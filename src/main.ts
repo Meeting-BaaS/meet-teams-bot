@@ -31,6 +31,9 @@ import {
     uploadLogsToS3,
 } from './utils/Logger'
 
+// Configuration pour activer/désactiver l'enregistrement
+export const RECORDING = process.env.RECORDING === 'true' // Par défaut false, true si RECORDING=true
+
 const ZOOM_SDK_DEBUG_EXECUTABLE_PATHNAME = './target/debug/client-zoom'
 const ZOOM_SDK_RELEASE_EXECUTABLE_PATHNAME = './target/release/client-zoom'
 const ZOOM_SDK_LIBRARY_PATH = './dependencies/zoom-sdk-linux-rs/zoom-meeting-sdk-linux'

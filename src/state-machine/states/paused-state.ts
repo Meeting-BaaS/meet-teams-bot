@@ -1,6 +1,7 @@
 import { Events } from '../../events'
 import { TRANSCODER } from '../../recording/Transcoder'
 
+import { RECORDING } from '../../main'
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
@@ -68,18 +69,30 @@ export class PausedState extends BaseState {
 
     private async pauseRecording(): Promise<void> {
         const pausePromise = async () => {
-            // Pause the MediaRecorder in the browser
-            await this.context.backgroundPage?.evaluate(() => {
-                const w = window as any
-                return w.pauseMediaRecorder?.()
-            })
+            // Pause the MediaRecorder in the browser seulement si RECORDING est activé
+            if (RECORDING) {
+                await this.context.backgroundPage?.evaluate(() => {
+                    const w = window as any
+                    return w.pauseMediaRecorder?.()
+                })
+            } else {
+                console.log('RECORDING disabled - skipping video recording pause')
+            }
 
             // Pause du Transcoder
-            await TRANSCODER.pause()
+            if (RECORDING) {
+                await TRANSCODER.pause()
+                console.log('Transcoder paused successfully')
+            } else {
+                console.log('RECORDING disabled - skipping transcoder pause')
+            }
 
             // Pause du streaming
-            if (this.context.streamingService) {
+            if (RECORDING && this.context.streamingService) {
                 this.context.streamingService.pause()
+                console.log('Streaming service paused successfully')
+            } else if (!RECORDING) {
+                console.log('RECORDING disabled - skipping streaming service pause')
             }
 
             console.log('Recording paused successfully')

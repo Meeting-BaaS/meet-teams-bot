@@ -5,6 +5,13 @@ import { MeetingProvider, RecordingMode } from './api'
 
 import { ApiService } from './api'
 
+// Initialize API service separately from recording
+export async function initApiService(
+    local_recording_server_location: string,
+): Promise<void> {
+    await ApiService.init(local_recording_server_location)
+}
+
 export async function startRecording(
     local_recording_server_location: string,
     chunkDuration: number,
@@ -35,7 +42,13 @@ export async function start_speakers_observer(
     recording_mode: RecordingMode,
     bot_name: string,
     meetingProvider: MeetingProvider,
+    local_recording_server_location?: string,
 ) {
+    // Initialize ApiService if URL is provided (needed for speakers communication)
+    if (local_recording_server_location) {
+        await ApiService.init(local_recording_server_location)
+    }
+    
     chrome.tabs.executeScript(
         {
             code: `var RECORDING_MODE = ${JSON.stringify(
@@ -116,6 +129,7 @@ setUserAgent(
 )
 
 const w = window as any
+w.initApiService = initApiService // Initialize API service
 w.startRecording = startRecording // Start screen recording
 w.stopMediaRecorder = stopMediaRecorder // stop screen recording
 w.stopAudioStreaming = stopAudioStreaming // Stop audio streaming

@@ -93,6 +93,7 @@ process_config() {
 run_with_config() {
     local config_file=$1
     local override_meeting_url=$2
+    local recording_mode=${RECORDING:-true}  # Par défaut true
     
     if [ ! -f "$config_file" ]; then
         print_error "Configuration file '$config_file' not found"
@@ -118,6 +119,7 @@ run_with_config() {
     local processed_config=$(process_config "$config_json")
     
     print_info "Running Meet Teams Bot with configuration: $config_file"
+    print_info "Recording mode: $recording_mode"
     if [ -n "$override_meeting_url" ]; then
         print_info "Meeting URL: $override_meeting_url"
     fi
@@ -135,6 +137,7 @@ run_with_config() {
     fi
     
     echo "$processed_config" | docker run -i \
+        -e RECORDING="$recording_mode" \
         -v "$(pwd)/$output_dir:/app/data" \
         meet-teams-bot
     
@@ -154,10 +157,12 @@ run_with_config() {
 # Run bot with JSON input
 run_with_json() {
     local json_input=$1
+    local recording_mode=${RECORDING:-true}  # Par défaut true
     local output_dir=$(create_output_dir)
     local processed_config=$(process_config "$json_input")
     
     print_info "Running Meet Teams Bot with provided JSON configuration"
+    print_info "Recording mode: $recording_mode"
     print_info "Output directory: $output_dir"
     
     # Debug: Show what we're sending to Docker (first 200 chars)
@@ -172,6 +177,7 @@ run_with_json() {
     fi
     
     echo "$processed_config" | docker run -i \
+        -e RECORDING="$recording_mode" \
         -v "$(pwd)/$output_dir:/app/data" \
         meet-teams-bot
     
@@ -217,17 +223,23 @@ show_help() {
     echo "  $0 clean                     - Clean recordings directory"
     echo "  $0 help                      - Show this help message"
     echo
+    echo "Environment Variables:"
+    echo "  RECORDING=true|false         - Enable/disable video recording (default: true)"
+    echo
     echo "Examples:"
     echo "  $0 build"
     echo "  $0 run params.json"
     echo "  $0 run params.json 'https://meet.google.com/new-meeting-url'"
+    echo "  RECORDING=false $0 run params.json  # Run without video recording"
     echo "  $0 run-json '{\"meeting_url\":\"https://meet.google.com/abc-def-ghi\", \"bot_name\":\"RecordingBot\"}'"
+    echo "  RECORDING=false $0 run-json '{...}'  # Run JSON config without recording"
     echo "  $0 clean"
     echo
     echo "Features:"
     echo "  • Automatically generates bot_uuid if not provided"
     echo "  • Override meeting URL by passing it as last argument"
-    echo "  • Saves recordings to ./recordings directory"
+    echo "  • Control video recording with RECORDING environment variable"
+    echo "  • Saves recordings to ./recordings directory (when recording enabled)"
     echo "  • Lists generated files after completion"
     echo
     echo "Configuration file should contain JSON with meeting parameters."

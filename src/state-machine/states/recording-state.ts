@@ -9,6 +9,7 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 
+import { RECORDING } from '../../main'
 import { TRANSCODER } from '../../recording/Transcoder'
 import { PathManager } from '../../utils/PathManager'
 
@@ -89,8 +90,8 @@ export class RecordingState extends BaseState {
     private async initializeRecording(): Promise<void> {
         console.info('Initializing recording...')
 
-        // Start streaming if available
-        if (this.context.streamingService) {
+        // Start streaming seulement si RECORDING est activé
+        if (RECORDING && this.context.streamingService) {
             console.info('Starting streaming service from recording state')
             this.context.streamingService.start()
 
@@ -102,6 +103,8 @@ export class RecordingState extends BaseState {
                 // If the instance is not available after starting, we might have a problem
                 Streaming.instance = this.context.streamingService
             }
+        } else if (!RECORDING) {
+            console.info('RECORDING disabled - skipping streaming service initialization')
         } else {
             console.warn('No streaming service available in context')
         }
@@ -111,7 +114,7 @@ export class RecordingState extends BaseState {
             hasPathManager: !!this.context.pathManager,
             hasStreamingService: !!this.context.streamingService,
             isStreamingInstanceAvailable: !!Streaming.instance,
-            isTranscoderConfigured: TRANSCODER.getStatus().isConfigured,
+            isTranscoderConfigured: RECORDING ? TRANSCODER.getStatus().isConfigured : 'N/A (RECORDING disabled)',
         })
 
         // Configure listeners
@@ -122,23 +125,29 @@ export class RecordingState extends BaseState {
     private async setupEventListeners(): Promise<void> {
         console.info('Setting up event listeners...')
 
-        TRANSCODER.on('chunkProcessed', async (chunkInfo) => {
-            try {
-                console.info('Received chunk for transcription:', {
-                    startTime: chunkInfo.startTime,
-                    endTime: chunkInfo.endTime,
-                    hasAudioUrl: !!chunkInfo.audioUrl,
-                })
-            } catch (error) {
-                console.error('Error during transcription:', error)
-            }
-        })
+        // Seulement configurer les event listeners du transcoder si RECORDING est activé
+        if (RECORDING) {
+            TRANSCODER.on('chunkProcessed', async (chunkInfo) => {
+                try {
+                    console.info('Received chunk for transcription:', {
+                        startTime: chunkInfo.startTime,
+                        endTime: chunkInfo.endTime,
+                        hasAudioUrl: !!chunkInfo.audioUrl,
+                    })
+                } catch (error) {
+                    console.error('Error during transcription:', error)
+                }
+            })
 
-        TRANSCODER.on('error', async (error) => {
-            console.error('Recording error:', error)
-            this.context.error = error
-            this.isProcessing = false
-        })
+            TRANSCODER.on('error', async (error) => {
+                console.error('Recording error:', error)
+                this.context.error = error
+                this.isProcessing = false
+            })
+            console.info('Transcoder event listeners configured')
+        } else {
+            console.info('RECORDING disabled - skipping transcoder event listeners')
+        }
 
         console.info('Event listeners setup complete')
     }
@@ -257,7 +266,12 @@ export class RecordingState extends BaseState {
 
             console.info('Stopping transcoder')
             try {
-                await TRANSCODER.stop()
+                if (RECORDING) {
+                    await TRANSCODER.stop()
+                    console.info('Transcoder stopped successfully')
+                } else {
+                    console.info('RECORDING disabled - skipping transcoder stop')
+                }
             } catch (error) {
                 console.error(
                     'Error stopping transcoder, continuing cleanup:',
@@ -277,6 +291,11 @@ export class RecordingState extends BaseState {
     }
 
     private async stopVideoRecording(): Promise<void> {
+        if (!RECORDING) {
+            console.log('RECORDING disabled - skipping video recording stop')
+            return
+        }
+
         if (!this.context.backgroundPage) {
             console.error(
                 'Background page not available for stopping video recording',
@@ -361,6 +380,11 @@ export class RecordingState extends BaseState {
     }
 
     private async stopAudioStreaming(): Promise<void> {
+        if (!RECORDING) {
+            console.info('RECORDING disabled - skipping audio streaming stop')
+            return
+        }
+
         if (!this.context.backgroundPage) {
             console.error('Background page not available for stopping audio')
             return
@@ -458,6 +482,11 @@ export class RecordingState extends BaseState {
      * @returns true if the meeting should end due to absence of sound
      */
     private checkNoSpeaker(now: number): boolean {
+        // Si RECORDING=false, pas de streaming audio donc pas de vérification de son
+        if (!RECORDING) {
+            return false
+        }
+
         const noSpeakerDetectedTime = this.context.noSpeakerDetectedTime || 0
 
         // If no silence period has been detected, no need to end
