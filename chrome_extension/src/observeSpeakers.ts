@@ -94,9 +94,9 @@ async function checkSpeakers() {
 }
 
 let checkSpeakersTimeout: number | null = null
-// Debounce delay increased from 10ms to 50ms to reduce mutation processing frequency
-// This optimization helps reduce CPU usage during high-frequency DOM changes
-const MUTATION_DEBOUNCE = 50
+// Debounce delay optimized to 150ms for good balance between reactivity and CPU usage
+// This reduces CPU usage while maintaining reasonable responsiveness
+const MUTATION_DEBOUNCE = 150
 
 // Track the last time a DOM mutation was detected to implement intelligent observer reset logic
 let lastMutationTime = Date.now()
@@ -146,20 +146,19 @@ async function observeSpeakers() {
         setInterval(async () => {
             if (document.visibilityState !== 'hidden') {
                 // Check if mutations have stopped being detected, indicating potential DOM changes
-                // that require observer reset. Threshold increased from 2s to 8s to reduce
-                // unnecessary resets and improve performance stability
-                if (Date.now() - lastMutationTime > 8000) {
+                // that require observer reset. Threshold set to 15s for balanced performance
+                if (Date.now() - lastMutationTime > 15000) {
                     console.warn(
-                        'No mutations detected for 8 seconds, resetting observer',
+                        'No mutations detected for 15 seconds, resetting observer',
                     )
                     await setupMutationObserver()
                 }
 
-                // Fallback speaker detection with reduced frequency for performance optimization
-                // Interval increased from 5s to 10s to balance reliability with CPU usage
+                // Fallback speaker detection with balanced frequency
+                // Interval set to 15s for good balance between accuracy and performance
                 checkSpeakers()
             }
-        }, 10000)
+        }, 15000) // 15 seconds for balanced performance
     } catch (e) {
         console.warn('Failed to initialize observer:', e)
         // Retry after a delay

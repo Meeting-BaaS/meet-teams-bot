@@ -6,6 +6,11 @@ let lastValidSpeakers: SpeakerData[] = []
 let lastValidSpeakerCheck = Date.now()
 const FREEZE_TIMEOUT = 30000 // 30 seconds
 
+// Cache selectors to avoid repeated DOM queries
+let cachedParticipantsList: Element | null = null
+let lastParticipantsListCheck = 0
+const PARTICIPANTS_LIST_CACHE_DURATION = 1000 // 1 second cache - more conservative
+
 export async function getSpeakerRootToObserve(
     recordingMode: RecordingMode,
 ): Promise<[Node, MutationObserverInit] | undefined> {
@@ -46,7 +51,7 @@ export async function getSpeakerRootToObserve(
             //     div.remove()
             // })
 
-            // Observe the entire document instead of the participants panel
+            // Observe the entire document - keep original logic that works
             return [
                 document,
                 {
@@ -128,16 +133,14 @@ export function getSpeakerFromDocument(
             return []
         }
 
-        const participantsList = document.querySelector(
-            "[aria-label='Participants']",
-        )
+        // Query participants list every time to ensure freshness
+        const participantsList = document.querySelector("[aria-label='Participants']")
         if (!participantsList) {
             lastValidSpeakers = []
             return [] // Real case of 0 participants
         }
 
-        const participantItems =
-            participantsList.querySelectorAll('[role="listitem"]')
+        const participantItems = participantsList.querySelectorAll('[role="listitem"]')
 
         if (!participantItems || participantItems.length === 0) {
             lastValidSpeakers = [] // Update the current state
@@ -184,7 +187,7 @@ export function getSpeakerFromDocument(
                     cohortId = cohortElement.getAttribute('data-cohort-id')
                 }
 
-                // Check if the merged audio is speaking
+                // Check if the merged audio is speaking - keep original logic
                 const speakingIndicators = Array.from(
                     item.querySelectorAll('*'),
                 ).filter((elem) => {
@@ -196,12 +199,9 @@ export function getSpeakerFromDocument(
                 })
 
                 // Also check for the unmuted microphone icon
-                const unmutedMicImg = item.querySelector(
-                    'img[src*="mic_unmuted"]',
-                )
+                const unmutedMicImg = item.querySelector('img[src*="mic_unmuted"]')
 
-                const isSpeaking =
-                    speakingIndicators.length > 0 || !!unmutedMicImg
+                const isSpeaking = speakingIndicators.length > 0 || !!unmutedMicImg
 
                 // Initialize the merged group
                 if (cohortId) {
@@ -213,37 +213,26 @@ export function getSpeakerFromDocument(
             }
 
             // Check if this participant is part of a merged audio group
-            const isInMergedAudio = !!item.querySelector(
-                '[aria-label="Adaptive audio group"]',
-            )
+            const isInMergedAudio = !!item.querySelector('[aria-label="Adaptive audio group"]')
             let participantCohortId: string | null = null
 
             if (isInMergedAudio) {
                 // Look for the cohort id in the parent element
                 const cohortElement = item.closest('[data-cohort-id]')
                 if (cohortElement) {
-                    participantCohortId =
-                        cohortElement.getAttribute('data-cohort-id')
+                    participantCohortId = cohortElement.getAttribute('data-cohort-id')
                 }
 
                 // Add this participant to the matching merged group
-                if (
-                    participantCohortId &&
-                    mergedGroups.has(participantCohortId)
-                ) {
-                    mergedGroups
-                        .get(participantCohortId)!
-                        .members.push(ariaLabel)
+                if (participantCohortId && mergedGroups.has(participantCohortId)) {
+                    mergedGroups.get(participantCohortId)!.members.push(ariaLabel)
                 }
             }
 
             // Add the participant to our map only if not in a merged group
             // or if it is the "Merged audio" entry itself
             if (isMergedAudio || !isInMergedAudio) {
-                const uniqueKey =
-                    isMergedAudio && cohortId
-                        ? `Merged audio_${cohortId}`
-                        : ariaLabel
+                const uniqueKey = isMergedAudio && cohortId ? `Merged audio_${cohortId}` : ariaLabel
 
                 if (!uniqueParticipants.has(uniqueKey)) {
                     uniqueParticipants.set(uniqueKey, {
@@ -257,7 +246,7 @@ export function getSpeakerFromDocument(
 
                 const participant = uniqueParticipants.get(uniqueKey)!
 
-                // Check if the participant is presenting
+                // Check if the participant is presenting - keep original logic
                 const allDivs = Array.from(item.querySelectorAll('div'))
                 const isPresenting = allDivs.some((div) => {
                     const text = div.textContent?.trim()
@@ -268,7 +257,7 @@ export function getSpeakerFromDocument(
                     participant.isPresenting = true
                 }
 
-                // Check speaking indicators
+                // Check speaking indicators - keep original logic but with small optimization
                 const speakingIndicators = Array.from(
                     item.querySelectorAll('*'),
                 ).filter((elem) => {
@@ -279,18 +268,17 @@ export function getSpeakerFromDocument(
                     )
                 })
 
-                speakingIndicators.forEach((indicator) => {
+                // Process indicators with early exit optimization
+                for (const indicator of speakingIndicators) {
                     const backgroundElement = indicator.children[1]
                     if (backgroundElement) {
-                        const backgroundPosition =
-                            getComputedStyle(
-                                backgroundElement,
-                            ).backgroundPositionX
+                        const backgroundPosition = getComputedStyle(backgroundElement).backgroundPositionX
                         if (backgroundPosition !== '0px') {
                             participant.isSpeaking = true
+                            break // Exit early once found - small optimization
                         }
                     }
-                })
+                }
 
                 // Update the map with the potentially modified data
                 uniqueParticipants.set(uniqueKey, participant)
