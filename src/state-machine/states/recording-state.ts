@@ -296,86 +296,23 @@ export class RecordingState extends BaseState {
             return
         }
 
-        if (!this.context.backgroundPage) {
-            console.error(
-                'Background page not available for stopping video recording',
-            )
-            return
-        }
-
-        try {
-            // Check if the function exists first
-            const functionExists = await this.context.backgroundPage.evaluate(
-                () => {
-                    const w = window as any
-                    return {
-                        stopMediaRecorderExists:
-                            typeof w.stopMediaRecorder === 'function',
-                        recordExists: typeof w.record !== 'undefined',
-                        recordStopExists:
-                            w.record && typeof w.record.stop === 'function',
-                    }
-                },
-            )
-
-            console.log('Stop functions status:', functionExists)
-
-            if (functionExists.stopMediaRecorderExists) {
-                // 1. Stop media recording with detailed diagnostics
-                await this.context.backgroundPage.evaluate(() => {
-                    const w = window as any
-                    try {
-                        console.log('Calling stopMediaRecorder...')
-                        const result = w.stopMediaRecorder()
-                        console.log(
-                            'stopMediaRecorder called successfully, result:',
-                            result,
-                        )
-                        return result
-                    } catch (error) {
-                        console.error('Error in stopMediaRecorder:', error)
-                        // Try to display more details about the error
-                        console.error(
-                            'Error details:',
-                            JSON.stringify(
-                                error,
-                                Object.getOwnPropertyNames(error),
-                            ),
-                        )
-                        throw error
-                    }
-                })
-            } else {
-                console.warn(
-                    'stopMediaRecorder function not found in window object',
-                )
-
-                // Direct workaround attempt with MediaRecorder if available
-                try {
-                    await this.context.backgroundPage.evaluate(() => {
-                        const w = window as any
-                        if (
-                            w.MEDIA_RECORDER &&
-                            w.MEDIA_RECORDER.state !== 'inactive'
-                        ) {
-                            console.log(
-                                'Attempting direct stop of MEDIA_RECORDER',
-                            )
-                            w.MEDIA_RECORDER.stop()
-                            return true
-                        }
-                        return false
-                    })
-                } catch (directStopError) {
-                    console.error(
-                        'Failed direct stop attempt:',
-                        directStopError,
-                    )
+        // Utiliser ScreenRecorder pour arrêter l'enregistrement
+        if (this.context.screenRecorder) {
+            try {
+                if (this.context.screenRecorder.isCurrentlyRecording()) {
+                    console.log('Stopping screen recording via ScreenRecorder...')
+                    await this.context.screenRecorder.stopRecording()
+                    console.log('Screen recording stopped successfully')
+                } else {
+                    console.log('Screen recording was not active')
                 }
+                return
+            } catch (error) {
+                console.error('Error stopping screen recording:', error)
+                throw error
             }
-        } catch (error) {
-            console.error('Failed to stop video recording:', error)
-            throw error
+        } else {
+            console.warn('ScreenRecorder not available - recording may not have been properly started')
         }
     }
 

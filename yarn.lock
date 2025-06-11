@@ -587,7 +587,7 @@
     "@jridgewell/resolve-uri" "^3.0.3"
     "@jridgewell/sourcemap-codec" "^1.4.10"
 
-"@playwright/test@^1.50.1":
+"@playwright/test@1.50.1":
   version "1.50.1"
   resolved "https://registry.npmjs.org/@playwright/test/-/test-1.50.1.tgz"
   integrity sha512-Jii3aBg+CEDpgnuDxEp/h7BimHcUTDlpEtce89xEumlJ5ef2hqepZ+PWp1DDpYC/VO9fmWVI1IlEaoI5fK9FXQ==

@@ -1,12 +1,17 @@
 import { Events } from '../../events'
 import { RECORDING } from '../../main'
 import { TRANSCODER } from '../../recording/Transcoder'
+import { ScreenRecorder } from '../../recording/ScreenRecorder'
+import { getRecordingConfig } from '../../config/recording-config'
 import { SpeakerManager } from '../../speaker-manager'
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 
 export class InCallState extends BaseState {
+    private screenRecorder: ScreenRecorder | null = null
+    private recordingConfig = getRecordingConfig()
+
     async execute(): StateExecuteResult {
         try {
             // Start dialog observer upon entering the state
@@ -74,11 +79,49 @@ export class InCallState extends BaseState {
 
             await TRANSCODER.start()
             console.info('Transcoder started successfully')
+
+            // Initialiser le ScreenRecorder
+            this.initializeScreenRecorder()
         } else {
             console.info('RECORDING disabled - skipping transcoder initialization')
         }
 
         console.info('Services initialized successfully')
+    }
+
+    private initializeScreenRecorder(): void {
+        const config = this.recordingConfig.screen
+        
+        this.screenRecorder = new ScreenRecorder({
+            width: config.width,
+            height: config.height,
+            framerate: config.framerate,
+            chunkDuration: config.chunkDuration,
+            outputFormat: config.outputFormat,
+            videoCodec: config.videoCodec,
+            audioCodec: config.audioCodec,
+            videoBitrate: config.videoBitrate,
+            audioBitrate: config.audioBitrate,
+            audioDevice: config.audioDevice
+        })
+
+        this.screenRecorder.on('error', (error) => {
+            console.error('ScreenRecorder error:', error)
+            Events.meetingError(error)
+        })
+
+        this.screenRecorder.on('started', () => {
+            console.log('Screen recording started successfully')
+        })
+
+        this.screenRecorder.on('stopped', () => {
+            console.log('Screen recording stopped')
+        })
+
+        // Ajouter le ScreenRecorder au context pour qu'il soit accessible depuis RecordingState
+        this.context.screenRecorder = this.screenRecorder
+
+        console.info('ScreenRecorder initialized for direct screen capture')
     }
 
     private async setupBrowserComponents(): Promise<void> {
@@ -87,7 +130,7 @@ export class InCallState extends BaseState {
         }
 
         try {
-            // First check if the extension functions exist
+            // Check if the extension functions exist for HTML cleanup
             const functionsExist = await this.context.backgroundPage.evaluate(
                 () => {
                     const w = window as any
@@ -102,9 +145,8 @@ export class InCallState extends BaseState {
 
             console.log('Extension functions status:', functionsExist)
 
-            // Only attempt to call functions that exist
+            // Clean up HTML if function exists
             if (functionsExist.removeHtmlExists) {
-                // Nettoyage du HTML
                 await this.context.backgroundPage.evaluate(
                     async (params) => {
                         const w = window as any
@@ -120,9 +162,7 @@ export class InCallState extends BaseState {
                 )
                 console.log('HTML cleanup completed successfully')
             } else {
-                console.warn(
-                    'remove_shitty_html function not found in extension context',
-                )
+                console.warn('HTML cleanup function not found in extension context')
             }
 
             // Si RECORDING=false, démarrer immédiatement l'observation des speakers
@@ -136,91 +176,43 @@ export class InCallState extends BaseState {
 
         } catch (error) {
             console.error('Error in setupBrowserComponents:', error)
-            // Log additional context to help diagnose the issue
             console.error('Context state:', {
                 hasBackgroundPage: !!this.context.backgroundPage,
                 recordingMode: this.context.params.recording_mode,
                 meetingProvider: this.context.params.meetingProvider,
                 botName: this.context.params.bot_name,
             })
-
-            // Re-throw the error, but with more context
             throw new Error(`Browser component setup failed: ${error as Error}`)
         }
 
-        // Mode RECORDING=true : Démarrer l'enregistrement d'abord
-        // Check if startRecording exists
-        const recordingFunctionsExist =
-            await this.context.backgroundPage.evaluate(() => {
-                const w = window as any
-                return {
-                    startRecordingExists:
-                        typeof w.startRecording === 'function',
-                    initMediaRecorderExists:
-                        typeof w.initMediaRecorder === 'function',
-                    recordModuleExists: typeof w.record !== 'undefined',
-                }
-            })
-
-        console.log('Recording functions status:', recordingFunctionsExist)
-
-        // Start recording with improved error handling
+        // Mode RECORDING=true : Démarrer l'enregistrement d'écran via ScreenRecorder
         let startTime: number
         let recordingStartedSuccessfully = false
         
+        console.log('Starting screen recording via ScreenRecorder...')
+
         try {
-            if (recordingFunctionsExist.startRecordingExists) {
-                console.log('Calling startRecording with parameters:', {
-                    local_recording_server_location:
-                        this.context.params.local_recording_server_location,
-                    chunk_duration: MEETING_CONSTANTS.CHUNK_DURATION,
-                    streaming_output: this.context.params.streaming_output,
-                    streaming_audio_frequency:
-                        this.context.params.streaming_audio_frequency,
+            if (this.screenRecorder) {
+                // Démarrer l'enregistrement d'écran avec callback pour les chunks
+                await this.screenRecorder.startRecording(async (chunk: Buffer, isFinal: boolean) => {
+                    try {
+                        // Envoyer le chunk au transcoder (comme le faisait l'extension Chrome)
+                        await TRANSCODER.uploadChunk(chunk, isFinal)
+                    } catch (error) {
+                        console.error('Error uploading chunk from screen recorder:', error)
+                    }
                 })
 
-                startTime = await this.context.backgroundPage.evaluate(
-                    async (params) => {
-                        const w = window as any
-                        try {
-                            // Loguer pour voir si la fonction est appelée
-                            console.log(
-                                'Calling window.startRecording function...',
-                            )
-
-                            const result = await w.startRecording(
-                                params.local_recording_server_location,
-                                params.chunk_duration,
-                                params.streaming_output,
-                                params.streaming_audio_frequency,
-                            )
-
-                            console.log('startRecording returned:', result)
-                            return result || Date.now() // Fallback si undefined
-                        } catch (error) {
-                            console.error('Error in startRecording:', error)
-                            throw error // Re-throw pour indiquer l'échec
-                        }
-                    },
-                    {
-                        local_recording_server_location:
-                            this.context.params.local_recording_server_location,
-                        chunk_duration: MEETING_CONSTANTS.CHUNK_DURATION,
-                        streaming_output: this.context.params.streaming_output,
-                        streaming_audio_frequency:
-                            this.context.params.streaming_audio_frequency,
-                    },
-                )
-                recordingStartedSuccessfully = true
-            } else {
-                console.warn(
-                    'startRecording function not found in extension context',
-                )
                 startTime = Date.now()
-                recordingStartedSuccessfully = false // Pas de fonction d'enregistrement
+                recordingStartedSuccessfully = true
+                console.log('Screen recording started successfully')
+            } else {
+                console.warn('ScreenRecorder not initialized')
+                startTime = Date.now()
+                recordingStartedSuccessfully = false
             }
         } catch (error) {
-            console.error('Error starting recording:', error)
+            console.error('Error starting screen recording:', error)
             startTime = Date.now()
             recordingStartedSuccessfully = false
         }
@@ -229,8 +221,8 @@ export class InCallState extends BaseState {
         this.context.startTime = startTime || Date.now()
         console.log(`Recording started at timestamp: ${this.context.startTime}`)
 
-        // Démarrer l'observation des speakers seulement si l'enregistrement a réussi (ou si pas de fonction d'enregistrement)
-        if (recordingStartedSuccessfully || !recordingFunctionsExist.startRecordingExists) {
+        // Démarrer l'observation des speakers seulement si l'enregistrement a réussi
+        if (recordingStartedSuccessfully) {
             const functionsExist = await this.context.backgroundPage.evaluate(
                 () => {
                     const w = window as any
@@ -279,6 +271,19 @@ export class InCallState extends BaseState {
                 'start_speakers_observer function not found in extension context',
             )
             // Continue without speakers observer - this is non-critical
+        }
+    }
+
+    // Méthode pour arrêter l'enregistrement d'écran lors de la transition
+    public async cleanup(): Promise<void> {
+        if (this.screenRecorder && this.screenRecorder.isCurrentlyRecording()) {
+            console.log('Stopping screen recording...')
+            try {
+                await this.screenRecorder.stopRecording()
+                console.log('Screen recording stopped successfully')
+            } catch (error) {
+                console.error('Error stopping screen recording:', error)
+            }
         }
     }
 }
