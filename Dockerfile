@@ -27,6 +27,7 @@ RUN apt-get update \
         pulseaudio-utils \
         pavucontrol \
         alsa-utils \
+        imagemagick \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -82,13 +83,13 @@ export XDG_RUNTIME_DIR=/tmp/pulse\n\
 # Create pulse runtime directory\n\
 mkdir -p $PULSE_RUNTIME_PATH\n\
 \n\
-# Start Xvfb\n\
-Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &\n\
+# Start Xvfb avec résolution augmentée pour compenser le crop plus important\n\
+Xvfb :99 -screen 0 1280x880x24 -ac +extension GLX +render -noreset &\n\
 XVFB_PID=$!\n\
 echo "✅ Virtual display started (PID: $XVFB_PID)"\n\
 \n\
-# Start PulseAudio in system mode\n\
-pulseaudio --system --disallow-exit --disallow-module-loading &\n\
+# Start PulseAudio in USER mode (pas system)\n\
+pulseaudio --start --log-target=stderr --log-level=notice &\n\
 PULSE_PID=$!\n\
 echo "✅ PulseAudio started (PID: $PULSE_PID)"\n\
 \n\
