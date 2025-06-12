@@ -90,6 +90,9 @@ export class InCallState extends BaseState {
     }
 
     private initializeScreenRecorder(): void {
+        console.info('Initializing ScreenRecorder for direct screen capture...')
+        
+        // Toujours utiliser la config par défaut - simple et efficace
         const config = this.recordingConfig.screen
         
         this.screenRecorder = new ScreenRecorder({
@@ -104,6 +107,14 @@ export class InCallState extends BaseState {
             audioBitrate: config.audioBitrate,
             audioDevice: config.audioDevice
         })
+
+        // ===== CONFIGURER LA PAGE POUR LE SIGNAL DE SYNC =====
+        if (this.context.playwrightPage) {
+            this.screenRecorder.setPage(this.context.playwrightPage)
+            console.log('📄 Meeting page configured for automatic sync signal generation')
+        } else {
+            console.warn('⚠️ No playwright page available - sync signal disabled')
+        }
 
         this.screenRecorder.on('error', (error) => {
             console.error('ScreenRecorder error:', error)
@@ -185,14 +196,22 @@ export class InCallState extends BaseState {
             throw new Error(`Browser component setup failed: ${error as Error}`)
         }
 
-        // Mode RECORDING=true : Démarrer l'enregistrement d'écran via ScreenRecorder
+        // Mode RECORDING=true : Calibrer PUIS démarrer l'enregistrement d'écran
         let startTime: number
         let recordingStartedSuccessfully = false
         
-        console.log('Starting screen recording via ScreenRecorder...')
-
+        console.log('🎯 === REVOLUTIONARY SYNC CALIBRATION ===')
+        
         try {
             if (this.screenRecorder) {
+                // ===== ÉTAPE 1: CALIBRATION UNE SEULE FOIS =====
+                console.log('🎯 Starting ONE-TIME sync calibration...')
+                await this.screenRecorder.calibrateSync()
+                console.log('✅ Calibration complete! Ready for perfect sync recording!')
+                
+                // ===== ÉTAPE 2: ENREGISTREMENT AVEC SYNC PARFAITE =====
+                console.log('🚀 Starting perfectly synchronized screen recording...')
+                
                 // Démarrer l'enregistrement d'écran avec callback pour les chunks
                 await this.screenRecorder.startRecording(async (chunk: Buffer, isFinal: boolean) => {
                     try {
