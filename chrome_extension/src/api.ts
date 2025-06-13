@@ -59,17 +59,17 @@ export class ApiService {
         // )
 
         async function upload_chunk(isFinal: boolean) {
-            let route = !isFinal ? 'upload_chunk' : 'upload_chunk_final'
-            await axios
-                .post(`${url}transcoder/${route}`, payload, {
-                    headers: {
-                        'Content-Type': 'application/octet-stream', // Or 'video/mp4' based on your video type
-                    },
-                    maxContentLength: 500 * 1024 * 1024, // 500MB limit to match server
-                })
-                .catch((error) => {
-                    console.error('Failed to send upload chunk message:', error)
-                })
+            // OBSOLETE: Ces routes transcoder n'existent plus avec le nouveau système ScreenRecorder
+            console.warn('OBSOLETE: transcoder routes no longer exist with new ScreenRecorder system')
+            console.warn('Chunks are no longer needed - ScreenRecorder captures directly')
+            return
+            
+            // Ancien code conservé pour référence :
+            // let route = !isFinal ? 'upload_chunk' : 'upload_chunk_final'
+            // await axios.post(`${url}transcoder/${route}`, payload, {
+            //     headers: { 'Content-Type': 'application/octet-stream' },
+            //     maxContentLength: 500 * 1024 * 1024,
+            // })
         }
 
         switch (messageType) {

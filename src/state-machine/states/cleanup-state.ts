@@ -1,6 +1,6 @@
 import { delSessionInRedis } from '../../instance'
 import { SoundContext, VideoContext } from '../../media_context'
-import { TRANSCODER } from '../../recording/Transcoder'
+import { SCREEN_RECORDER } from '../../recording/ScreenRecorder'
 import { MEETING_CONSTANTS } from '../constants'
 
 import { MeetingStateType, StateExecuteResult } from '../types'
@@ -35,8 +35,8 @@ export class CleanupState extends BaseState {
 
     private async performCleanup(): Promise<void> {
         try {
-            // 1. Arrêter le Transcoder et la transcription
-            await this.stopTranscoderAndTranscription()
+            // 1. Arrêter le ScreenRecorder
+            await this.stopScreenRecorder()
 
             // 2.Arrêter le streaming
             if (this.context.streamingService) {
@@ -46,8 +46,8 @@ export class CleanupState extends BaseState {
             // 3. Clean up extension resources and browser
             await this.cleanupBrowserResources()
 
-            // 4. Upload the video to S3 before removing local files
-            await this.uploadVideoToS3()
+            // 4. Upload the video to S3 (handled automatically by ScreenRecorder now)
+            console.log('Video upload handled automatically by ScreenRecorder')
 
             // 5. Final Redis cleanup
             await this.cleanupRedisSession()
@@ -57,11 +57,17 @@ export class CleanupState extends BaseState {
         }
     }
 
-    private async stopTranscoderAndTranscription(): Promise<void> {
+    private async stopScreenRecorder(): Promise<void> {
         try {
-            await Promise.all([TRANSCODER.stop()])
+            if (SCREEN_RECORDER.isCurrentlyRecording()) {
+                console.log('Stopping ScreenRecorder from cleanup state...')
+                await SCREEN_RECORDER.stopRecording()
+                console.log('ScreenRecorder stopped successfully')
+            } else {
+                console.log('ScreenRecorder not recording, nothing to stop')
+            }
         } catch (error) {
-            console.error('Error stopping processes:', error)
+            console.error('Error stopping ScreenRecorder:', error)
             throw error
         }
     }
@@ -93,16 +99,15 @@ export class CleanupState extends BaseState {
     }
 
     private async uploadVideoToS3(): Promise<void> {
-        if (!TRANSCODER) return
-
         try {
-            // Only upload if not already done in the stop() method
-            if (!TRANSCODER.getFilesUploaded()) {
-                console.log('Uploading video to S3')
-                await TRANSCODER.uploadToS3()
+            // ScreenRecorder handles S3 upload automatically during stopRecording()
+            // Only upload manually if not already done
+            if (!SCREEN_RECORDER.getFilesUploaded()) {
+                console.log('Uploading video to S3 via ScreenRecorder')
+                await SCREEN_RECORDER.uploadToS3()
             } else {
                 console.log(
-                    'Files already uploaded to S3 in stop() method, skipping',
+                    'Files already uploaded to S3 by ScreenRecorder, skipping',
                 )
             }
         } catch (error) {

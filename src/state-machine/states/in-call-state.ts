@@ -1,17 +1,12 @@
 import { Events } from '../../events'
 import { RECORDING } from '../../main'
-import { TRANSCODER } from '../../recording/Transcoder'
-import { ScreenRecorder } from '../../recording/ScreenRecorder'
-import { getRecordingConfig } from '../../config/recording-config'
+import { SCREEN_RECORDER } from '../../recording/ScreenRecorder'
 import { SpeakerManager } from '../../speaker-manager'
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 
 export class InCallState extends BaseState {
-    private screenRecorder: ScreenRecorder | null = null
-    private recordingConfig = getRecordingConfig()
-
     async execute(): StateExecuteResult {
         try {
             // Start dialog observer upon entering the state
@@ -68,71 +63,23 @@ export class InCallState extends BaseState {
             throw new Error('PathManager not initialized')
         }
 
-        // Seulement configurer et démarrer le transcoder si RECORDING est activé
+        // Configure SCREEN_RECORDER if RECORDING is enabled
         if (RECORDING) {
-            // Configurer le transcoder avec le mode d'enregistrement
-            TRANSCODER.configure(
+            console.info('Configuring SCREEN_RECORDER...')
+            
+            // Configure SCREEN_RECORDER with PathManager and recording params
+            SCREEN_RECORDER.configure(
                 this.context.pathManager,
                 this.context.params.recording_mode,
                 this.context.params,
             )
 
-            await TRANSCODER.start()
-            console.info('Transcoder started successfully')
-
-            // Initialiser le ScreenRecorder
-            this.initializeScreenRecorder()
+            console.info('SCREEN_RECORDER configured successfully')
         } else {
-            console.info('RECORDING disabled - skipping transcoder initialization')
+            console.info('RECORDING disabled - skipping screen recorder initialization')
         }
 
         console.info('Services initialized successfully')
-    }
-
-    private initializeScreenRecorder(): void {
-        console.info('Initializing ScreenRecorder for direct screen capture...')
-        
-        // Toujours utiliser la config par défaut - simple et efficace
-        const config = this.recordingConfig.screen
-        
-        this.screenRecorder = new ScreenRecorder({
-            width: config.width,
-            height: config.height,
-            framerate: config.framerate,
-            chunkDuration: config.chunkDuration,
-            outputFormat: config.outputFormat,
-            videoCodec: config.videoCodec,
-            audioCodec: config.audioCodec,
-            videoBitrate: config.videoBitrate,
-            audioBitrate: config.audioBitrate,
-            audioDevice: config.audioDevice
-        })
-
-        // ===== CONFIGURER LA PAGE POUR LE SIGNAL DE SYNC =====
-        if (this.context.playwrightPage) {
-            this.screenRecorder.setPage(this.context.playwrightPage)
-            console.log('📄 Meeting page configured for automatic sync signal generation')
-        } else {
-            console.warn('⚠️ No playwright page available - sync signal disabled')
-        }
-
-        this.screenRecorder.on('error', (error) => {
-            console.error('ScreenRecorder error:', error)
-            Events.meetingError(error)
-        })
-
-        this.screenRecorder.on('started', () => {
-            console.log('Screen recording started successfully')
-        })
-
-        this.screenRecorder.on('stopped', () => {
-            console.log('Screen recording stopped')
-        })
-
-        // Ajouter le ScreenRecorder au context pour qu'il soit accessible depuis RecordingState
-        this.context.screenRecorder = this.screenRecorder
-
-        console.info('ScreenRecorder initialized for direct screen capture')
     }
 
     private async setupBrowserComponents(): Promise<void> {
@@ -196,42 +143,30 @@ export class InCallState extends BaseState {
             throw new Error(`Browser component setup failed: ${error as Error}`)
         }
 
-        // Mode RECORDING=true : Calibrer PUIS démarrer l'enregistrement d'écran
+        // Mode RECORDING=true : Démarrer l'enregistrement d'écran
         let startTime: number
         let recordingStartedSuccessfully = false
         
-        console.log('🎯 === REVOLUTIONARY SYNC CALIBRATION ===')
+        console.log('🎯 === STARTING SCREEN RECORDING ===')
         
         try {
-            if (this.screenRecorder) {
-                // ===== ÉTAPE 1: CALIBRATION UNE SEULE FOIS =====
-                console.log('🎯 Starting ONE-TIME sync calibration...')
-                await this.screenRecorder.calibrateSync()
-                console.log('✅ Calibration complete! Ready for perfect sync recording!')
-                
-                // ===== ÉTAPE 2: ENREGISTREMENT AVEC SYNC PARFAITE =====
-                console.log('🚀 Starting perfectly synchronized screen recording...')
-                
-                // Démarrer l'enregistrement d'écran avec callback pour les chunks
-                await this.screenRecorder.startRecording(async (chunk: Buffer, isFinal: boolean) => {
-                    try {
-                        // Envoyer le chunk au transcoder (comme le faisait l'extension Chrome)
-                        await TRANSCODER.uploadChunk(chunk, isFinal)
-                    } catch (error) {
-                        console.error('Error uploading chunk from screen recorder:', error)
-                    }
-                })
-
-                startTime = Date.now()
-                recordingStartedSuccessfully = true
-                console.log('Screen recording started successfully')
+            // Configure the meeting page for sync (if available)
+            if (this.context.playwrightPage) {
+                SCREEN_RECORDER.setPage(this.context.playwrightPage)
+                console.log('📄 Meeting page configured for SCREEN_RECORDER')
             } else {
-                console.warn('ScreenRecorder not initialized')
-                startTime = Date.now()
-                recordingStartedSuccessfully = false
+                console.warn('⚠️ No playwright page available')
             }
+
+            // Start screen recording
+            console.log('🚀 Starting screen recording...')
+            await SCREEN_RECORDER.startRecording()
+
+            startTime = Date.now()
+            recordingStartedSuccessfully = true
+            console.log('✅ Screen recording started successfully')
         } catch (error) {
-            console.error('Error starting screen recording:', error)
+            console.error('❌ Error starting screen recording:', error)
             startTime = Date.now()
             recordingStartedSuccessfully = false
         }
@@ -290,19 +225,6 @@ export class InCallState extends BaseState {
                 'start_speakers_observer function not found in extension context',
             )
             // Continue without speakers observer - this is non-critical
-        }
-    }
-
-    // Méthode pour arrêter l'enregistrement d'écran lors de la transition
-    public async cleanup(): Promise<void> {
-        if (this.screenRecorder && this.screenRecorder.isCurrentlyRecording()) {
-            console.log('Stopping screen recording...')
-            try {
-                await this.screenRecorder.stopRecording()
-                console.log('Screen recording stopped successfully')
-            } catch (error) {
-                console.error('Error stopping screen recording:', error)
-            }
         }
     }
 }

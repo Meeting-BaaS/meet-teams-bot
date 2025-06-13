@@ -10,7 +10,7 @@ import {
 import { BaseState } from './base-state'
 
 import { RECORDING } from '../../main'
-import { TRANSCODER } from '../../recording/Transcoder'
+import { SCREEN_RECORDER } from '../../recording/ScreenRecorder'
 import { PathManager } from '../../utils/PathManager'
 
 // Sound level threshold for considering activity (0-100)
@@ -114,7 +114,7 @@ export class RecordingState extends BaseState {
             hasPathManager: !!this.context.pathManager,
             hasStreamingService: !!this.context.streamingService,
             isStreamingInstanceAvailable: !!Streaming.instance,
-            isTranscoderConfigured: RECORDING ? TRANSCODER.getStatus().isConfigured : 'N/A (RECORDING disabled)',
+            isScreenRecorderConfigured: RECORDING ? SCREEN_RECORDER.getStatus().isConfigured : 'N/A (RECORDING disabled)',
         })
 
         // Configure listeners
@@ -125,28 +125,21 @@ export class RecordingState extends BaseState {
     private async setupEventListeners(): Promise<void> {
         console.info('Setting up event listeners...')
 
-        // Seulement configurer les event listeners du transcoder si RECORDING est activé
+        // Seulement configurer les event listeners du screen recorder si RECORDING est activé
         if (RECORDING) {
-            TRANSCODER.on('chunkProcessed', async (chunkInfo) => {
-                try {
-                    console.info('Received chunk for transcription:', {
-                        startTime: chunkInfo.startTime,
-                        endTime: chunkInfo.endTime,
-                        hasAudioUrl: !!chunkInfo.audioUrl,
-                    })
-                } catch (error) {
-                    console.error('Error during transcription:', error)
-                }
-            })
-
-            TRANSCODER.on('error', async (error) => {
-                console.error('Recording error:', error)
+            SCREEN_RECORDER.on('error', async (error) => {
+                console.error('ScreenRecorder error:', error)
                 this.context.error = error
                 this.isProcessing = false
             })
-            console.info('Transcoder event listeners configured')
+
+            SCREEN_RECORDER.on('stopped', async () => {
+                console.info('ScreenRecorder stopped - recording completed')
+            })
+            
+            console.info('ScreenRecorder event listeners configured')
         } else {
-            console.info('RECORDING disabled - skipping transcoder event listeners')
+            console.info('RECORDING disabled - skipping screen recorder event listeners')
         }
 
         console.info('Event listeners setup complete')
@@ -264,17 +257,17 @@ export class RecordingState extends BaseState {
                 )
             })
 
-            console.info('Stopping transcoder')
+            console.info('Stopping screen recorder')
             try {
-                if (RECORDING) {
-                    await TRANSCODER.stop()
-                    console.info('Transcoder stopped successfully')
+                if (RECORDING && SCREEN_RECORDER.isCurrentlyRecording()) {
+                    await SCREEN_RECORDER.stopRecording()
+                    console.info('ScreenRecorder stopped successfully')
                 } else {
-                    console.info('RECORDING disabled - skipping transcoder stop')
+                    console.info('RECORDING disabled or not recording - skipping screen recorder stop')
                 }
             } catch (error) {
                 console.error(
-                    'Error stopping transcoder, continuing cleanup:',
+                    'Error stopping screen recorder, continuing cleanup:',
                     error,
                 )
             }
@@ -470,3 +463,4 @@ export class RecordingState extends BaseState {
         return new Promise((resolve) => setTimeout(resolve, ms))
     }
 }
+

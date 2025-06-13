@@ -1,5 +1,5 @@
 import { Events } from '../../events'
-import { TRANSCODER } from '../../recording/Transcoder'
+import { SCREEN_RECORDER } from '../../recording/ScreenRecorder'
 
 import { RECORDING } from '../../main'
 import { MeetingStateType, StateExecuteResult } from '../types'
@@ -52,12 +52,11 @@ export class ResumingState extends BaseState {
                 console.log('RECORDING disabled - skipping video recording resume')
             }
 
-            // Reprendre le Transcoder
+            // Note: ScreenRecorder ne supporte pas pause/resume - l'enregistrement a continué
             if (RECORDING) {
-                await TRANSCODER.resume()
-                console.log('Transcoder resumed successfully')
+                console.log('Note: ScreenRecorder recording continued during pause (no pause/resume support)')
             } else {
-                console.log('RECORDING disabled - skipping transcoder resume')
+                console.log('RECORDING disabled - no recording to resume')
             }
 
             // Reprendre le streaming
