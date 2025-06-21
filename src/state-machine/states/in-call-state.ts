@@ -1,12 +1,11 @@
 import { Events } from '../../events'
-import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
-import { SpeakerManager } from '../../speaker-manager'
-import { SpeakersObserver } from '../../meeting/speakersObserver'
 import { HtmlCleaner } from '../../meeting/htmlCleaner'
+import { SpeakersObserver } from '../../meeting/speakersObserver'
+import { GLOBAL } from '../../singleton'
+import { SpeakerManager } from '../../speaker-manager'
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
-import { GLOBAL } from '../../singleton'
 
 export class InCallState extends BaseState {
     async execute(): StateExecuteResult {
@@ -65,16 +64,6 @@ export class InCallState extends BaseState {
             throw new Error('PathManager not initialized')
         }
 
-        console.info('Configuring SCREEN_RECORDER...')
-
-        // Configure SCREEN_RECORDER with PathManager and recording params
-        ScreenRecorderManager.getInstance().configure(
-            this.context.pathManager,
-            GLOBAL.get().recording_mode,
-        )
-
-        console.info('SCREEN_RECORDER configured successfully')
-
         console.info('Services initialized successfully')
     }
 
@@ -101,38 +90,8 @@ export class InCallState extends BaseState {
             throw new Error(`Browser component setup failed: ${error as Error}`)
         }
 
-        // RECORDING=true mode: Start screen recording
-        let startTime: number
-        let recordingStartedSuccessfully = false
-
-        console.log('🎯 === STARTING SCREEN RECORDING ===')
-
-        try {
-            // Configure the meeting page for sync (if available)
-            if (this.context.playwrightPage) {
-                ScreenRecorderManager.getInstance().setPage(
-                    this.context.playwrightPage,
-                )
-                console.log('📄 Meeting page configured for SCREEN_RECORDER')
-            } else {
-                console.warn('⚠️ No playwright page available')
-            }
-
-            // Start screen recording
-            console.log('🚀 Starting screen recording...')
-            await ScreenRecorderManager.getInstance().startRecording()
-
-            startTime = Date.now()
-            recordingStartedSuccessfully = true
-            console.log('✅ Screen recording started successfully')
-        } catch (error) {
-            console.error('❌ Error starting screen recording:', error)
-            startTime = Date.now()
-            recordingStartedSuccessfully = false
-        }
-
         // Set start time in context
-        this.context.startTime = startTime || Date.now()
+        this.context.startTime = Date.now()
         console.log(`Recording started at timestamp: ${this.context.startTime}`)
 
         // Start speakers observation in all cases
@@ -144,15 +103,9 @@ export class InCallState extends BaseState {
             // Continue even if speakers observation fails
         }
 
-        if (recordingStartedSuccessfully) {
-            console.log(
-                '✅ Screen recording and speakers observation setup complete',
-            )
-        } else {
-            console.warn(
-                '⚠️ Screen recording failed but speakers observation is running',
-            )
-        }
+        console.log(
+            '✅ Browser components and speakers observation setup complete',
+        )
 
         // Notify that recording has started
         Events.inCallRecording({ start_time: this.context.startTime })

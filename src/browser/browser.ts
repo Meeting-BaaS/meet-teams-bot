@@ -1,39 +1,22 @@
-import { BrowserContext, chromium, Page } from '@playwright/test'
-
-type Resolution = {
-    width: number
-    height: number
-}
-
-const P480: Resolution = {
-    width: 854,
-    height: 480,
-}
-
-const P720: Resolution = {
-    width: 1280,
-    height: 720,
-}
-
-var RESOLUTION: Resolution = P720
+import { BrowserContext, chromium } from '@playwright/test';
+import { PathManager } from '../utils/PathManager';
 
 export async function openBrowser(
-    lowResolution: boolean,
     slowMo: boolean = false,
-): Promise<{ browser: BrowserContext; backgroundPage: Page }> {
-    if (lowResolution) {
-        RESOLUTION = P480
-    }
-
-    const width = RESOLUTION.width
-    const height = RESOLUTION.height
+): Promise<{ browser: BrowserContext}> {
+    const width = 1280
+    const height = 720
 
     try {
-        console.log('Launching persistent context with exact extension args...')
+        console.log('Launching browser context with video recording...')
 
         const context = await chromium.launchPersistentContext('', {
             headless: false,
             viewport: { width, height },
+            recordVideo: {
+                dir: PathManager.getInstance().getTempPath(),
+                size: { width: width, height: height },
+            },
             args: [
                 '--no-sandbox',
                 '--disable-rtc-smoothness-algorithm',
@@ -58,16 +41,11 @@ export async function openBrowser(
             timeout: 120000, // 2 minutes
         })
 
-        console.log('Creating main page for meeting interaction...')
+        console.log('Browser launched successfully with video recording')
 
-        // Create a main page for meeting interaction
-        const mainPage = await context.newPage()
-
-        console.log('Browser launched successfully')
-
-        return { browser: context, backgroundPage: mainPage }
+        return { browser: context}
     } catch (error) {
         console.error('Failed to open browser:', error)
         throw error
     }
-}
+} 

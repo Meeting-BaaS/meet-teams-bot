@@ -1,5 +1,4 @@
 import { generateBranding, playBranding } from '../../branding'
-import { openBrowser } from '../../browser/browser'
 import { MeetingHandle } from '../../meeting'
 import { GLOBAL } from '../../singleton'
 import { Streaming } from '../../streaming'
@@ -34,26 +33,8 @@ export class InitializationState extends BaseState {
                 })
             }
 
-            // Setup browser - étape critique
-            try {
-                await this.setupBrowser()
-            } catch (error) {
-                console.error('Critical error: Browser setup failed:', error)
-                // Ajouter des détails à l'erreur pour faciliter le diagnostic
-                const enhancedError = new Error(
-                    `Browser initialization failed: ${error instanceof Error ? error.message : String(error)}`,
-                )
-                enhancedError.stack =
-                    error instanceof Error ? error.stack : undefined
-                throw enhancedError
-            }
-
-            this.context.streamingService = new Streaming(
-                GLOBAL.get().streaming_input,
-                GLOBAL.get().streaming_output,
-                GLOBAL.get().streaming_audio_frequency,
-                GLOBAL.get().bot_uuid,
-            )
+            this.context.streamingService = new Streaming()
+              
 
             // All initialization successful
             return this.transition(MeetingStateType.WaitingRoom)
@@ -69,71 +50,6 @@ export class InitializationState extends BaseState {
         )
         await this.context.brandingProcess.wait
         playBranding()
-    }
-
-    private async setupBrowser(): Promise<void> {
-        const maxRetries = 3
-        let lastError: Error | null = null
-
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                console.info(`Browser setup attempt ${attempt}/${maxRetries}`)
-
-                // Définir le type de retour attendu de openBrowser
-                type BrowserResult = {
-                    browser: any
-                    backgroundPage: any
-                }
-
-                // Augmenter le timeout pour les environnements plus lents
-                const timeoutMs = 60000 // 60 secondes au lieu de 30
-
-                // Create a promise that rejects after a delay
-                const timeoutPromise = new Promise<BrowserResult>(
-                    (_, reject) => {
-                        const id = setTimeout(() => {
-                            clearTimeout(id)
-                            reject(
-                                new Error(
-                                    `Browser setup timeout (${timeoutMs}ms)`,
-                                ),
-                            )
-                        }, timeoutMs)
-                    },
-                )
-
-                // Execute the promise to open the browser with a timeout
-                const result = await Promise.race<BrowserResult>([
-                    openBrowser(false, false),
-                    timeoutPromise,
-                ])
-
-                // If we get here, openBrowser has succeeded
-                this.context.browserContext = result.browser
-
-                console.info('Browser setup completed successfully')
-                return // Exit the function if successful
-            } catch (error) {
-                lastError = error as Error
-                console.error(`Browser setup attempt ${attempt} failed:`, error)
-
-                // Si ce n'est pas la dernière tentative, attendre avant de réessayer
-                if (attempt < maxRetries) {
-                    const waitTime = attempt * 5000 // Attente progressive: 5s, 10s, 15s...
-                    console.info(`Waiting ${waitTime}ms before retry...`)
-                    await new Promise((resolve) =>
-                        setTimeout(resolve, waitTime),
-                    )
-                }
-            }
-        }
-
-        // Si on arrive ici, c'est que toutes les tentatives ont échoué
-        console.error('All browser setup attempts failed')
-        throw (
-            lastError ||
-            new Error('Browser setup failed after multiple attempts')
-        )
     }
 
     private async setupPathManager(): Promise<void> {

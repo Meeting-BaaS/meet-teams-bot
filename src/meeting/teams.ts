@@ -3,14 +3,13 @@ import { BrowserContext, Page } from '@playwright/test'
 import {
     JoinError,
     JoinErrorCode,
-    MeetingParams,
-    MeetingProviderInterface,
+    MeetingProviderInterface
 } from '../types'
 
+import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/teamsUrlParser'
 import { sleep } from '../utils/sleep'
 import { takeScreenshot } from '../utils/takeScreenshot'
-import { GLOBAL } from '../singleton'
 
 export class TeamsProvider implements MeetingProviderInterface {
     constructor() {}
@@ -33,22 +32,15 @@ export class TeamsProvider implements MeetingProviderInterface {
         attempts: number = 0,
     ): Promise<Page> {
         const url = new URL(link)
+        
+        console.log('Creating new page in meeting context...')
+        
+        // Use the provided context (already configured with video recording)
         const page = await browserContext.newPage()
         const maxAttempts = 10
 
         page.setDefaultTimeout(30000)
         page.setDefaultNavigationTimeout(30000)
-
-        // Set permissions based on streaming_input
-        if (streaming_input) {
-            await browserContext.grantPermissions(['microphone', 'camera'], {
-                origin: url.origin,
-            })
-        } else {
-            await browserContext.grantPermissions(['camera'], {
-                origin: url.origin,
-            })
-        }
 
         try {
             await page.goto(link, {

@@ -1,17 +1,12 @@
 import { BrowserContext, Page } from '@playwright/test'
 
-import {
-    JoinError,
-    JoinErrorCode,
-    MeetingParams,
-    MeetingProviderInterface,
-} from '../types'
+import { JoinError, JoinErrorCode, MeetingProviderInterface } from '../types'
 
+import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
 import { takeScreenshot } from '../utils/takeScreenshot'
 import { closeMeeting } from './meet/closeMeeting'
-import { GLOBAL } from '../singleton'
 
 export class MeetProvider implements MeetingProviderInterface {
     async parseMeetingUrl(meeting_url: string) {
@@ -33,15 +28,10 @@ export class MeetProvider implements MeetingProviderInterface {
         streaming_input: string | undefined,
     ): Promise<Page> {
         try {
-            console.log('Creating new page in existing context...')
+            console.log('Creating new page in meeting context...')
+            
+            // Use the provided context (already configured with video recording)
             const page = await browserContext.newPage()
-
-            // Set permissions based on streaming_input
-            if (streaming_input) {
-                await browserContext.grantPermissions(['microphone', 'camera'])
-            } else {
-                await browserContext.grantPermissions(['camera'])
-            }
 
             console.log(`Navigating to ${link}...`)
             await page.goto(link, {

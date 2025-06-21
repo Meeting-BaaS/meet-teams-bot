@@ -1,9 +1,9 @@
 import * as fs from 'fs'
-import { IncomingMessage } from 'http'
 import { Readable } from 'stream'
-import { RawData, Server, WebSocket } from 'ws'
+import { RawData, WebSocket } from 'ws'
 
 import { SoundContext } from './media_context'
+import { GLOBAL } from './singleton'
 import { SpeakerData } from './types'
 import { PathManager } from './utils/PathManager'
 
@@ -44,19 +44,12 @@ export class Streaming {
     private readonly STATS_LOG_INTERVAL_MS: number = 15000
 
     constructor(
-        input: string | undefined,
-        output: string | undefined,
-        sample_rate: number | undefined,
-        bot_id: string,
     ) {
-        this.inputUrl = input
-        this.outputUrl = output
-        this.botId = bot_id
-
-        if (sample_rate) {
-            this.sample_rate = sample_rate
-        }
-
+        this.inputUrl = GLOBAL.get().streaming_input
+        this.outputUrl = GLOBAL.get().streaming_output
+        this.botId = GLOBAL.get().bot_uuid
+        this.sample_rate = GLOBAL.get().streaming_audio_frequency || DEFAULT_SAMPLE_RATE
+        
         this.audioPacketsReceived = 0
 
         this.start()

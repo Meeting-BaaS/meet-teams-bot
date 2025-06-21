@@ -4,24 +4,15 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { Streaming } from '../streaming'
 
-import { RecordingMode } from '../types'
+import { GLOBAL } from '../singleton'
 import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
 import { SyncCalibrator } from './SyncCalibrator'
-import { GLOBAL } from '../singleton'
 
 interface ScreenRecordingConfig {
-    display: string
     audioDevice?: string
-    outputFormat: 'webm' | 'mp4'
-    videoCodec: 'libx264' | 'libvpx-vp9' | 'libvpx'
     audioCodec: 'aac' | 'opus' | 'libmp3lame'
-    width: number
-    height: number
-    framerate: number
     audioBitrate: string
-    videoBitrate: string
-    recordingMode?: RecordingMode
     enableTranscriptionChunking?: boolean
     transcriptionChunkDuration?: number
     s3Path?: string
@@ -51,17 +42,9 @@ export class ScreenRecorder extends EventEmitter {
         super()
 
         this.config = {
-            display: process.env.DISPLAY || ':99',
             audioDevice: 'pulse',
-            outputFormat: 'mp4',
-            videoCodec: 'libx264',
             audioCodec: 'aac',
-            width: 1280,
-            height: 720,
-            framerate: 30,
             audioBitrate: '128k',
-            videoBitrate: '1000k',
-            recordingMode: 'speaker_view',
             enableTranscriptionChunking: false,
             transcriptionChunkDuration: 3600,
             s3Path: '',
@@ -78,7 +61,6 @@ export class ScreenRecorder extends EventEmitter {
         }
 
         console.log('Native ScreenRecorder initialized:', {
-            recordingMode: this.config.recordingMode,
             enableTranscriptionChunking:
                 this.config.enableTranscriptionChunking,
         })
@@ -86,17 +68,12 @@ export class ScreenRecorder extends EventEmitter {
 
     public configure(
         pathManager: PathManager,
-        recordingMode?: RecordingMode,
     ): void {
         if (!pathManager) {
             throw new Error('PathManager is required for configuration')
         }
 
         this.pathManager = pathManager
-
-        if (recordingMode) {
-            this.config.recordingMode = recordingMode
-        }
 
         // Simple transcription detection
         if (GLOBAL.get().speech_to_text_provider) {
@@ -116,7 +93,6 @@ export class ScreenRecorder extends EventEmitter {
         console.log('Native ScreenRecorder configured:', {
             outputPath: this.outputPath,
             audioOutputPath: this.audioOutputPath,
-            recordingMode: this.config.recordingMode,
         })
     }
 
@@ -131,6 +107,161 @@ export class ScreenRecorder extends EventEmitter {
 
     public setPage(page: any): void {
         this.page = page
+    }
+
+    /**
+     * Retrieve the Playwright video file and prepare it for synchronization
+     */
+    public async retrievePlaywrightVideo(): Promise<string | null> {
+        if (!this.page) {
+            console.warn('No page available to retrieve video')
+            return null
+        }
+
+        try {
+            // Get the video file path from Playwright
+            const videoPath = await this.page.video()?.path()
+            
+            if (!videoPath || !fs.existsSync(videoPath)) {
+                console.warn('No video file found from Playwright')
+                return null
+            }
+
+            console.log(`📹 Playwright video found: ${videoPath}`)
+            return videoPath
+        } catch (error) {
+            console.error('Error retrieving Playwright video:', error)
+            return null
+        }
+    }
+
+    /**
+     * Synchronize and merge Playwright video with system audio
+     */
+    public async mergeVideoWithAudio(playwrightVideoPath: string): Promise<void> {
+        if (!this.audioOutputPath || !fs.existsSync(this.audioOutputPath)) {
+            console.warn('No audio file available for merging')
+            return
+        }
+
+        if (!fs.existsSync(playwrightVideoPath)) {
+            console.warn('Playwright video file not found for merging')
+            return
+        }
+
+        try {
+            console.log('🎬 Starting video-audio synchronization and merging...')
+            
+            // Calculate sync offset using existing method
+            const syncOffset = await this.calculateSyncOffset()
+            
+            // Create final output path
+            const finalOutputPath = this.pathManager?.getOutputPath() + '.mp4'
+            
+            if (!finalOutputPath) {
+                throw new Error('No output path available for final video')
+            }
+
+            // Build FFmpeg args for merging with sync
+            const mergeArgs = this.buildMergeArgs(playwrightVideoPath, syncOffset, finalOutputPath)
+            
+            console.log('🔄 Merging video and audio with synchronization...')
+            
+            return new Promise((resolve, reject) => {
+                const mergeProcess = spawn('ffmpeg', mergeArgs, {
+                    stdio: ['pipe', 'pipe', 'pipe']
+                })
+
+                mergeProcess.on('error', (error) => {
+                    console.error('FFmpeg merge error:', error)
+                    reject(error)
+                })
+
+                mergeProcess.on('exit', (code) => {
+                    if (code === 0) {
+                        console.log('✅ Video-audio merge completed successfully')
+                        
+                        // Clean up individual files
+                        this.cleanupIndividualFiles(playwrightVideoPath)
+                        
+                        // Update output path to final merged file
+                        this.outputPath = finalOutputPath
+                        
+                        resolve()
+                    } else {
+                        console.error(`❌ FFmpeg merge failed with code ${code}`)
+                        reject(new Error(`FFmpeg merge failed with code ${code}`))
+                    }
+                })
+
+                mergeProcess.stderr?.on('data', (data) => {
+                    const output = data.toString()
+                    if (output.includes('error')) {
+                        console.error('FFmpeg merge stderr:', output.trim())
+                    }
+                })
+            })
+        } catch (error) {
+            console.error('Error merging video with audio:', error)
+            throw error
+        }
+    }
+
+    /**
+     * Build FFmpeg arguments for merging video and audio with synchronization
+     */
+    private buildMergeArgs(playwrightVideoPath: string, syncOffset: number, finalOutputPath: string): string[] {
+        const args: string[] = []
+
+        // Input 1: Playwright video (no offset needed, it's the reference)
+        args.push('-i', playwrightVideoPath)
+        
+        // Input 2: System audio (with sync offset)
+        args.push(
+            '-itsoffset', syncOffset.toString(),
+            '-i', this.audioOutputPath
+        )
+
+        // Output configuration
+        args.push(
+            // Map video from first input
+            '-map', '0:v:0',
+            // Map audio from second input
+            '-map', '1:a:0',
+            // Video codec (copy to avoid re-encoding)
+            '-c:v', 'copy',
+            // Audio codec
+            '-c:a', 'aac',
+            // Audio bitrate
+            '-b:a', '160k',
+            // Avoid negative timestamps
+            '-avoid_negative_ts', 'make_zero',
+            // Output format
+            '-f', 'mp4',
+            // Output file
+            '-y', finalOutputPath
+        )
+
+        console.log(`🎯 Merge args: video + audio with ${syncOffset.toFixed(3)}s offset`)
+        return args
+    }
+
+    /**
+     * Clean up individual video and audio files after successful merge
+     */
+    private cleanupIndividualFiles(playwrightVideoPath: string): void {
+        try {
+            // Remove Playwright video file
+            if (fs.existsSync(playwrightVideoPath)) {
+                fs.unlinkSync(playwrightVideoPath)
+                console.log('🗑️ Cleaned up Playwright video file')
+            }
+            
+            // Remove audio file (already handled by upload process)
+            console.log('🗑️ Audio file will be cleaned up by upload process')
+        } catch (error) {
+            console.warn('Warning: Could not clean up individual files:', error)
+        }
     }
 
     public async startRecording(): Promise<void> {
@@ -160,7 +291,7 @@ export class ScreenRecorder extends EventEmitter {
             console.log('Native recording started successfully')
             this.emit('started', {
                 outputPath: this.outputPath,
-                isAudioOnly: this.config.recordingMode === 'audio_only',
+                isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
             })
         } catch (error) {
             console.error('Failed to start native recording:', error)
@@ -209,89 +340,53 @@ export class ScreenRecorder extends EventEmitter {
 
     private buildNativeFFmpegArgs(syncOffset: number): string[] {
         const args: string[] = []
-        const isAudioOnly = this.config.recordingMode === 'audio_only'
+        const isAudioOnly = GLOBAL.get().recording_mode === 'audio_only'
 
-        console.log('🛠️ Building FFmpeg args for native synchronization...')
+        console.log('🛠️ Building FFmpeg args for audio-only recording...')
         console.log(`🎯 Applying audio offset: ${syncOffset.toFixed(3)}s`)
 
-        if (isAudioOnly) {
-            args.push(
-                '-f',
-                'pulse',
-                '-i',
-                'virtual_speaker.monitor',
-                '-itsoffset',
-                syncOffset.toString(),
-                '-acodec',
-                'pcm_s16le',
-                '-ac',
-                '1',
-                '-ar',
-                '16000',
-                '-f',
-                'wav',
-                '-y',
-                this.outputPath,
-            )
-        } else {
-            args.push(
-                // Video input - simplified and optimized
-                '-f',
-                'x11grab',
-                '-video_size',
-                '1280x880',
-                '-framerate',
-                '30',
-                '-i',
-                this.config.display,
-            )
+        // Audio input - auto-detect PulseAudio config
+        args.push(
+            '-f',
+            'pulse',
+            '-itsoffset',
+            syncOffset.toString(),
+            '-i',
+            'virtual_speaker.monitor',
+        )
 
-            // Audio input - auto-detect PulseAudio config
-            args.push(
-                '-f',
-                'pulse',
-                '-itsoffset',
-                syncOffset.toString(),
-                '-i',
-                'virtual_speaker.monitor',
-            )
+        // === OUTPUT 1: WAV (audio for transcription) ===
+        args.push(
+            '-acodec',
+            'pcm_s16le',
+            '-ac',
+            '1',
+            '-ar',
+            '16000',
+            '-async',
+            '1',
+            '-avoid_negative_ts',
+            'make_zero',
+            '-f',
+            'wav',
+            this.audioOutputPath,
+        )
 
-            // **FIXED: Restore simultaneous MP4 + WAV multi-output (like working version)**
-            args.push(
-                // === OUTPUT 1: MP4 (video + audio) ===
-                '-map',
-                '0:v:0',
-                '-map',
-                '1:a:0',
-                '-c:v',
-                'libx264',
-                '-preset',
-                'fast', // Optimized for real-time recording
-                '-crf',
-                '23', // Slightly higher CRF for faster encoding
-                '-tune',
-                'zerolatency', // Optimize for low-latency streaming
-                '-vf',
-                'crop=1280:720:0:160',
-                '-c:a',
-                'aac',
-                '-b:a',
-                '160k',
-                '-avoid_negative_ts',
-                'make_zero',
-                '-max_muxing_queue_size',
-                '1024',
-                '-async',
-                '1',
-                '-f',
-                'mp4',
-                '-movflags',
-                '+faststart+frag_keyframe+empty_moov', // Enhanced streaming support
-                this.outputPath,
+        // === OUTPUT 2: Real-time chunks (if enabled) ===
+        if (this.config.enableTranscriptionChunking) {
+            // Use audio_tmp directory and UUID-based naming like production
+            const chunksDir = this.pathManager
+                ? this.pathManager.getAudioTmpPath()
+                : path.join(path.dirname(this.audioOutputPath), 'audio_tmp')
+            if (!fs.existsSync(chunksDir)) {
+                fs.mkdirSync(chunksDir, { recursive: true })
+            }
 
-                // === OUTPUT 2: WAV (simultaneous audio for transcription) ===
-                '-map',
-                '1:a:0',
+            // Use botUuid for chunk naming format: ${botUuid}-%d.wav
+            const botUuid = GLOBAL.get().bot_uuid
+            const chunkPattern = path.join(chunksDir, `${botUuid}-%d.wav`)
+
+            args.push(
                 '-vn',
                 '-acodec',
                 'pcm_s16le',
@@ -299,62 +394,28 @@ export class ScreenRecorder extends EventEmitter {
                 '1',
                 '-ar',
                 '16000',
-                '-async',
-                '1',
-                '-avoid_negative_ts',
-                'make_zero',
                 '-f',
+                'segment',
+                '-segment_time',
+                (this.config.transcriptionChunkDuration || 3600).toString(),
+                '-segment_format',
                 'wav',
-                this.audioOutputPath,
+                chunkPattern,
             )
 
-            // === OUTPUT 3: Real-time chunks (if enabled) ===
-            if (this.config.enableTranscriptionChunking) {
-                // Use audio_tmp directory and UUID-based naming like production
-                const chunksDir = this.pathManager
-                    ? this.pathManager.getAudioTmpPath()
-                    : path.join(path.dirname(this.outputPath), 'audio_tmp')
-                if (!fs.existsSync(chunksDir)) {
-                    fs.mkdirSync(chunksDir, { recursive: true })
-                }
-
-                // Use botUuid for chunk naming format: ${botUuid}-%d.wav
-                const botUuid = GLOBAL.get().bot_uuid
-                const chunkPattern = path.join(chunksDir, `${botUuid}-%d.wav`)
-
-                args.push(
-                    '-map',
-                    '1:a:0',
-                    '-vn',
-                    '-acodec',
-                    'pcm_s16le',
-                    '-ac',
-                    '1',
-                    '-ar',
-                    '16000',
-                    '-f',
-                    'segment',
-                    '-segment_time',
-                    (this.config.transcriptionChunkDuration || 3600).toString(),
-                    '-segment_format',
-                    'wav',
-                    chunkPattern,
-                )
-
-                this.startChunkMonitoring(chunksDir)
-                console.log(
-                    `🎯 Real-time chunks: ${this.config.transcriptionChunkDuration}s chunks enabled`,
-                )
-                console.log(`🎯 Chunk naming format: ${botUuid}-[index].wav`)
-            }
-
+            this.startChunkMonitoring(chunksDir)
             console.log(
-                `✅ FFmpeg itsoffset parameter: ${syncOffset.toFixed(3)}s`,
+                `🎯 Real-time chunks: ${this.config.transcriptionChunkDuration}s chunks enabled`,
             )
-            console.log(
-                `🎯 Simultaneous generation: MP4 + WAV during recording`,
-            )
+            console.log(`🎯 Chunk naming format: ${botUuid}-[index].wav`)
         }
+
+        console.log(
+            `✅ FFmpeg itsoffset parameter: ${syncOffset.toFixed(3)}s`,
+        )
+        console.log(
+            `🎯 Audio-only recording: WAV + chunks during recording`,
+        )
 
         return args
     }
@@ -525,7 +586,7 @@ export class ScreenRecorder extends EventEmitter {
      */
     private async postProcessRecordings(): Promise<void> {
         const trimSeconds = this.config.trimEndSeconds || 2
-        
+
         console.log(
             `🔧 Post-processing: trimming last ${trimSeconds}s to remove corruption`,
         )
@@ -714,6 +775,7 @@ export class ScreenRecorder extends EventEmitter {
 
         const identifier = PathManager.getInstance().getIdentifier()
 
+        // Upload audio file (always available)
         if (fs.existsSync(this.audioOutputPath)) {
             console.log(
                 `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
@@ -725,9 +787,11 @@ export class ScreenRecorder extends EventEmitter {
             )
             fs.unlinkSync(this.audioOutputPath)
         }
+
+        // Upload merged video file (if available)
         if (fs.existsSync(this.outputPath)) {
             console.log(
-                `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                `📤 Uploading merged MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
             )
             await this.s3Uploader.uploadFile(
                 this.outputPath,
@@ -736,6 +800,7 @@ export class ScreenRecorder extends EventEmitter {
             )
             fs.unlinkSync(this.outputPath)
         }
+
         this.filesUploaded = true
     }
 
@@ -833,10 +898,31 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private async handleSuccessfulRecording(): Promise<void> {
-        console.log('Native recording completed')
+        console.log('Audio recording completed')
 
-        // Post-process files to remove corrupted endings
+        // Post-process audio file to remove corrupted endings
         await this.postProcessRecordings()
+
+        // Retrieve and merge Playwright video with system audio
+        if (GLOBAL.get().recording_mode !== 'audio_only') {
+            try {
+                console.log('🎬 Starting video-audio merge process...')
+                
+                // Retrieve Playwright video
+                const playwrightVideoPath = await this.retrievePlaywrightVideo()
+                
+                if (playwrightVideoPath) {
+                    // Merge video with audio using synchronization
+                    await this.mergeVideoWithAudio(playwrightVideoPath)
+                    console.log('✅ Video-audio merge completed')
+                } else {
+                    console.warn('⚠️ No Playwright video found, keeping audio-only recording')
+                }
+            } catch (error) {
+                console.error('❌ Video-audio merge failed:', error)
+                console.warn('⚠️ Continuing with audio-only recording')
+            }
+        }
 
         // Auto-upload if not serverless and wait for completion
         if (!GLOBAL.isServerless()) {
@@ -858,7 +944,6 @@ export class ScreenRecorderManager {
     public static getInstance(): ScreenRecorder {
         if (!ScreenRecorderManager.instance) {
             ScreenRecorderManager.instance = new ScreenRecorder({
-                recordingMode: 'speaker_view',
                 enableTranscriptionChunking:
                     GLOBAL.get().speech_to_text_provider !== null,
                 transcriptionChunkDuration: 3600,

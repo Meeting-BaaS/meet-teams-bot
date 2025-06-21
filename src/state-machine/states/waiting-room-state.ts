@@ -1,13 +1,15 @@
+import { openBrowser } from '../../browser/browser'
 import { Events } from '../../events'
+import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
+import { GLOBAL } from '../../singleton'
 import { JoinError, JoinErrorCode } from '../../types'
+import { takeScreenshot } from '../../utils/takeScreenshot'
 import {
     MeetingStateType,
     RecordingEndReason,
     StateExecuteResult,
 } from '../types'
 import { BaseState } from './base-state'
-import { takeScreenshot } from '../../utils/takeScreenshot'
-import { GLOBAL } from '../../singleton'
 
 export class WaitingRoomState extends BaseState {
     async execute(): StateExecuteResult {
@@ -33,9 +35,6 @@ export class WaitingRoomState extends BaseState {
 
             // Open the meeting page
             await this.openMeetingPage(meetingLink)
-
-            // Start the dialog observer once the page is open
-            this.startDialogObserver()
 
             // Wait for acceptance into the meeting
             await this.waitForAcceptance()
@@ -65,10 +64,7 @@ export class WaitingRoomState extends BaseState {
     }
 
     private async getMeetingInfo() {
-        if (!this.context.browserContext) {
-            throw new Error('Browser context not initialized')
-        }
-
+        // No need to check browserContext anymore since we create it in openMeetingPage
         try {
             return await this.context.provider.parseMeetingUrl(
                 GLOBAL.get().meeting_url,
@@ -80,19 +76,40 @@ export class WaitingRoomState extends BaseState {
     }
 
     private async openMeetingPage(meetingLink: string) {
-        if (!this.context.browserContext) {
-            throw new Error('Browser context not initialized')
-        }
-
         try {
             console.info('Attempting to open meeting page:', meetingLink)
+            
+            // Create the meeting context with video recording
+            const { browser: meetingContext } = await openBrowser(false)
+            
+            // Create the meeting page using the provider
             this.context.playwrightPage =
                 await this.context.provider.openMeetingPage(
-                    this.context.browserContext,
+                    meetingContext,
                     meetingLink,
                     GLOBAL.get().streaming_input,
                 )
             console.info('Meeting page opened successfully')
+
+            // Start the dialog observer now that the page is open
+            this.startDialogObserver()
+
+            // Configure and start audio recording
+            console.info('Configuring audio recording...')
+            const screenRecorder = ScreenRecorderManager.getInstance()
+
+            // Configure the recorder with PathManager and recording mode
+            screenRecorder.configure(
+                this.context.pathManager!,
+            )
+
+            // Set the page for sync calibration
+            screenRecorder.setPage(this.context.playwrightPage)
+
+            // Start audio recording
+            console.info('Starting audio recording...')
+            await screenRecorder.startRecording()
+            console.info('Audio recording started successfully')
         } catch (error) {
             console.error('Failed to open meeting page:', {
                 error,
