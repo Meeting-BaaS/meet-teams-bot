@@ -19,6 +19,7 @@ export class ScreenRecorder extends EventEmitter {
     private ffmpegProcess: ChildProcess | null = null
     private outputPath: string = ''
     private audioOutputPath: string = ''
+    private tempAudioOutputPath: string = '' // Path for temporary audio file (with bip)
     private s3Uploader: S3Uploader | null = null
     private isRecording: boolean = false
     private filesUploaded: boolean = false
@@ -37,9 +38,11 @@ export class ScreenRecorder extends EventEmitter {
     private generateOutputPaths(pathManager: PathManager): void {
         if (GLOBAL.get().recording_mode === 'audio_only') {
             this.audioOutputPath = pathManager.getOutputPath() + '.wav'
+            this.tempAudioOutputPath = PathManager.getInstance().getTempPath() + '/' + pathManager.getIdentifier() + '.wav'
         } else {
             this.outputPath = pathManager.getOutputPath() + '.mp4'
             this.audioOutputPath = pathManager.getOutputPath() + '.wav'
+            this.tempAudioOutputPath = PathManager.getInstance().getTempPath() + '/' + pathManager.getIdentifier() + '.wav'
         }
     }
 
@@ -74,7 +77,8 @@ export class ScreenRecorder extends EventEmitter {
             // Keep files for analysis - don't delete immediately
             console.log('📁 Keeping files for analysis:')
             console.log(`   - Playwright video: ${playwrightVideoPath}`)
-            console.log(`   - Audio WAV: ${this.audioOutputPath}`)
+            console.log(`   - Audio WAV (final): ${this.audioOutputPath}`)
+            console.log(`   - Audio WAV (original with bip): ${this.tempAudioOutputPath}`)
             console.log('🗑️ Files will be cleaned up later by upload process')
         } catch (error) {
             console.warn('Warning: Could not clean up individual files:', error)
@@ -148,7 +152,7 @@ export class ScreenRecorder extends EventEmitter {
             'make_zero',
             '-f',
             'wav',
-            this.audioOutputPath,
+            this.tempAudioOutputPath,
         )
 
         // === OUTPUT 2: Streaming audio (for sound level analysis) ===
@@ -174,7 +178,7 @@ export class ScreenRecorder extends EventEmitter {
 
         console.log('🎯 Audio recording: WAV + streaming')
         console.log('🛠️ FFmpeg command:', 'ffmpeg', args.join(' '))
-        console.log('📁 Output WAV path:', this.audioOutputPath)
+        console.log('📁 Output WAV path:', this.tempAudioOutputPath)
 
         const process = spawn('ffmpeg', args, {
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -247,7 +251,7 @@ export class ScreenRecorder extends EventEmitter {
 
         const identifier = PathManager.getInstance().getIdentifier()
 
-        // Upload audio file (always available)
+        // Upload audio file (always available) - only upload the final version
         if (fs.existsSync(this.audioOutputPath)) {
             console.log(
                 `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
@@ -271,6 +275,11 @@ export class ScreenRecorder extends EventEmitter {
                 `${identifier}.mp4`,
             )
             fs.unlinkSync(this.outputPath)
+        }
+
+        // Keep the temporary audio file (with bip) for analysis
+        if (fs.existsSync(this.tempAudioOutputPath)) {
+            console.log(`📁 Preserving original WAV with bip for analysis: ${this.tempAudioOutputPath}`)
         }
 
         this.filesUploaded = true
@@ -402,12 +411,13 @@ export class ScreenRecorder extends EventEmitter {
     private async mergeVideoWithAudio(
         playwrightVideoPath: string,
     ): Promise<void> {
-        console.log('🎬 Calculating synchronization offset...')
+        console.log('🎬 CORRECT APPROACH: Calculate offset, merge, then trim correctly...')
 
         try {
-            // Calculate the offset between video and audio
+            // Step 1: Calculate sync offset on original files (with bip/flash)
+            console.log('🔍 Step 1: Calculating synchronization offset...')
             const syncResult = await calculateVideoOffset(
-                this.audioOutputPath,
+                this.tempAudioOutputPath, // Use temp file with bip
                 playwrightVideoPath,
             )
 
@@ -415,222 +425,90 @@ export class ScreenRecorder extends EventEmitter {
                 `🎯 Sync offset: ${syncResult.offsetSeconds.toFixed(3)}s (confidence: ${(syncResult.confidence * 100).toFixed(1)}%)`,
             )
 
-            // Apply offset to align audio with video
+            // Step 2: Merge with offset
             const audioOffset = syncResult.offsetSeconds
-
-            console.log(
-                '🔄 Trimming individual files with offset compensation...',
-            )
-
-            // First, trim the individual files accounting for the offset
-            await this.trimIndividualFiles(audioOffset)
-
-            console.log(
-                '🔄 Merging pre-trimmed video and audio without offset...',
-            )
-            console.log(
-                '📹 Converting VP8/WebM to H.264/MP4 for compatibility...',
-            )
-
-            // Get paths to trimmed files
-            const trimmedWavPath = this.audioOutputPath + '.temp.wav'
-            const trimmedVideoPath = playwrightVideoPath + '.temp.webm'
+            console.log('🔄 Step 2: Merging audio + video with calculated offset...')
             
-            // Check if trimmed files exist, otherwise use originals
-            const finalWavPath = fs.existsSync(trimmedWavPath) ? trimmedWavPath : this.audioOutputPath
-            const finalVideoPath = fs.existsSync(trimmedVideoPath) ? trimmedVideoPath : playwrightVideoPath
-            
-            console.log(`📁 Using WAV: ${finalWavPath}`)
-            console.log(`📁 Using video: ${finalVideoPath}`)
+            const mergedVideoPath = this.outputPath + '.merged.mp4'
+            await this.mergeWithOffset(audioOffset, mergedVideoPath, playwrightVideoPath, this.tempAudioOutputPath)
 
-            // Verify and adjust durations before merging
-            await this.verifyAndAdjustDurations(finalVideoPath)
+            // Step 3: Trim merged video (CORRECTLY accounting for audio delay)
+            const trimmedVideoPath = this.outputPath + '.trimmed.mp4'
+            await this.trimMergedVideo(mergedVideoPath, trimmedVideoPath, audioOffset)
 
-            return new Promise((resolve, reject) => {
-                const ffmpegArgs = [
-                    '-y', // Overwrite output file
-                    '-i',
-                    finalVideoPath, // Video input (trimmed or original)
-                    '-i',
-                    finalWavPath, // Audio input (trimmed or original)
-                    '-c:v',
-                    'libx264', // Re-encode video to H.264 for MP4 compatibility
-                    '-preset',
-                    'fast', // Fast encoding preset
-                    '-crf',
-                    '23', // Good quality/size balance
-                    '-c:a',
-                    'aac', // Encode audio to AAC
-                    '-shortest', // End when shortest stream ends
-                    this.outputPath,
-                ]
+            // Step 4: Extract audio from trimmed video
+            await this.extractAudioFromVideo(trimmedVideoPath)
 
-                console.log(
-                    '🛠️ FFmpeg command:',
-                    'ffmpeg',
-                    ffmpegArgs.join(' '),
-                )
-                console.log('🎬 Merging files with proper synchronization')
+            // Step 5: Move trimmed video to final location
+            fs.renameSync(trimmedVideoPath, this.outputPath)
 
-                const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
-                    stdio: ['pipe', 'pipe', 'pipe'],
-                })
+            // Clean up intermediate files
+            if (fs.existsSync(mergedVideoPath)) {
+                fs.unlinkSync(mergedVideoPath)
+            }
 
-                ffmpegProcess.on('error', (error) => {
-                    console.error('❌ FFmpeg merge error:', error)
-                    reject(error)
-                })
+            console.log('✅ Video-audio merge completed with correct approach')
+            console.log(`📁 Original WAV preserved: ${this.tempAudioOutputPath}`)
+            console.log(`📁 Final WAV: ${this.audioOutputPath}`)
+            console.log(`📁 Final MP4: ${this.outputPath}`)
 
-                ffmpegProcess.on('exit', async (code) => {
-                    if (code === 0) {
-                        console.log(
-                            '✅ Video-audio merge completed successfully',
-                        )
+            // Clean up individual files after successful merge
+            this.cleanupIndividualFiles(playwrightVideoPath)
 
-                        // Replace original WAV with trimmed version if it exists
-                        const trimmedWavPath = this.audioOutputPath + '.temp.wav'
-                        if (fs.existsSync(trimmedWavPath)) {
-                            try {
-                                // Replace original with trimmed version
-                                fs.renameSync(trimmedWavPath, this.audioOutputPath)
-                                console.log('✅ Replaced original WAV with trimmed version')
-                            } catch (error) {
-                                console.warn('⚠️ Could not replace original WAV with trimmed version:', error)
-                            }
-                        }
-
-                        // Clean up individual files after successful merge
-                        this.cleanupIndividualFiles(playwrightVideoPath)
-
-                        resolve()
-                    } else {
-                        console.error(
-                            `❌ FFmpeg merge failed with code ${code}`,
-                        )
-                        reject(
-                            new Error(
-                                `FFmpeg merge process failed with exit code ${code}`,
-                            ),
-                        )
-                    }
-                })
-
-                ffmpegProcess.stderr?.on('data', (data) => {
-                    const output = data.toString()
-                    // Log all stderr for debugging codec issues
-                    console.log('FFmpeg stderr:', output.trim())
-                })
-            })
         } catch (error) {
             console.error('❌ Video-audio merge failed:', error)
             throw error
         }
     }
 
-    private async trimIndividualFiles(audioOffset: number): Promise<void> {
-        try {
-            // Get the meeting startTime from the recording state
-            const meetingStartTime = this.meetingStartTime
-            const recordingStartTime = this.recordingStartTime
-
-            if (!meetingStartTime || !recordingStartTime) {
-                console.warn(
-                    '⚠️ No meeting start time available, skipping trim',
-                )
-                return
-            }
-
-            // Calculate the offset from recording start to meeting start
-            const trimOffsetSeconds =
-                (meetingStartTime - recordingStartTime) / 1000
-
-            if (trimOffsetSeconds <= 0) {
-                console.log('✅ No trim needed - meeting started immediately')
-                return
-            }
-
-            console.log(
-                `✂️ Trimming individual files (${trimOffsetSeconds.toFixed(3)}s offset)...`,
-            )
-            console.log(
-                `📅 Recording started: ${new Date(recordingStartTime).toISOString()}`,
-            )
-            console.log(
-                `📅 Meeting started: ${new Date(meetingStartTime).toISOString()}`,
-            )
-            console.log(
-                `🎵 Audio offset: ${audioOffset.toFixed(3)}s (audio is ${audioOffset > 0 ? 'behind' : 'ahead of'} video)`,
-            )
-
-            // Trim both files in parallel
-            await Promise.all([
-                this.trimWAVFile(trimOffsetSeconds, audioOffset),
-                this.trimVideoFile(trimOffsetSeconds, audioOffset),
-            ])
-
-            console.log('✅ Individual files trimmed successfully')
-        } catch (error) {
-            console.error('❌ Individual file trimming failed:', error)
-            throw error
-        }
-    }
-
-    private async trimWAVFile(
-        trimOffsetSeconds: number,
-        audioOffset: number,
-    ): Promise<void> {
-        // WAV is trimmed at meeting start time (no offset adjustment needed)
-        // The sync signal (bip) handles the audio-video synchronization automatically
-        console.log(
-            `🎵 WAV trim: ${trimOffsetSeconds.toFixed(3)}s (sync signal handles alignment)`,
-        )
-        if (trimOffsetSeconds <= 0) {
-            console.log('✅ WAV: No trim needed')
-            return
-        }
-
-        const tempWavPath = this.audioOutputPath + '.temp.wav'
-        const ffmpegArgs = [
-            '-y', // Overwrite output file
-            '-i',
-            this.audioOutputPath, // Input audio
-            '-ss',
-            trimOffsetSeconds.toFixed(3), // Start from meeting start time
-            '-c',
-            'copy', // Copy streams without re-encoding (fast)
-            tempWavPath,
-        ]
-
-        console.log('🛠️ WAV trim command:', 'ffmpeg', ffmpegArgs.join(' '))
-
+    private async mergeWithOffset(audioOffset: number, outputPath: string, videoPath: string, audioPath: string): Promise<void> {
+        console.log(`🔄 Step 1: Merging audio + video with AUDIO delay...`)
+        
+        // COMPENSATION: Ajouter 724ms pour corriger le décalage résiduel du trim FFmpeg
+        const compensatedOffset = audioOffset + 0.724 // 724ms de compensation exacte
+        console.log(`🎯 Audio delay: ${audioOffset.toFixed(3)}s (original) + 0.724s (trim compensation) = ${compensatedOffset.toFixed(3)}s`)
+        
         return new Promise((resolve, reject) => {
+            const ffmpegArgs = [
+                '-y', // Overwrite output file
+                '-i', audioPath, // Audio input (with bip)
+                '-i', videoPath, // Video input (with flash)
+                // Delay audio with compensation
+                '-filter_complex', `[0:a]adelay=${Math.round(compensatedOffset * 1000)}|${Math.round(compensatedOffset * 1000)}[a]`,
+                '-map', '[a]', // Use the delayed audio
+                '-map', '1:v', // Use the original video
+                '-c:v', 'libx264', // Re-encode video to H.264 for MP4 compatibility
+                '-preset', 'fast', // Fast encoding preset
+                '-crf', '23', // Good quality/size balance
+                '-c:a', 'aac', // Encode audio to AAC
+                '-shortest', // End when shortest stream ends
+                outputPath,
+            ]
+
+            console.log(
+                '🛠️ FFmpeg merge command (AUDIO DELAY + COMPENSATION):',
+                'ffmpeg',
+                ffmpegArgs.join(' '),
+            )
+
             const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
                 stdio: ['pipe', 'pipe', 'pipe'],
             })
 
             ffmpegProcess.on('error', (error) => {
-                console.error('❌ FFmpeg WAV trim error:', error)
+                console.error('❌ FFmpeg merge error:', error)
                 reject(error)
             })
 
             ffmpegProcess.on('exit', (code) => {
                 if (code === 0) {
-                    // Keep both original and trimmed versions for analysis
-                    console.log(
-                        `✅ WAV trimmed successfully (removed ${trimOffsetSeconds.toFixed(3)}s of pre-meeting content)`,
-                    )
-                    console.log(`📁 Original WAV: ${this.audioOutputPath}`)
-                    console.log(`📁 Trimmed WAV: ${tempWavPath}`)
+                    console.log('✅ Merge completed with AUDIO delay + compensation alignment')
                     resolve()
                 } else {
-                    console.error(`❌ FFmpeg WAV trim failed with code ${code}`)
-                    // Clean up temp file if it exists
-                    if (fs.existsSync(tempWavPath)) {
-                        fs.unlinkSync(tempWavPath)
-                    }
+                    console.error(`❌ FFmpeg merge failed with code ${code}`)
                     reject(
                         new Error(
-                            `FFmpeg WAV trim process failed with exit code ${code}`,
+                            `FFmpeg merge process failed with exit code ${code}`,
                         ),
                     )
                 }
@@ -638,82 +516,49 @@ export class ScreenRecorder extends EventEmitter {
 
             ffmpegProcess.stderr?.on('data', (data) => {
                 const output = data.toString()
-                console.log('FFmpeg WAV trim stderr:', output.trim())
+                console.log('FFmpeg merge stderr:', output.trim())
             })
         })
     }
 
-    private async trimVideoFile(
-        trimOffsetSeconds: number,
-        audioOffset: number,
-    ): Promise<void> {
-        // Get the Playwright video path
-        const playwrightVideoPath = await this.retrievePlaywrightVideo()
-        if (!playwrightVideoPath) {
-            throw new Error('No Playwright video found for trimming')
-        }
-
-        // Adjust video trim to account for audio-video offset
-        // Video starts before audio, so we need to add the offset to align them
-        // Use only the sync signal offset for proper synchronization
-        const adjustedTrimOffset = trimOffsetSeconds + audioOffset
-
-        console.log(
-            `🎬 Video trim adjustment: ${trimOffsetSeconds.toFixed(3)}s + ${audioOffset.toFixed(3)}s sync offset = ${adjustedTrimOffset.toFixed(3)}s`,
-        )
-        console.log(
-            `🔍 Sync analysis: Audio beep at ~0.05s, Video flash at ~5s, Offset: ${audioOffset.toFixed(3)}s`,
-        )
-
-        if (adjustedTrimOffset <= 0) {
-            console.log('✅ Video: No trim needed after offset adjustment')
-            return
-        }
-
-        const tempVideoPath = playwrightVideoPath + '.temp.webm'
-        const ffmpegArgs = [
-            '-y', // Overwrite output file
-            '-i',
-            playwrightVideoPath, // Input video (Playwright video)
-            '-ss',
-            adjustedTrimOffset.toFixed(3), // Start from adjusted meeting start time
-            '-c',
-            'copy', // Copy streams without re-encoding (fast)
-            tempVideoPath,
-        ]
-
-        console.log('🛠️ Video trim command:', 'ffmpeg', ffmpegArgs.join(' '))
-
+    private async extractAudioFromVideo(videoPath: string): Promise<void> {
+        console.log('🔄 Step 3: Extracting audio from merged video to output.wav...')
+        
         return new Promise((resolve, reject) => {
+            const ffmpegArgs = [
+                '-y', // Overwrite output file
+                '-i',
+                videoPath, // Input merged video
+                '-vn', // No video
+                '-acodec',
+                'pcm_s16le', // WAV format
+                '-ac',
+                '1', // Mono
+                '-ar',
+                '16000', // 16kHz sample rate
+                this.audioOutputPath, // Output WAV
+            ]
+
+            console.log('🛠️ FFmpeg extract command:', 'ffmpeg', ffmpegArgs.join(' '))
+
             const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
                 stdio: ['pipe', 'pipe', 'pipe'],
             })
 
             ffmpegProcess.on('error', (error) => {
-                console.error('❌ FFmpeg video trim error:', error)
+                console.error('❌ FFmpeg extract error:', error)
                 reject(error)
             })
 
             ffmpegProcess.on('exit', (code) => {
                 if (code === 0) {
-                    // Keep both original and trimmed versions for analysis
-                    console.log(
-                        `✅ Video trimmed successfully (removed ${adjustedTrimOffset.toFixed(3)}s of pre-meeting content)`,
-                    )
-                    console.log(`📁 Original video: ${playwrightVideoPath}`)
-                    console.log(`📁 Trimmed video: ${tempVideoPath}`)
+                    console.log('✅ Audio extracted successfully')
                     resolve()
                 } else {
-                    console.error(
-                        `❌ FFmpeg video trim failed with code ${code}`,
-                    )
-                    // Clean up temp file if it exists
-                    if (fs.existsSync(tempVideoPath)) {
-                        fs.unlinkSync(tempVideoPath)
-                    }
+                    console.error(`❌ FFmpeg extract failed with code ${code}`)
                     reject(
                         new Error(
-                            `FFmpeg video trim process failed with exit code ${code}`,
+                            `FFmpeg extract process failed with exit code ${code}`,
                         ),
                     )
                 }
@@ -721,7 +566,7 @@ export class ScreenRecorder extends EventEmitter {
 
             ffmpegProcess.stderr?.on('data', (data) => {
                 const output = data.toString()
-                console.log('FFmpeg video trim stderr:', output.trim())
+                console.log('FFmpeg extract stderr:', output.trim())
             })
         })
     }
@@ -951,111 +796,56 @@ export class ScreenRecorder extends EventEmitter {
         })
     }
 
-    private async verifyAndAdjustDurations(playwrightVideoPath: string): Promise<void> {
-        try {
-            console.log('🔍 Verifying file durations before merge...')
-            
-            // Get paths to trimmed files
-            const trimmedWavPath = this.audioOutputPath + '.temp.wav'
-            const trimmedVideoPath = playwrightVideoPath + '.temp.webm'
-            
-            // Use trimmed files if they exist, otherwise use originals
-            const finalWavPath = fs.existsSync(trimmedWavPath) ? trimmedWavPath : this.audioOutputPath
-            const finalVideoPath = fs.existsSync(trimmedVideoPath) ? trimmedVideoPath : playwrightVideoPath
-            
-            // Get durations of both files
-            const wavDuration = await this.getWAVDuration(finalWavPath)
-            const videoDuration = await this.getVideoDuration(finalVideoPath)
-            
-            console.log(`📊 WAV duration: ${wavDuration.toFixed(3)}s`)
-            console.log(`📊 Video duration: ${videoDuration.toFixed(3)}s`)
-            
-            const durationDiff = Math.abs(wavDuration - videoDuration)
-            
-            if (durationDiff > 0.1) { // More than 100ms difference
-                console.warn(`⚠️ Duration mismatch detected: ${durationDiff.toFixed(3)}s difference`)
-                
-                // Use the shorter duration for both files
-                const targetDuration = Math.min(wavDuration, videoDuration)
-                console.log(`🎯 Adjusting both files to ${targetDuration.toFixed(3)}s`)
-                
-                // Adjust WAV if needed
-                if (wavDuration > targetDuration) {
-                    await this.trimWAVToDuration(finalWavPath, targetDuration)
-                }
-                
-                // Adjust video if needed
-                if (videoDuration > targetDuration) {
-                    await this.trimVideoToDuration(finalVideoPath, targetDuration)
-                }
-            } else {
-                console.log('✅ File durations match (within 100ms tolerance)')
-            }
-        } catch (error) {
-            console.error('❌ Duration verification failed:', error)
-            throw error
+    private async trimMergedVideo(
+        mergedVideoPath: string,
+        trimmedVideoPath: string,
+        audioOffset: number,
+    ): Promise<void> {
+        console.log('✂️ Trimming merged video to remove pre-meeting content...')
+        
+        // Calculate trim offset from meeting start time
+        const meetingStartTime = this.meetingStartTime
+        const recordingStartTime = this.recordingStartTime
+
+        if (!meetingStartTime || !recordingStartTime) {
+            console.warn('⚠️ No meeting start time available, copying files without trim')
+            fs.copyFileSync(mergedVideoPath, trimmedVideoPath)
+            return
         }
+
+        const baseTrimOffsetSeconds = (meetingStartTime - recordingStartTime) / 1000
+
+        if (baseTrimOffsetSeconds <= 0) {
+            console.log('✅ No trim needed - meeting started immediately')
+            fs.copyFileSync(mergedVideoPath, trimmedVideoPath)
+            return
+        }
+
+        // CORRECTION: Le trim doit tenir compte du delay audio appliqué
+        // Si on a délayé l'audio de X secondes, le point de sync s'est décalé
+        const adjustedTrimOffset = baseTrimOffsetSeconds + audioOffset
+        
+        console.log(`📊 Base trim: ${baseTrimOffsetSeconds.toFixed(3)}s`)
+        console.log(`📊 Audio delay applied: ${audioOffset.toFixed(3)}s`) 
+        console.log(`📊 Adjusted trim: ${adjustedTrimOffset.toFixed(3)}s`)
+
+        await this.trimVideoFile(adjustedTrimOffset, mergedVideoPath, trimmedVideoPath)
     }
 
-    private async getVideoDuration(videoPath: string): Promise<number> {
+    private async trimVideoFile(trimOffset: number, inputPath: string, outputPath: string): Promise<void> {
+        console.log(`✂️ Trimming video file...`)
+        
         return new Promise((resolve, reject) => {
-            const ffprobeArgs = [
-                '-i',
-                videoPath,
-                '-show_entries',
-                'format=duration',
-                '-v',
-                'quiet',
-                '-of',
-                'csv=p=0',
+            const ffmpegArgs = [
+                '-y',
+                '-i', inputPath,
+                '-ss', trimOffset.toFixed(3),
+                '-c', 'copy',
+                outputPath,
             ]
 
-            const ffprobeProcess = spawn('ffprobe', ffprobeArgs, {
-                stdio: ['pipe', 'pipe', 'pipe'],
-            })
+            console.log('🛠️ FFmpeg trim video:', 'ffmpeg', ffmpegArgs.join(' '))
 
-            let output = ''
-            let errorOutput = ''
-            
-            ffprobeProcess.stdout?.on('data', (data) => {
-                output += data.toString()
-            })
-
-            ffprobeProcess.stderr?.on('data', (data) => {
-                errorOutput += data.toString()
-            })
-
-            ffprobeProcess.on('error', (error) => {
-                console.error('❌ FFprobe video duration error:', error)
-                reject(error)
-            })
-
-            ffprobeProcess.on('exit', (code) => {
-                if (code === 0) {
-                    const duration = parseFloat(output.trim())
-                    resolve(duration)
-                } else {
-                    console.error(`❌ FFprobe video duration failed with code ${code}`)
-                    reject(new Error(`FFprobe video duration failed with exit code ${code}`))
-                }
-            })
-        })
-    }
-
-    private async trimWAVToDuration(wavPath: string, targetDuration: number): Promise<void> {
-        const tempWavPath = wavPath + '.temp2.wav'
-        const ffmpegArgs = [
-            '-y',
-            '-i',
-            wavPath,
-            '-t',
-            targetDuration.toFixed(3),
-            '-c',
-            'copy',
-            tempWavPath,
-        ]
-
-        return new Promise((resolve, reject) => {
             const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
                 stdio: ['pipe', 'pipe', 'pipe'],
             })
@@ -1063,42 +853,17 @@ export class ScreenRecorder extends EventEmitter {
             ffmpegProcess.on('error', reject)
             ffmpegProcess.on('exit', (code) => {
                 if (code === 0) {
-                    fs.renameSync(tempWavPath, wavPath)
-                    console.log(`✅ WAV trimmed to ${targetDuration.toFixed(3)}s`)
+                    console.log('✅ Video trimmed successfully')
                     resolve()
                 } else {
-                    reject(new Error(`FFmpeg WAV trim failed with code ${code}`))
+                    reject(new Error(`Video trim failed with code ${code}`))
                 }
             })
-        })
-    }
 
-    private async trimVideoToDuration(videoPath: string, targetDuration: number): Promise<void> {
-        const tempVideoPath = videoPath + '.temp2.webm'
-        const ffmpegArgs = [
-            '-y',
-            '-i',
-            videoPath,
-            '-t',
-            targetDuration.toFixed(3),
-            '-c',
-            'copy',
-            tempVideoPath,
-        ]
-
-        return new Promise((resolve, reject) => {
-            const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
-                stdio: ['pipe', 'pipe', 'pipe'],
-            })
-
-            ffmpegProcess.on('error', reject)
-            ffmpegProcess.on('exit', (code) => {
-                if (code === 0) {
-                    fs.renameSync(tempVideoPath, videoPath)
-                    console.log(`✅ Video trimmed to ${targetDuration.toFixed(3)}s`)
-                    resolve()
-                } else {
-                    reject(new Error(`FFmpeg video trim failed with code ${code}`))
+            ffmpegProcess.stderr?.on('data', (data) => {
+                const output = data.toString()
+                if (output.includes('error')) {
+                    console.log('FFmpeg video trim stderr:', output.trim())
                 }
             })
         })

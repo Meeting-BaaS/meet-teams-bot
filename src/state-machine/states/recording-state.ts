@@ -10,6 +10,7 @@ import {
 import { BaseState } from './base-state'
 
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
+import { generateSyncSignal } from '../../utils/SyncSignal'
 
 // Sound level threshold for considering activity (0-100)
 const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
@@ -34,8 +35,8 @@ export class RecordingState extends BaseState {
             const startTime = Date.now()
 
             // Only for testing video and audio sync
-            // await this.sleep(10000)
-            // await generateSyncSignal(this.context.playwrightPage)
+            await this.sleep(10000)
+            await generateSyncSignal(this.context.playwrightPage)
 
             // Main loop
             while (this.isProcessing) {
