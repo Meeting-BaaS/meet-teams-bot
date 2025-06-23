@@ -36,7 +36,7 @@ export class RecordingState extends BaseState {
             // Only for testing video and audio sync
             // await this.sleep(10000)
             // await generateSyncSignal(this.context.playwrightPage)
-            
+
             // Main loop
             while (this.isProcessing) {
                 // Check global timeout
@@ -53,7 +53,6 @@ export class RecordingState extends BaseState {
                     break
                 }
 
-               
                 // Check if we should stop
                 const { shouldEnd, reason } = await this.checkEndConditions()
 
@@ -91,7 +90,9 @@ export class RecordingState extends BaseState {
 
         // Set the meeting start time for video trimming
         const meetingStartTime = Date.now()
-        ScreenRecorderManager.getInstance().setMeetingStartTime(meetingStartTime)
+        ScreenRecorderManager.getInstance().setMeetingStartTime(
+            meetingStartTime,
+        )
 
         // Start streaming seulement si RECORDING est activé
         if (this.context.streamingService) {

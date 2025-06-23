@@ -25,7 +25,7 @@ export interface OffsetCalculationOptions {
     expectedFrequency?: number
     /** Green flash color threshold (default: 200 for RGB green component) */
     greenThreshold?: number
-    /** Analysis window in seconds (default: 6) */
+    /** Analysis window in seconds (default: 10) */
     analysisWindow?: number
     /** Minimum beep duration in milliseconds (default: 100) */
     minBeepDuration?: number
@@ -46,7 +46,7 @@ export async function calculateVideoOffset(
     const {
         expectedFrequency = 1000,
         greenThreshold = 200,
-        analysisWindow = 6, // Analyze only first 6 seconds
+        analysisWindow = 10, // Analyze first 10 seconds
         minBeepDuration = 100
     } = options
 
@@ -58,14 +58,19 @@ export async function calculateVideoOffset(
         // Analyze both files in parallel
         const [audioTimestamp, videoTimestamp] = await Promise.all([
             detectAudioBeep(audioPath, expectedFrequency, analysisWindow, minBeepDuration),
-            detectVideoFlash(videoPath, greenThreshold, analysisWindow)
+            detectVideoFlash(videoPath, analysisWindow)
         ])
 
+        // Validate that we found both signals
+        if (audioTimestamp <= 0) {
+            throw new Error(`Failed to detect audio beep in first ${analysisWindow}s`)
+        }
+        if (videoTimestamp <= 0) {
+            throw new Error(`Failed to detect video flash in first ${analysisWindow}s`)
+        }
+
         const offsetSeconds = videoTimestamp - audioTimestamp
-        const confidence = Math.min(
-            audioTimestamp > 0 ? 0.9 : 0.1,
-            videoTimestamp > 0 ? 0.9 : 0.1
-        )
+        const confidence = 0.9 // High confidence if both signals detected
 
         const result: SyncOffset = {
             audioTimestamp,
@@ -99,71 +104,64 @@ async function detectAudioBeep(
     console.log(`🔊 Detecting ${frequency}Hz beep in first ${analysisWindow}s of audio...`)
 
     try {
-        // Method 1: Look for very early audio activity (sync beep should be at the very beginning)
-        const earlyAnalysisWindow = Math.min(3, analysisWindow) // Focus on first 3 seconds
-        
-        // Use silence detection with very sensitive settings to catch short beeps
-        const silenceCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-40dB:duration=0.02" -f null -t ${earlyAnalysisWindow} - 2>&1 | grep "silence_"`
+        // Method 1: Use silence detection to find audio activity
+        const silenceCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-35dB:duration=0.01" -f null -t ${analysisWindow} - 2>&1 | grep "silence_"`
         
         try {
             const { stdout: silenceOutput } = await execAsync(silenceCmd)
             const lines = silenceOutput.split('\n').filter(line => line.includes('silence_'))
             
-            console.log(`   Silence detection found ${lines.length} events in first ${earlyAnalysisWindow}s`)
+            console.log(`   Silence detection found ${lines.length} events in first ${analysisWindow}s`)
             
-            // Look for the very first audio activity (likely the sync beep)
-            let earliestAudio = null
-            
+            // Look for the first significant audio activity (silence_end)
             for (const line of lines) {
-                // Look for silence_end which indicates audio starting
                 const endMatch = line.match(/silence_end: ([0-9.]+)/)
                 if (endMatch) {
                     const time = parseFloat(endMatch[1])
-                    if (time < 2.0) { // Only consider audio in first 2 seconds
-                        if (earliestAudio === null || time < earliestAudio) {
-                            earliestAudio = time
-                        }
+                    if (time > 0.1 && time < analysisWindow) { // Avoid very early noise
+                        console.log(`   Found audio activity (likely bip) at ${time.toFixed(3)}s`)
+                        return time
                     }
                 }
-                
-                // Also check silence_start (if audio starts immediately, we'll see silence_start first)
-                const startMatch = line.match(/silence_start: ([0-9.]+)/)
-                if (startMatch) {
-                    const time = parseFloat(startMatch[1])
-                    if (time < 1.0 && time > 0.05) { // Short beep ending quickly
-                        const beepTime = Math.max(0, time - 0.1) // Assume beep started a bit before
-                        console.log(`   Found short audio ending at ${time.toFixed(3)}s, assuming beep at ${beepTime.toFixed(3)}s`)
-                        return beepTime
-                    }
-                }
-            }
-            
-            if (earliestAudio !== null) {
-                console.log(`   Found earliest audio activity at ${earliestAudio.toFixed(3)}s`)
-                return earliestAudio
             }
         } catch (e) {
             console.log(`   Silence detection failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
         }
         
-        // Method 2: Volume analysis with focus on very beginning
-        const volumeCmd = `ffmpeg -i "${audioPath}" -af "volumedetect" -f null -t ${earlyAnalysisWindow} - 2>&1`
+        // Method 2: Use volume analysis to find the first significant audio peak
+        const volumeCmd = `ffmpeg -i "${audioPath}" -af "volumedetect" -f null -t ${analysisWindow} - 2>&1`
         const { stdout: volumeOutput } = await execAsync(volumeCmd)
         
         const maxVolumeMatch = volumeOutput.match(/max_volume: (-?[0-9.]+) dB/)
         if (maxVolumeMatch) {
             const maxVolume = parseFloat(maxVolumeMatch[1])
-            console.log(`   Audio levels in first ${earlyAnalysisWindow}s: max=${maxVolume.toFixed(1)}dB`)
+            console.log(`   Audio levels in first ${analysisWindow}s: max=${maxVolume.toFixed(1)}dB`)
             
-            // If there's any audio in the first few seconds, assume sync beep is very early
-            if (maxVolume > -50) {
-                const estimatedBeepTime = 0.05 // Assume sync beep happens very early
-                console.log(`   Assuming sync beep at ${estimatedBeepTime.toFixed(3)}s (early audio detected)`)
-                return estimatedBeepTime
+            // If there's significant audio, use a more detailed analysis
+            if (maxVolume > -60) {
+                // Use a more sensitive silence detection
+                const detailedCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-50dB:duration=0.005" -f null -t ${analysisWindow} - 2>&1 | grep "silence_end"`
+                try {
+                    const { stdout: detailedOutput } = await execAsync(detailedCmd)
+                    const detailedLines = detailedOutput.split('\n').filter(line => line.includes('silence_end'))
+                    
+                    for (const line of detailedLines) {
+                        const match = line.match(/silence_end: ([0-9.]+)/)
+                        if (match) {
+                            const time = parseFloat(match[1])
+                            if (time > 0.1 && time < analysisWindow) {
+                                console.log(`   Found audio activity with detailed analysis at ${time.toFixed(3)}s`)
+                                return time
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.log(`   Detailed analysis failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+                }
             }
         }
         
-        console.log(`   No sync beep detected in first ${earlyAnalysisWindow}s`)
+        console.log(`   No sync bip detected in first ${analysisWindow}s`)
         return 0
     } catch (error) {
         console.warn(`⚠️ Audio analysis failed: ${error}`)
@@ -176,63 +174,94 @@ async function detectAudioBeep(
  */
 async function detectVideoFlash(
     videoPath: string,
-    greenThreshold: number,
     analysisWindow: number
 ): Promise<number> {
-    console.log(`💡 Detecting green flash in video (expecting around 4-6s)...`)
+    console.log(`💡 Detecting green flash in video (first ${analysisWindow}s)...`)
 
     try {
-        // Method 1: Look for scene changes specifically in the 4-6 second range where flash is expected
-        const flashWindowStart = 4
-        const flashWindowEnd = Math.min(6, analysisWindow)
-        
-        // Use scene detection to find sudden brightness/color changes
-        const sceneCmd = `ffmpeg -i "${videoPath}" -vf "select='between(t,${flashWindowStart},${flashWindowEnd})*gt(scene,0.1)',showinfo" -f null - 2>&1 | grep "pts_time"`
+        // Method 1: Use scene detection to find significant frame changes
+        const sceneCmd = `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.05)',showinfo" -f null -t ${analysisWindow} - 2>&1 | grep "pts_time"`
         
         try {
             const { stdout: sceneResult } = await execAsync(sceneCmd)
             const lines = sceneResult.split('\n').filter(line => line.includes('pts_time'))
             
-            console.log(`   Found ${lines.length} scene changes between ${flashWindowStart}-${flashWindowEnd}s`)
+            console.log(`   Found ${lines.length} scene changes in first ${analysisWindow}s`)
+            
+            // Look for the most significant scene change after 2s (ignore early scene changes)
+            let bestFlashTime = 0
+            let bestSceneValue = 0
             
             for (const line of lines) {
-                const match = line.match(/pts_time:([0-9.]+)/)
-                if (match) {
-                    const flashTime = parseFloat(match[1])
-                    if (flashTime >= 4.0 && flashTime <= 6.0) { // Focus on expected flash range
-                        console.log(`   Found scene change (likely green flash) at ${flashTime.toFixed(3)}s`)
-                        return flashTime
+                const timeMatch = line.match(/pts_time:([0-9.]+)/)
+                const sceneMatch = line.match(/scene:([0-9.]+)/)
+                
+                if (timeMatch && sceneMatch) {
+                    const time = parseFloat(timeMatch[1])
+                    const sceneValue = parseFloat(sceneMatch[1])
+                    
+                    // Ignore very early scene changes (before 2s) and look for significant changes
+                    if (time > 2.0 && time < analysisWindow && sceneValue > bestSceneValue) {
+                        bestFlashTime = time
+                        bestSceneValue = sceneValue
+                    }
+                }
+            }
+            
+            if (bestFlashTime > 0) {
+                console.log(`   Found significant scene change (likely flash) at ${bestFlashTime.toFixed(3)}s (scene value: ${bestSceneValue.toFixed(3)})`)
+                return bestFlashTime
+            }
+        } catch (e) {
+            console.log(`   Scene detection failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+        }
+        
+        // Method 2: Use frame difference analysis with higher threshold
+        try {
+            const frameCmd = `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.08)',showinfo" -vsync 0 -f null -t ${analysisWindow} - 2>&1 | grep "pts_time"`
+            
+            const { stdout: frameResult } = await execAsync(frameCmd)
+            const frameLines = frameResult.split('\n').filter(line => line.includes('pts_time'))
+            
+            if (frameLines.length > 0) {
+                // Take the first significant frame change after 2s
+                for (const line of frameLines) {
+                    const match = line.match(/pts_time:([0-9.]+)/)
+                    if (match) {
+                        const flashTime = parseFloat(match[1])
+                        if (flashTime > 2.0 && flashTime < analysisWindow) {
+                            console.log(`   Found frame change at ${flashTime.toFixed(3)}s (likely flash)`)
+                            return flashTime
+                        }
                     }
                 }
             }
         } catch (e) {
-            console.log(`   Scene detection failed, trying alternative method...`)
+            console.log(`   Frame analysis failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
         }
         
-        // Method 2: Look for significant frame changes in the expected time range
+        // Method 3: Look specifically in the 5-8s range where we know the flash is
         try {
-            const frameAnalysisCmd = `ffmpeg -i "${videoPath}" -vf "select='between(t,${flashWindowStart},${flashWindowEnd})*gt(scene,0.08)',showinfo" -vsync 0 -f null - 2>&1 | grep "pts_time" | head -3`
+            const rangeCmd = `ffmpeg -i "${videoPath}" -vf "select='between(t,5,8)*gt(scene,0.03)',showinfo" -vsync 0 -f null - 2>&1 | grep "pts_time"`
             
-            const { stdout: frameResult } = await execAsync(frameAnalysisCmd)
-            const frameLines = frameResult.split('\n').filter(line => line.includes('pts_time'))
+            const { stdout: rangeResult } = await execAsync(rangeCmd)
+            const rangeLines = rangeResult.split('\n').filter(line => line.includes('pts_time'))
             
-            if (frameLines.length > 0) {
-                // Take the first significant frame change in our target window
-                const match = frameLines[0].match(/pts_time:([0-9.]+)/)
+            if (rangeLines.length > 0) {
+                // Take the first frame change in the 5-8s range
+                const match = rangeLines[0].match(/pts_time:([0-9.]+)/)
                 if (match) {
                     const flashTime = parseFloat(match[1])
-                    console.log(`   Found frame change at ${flashTime.toFixed(3)}s (likely flash)`)
+                    console.log(`   Found frame change in 5-8s range at ${flashTime.toFixed(3)}s (likely flash)`)
                     return flashTime
                 }
             }
         } catch (e) {
-            console.log(`   Frame analysis failed, using estimation...`)
+            console.log(`   Range analysis failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
         }
         
-        // Method 3: If detection fails, estimate based on expected timing
-        const estimatedFlashTime = 5.0 // Expected flash time
-        console.log(`   Using estimated flash time: ${estimatedFlashTime.toFixed(3)}s (expected range 4-6s)`)
-        return estimatedFlashTime
+        console.log(`   No video flash detected in first ${analysisWindow}s`)
+        return 0
         
     } catch (error) {
         console.warn(`⚠️ Video analysis failed: ${error}`)
