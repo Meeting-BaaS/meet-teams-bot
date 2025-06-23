@@ -729,9 +729,11 @@ export class ScreenRecorder extends EventEmitter {
         }
 
         console.log('🎵 Splitting WAV into 1-hour chunks for transcription...')
+        console.log(`📁 WAV file path: ${this.audioOutputPath}`)
 
         try {
-            // Get WAV duration using FFmpeg
+            // Get WAV duration using FFprobe
+            console.log('🔍 Step 1: Getting WAV duration...')
             const duration = await this.getWAVDuration()
             const chunkDuration = 3600 // 1 hour in seconds
             const chunks = Math.ceil(duration / chunkDuration)
@@ -741,6 +743,8 @@ export class ScreenRecorder extends EventEmitter {
             )
 
             const identifier = PathManager.getInstance().getIdentifier()
+            console.log(`🔍 Step 2: Creating ${chunks} chunks with identifier: ${identifier}`)
+            
             const chunkPromises: Promise<void>[] = []
 
             for (let i = 0; i < chunks; i++) {
@@ -748,8 +752,12 @@ export class ScreenRecorder extends EventEmitter {
                 const endTime = Math.min((i + 1) * chunkDuration, duration)
                 const chunkDurationActual = endTime - startTime
 
-                if (chunkDurationActual <= 0) continue
+                if (chunkDurationActual <= 0) {
+                    console.log(`⚠️ Skipping chunk ${i} (duration: ${chunkDurationActual}s)`)
+                    continue
+                }
 
+                console.log(`🔍 Step 3: Creating chunk ${i} (${startTime.toFixed(1)}s - ${endTime.toFixed(1)}s)`)
                 const chunkPromise = this.createWAVChunk(
                     startTime,
                     chunkDurationActual,
@@ -759,17 +767,19 @@ export class ScreenRecorder extends EventEmitter {
                 chunkPromises.push(chunkPromise)
             }
 
+            console.log(`🔍 Step 4: Waiting for ${chunkPromises.length} chunks to complete...`)
             await Promise.all(chunkPromises)
             console.log(`✅ Created ${chunks} WAV chunks for transcription`)
         } catch (error) {
             console.error('❌ WAV splitting failed:', error)
+            console.error('❌ Error details:', JSON.stringify(error, Object.getOwnPropertyNames(error)))
             throw error
         }
     }
 
     private async getWAVDuration(): Promise<number> {
         return new Promise((resolve, reject) => {
-            const ffmpegArgs = [
+            const ffprobeArgs = [
                 '-i',
                 this.audioOutputPath,
                 '-show_entries',
@@ -780,27 +790,40 @@ export class ScreenRecorder extends EventEmitter {
                 'csv=p=0',
             ]
 
-            const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
+            console.log(`🔍 Getting WAV duration for: ${this.audioOutputPath}`)
+            console.log('🛠️ FFprobe duration command:', 'ffprobe', ffprobeArgs.join(' '))
+
+            const ffprobeProcess = spawn('ffprobe', ffprobeArgs, {
                 stdio: ['pipe', 'pipe', 'pipe'],
             })
 
             let output = ''
-            ffmpegProcess.stdout?.on('data', (data) => {
+            let errorOutput = ''
+            
+            ffprobeProcess.stdout?.on('data', (data) => {
                 output += data.toString()
             })
 
-            ffmpegProcess.on('error', (error) => {
+            ffprobeProcess.stderr?.on('data', (data) => {
+                errorOutput += data.toString()
+            })
+
+            ffprobeProcess.on('error', (error) => {
+                console.error('❌ FFprobe duration process error:', error)
                 reject(error)
             })
 
-            ffmpegProcess.on('exit', (code) => {
+            ffprobeProcess.on('exit', (code) => {
                 if (code === 0) {
                     const duration = parseFloat(output.trim())
+                    console.log(`✅ WAV duration: ${duration}s`)
                     resolve(duration)
                 } else {
+                    console.error(`❌ FFprobe duration failed with code ${code}`)
+                    console.error('❌ FFprobe stderr:', errorOutput)
                     reject(
                         new Error(
-                            `FFmpeg duration check failed with code ${code}`,
+                            `FFprobe duration check failed with exit code ${code}`,
                         ),
                     )
                 }
