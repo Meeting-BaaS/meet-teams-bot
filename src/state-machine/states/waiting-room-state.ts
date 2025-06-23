@@ -3,7 +3,6 @@ import { Events } from '../../events'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { JoinError, JoinErrorCode } from '../../types'
-import { takeScreenshot } from '../../utils/takeScreenshot'
 import {
     MeetingStateType,
     RecordingEndReason,
@@ -78,11 +77,11 @@ export class WaitingRoomState extends BaseState {
     private async openMeetingPage(meetingLink: string) {
         try {
             console.info('Attempting to open meeting page:', meetingLink)
-            
+
             // Create the meeting context with video recording
             const { browser: meetingContext } = await openBrowser(false)
-            
-            // Create the meeting page using the provider
+
+            console.info('Opening meeting page...')
             this.context.playwrightPage =
                 await this.context.provider.openMeetingPage(
                     meetingContext,
@@ -96,49 +95,15 @@ export class WaitingRoomState extends BaseState {
 
             // Configure and start audio recording
             console.info('Configuring audio recording...')
-            const screenRecorder = ScreenRecorderManager.getInstance()
-
-            // Configure the recorder with PathManager and recording mode
-            screenRecorder.configure(
-                this.context.pathManager!,
-            )
-
-            // Set the page for sync calibration
-            screenRecorder.setPage(this.context.playwrightPage)
-
             // Start audio recording
             console.info('Starting audio recording...')
-            await screenRecorder.startRecording()
+            const screenRecorder = ScreenRecorderManager.getInstance()
+            await screenRecorder.startAudioRecording(this.context.playwrightPage)
             console.info('Audio recording started successfully')
+            
         } catch (error) {
-            console.error('Failed to open meeting page:', {
-                error,
-                message:
-                    error instanceof Error ? error.message : 'Unknown error',
-                stack: error instanceof Error ? error.stack : undefined,
-            })
-
-            // Take screenshot if possible
-            if (this.context.playwrightPage) {
-                try {
-                    await takeScreenshot(
-                        this.context.playwrightPage,
-                        'waiting-room-error',
-                    )
-                    console.info('Error screenshot saved')
-                } catch (screenshotError) {
-                    console.error(
-                        'Failed to take error screenshot:',
-                        screenshotError,
-                    )
-                }
-            }
-
-            throw new Error(
-                error instanceof Error
-                    ? error.message
-                    : 'Failed to open meeting page',
-            )
+            console.error('Failed to open meeting page:', error)
+            throw error
         }
     }
 
