@@ -67,15 +67,11 @@ fi
 # Check if we're in a Nix build environment (TYPESCRIPT_TYPES_ROOT is set)
 if [ -n "${TYPESCRIPT_TYPES_ROOT:-}" ]; then
     echo "=== Nix Environment Setup ==="
-    echo "Detected Nix build environment - setting up TYPESCRIPT_TYPES_ROOT"
-    echo "Using Nix-provided TypeScript types from: $TYPESCRIPT_TYPES_ROOT"
-    # In Nix environment, we'll use both Nix types and global types
-    GLOBAL_NODE_MODULES="${TYPESCRIPT_TYPES_ROOT%%:*}"
-    echo "Global node_modules path: $GLOBAL_NODE_MODULES"
+    echo "Detected Nix build environment - using local types only"
+    echo "Skipping Nix-provided TypeScript types to avoid conflicts"
     
-    # Update TYPESCRIPT_TYPES_ROOT to include both Nix types and global types
-    export TYPESCRIPT_TYPES_ROOT="$TYPESCRIPT_TYPES_ROOT:$GLOBAL_NODE_MODULES/@types"
-    echo "✓ Updated TYPESCRIPT_TYPES_ROOT to include global types: $TYPESCRIPT_TYPES_ROOT"
+    # In Nix environment, we'll use only local types to avoid store conflicts
+    echo "✓ Using local types only to avoid Nix store conflicts"
     
     # In Nix environment, skip global npm install since types are already available
     echo "✓ Skipping global npm install in Nix environment - types already available"
@@ -221,11 +217,9 @@ echo "✓ Dependencies installed with npm install"
 
 echo "=== Setting up TypeScript Configuration ==="
 
-# Get the TypeScript lib directory from the environment
-TYPESCRIPT_LIB_DIR="${TYPESCRIPT_TYPES_ROOT%%:*}"
+# Get Playwright types from the environment
 PLAYWRIGHT_TYPES="${PLAYWRIGHT_TYPES%/types}"
 
-echo "TypeScript lib directory: $TYPESCRIPT_LIB_DIR"
 echo "Playwright types: $PLAYWRIGHT_TYPES"
 
 
@@ -333,8 +327,8 @@ echo "{\"buildDate\": \"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"}" > src/buildInfo.jso
 echo "✓ Build info created"
 
 echo "Running TypeScript compilation..."
-echo "Running: tsc --skipLibCheck -p tsconfig.release.json"
-tsc --skipLibCheck -p tsconfig.release.json || {
+echo "Running: ./node_modules/.bin/tsc --skipLibCheck -p tsconfig.release.json"
+./node_modules/.bin/tsc --skipLibCheck -p tsconfig.release.json || {
     echo "❌ Server build failed!"
     echo "TypeScript configuration:"
     cat tsconfig.release.json
