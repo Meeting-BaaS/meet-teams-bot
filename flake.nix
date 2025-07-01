@@ -125,12 +125,6 @@
                 export BOT_CAMERA_NUM=${toString num}
                 print_success "Using existing virtual camera at /dev/video$BOT_CAMERA_NUM"
                 camera_found=true
-                
-                # Generate and stream branding to the virtual camera
-                print_info "Setting up branding for virtual camera..."
-                ./generate_custom_branding.sh "Bot-$BOT_ID" &
-                export BRANDING_PID=$!
-                print_success "Branding stream started (PID: $BRANDING_PID)"
             fi'') (pkgs.lib.range shared.config.cameras.start_num shared.config.cameras.end_num))}
             
             if [ "$camera_found" = "false" ]; then
@@ -154,12 +148,6 @@
                         if [ -e "/dev/video$i" ]; then
                             export BOT_CAMERA_NUM=$i
                             print_success "Virtual camera created at /dev/video$BOT_CAMERA_NUM"
-                            
-                            # Generate and stream branding to the virtual camera
-                            print_info "Setting up branding for virtual camera..."
-                            ./generate_custom_branding.sh "Bot-$BOT_ID" &
-                            export BRANDING_PID=$!
-                            print_success "Branding stream started (PID: $BRANDING_PID)"
                             break
                         fi
                     fi
@@ -234,12 +222,9 @@
                             *) export BOT_CAMERA_NUM=$((${toString shared.config.cameras.start_num} + $i - 1)) ;;
                         esac
                         
-                        # Set up branding for this instance
+                        # Verify camera is available for this instance
                         if [ -e "/dev/video$BOT_CAMERA_NUM" ]; then
-                            print_info "Setting up branding for $bot_name on /dev/video$BOT_CAMERA_NUM"
-                            ./generate_custom_branding.sh "$bot_name" > "$log_dir/branding.log" 2>&1 &
-                            export BRANDING_PID=$!
-                            print_success "$bot_name branding started (PID: $BRANDING_PID)"
+                            print_success "Camera /dev/video$BOT_CAMERA_NUM available for $bot_name"
                         else
                             print_warning "Camera /dev/video$BOT_CAMERA_NUM not available for $bot_name"
                         fi
@@ -247,7 +232,6 @@
                         # Log instance startup
                         echo "$(date): $bot_name instance started" >> "$log_dir/instance.log"
                         echo "  Camera: /dev/video$BOT_CAMERA_NUM" >> "$log_dir/instance.log"
-                        echo "  Branding PID: $BRANDING_PID" >> "$log_dir/instance.log"
                         echo "  Log directory: $log_dir" >> "$log_dir/instance.log"
                         echo "  Parent PID: $$" >> "$log_dir/instance.log"
                         
@@ -256,18 +240,12 @@
                         print_info "$bot_name is now running independently"
                         
                         # Set up cleanup trap
-                        trap 'echo "$(date): $bot_name instance stopped" >> "$log_dir/instance.log"; kill $BRANDING_PID 2>/dev/null || true; exit 0' TERM INT
+                        trap 'echo "$(date): $bot_name instance stopped" >> "$log_dir/instance.log"; exit 0' TERM INT
                         
                         # Keep the process alive
                         while true; do
                             sleep 10
-                            # Check if branding process is still alive
-                            if ! kill -0 $BRANDING_PID 2>/dev/null; then
-                                echo "$(date): $bot_name branding process died, restarting..." >> "$log_dir/instance.log"
-                                ./generate_custom_branding.sh "$bot_name" > "$log_dir/branding.log" 2>&1 &
-                                export BRANDING_PID=$!
-                                echo "$(date): $bot_name branding restarted (PID: $BRANDING_PID)" >> "$log_dir/instance.log"
-                            fi
+                            # Just keep the process alive - no branding management
                         done
                     ) > "$log_dir/process.log" 2>&1 &
                     
@@ -286,9 +264,6 @@
             # Function to stop all bot instances
             stop-bots() {
                 print_info "Stopping all bot instances..."
-                
-                # Stop branding processes
-                pkill -f "generate_custom_branding.sh" 2>/dev/null || true
                 
                 # Stop bot instance processes
                 if [ -f "logs/bot_pids.log" ]; then
@@ -329,16 +304,7 @@
                     echo "  No bot instances found"
                 fi
                 
-                # Check for branding processes
-                print_info "Branding processes:"
-                local branding_pids=$(pgrep -f "generate_custom_branding.sh" 2>/dev/null || true)
-                if [ -n "$branding_pids" ]; then
-                    for pid in $branding_pids; do
-                        echo "  PID $pid: generate_custom_branding.sh"
-                    done
-                else
-                    echo "  No branding processes found"
-                fi
+
                 
                 # Show recent log directories
                 print_info "Recent log directories:"
@@ -379,11 +345,6 @@
                             cat "$latest_log/instance.log"
                             echo ""
                         fi
-                        if [ -f "$latest_log/branding.log" ]; then
-                            echo "=== Branding Log ==="
-                            cat "$latest_log/branding.log"
-                            echo ""
-                        fi
                     else
                         print_warning "No logs found for $bot_name"
                     fi
@@ -397,7 +358,7 @@
                 if [ "$bot_name" = "all" ]; then
                     print_info "Following all bot logs (Ctrl+C to stop)..."
                     if [ -d "logs" ]; then
-                        tail -f logs/*/instance.log logs/*/branding.log 2>/dev/null || true
+                        tail -f logs/*/instance.log 2>/dev/null || true
                     else
                         echo "No logs to follow"
                     fi
@@ -406,7 +367,7 @@
                     if ls $log_dir >/dev/null 2>&1; then
                         local latest_log=$(ls -td $log_dir | head -1)
                         print_info "Following logs for $bot_name (Ctrl+C to stop)..."
-                        tail -f "$latest_log"/*.log 2>/dev/null || true
+                        tail -f "$latest_log"/instance.log 2>/dev/null || true
                     else
                         print_warning "No logs found for $bot_name"
                     fi
@@ -422,21 +383,21 @@
             }
             
             echo ""
-            echo "Bot management functions:"
-            echo "  launch-bots [count] [prefix]  - Launch multiple bot instances"
-            echo "  list-bots                     - List running bot instances"
-            echo "  stop-bots                     - Stop all bot instances"
-            echo "  view-logs [bot_name]            - View bot logs"
-            echo "  follow-logs [bot_name]          - Follow bot logs in real-time"
+            echo "Camera management functions:"
+            echo "  launch-bots [count] [prefix]  - Prepare multiple camera instances"
+            echo "  list-bots                     - List running camera instances"
+            echo "  stop-bots                     - Stop all camera instances"
+            echo "  view-logs [bot_name]            - View camera instance logs"
+            echo "  follow-logs [bot_name]          - Follow camera instance logs in real-time"
             echo "  clean-logs [days]               - Clean old logs"
             echo ""
             echo "Examples:"
-            echo "  launch-bots 2 MeetingBot      - Launch 2 bots named MeetingBot-1, MeetingBot-2"
-            echo "  launch-bots 4                 - Launch 4 bots named Bot-1, Bot-2, Bot-3, Bot-4"
-            echo "  view-logs                     - View all available bot logs"
-            echo "  view-logs MeetingBot-1        - View logs for specific bot"
-            echo "  follow-logs MeetingBot-1      - Follow logs for specific bot in real-time"
-            echo "  follow-logs                   - Follow all bot logs in real-time"
+            echo "  launch-bots 2 MeetingBot      - Prepare 2 camera instances named MeetingBot-1, MeetingBot-2"
+            echo "  launch-bots 4                 - Prepare 4 camera instances named Bot-1, Bot-2, Bot-3, Bot-4"
+            echo "  view-logs                     - View all available camera instance logs"
+            echo "  view-logs MeetingBot-1        - View logs for specific camera instance"
+            echo "  follow-logs MeetingBot-1      - Follow logs for specific camera instance in real-time"
+            echo "  follow-logs                   - Follow all camera instance logs in real-time"
             echo "  clean-logs 3                  - Clean logs older than 3 days"
           '';
         };
