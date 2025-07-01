@@ -52,6 +52,8 @@
             PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "1";
             # Use local node_modules for TypeScript to avoid store conflicts
             NODE_PATH = "./node_modules";
+            # Force Node.js 20 to be used
+            PATH = "${pkgs.nodejs_20}/bin:$PATH";
           };
 
           shellHook = ''
