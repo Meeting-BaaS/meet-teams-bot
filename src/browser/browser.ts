@@ -1,4 +1,4 @@
-import { BrowserContext, chromium, Page } from '@playwright/test'
+import { BrowserContext, chromium } from '@playwright/test'
 
 type Resolution = {
     width: number
@@ -30,10 +30,24 @@ export async function openBrowser(
 
     try {
         console.log('Launching persistent context with exact extension args...')
+        console.log('Resolution:', width, 'x', height)
+        console.log('Environment variables:')
+        console.log('  DISPLAY:', process.env.DISPLAY)
+        console.log('  PLAYWRIGHT_BROWSERS_PATH:', process.env.PLAYWRIGHT_BROWSERS_PATH)
+        console.log('  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD:', process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD)
+        console.log('  NODE_ENV:', process.env.NODE_ENV)
+
+        const botCameraDevice = `/dev/video${process.env.BOT_CAMERA_NUM || '10'}`
+        console.log(`  Using camera device: ${botCameraDevice}`)
+
+        // Use the correct executable path that actually exists
+        const executablePath = '/nix/store/y53pinyaz63p6hs8acbgjnn585wnnr08-playwright-browsers-chromium/chromium-1169/chrome-linux/chrome'
+        console.log(`  Browser executable path: ${executablePath}`)
 
         const context = await chromium.launchPersistentContext('', {
             headless: false,
             viewport: { width, height },
+            executablePath: executablePath,
             args: [
                 // Security configurations
                 '--no-sandbox',
@@ -55,7 +69,7 @@ export async function openBrowser(
                 '--disable-features=TrustedScriptTypes',
                 '--disable-features=TrustedHTML',
                 '--use-fake-device-for-media-stream',
-                // `--use-file-for-fake-video-capture=${botCameraDevice}`,
+                `--use-file-for-fake-video-capture=${botCameraDevice}`,
             ],
             slowMo: slowMo ? 100 : undefined,
             permissions: ['microphone', 'camera'],
@@ -75,6 +89,24 @@ export async function openBrowser(
         return { browser: context}
     } catch (error) {
         console.error('Failed to open browser:', error)
+        console.error('Error name:', (error as Error).name)
+        console.error('Error message:', (error as Error).message)
+        console.error('Error stack:', (error as Error).stack)
+        
+        // Log additional debugging information
+        if ((error as Error).message) {
+            console.error('Full error message:', (error as Error).message)
+        }
+        
+        // Check if it's a specific Playwright error
+        if ((error as Error).name === 'TimeoutError') {
+            console.error('Browser launch timed out - this might be a display or environment issue')
+        } else if ((error as Error).message && (error as Error).message.includes('ENOENT')) {
+            console.error('File not found error - this might be a missing browser binary')
+        } else if ((error as Error).message && (error as Error).message.includes('permission')) {
+            console.error('Permission error - this might be a sandbox or display access issue')
+        }
+        
         throw error
     }
 }
