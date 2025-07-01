@@ -3,7 +3,7 @@
  * Generates a 1000Hz beep + green flash for synchronization purposes
  */
 
-import { Page } from 'playwright'
+import { Page } from '@playwright/test'
 
 export interface SyncSignalOptions {
     /** Duration of the sync signal in milliseconds (default: 500) */
