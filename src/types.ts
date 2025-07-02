@@ -1,13 +1,6 @@
-import { Browser, BrowserContext, Page } from '@playwright/test'
+import { BrowserContext, Page } from '@playwright/test'
 
-export type Meeting = {
-    page: Page
-    backgroundPage: Page
-    browser: Browser
-    meetingTimeoutInterval: NodeJS.Timeout
-}
-
-export type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod'
+type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod'
 export type RecordingMode = 'speaker_view' | 'gallery_view' | 'audio_only'
 
 export interface MeetingProviderInterface {
@@ -93,24 +86,6 @@ export type MeetingParams = {
     zoom_sdk_pwd?: string
 }
 
-export class CancellationToken {
-    isCancellationRequested: boolean
-    timeInSec: number
-    timeout: NodeJS.Timeout
-    constructor(timeInSec: number) {
-        this.isCancellationRequested = false
-        this.timeInSec = timeInSec
-        this.timeout = setTimeout(() => this.cancel(), this.timeInSec * 1000)
-    }
-    cancel() {
-        this.isCancellationRequested = true
-    }
-    reset() {
-        clearTimeout(this.timeout)
-        this.timeout = setTimeout(() => this.cancel(), this.timeInSec * 1000)
-    }
-}
-
 export type StopRecordParams = {
     meeting_url: string
     user_id: number
@@ -123,12 +98,6 @@ export type SpeakerData = {
     isSpeaking: boolean
 }
 export type MeetingProvider = 'Meet' | 'Teams' | 'Zoom'
-
-export enum RecordingApprovalState {
-    WAITING = 'WAITING',
-    ENABLE = 'ENABLE',
-    DISABLE = 'DISABLE',
-}
 
 export class JoinError extends Error {
     details?: any

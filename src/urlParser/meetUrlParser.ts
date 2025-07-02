@@ -1,6 +1,6 @@
 import { JoinError, JoinErrorCode } from '../types'
 
-export interface MeetUrlComponents {
+interface MeetUrlComponents {
     meetingId: string
     password: string // Empty string for Meet
 }

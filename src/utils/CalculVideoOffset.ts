@@ -13,7 +13,7 @@ const execAsync = promisify(exec)
 const EXPECTED_FREQUENCY = 1000
 const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds
 
-export interface SyncOffset {
+interface SyncOffset {
     /** Audio signal timestamp in seconds */
     audioTimestamp: number
     /** Video signal timestamp in seconds */
@@ -212,39 +212,54 @@ async function detectVideoFlash(videoPath: string): Promise<number> {
         try {
             const { stdout: sceneColorOutput } = await execAsync(sceneColorCmd)
             const lines = sceneColorOutput.split('\n')
-            
+
             let currentTime = 0
             let currentMean = ''
-            
+
             for (const line of lines) {
                 const timeMatch = line.match(/pts_time:([0-9.]+)/)
                 const meanMatch = line.match(/mean:\[([0-9. ]+)\]/)
-                
+
                 if (timeMatch) {
                     currentTime = parseFloat(timeMatch[1])
                 }
                 if (meanMatch) {
                     currentMean = meanMatch[1]
-                    
+
                     // Parse YUV values: mean:[Y U V]
-                    const values = currentMean.trim().split(/\s+/).map(v => parseFloat(v))
+                    const values = currentMean
+                        .trim()
+                        .split(/\s+/)
+                        .map((v) => parseFloat(v))
                     if (values.length >= 3) {
                         const [Y, U, V] = values
-                        
+
                         // Check if this looks like a green flash:
                         // Y (luminance) should be lower than normal (~140-150 vs ~220)
                         // U (red chrominance) should be lower than normal (~63 vs ~128)
                         // V (blue chrominance) should be much lower than normal (~46 vs ~128)
-                        if (Y < 160 && U < 80 && V < 60 && currentTime > 1.0 && currentTime < ANALYSIS_WINDOW) {
-                            console.log(`   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`)
-                            console.log(`   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`)
+                        if (
+                            Y < 160 &&
+                            U < 80 &&
+                            V < 60 &&
+                            currentTime > 1.0 &&
+                            currentTime < ANALYSIS_WINDOW
+                        ) {
+                            console.log(
+                                `   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`,
+                            )
+                            console.log(
+                                `   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`,
+                            )
                             return currentTime
                         }
                     }
                 }
             }
         } catch (e) {
-            console.log(`   Color analysis failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+            console.log(
+                `   Color analysis failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
+            )
         }
 
         // Fallback: Use traditional scene detection if color analysis fails
@@ -306,7 +321,7 @@ async function detectVideoFlash(videoPath: string): Promise<number> {
 /**
  * Test function using the provided sample files
  */
-export async function testWithSampleFiles(): Promise<SyncOffset> {
+async function testWithSampleFiles(): Promise<SyncOffset> {
     const audioPath =
         '/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output.wav'
     const videoPath =
@@ -319,27 +334,28 @@ export async function testWithSampleFiles(): Promise<SyncOffset> {
  * Test function for the specific problematic video file
  * Uses color-based detection instead of scene detection
  */
-export async function testGreenFlashDetection(): Promise<SyncOffset> {
-    const videoPath = '/Users/philippedrion/Documents/meeting-baas/meeting_bot/recording_server/recordings/47FED07F-401A-4E78-A810-044F4CE469BA/temp/raw.mp4'
-    
+async function testGreenFlashDetection(): Promise<SyncOffset> {
+    const videoPath =
+        '/Users/philippedrion/Documents/meeting-baas/meeting_bot/recording_server/recordings/47FED07F-401A-4E78-A810-044F4CE469BA/temp/raw.mp4'
+
     console.log('🧪 Testing green flash detection on specific video file...')
     console.log(`   Video: ${videoPath}`)
-    
+
     try {
         // Use color-based detection instead of scene detection
         const videoTimestamp = await detectGreenFlashByColor(videoPath)
-        
+
         const result: SyncOffset = {
             audioTimestamp: 0, // Not testing audio
             videoTimestamp,
             offsetSeconds: 0,
             confidence: videoTimestamp > 0 ? 0.95 : 0.1,
         }
-        
+
         console.log(`✅ Green flash detection result:`)
         console.log(`   Video flash at: ${videoTimestamp.toFixed(3)}s`)
         console.log(`   Confidence: ${(result.confidence * 100).toFixed(1)}%`)
-        
+
         return result
     } catch (error) {
         console.error('❌ Green flash detection failed:', error)
@@ -357,7 +373,9 @@ export async function testGreenFlashDetection(): Promise<SyncOffset> {
  * Looks for frames with specific YUV color characteristics of the green flash
  */
 async function detectGreenFlashByColor(videoPath: string): Promise<number> {
-    console.log(`💚 Detecting green flash using color analysis (first ${ANALYSIS_WINDOW}s)...`)
+    console.log(
+        `💚 Detecting green flash using color analysis (first ${ANALYSIS_WINDOW}s)...`,
+    )
 
     try {
         // Method 1: Look for frames with low Y (luminance) and low V (blue chrominance)
@@ -378,13 +396,17 @@ async function detectGreenFlashByColor(videoPath: string): Promise<number> {
                 if (match) {
                     const time = parseFloat(match[1])
                     if (time > 1.0 && time < ANALYSIS_WINDOW) {
-                        console.log(`   Found green flash at ${time.toFixed(3)}s (color-based detection)`)
+                        console.log(
+                            `   Found green flash at ${time.toFixed(3)}s (color-based detection)`,
+                        )
                         return time
                     }
                 }
             }
         } catch (e) {
-            console.log(`   Color detection failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+            console.log(
+                `   Color detection failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
+            )
         }
 
         // Method 2: Use scene detection but filter by color characteristics
@@ -393,39 +415,54 @@ async function detectGreenFlashByColor(videoPath: string): Promise<number> {
         try {
             const { stdout: sceneColorOutput } = await execAsync(sceneColorCmd)
             const lines = sceneColorOutput.split('\n')
-            
+
             let currentTime = 0
             let currentMean = ''
-            
+
             for (const line of lines) {
                 const timeMatch = line.match(/pts_time:([0-9.]+)/)
                 const meanMatch = line.match(/mean:\[([0-9. ]+)\]/)
-                
+
                 if (timeMatch) {
                     currentTime = parseFloat(timeMatch[1])
                 }
                 if (meanMatch) {
                     currentMean = meanMatch[1]
-                    
+
                     // Parse YUV values: mean:[Y U V]
-                    const values = currentMean.trim().split(/\s+/).map(v => parseFloat(v))
+                    const values = currentMean
+                        .trim()
+                        .split(/\s+/)
+                        .map((v) => parseFloat(v))
                     if (values.length >= 3) {
                         const [Y, U, V] = values
-                        
+
                         // Check if this looks like a green flash:
                         // Y (luminance) should be lower than normal (~140-150 vs ~220)
                         // U (red chrominance) should be lower than normal (~63 vs ~128)
                         // V (blue chrominance) should be much lower than normal (~46 vs ~128)
-                        if (Y < 160 && U < 80 && V < 60 && currentTime > 1.0 && currentTime < ANALYSIS_WINDOW) {
-                            console.log(`   Found green flash at ${currentTime.toFixed(3)}s (scene+color analysis)`)
-                            console.log(`   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`)
+                        if (
+                            Y < 160 &&
+                            U < 80 &&
+                            V < 60 &&
+                            currentTime > 1.0 &&
+                            currentTime < ANALYSIS_WINDOW
+                        ) {
+                            console.log(
+                                `   Found green flash at ${currentTime.toFixed(3)}s (scene+color analysis)`,
+                            )
+                            console.log(
+                                `   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`,
+                            )
                             return currentTime
                         }
                     }
                 }
             }
         } catch (e) {
-            console.log(`   Scene+color analysis failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
+            console.log(
+                `   Scene+color analysis failed: ${e instanceof Error ? e.message : 'Unknown error'}`,
+            )
         }
 
         console.log(`   No green flash detected in first ${ANALYSIS_WINDOW}s`)

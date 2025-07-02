@@ -423,7 +423,7 @@ export class TeamsProvider implements MeetingProviderInterface {
 
 const INPUT_BOT = 'input[placeholder="Type your name"]'
 
-export async function clickWithInnerText(
+async function clickWithInnerText(
     page: Page,
     htmlType: string,
     innerText: string,

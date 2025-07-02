@@ -5,7 +5,7 @@
 
 import { Page } from '@playwright/test'
 
-export interface SyncSignalOptions {
+interface SyncSignalOptions {
     /** Duration of the sync signal in milliseconds (default: 500) */
     duration?: number
     /** Audio frequency in Hz (default: 1000) */

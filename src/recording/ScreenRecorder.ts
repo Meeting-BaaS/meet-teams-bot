@@ -88,9 +88,9 @@ export class ScreenRecorder extends EventEmitter {
 
             await sleep(FLASH_SCREEN_SLEEP_TIME)
             await generateSyncSignal(page, {
-                duration: 800,     // Much longer signal for reliable detection
-                frequency: 1000,   // Keep 1000Hz for consistency
-                volume: 0.95       // Higher volume for better detection
+                duration: 800, // Much longer signal for reliable detection
+                frequency: 1000, // Keep 1000Hz for consistency
+                volume: 0.95, // Higher volume for better detection
             })
 
             console.log('Native recording started successfully')
@@ -116,8 +116,12 @@ export class ScreenRecorder extends EventEmitter {
             try {
                 // Check if virtual_speaker.monitor exists
                 const { spawn } = await import('child_process')
-                const checkProcess = spawn('pactl', ['list', 'sources', 'short'])
-                
+                const checkProcess = spawn('pactl', [
+                    'list',
+                    'sources',
+                    'short',
+                ])
+
                 let output = ''
                 checkProcess.stdout?.on('data', (data) => {
                     output += data.toString()
@@ -127,30 +131,45 @@ export class ScreenRecorder extends EventEmitter {
                     checkProcess.on('close', resolve)
                 })
 
-                if (exitCode === 0 && output.includes('virtual_speaker.monitor')) {
-                    console.log(`✅ Audio device ready after ${attempt} attempt(s)`)
+                if (
+                    exitCode === 0 &&
+                    output.includes('virtual_speaker.monitor')
+                ) {
+                    console.log(
+                        `✅ Audio device ready after ${attempt} attempt(s)`,
+                    )
                     return
                 }
 
-                console.log(`⏳ Attempt ${attempt}/${maxAttempts}: audio device not ready, waiting ${delayMs}ms...`)
+                console.log(
+                    `⏳ Attempt ${attempt}/${maxAttempts}: audio device not ready, waiting ${delayMs}ms...`,
+                )
                 await sleep(delayMs)
-
             } catch (error) {
-                console.warn(`⚠️ Attempt ${attempt}/${maxAttempts}: Error checking audio device:`, error)
+                console.warn(
+                    `⚠️ Attempt ${attempt}/${maxAttempts}: Error checking audio device:`,
+                    error,
+                )
                 await sleep(delayMs)
             }
         }
 
         // If we get here, devices are still not ready - try a quick FFmpeg test
-        console.warn(`⚠️ Audio devices not confirmed ready after ${maxAttempts} attempts, testing with FFmpeg...`)
-        
+        console.warn(
+            `⚠️ Audio devices not confirmed ready after ${maxAttempts} attempts, testing with FFmpeg...`,
+        )
+
         try {
             const testProcess = spawn('ffmpeg', [
-                '-f', 'pulse',
-                '-i', 'virtual_speaker.monitor',
-                '-t', '0.1',
-                '-f', 'null',
-                '-'
+                '-f',
+                'pulse',
+                '-i',
+                'virtual_speaker.monitor',
+                '-t',
+                '0.1',
+                '-f',
+                'null',
+                '-',
             ])
 
             const testExitCode = await new Promise<number>((resolve) => {
@@ -158,14 +177,18 @@ export class ScreenRecorder extends EventEmitter {
             })
 
             if (testExitCode === 0) {
-                console.log('✅ FFmpeg audio test successful - devices are ready')
+                console.log(
+                    '✅ FFmpeg audio test successful - devices are ready',
+                )
                 return
             }
         } catch (error) {
             console.error('❌ FFmpeg audio test failed:', error)
         }
 
-        throw new Error('Audio devices not ready after maximum wait time - virtual_speaker.monitor unavailable')
+        throw new Error(
+            'Audio devices not ready after maximum wait time - virtual_speaker.monitor unavailable',
+        )
     }
 
     private buildNativeFFmpegArgs(): string[] {
@@ -822,7 +845,9 @@ file '${absoluteInputPath}'`
             outputAudioPath,
         ]
 
-        console.log(`✂️ Trimming ${trimSeconds.toFixed(3)}s from audio start (re-encoding for clean timestamps)`)
+        console.log(
+            `✂️ Trimming ${trimSeconds.toFixed(3)}s from audio start (re-encoding for clean timestamps)`,
+        )
         await this.runFFmpeg(args)
     }
 
@@ -849,7 +874,9 @@ file '${absoluteInputPath}'`
             outputPath,
         ]
 
-        console.log(`🎬 Merging video and audio (converting audio to AAC during merge)`)
+        console.log(
+            `🎬 Merging video and audio (converting audio to AAC during merge)`,
+        )
         await this.runFFmpeg(args)
     }
 
@@ -877,7 +904,7 @@ file '${absoluteInputPath}'`
         calcOffset: number,
         duration: number,
     ): Promise<void> {
-        // Use calcOffset directly - no need for videoStartTime compensation 
+        // Use calcOffset directly - no need for videoStartTime compensation
         // since audio and video are already synchronized after merge
         const args = [
             '-i',

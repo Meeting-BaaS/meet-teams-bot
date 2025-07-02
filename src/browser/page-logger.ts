@@ -73,10 +73,4 @@ export function listenPage(page: Page) {
             console.log(`Failed to log forward logs: ${e}`)
         }
     })
-
-    // Focus on DEBUG logs only - no other error monitoring
-}
-
-export function removeListenPage(page: Page) {
-    page.removeListener('console', () => {})
 }

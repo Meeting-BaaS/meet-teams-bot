@@ -3,7 +3,7 @@ import { promisify } from 'util'
 
 const execAsync = promisify(exec)
 
-export interface SystemDiagnosticResult {
+interface SystemDiagnosticResult {
     pulseAudioLatency: number
     ffmpegBufferDelay: number
     systemLoad: number
@@ -12,7 +12,7 @@ export interface SystemDiagnosticResult {
     variance: number
 }
 
-export class SystemDiagnostic {
+class SystemDiagnostic {
     private diagnosticHistory: SystemDiagnosticResult[] = []
     private isRunning: boolean = false
 

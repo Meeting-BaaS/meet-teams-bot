@@ -1,6 +1,6 @@
 import { JoinError, JoinErrorCode } from '../types'
 
-export interface TeamsUrlComponents {
+interface TeamsUrlComponents {
     meetingId: string
     password: string
 }
