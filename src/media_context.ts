@@ -3,8 +3,37 @@ import internal from 'stream'
 
 // sudo apt install linux-modules-extra-`uname -r`
 // const MICRO_DEVICE: string = 'hw:Loopback,1' // sndloop module
-const MICRO_DEVICE: string = 'pulse:virtual_mic' // pulseaudio virtual mic
-const CAMERA_DEVICE: string = '/dev/video10'
+
+// Get device configuration from environment variables
+const getMicroDevice = (): string => {
+    const botDeviceId = process.env.BOT_DEVICE_ID
+    if (botDeviceId) {
+        const deviceId = parseInt(botDeviceId)
+        if (deviceId >= 1 && deviceId <= 8) {
+            return `pulse:virtual_mic_source_${deviceId}`
+        }
+    }
+    return 'pulse:virtual_mic' // fallback
+}
+
+const getCameraDevice = (): string => {
+    const botDeviceId = process.env.BOT_DEVICE_ID
+    if (botDeviceId) {
+        const deviceId = parseInt(botDeviceId)
+        if (deviceId >= 1 && deviceId <= 8) {
+            return `/dev/video${10 + deviceId - 1}`
+        }
+    }
+    return '/dev/video10' // fallback
+}
+
+const MICRO_DEVICE: string = getMicroDevice()
+const CAMERA_DEVICE: string = getCameraDevice()
+
+console.log('🔧 MediaContext config:')
+console.log(`  Micro Device: ${MICRO_DEVICE}`)
+console.log(`  Camera Device: ${CAMERA_DEVICE}`)
+console.log(`  Bot Device ID: ${process.env.BOT_DEVICE_ID || 'not set'}`)
 
 // This abstract claas contains the current ffmpeg process
 // A derived class must implement play and stop methods

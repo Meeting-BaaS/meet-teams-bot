@@ -25,6 +25,7 @@ const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (16:9 ratio)
 interface ScreenRecordingConfig {
     display: string
     audioDevice?: string
+    audioSink?: string
 }
 
 export class ScreenRecorder extends EventEmitter {
@@ -41,11 +42,22 @@ export class ScreenRecorder extends EventEmitter {
     constructor(config: Partial<ScreenRecordingConfig> = {}) {
         super()
 
+        // Get device configuration from environment variables
+        const botDeviceId = process.env.BOT_DEVICE_ID
+        const display = process.env.DISPLAY || ':99'
+        const audioSink = process.env.AUDIO_SINK || 'virtual_speaker.monitor'
+
         this.config = {
-            display: ':99',
+            display,
             audioDevice: 'pulse',
+            audioSink,
             ...config,
         }
+
+        console.log('🔧 ScreenRecorder config:')
+        console.log(`  Display: ${this.config.display}`)
+        console.log(`  Audio Sink: ${this.config.audioSink}`)
+        console.log(`  Bot Device ID: ${botDeviceId || 'not set'}`)
     }
 
     private generateOutputPaths(): void {
@@ -133,7 +145,7 @@ export class ScreenRecorder extends EventEmitter {
 
                 if (
                     exitCode === 0 &&
-                    output.includes('virtual_speaker.monitor')
+                    output.includes(this.config.audioSink || 'virtual_speaker.monitor')
                 ) {
                     console.log(
                         `✅ Audio device ready after ${attempt} attempt(s)`,
@@ -164,7 +176,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-i',
-                'virtual_speaker.monitor',
+                this.config.audioSink || 'virtual_speaker.monitor',
                 '-t',
                 '0.1',
                 '-f',
@@ -187,7 +199,7 @@ export class ScreenRecorder extends EventEmitter {
         }
 
         throw new Error(
-            'Audio devices not ready after maximum wait time - virtual_speaker.monitor unavailable',
+            `Audio devices not ready after maximum wait time - ${this.config.audioSink || 'virtual_speaker.monitor'} unavailable`,
         )
     }
 
@@ -215,7 +227,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-i',
-                'virtual_speaker.monitor',
+                this.config.audioSink || 'virtual_speaker.monitor',
 
                 // === VIDEO INPUT FOR SCREENSHOTS ===
                 '-f',
@@ -289,7 +301,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-i',
-                'virtual_speaker.monitor',
+                this.config.audioSink || 'virtual_speaker.monitor',
 
                 // === OUTPUT 1: RAW VIDEO (no audio) ===
                 '-map',

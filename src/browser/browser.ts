@@ -6,18 +6,33 @@ export async function openBrowser(
     const width = 1280 // 640
     const height = 720 // 480
 
+    // Get device configuration from environment variables
+    const botDeviceId = process.env.BOT_DEVICE_ID
+    const display = process.env.DISPLAY || ':99'
+    const chromiumPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+
+    console.log('🔧 Browser config:')
+    console.log(`  Display: ${display}`)
+    console.log(`  Chromium Path: ${chromiumPath || 'default'}`)
+    console.log(`  Bot Device ID: ${botDeviceId || 'not set'}`)
+
     try {
         console.log('Launching persistent context with exact extension args...')
 
-        const context = await chromium.launchPersistentContext('', {
+        // Set display environment variable
+        if (display) {
+            process.env.DISPLAY = display
+        }
+
+        const launchOptions: any = {
             headless: false,
             viewport: { width, height },
             args: [
                 // Security configurations
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                
-                // WebRTC optimizations (required for meeting audio/video capture)
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
                 '--disable-rtc-smoothness-algorithm',
                 '--disable-webrtc-hw-decoding',
                 '--disable-webrtc-hw-encoding',
@@ -52,7 +67,17 @@ export async function openBrowser(
             acceptDownloads: true,
             bypassCSP: true,
             timeout: 120000,
-        })
+        }
+
+        // Use NixOS Chromium path if provided
+        if (chromiumPath) {
+            console.log(`🔧 Using NixOS Chromium: ${chromiumPath}`)
+            launchOptions.executablePath = chromiumPath
+        } else {
+            console.log('🔧 Using default Chromium from Playwright')
+        }
+
+        const context = await chromium.launchPersistentContext('', launchOptions)
 
         return { browser: context }
     } catch (error) {
