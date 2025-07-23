@@ -98,3 +98,21 @@ export type SpeakerData = {
     isSpeaking: boolean
 }
 export type MeetingProvider = 'Meet' | 'Teams' | 'Zoom'
+
+// CAPTCHA Configuration Types
+export interface CAPTCHAConfig {
+    enabled: boolean
+    maxAttempts: number
+    timeoutMs: number
+    confidenceThreshold: number
+    languages: ('en' | 'fr' | 'es' | 'de')[]
+    retryDelayMs: number
+}
+
+export interface CAPTCHAHandlingResult {
+    success: boolean
+    attempts: number
+    solution?: string
+    error?: string
+    language?: string
+}
