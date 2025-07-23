@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test'
 import { GLOBAL } from '../../singleton'
 import { MeetingContext } from '../../state-machine/types'
+import { CAPTCHAHandler } from '../../utils/CAPTCHAHandler'
 import { DialogObserverResult } from './types'
 
 interface DismissTimeouts {
@@ -22,9 +23,18 @@ const TIMEOUTS: DismissTimeouts = {
 export class SimpleDialogObserver {
     protected context: MeetingContext
     protected dialogObserverInterval?: NodeJS.Timeout
+    private captchaHandler: CAPTCHAHandler
 
     constructor(context: MeetingContext) {
         this.context = context
+        this.captchaHandler = new CAPTCHAHandler({
+            enabled: true,
+            maxAttempts: 3,
+            timeoutMs: 30000,
+            confidenceThreshold: 0.6,
+            languages: ['en', 'fr', 'es', 'de'],
+            retryDelayMs: 2000,
+        })
     }
 
     setupGlobalDialogObserver() {
@@ -120,6 +130,14 @@ export class SimpleDialogObserver {
         try {
             // Google Meet specific modal patterns
             const modalPatterns = [
+                // CAPTCHA modals (highest priority)
+                {
+                    name: 'captcha_verification',
+                    selector:
+                        'div[role="dialog"]:has-text("Verify"):has(button), div[role="dialog"]:has-text("robot"):has(button), div[role="dialog"]:has-text("captcha"):has(button)',
+                    buttonTexts: ['Submit', 'Verify', 'Continue'],
+                    isCaptcha: true,
+                },
                 // Privacy/notification modals
                 {
                     name: 'privacy_notification',
@@ -176,6 +194,43 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Found modal: ${pattern.name}`,
                     )
+
+                    // Handle CAPTCHA modals specially
+                    if (pattern.isCaptcha) {
+                        console.info(
+                            `[SimpleDialogObserver] CAPTCHA modal detected, attempting to solve...`,
+                        )
+                        try {
+                            const captchaResult =
+                                await this.captchaHandler.handleCAPTCHA(
+                                    page,
+                                    'waiting-room',
+                                )
+                            if (
+                                captchaResult.success &&
+                                captchaResult.solution
+                            ) {
+                                console.info(
+                                    `[SimpleDialogObserver] CAPTCHA solved: "${captchaResult.solution}"`,
+                                )
+                                await page.waitForTimeout(timeouts.PAGE_TIMEOUT)
+                                return {
+                                    found: true,
+                                    dismissed: true,
+                                    modalType: pattern.name,
+                                    detectionMethod: 'captcha_solved',
+                                }
+                            } else {
+                                console.warn(
+                                    `[SimpleDialogObserver] CAPTCHA solving failed: ${captchaResult.error}`,
+                                )
+                            }
+                        } catch (error) {
+                            console.error(
+                                `[SimpleDialogObserver] Error handling CAPTCHA: ${error}`,
+                            )
+                        }
+                    }
 
                     // Try to dismiss the modal by clicking appropriate buttons
                     const dismissed = await this.tryDismissModal(
