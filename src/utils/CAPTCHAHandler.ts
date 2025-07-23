@@ -1,4 +1,5 @@
 import { Page } from '@playwright/test'
+import { CAPTCHA_CONSTANTS, OCR_CONSTANTS } from '../state-machine/constants'
 import { CAPTCHAConfig, CAPTCHAHandlingResult } from '../types'
 import { CAPTCHADetection, CAPTCHADetector } from './CAPTCHADetector'
 import { CAPTCHASolver } from './CAPTCHASolver'
@@ -14,11 +15,11 @@ export class CAPTCHAHandler {
         this.solver = new CAPTCHASolver()
         this.config = {
             enabled: true,
-            maxAttempts: 3,
-            timeoutMs: 30000, // 30 seconds
-            confidenceThreshold: 0.6,
-            languages: ['en', 'fr', 'es', 'de'],
-            retryDelayMs: 2000,
+            maxAttempts: CAPTCHA_CONSTANTS.DEFAULT_MAX_ATTEMPTS,
+            timeoutMs: CAPTCHA_CONSTANTS.DEFAULT_TIMEOUT_MS,
+            confidenceThreshold: CAPTCHA_CONSTANTS.DEFAULT_CONFIDENCE_THRESHOLD,
+            languages: [...CAPTCHA_CONSTANTS.SUPPORTED_LANGUAGES],
+            retryDelayMs: CAPTCHA_CONSTANTS.DEFAULT_RETRY_DELAY_MS,
             ...config,
         }
     }
@@ -61,6 +62,8 @@ export class CAPTCHAHandler {
                 const detections =
                     await CAPTCHADetector.detectCAPTCHAFromScreenshots(
                         screenshotsPath,
+                        300000, // 5 minute window
+                        true, // Process all screenshots for complete visibility
                     )
 
                 // Use the most recent detection if any found
@@ -162,6 +165,45 @@ export class CAPTCHAHandler {
                 error: error instanceof Error ? error.message : 'Unknown error',
                 language: 'en',
             }
+        }
+    }
+
+    /**
+     * Continuous OCR analysis throughout the entire meeting
+     * This runs continuously regardless of CAPTCHA presence
+     */
+    public async performContinuousOCR(
+        page: Page,
+        currentState?: string,
+    ): Promise<void> {
+        // Check if we're in cleanup mode - if so, skip OCR
+        if (
+            CAPTCHAHandler.isInCleanup ||
+            currentState === 'cleanup' ||
+            currentState === 'terminated'
+        ) {
+            return
+        }
+
+        console.log('📊 [CAPTCHAHandler] Performing continuous OCR analysis...')
+
+        try {
+            const screenshotsPath =
+                PathManager.getInstance().getScreenshotsPath()
+
+            // Process all recent screenshots for continuous OCR
+            await CAPTCHADetector.detectCAPTCHAFromScreenshots(
+                screenshotsPath,
+                OCR_CONSTANTS.DEFAULT_SCREENSHOT_MAX_AGE_MS, // Use shorter window for continuous processing
+                true, // Process all screenshots for complete visibility
+            )
+
+            console.log('📊 [CAPTCHAHandler] Continuous OCR analysis completed')
+        } catch (error) {
+            console.error(
+                '💥 [CAPTCHAHandler] Error during continuous OCR:',
+                error,
+            )
         }
     }
 

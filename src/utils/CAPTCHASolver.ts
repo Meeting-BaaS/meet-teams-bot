@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import Tesseract from 'tesseract.js'
 import { promisify } from 'util'
+import { CAPTCHA_CONSTANTS } from '../state-machine/constants'
 import { PathManager } from './PathManager'
 
 const exec = promisify(require('child_process').exec)
@@ -17,6 +18,23 @@ export interface CAPTCHASolution {
         original: string
         preprocessed: string
         tempDir: string
+    }
+    ocrDetails?: {
+        words: Array<{
+            text: string
+            confidence: number
+            bbox: { x0: number; y0: number; x1: number; y1: number }
+        }>
+        lines: Array<{
+            text: string
+            confidence: number
+            bbox: { x0: number; y0: number; x1: number; y1: number }
+        }>
+        symbols: Array<{
+            text: string
+            confidence: number
+            bbox: { x0: number; y0: number; x1: number; y1: number }
+        }>
     }
 }
 
@@ -117,6 +135,11 @@ export class CAPTCHASolver {
                     text: '',
                     confidence: 0,
                     error: 'Image file not found',
+                    ocrDetails: {
+                        words: [],
+                        lines: [],
+                        symbols: [],
+                    },
                 }
             }
 
@@ -129,9 +152,9 @@ export class CAPTCHASolver {
             console.log('🛠️ [CAPTCHASolver] Starting image preprocessing...')
             const preprocessedPath = await this.preprocessImage(imagePath, {
                 crop: { x: 0, y: 0, width: 0, height: 0 },
-                scale: 2.0, // Moderate scaling
-                contrast: 1.3, // Gentle contrast boost
-                brightness: 1.0, // No brightness change
+                scale: CAPTCHA_CONSTANTS.DEFAULT_SCALE_FACTOR,
+                contrast: CAPTCHA_CONSTANTS.DEFAULT_CONTRAST,
+                brightness: CAPTCHA_CONSTANTS.DEFAULT_BRIGHTNESS,
                 noiseReduction: false, // Disable noise reduction
                 binarization: false, // Disable for better text recognition
                 deskew: false, // Disable deskew
@@ -145,6 +168,11 @@ export class CAPTCHASolver {
                     text: '',
                     confidence: 0,
                     error: 'Image preprocessing failed',
+                    ocrDetails: {
+                        words: [],
+                        lines: [],
+                        symbols: [],
+                    },
                 }
             }
 
@@ -227,6 +255,11 @@ export class CAPTCHASolver {
                             preprocessed: alternativeResult.preprocessedPath,
                             tempDir: this.tempDir,
                         },
+                        ocrDetails: {
+                            words: [],
+                            lines: [],
+                            symbols: [],
+                        },
                     }
                 }
 
@@ -255,6 +288,11 @@ export class CAPTCHASolver {
                                 preprocessed: imagePath,
                                 tempDir: this.tempDir,
                             },
+                            ocrDetails: {
+                                words: originalResult.data.words || [],
+                                lines: originalResult.data.lines || [],
+                                symbols: originalResult.data.symbols || [],
+                            },
                         }
                     }
                 }
@@ -271,6 +309,11 @@ export class CAPTCHASolver {
                     preprocessed: preprocessedPath,
                     tempDir: this.tempDir,
                 },
+                ocrDetails: {
+                    words: result.data.words || [],
+                    lines: result.data.lines || [],
+                    symbols: result.data.symbols || [],
+                },
             }
         } catch (error) {
             console.error('💥 [CAPTCHASolver] Error solving CAPTCHA:', error)
@@ -279,6 +322,11 @@ export class CAPTCHASolver {
                 text: '',
                 confidence: 0,
                 error: error instanceof Error ? error.message : 'Unknown error',
+                ocrDetails: {
+                    words: [],
+                    lines: [],
+                    symbols: [],
+                },
             }
         }
     }
@@ -405,26 +453,7 @@ export class CAPTCHASolver {
     } | null> {
         try {
             // Try different preprocessing configurations
-            const configs = [
-                {
-                    scale: 4.0,
-                    contrast: 2.0,
-                    brightness: 1.2,
-                    noiseReduction: false,
-                    binarization: true,
-                    deskew: false,
-                    sharpen: true,
-                },
-                {
-                    scale: 2.5,
-                    contrast: 1.5,
-                    brightness: 0.9,
-                    noiseReduction: true,
-                    binarization: false,
-                    deskew: true,
-                    sharpen: false,
-                },
-            ]
+            const configs = CAPTCHA_CONSTANTS.ALTERNATIVE_CONFIGS
 
             for (const config of configs) {
                 console.log(

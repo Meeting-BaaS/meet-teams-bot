@@ -3,7 +3,8 @@ import { HtmlCleaner } from '../../meeting/htmlCleaner'
 import { SpeakersObserver } from '../../meeting/speakersObserver'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
-import { MEETING_CONSTANTS } from '../constants'
+import { CAPTCHAHandler } from '../../utils/CAPTCHAHandler'
+import { MEETING_CONSTANTS, OCR_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 
@@ -90,6 +91,25 @@ export class InCallState extends BaseState {
         } catch (error) {
             console.error('Failed to start speakers observation:', error)
             // Continue even if speakers observation fails
+        }
+
+        // Initialize continuous OCR if enabled
+        if (OCR_CONSTANTS.ENABLE_CONTINUOUS_OCR) {
+            try {
+                console.log('🔍 Initializing continuous OCR system...')
+                const captchaHandler = new CAPTCHAHandler()
+                await captchaHandler.performContinuousOCR(
+                    this.context.playwrightPage,
+                    'in-call',
+                )
+                console.log('✅ Continuous OCR system initialized')
+            } catch (ocrError) {
+                console.warn(
+                    '⚠️ Continuous OCR initialization failed (non-blocking):',
+                    ocrError,
+                )
+                // Don't let OCR errors stop the meeting setup
+            }
         }
 
         // Notify that recording has started

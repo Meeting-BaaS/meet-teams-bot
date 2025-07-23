@@ -1,6 +1,6 @@
 import { Events } from '../../events'
 import { Streaming } from '../../streaming'
-import { MEETING_CONSTANTS } from '../constants'
+import { MEETING_CONSTANTS, OCR_CONSTANTS } from '../constants'
 
 import {
     MeetingEndReason,
@@ -11,6 +11,7 @@ import { BaseState } from './base-state'
 
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
+import { CAPTCHAHandler } from '../../utils/CAPTCHAHandler'
 import { sleep } from '../../utils/sleep'
 
 // Sound level threshold for considering activity (0-100)
@@ -69,6 +70,23 @@ export class RecordingState extends BaseState {
                 // If pause requested, transition to Paused state
                 if (this.context.isPaused) {
                     return this.transition(MeetingStateType.Paused)
+                }
+
+                // Perform continuous OCR analysis if enabled
+                if (OCR_CONSTANTS.ENABLE_CONTINUOUS_OCR) {
+                    try {
+                        const captchaHandler = new CAPTCHAHandler()
+                        await captchaHandler.performContinuousOCR(
+                            this.context.playwrightPage,
+                            'recording',
+                        )
+                    } catch (ocrError) {
+                        console.warn(
+                            '⚠️ Continuous OCR error (non-blocking):',
+                            ocrError,
+                        )
+                        // Don't let OCR errors stop the recording
+                    }
                 }
 
                 await sleep(this.CHECK_INTERVAL)

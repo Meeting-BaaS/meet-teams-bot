@@ -1,6 +1,7 @@
 import { Page } from '@playwright/test'
 import * as fs from 'fs'
 import * as path from 'path'
+import { CAPTCHA_CONSTANTS } from '../state-machine/constants'
 import { LanguageDetection } from './CAPTCHALanguageDetector'
 import { CAPTCHASolver } from './CAPTCHASolver'
 import { PathManager } from './PathManager'
@@ -71,7 +72,8 @@ export class CAPTCHADetector {
      */
     public static async detectCAPTCHAFromScreenshots(
         screenshotsPath: string,
-        maxAgeMs: number = 60000, // Look for screenshots from last 60 seconds
+        maxAgeMs: number = CAPTCHA_CONSTANTS.DEFAULT_SCREENSHOT_MAX_AGE_MS,
+        processAllScreenshots: boolean = false, // If true, process all screenshots regardless of age
     ): Promise<CAPTCHADetection[]> {
         console.log(
             `🔍 [CAPTCHADetector] Detecting CAPTCHA from existing screenshots...`,
@@ -103,7 +105,8 @@ export class CAPTCHADetector {
                 .map((file) => {
                     const timestamp = this.extractTimestampFromFilename(file)
                     const age = Date.now() - timestamp
-                    const isValid = age <= maxAgeMs && age >= 0
+                    const isValid =
+                        processAllScreenshots || (age <= maxAgeMs && age >= 0)
 
                     console.log(`📸 [CAPTCHADetector] Processing file: ${file}`)
                     console.log(
@@ -129,7 +132,14 @@ export class CAPTCHADetector {
                     }
                 })
                 .filter((file) => file.isValid)
-                .sort((a, b) => b.timestamp - a.timestamp) // Most recent first
+                .sort((a, b) => {
+                    // Sort by timestamp first (most recent first)
+                    if (b.timestamp !== a.timestamp) {
+                        return b.timestamp - a.timestamp
+                    }
+                    // If same timestamp, sort by filename to maintain order
+                    return a.name.localeCompare(b.name)
+                })
 
             console.log(
                 `📸 [CAPTCHADetector] Found ${screenshotFiles.length} recent screenshots (maxAge: ${maxAgeMs}ms)`,
@@ -150,7 +160,10 @@ export class CAPTCHADetector {
                         const timestamp =
                             this.extractTimestampFromFilename(file)
                         const age = Date.now() - timestamp
-                        const isValid = age <= 45000 && age >= 0 // 45 second window for retry
+                        const isValid =
+                            age <=
+                                CAPTCHA_CONSTANTS.RETRY_SCREENSHOT_MAX_AGE_MS &&
+                            age >= 0 // 4 minute window for retry (increased from 45s)
 
                         return {
                             name: file,
@@ -161,7 +174,14 @@ export class CAPTCHADetector {
                         }
                     })
                     .filter((file) => file.isValid)
-                    .sort((a, b) => b.timestamp - a.timestamp)
+                    .sort((a, b) => {
+                        // Sort by timestamp first (most recent first)
+                        if (b.timestamp !== a.timestamp) {
+                            return b.timestamp - a.timestamp
+                        }
+                        // If same timestamp, sort by filename to maintain order
+                        return a.name.localeCompare(b.name)
+                    })
 
                 console.log(
                     `📸 [CAPTCHADetector] Retry found ${retryFiles.length} screenshots`,
@@ -180,6 +200,12 @@ export class CAPTCHADetector {
                 const detection = await this.analyzeScreenshotForCAPTCHA(
                     screenshot.path,
                 )
+
+                // ALWAYS log OCR results (philosophy: complete visibility)
+                console.log(
+                    `📊 [CAPTCHADetector] OCR completed for ${screenshot.name}`,
+                )
+
                 if (detection.isPresent) {
                     console.log(
                         `🎯 [CAPTCHADetector] CAPTCHA detected in ${screenshot.name}`,
@@ -189,6 +215,10 @@ export class CAPTCHADetector {
                         screenshotPath: screenshot.path,
                         timestamp: screenshot.timestamp,
                     })
+                } else {
+                    console.log(
+                        `✅ [CAPTCHADetector] No CAPTCHA in ${screenshot.name} (normal)`,
+                    )
                 }
             }
 
@@ -322,29 +352,18 @@ export class CAPTCHADetector {
      * Check if text contains CAPTCHA-related content
      */
     private static containsCAPTCHAText(text: string): boolean {
-        const captchaKeywords = [
-            'verify',
-            'robot',
-            'captcha',
-            'human',
-            'person',
-            'vérifiez',
-            'robot',
-            'captcha',
-            'humain',
-            'personne',
-            'verificar',
-            'robot',
-            'captcha',
-            'humano',
-            'überprüfen',
-            'roboter',
-            'captcha',
-            'mensch',
-        ]
-
         const lowerText = text.toLowerCase()
-        return captchaKeywords.some((keyword) => lowerText.includes(keyword))
+
+        // Use centralized CAPTCHA keywords from constants
+        for (const [language, keywords] of Object.entries(
+            CAPTCHA_CONSTANTS.CAPTCHA_KEYWORDS,
+        )) {
+            if (keywords.some((keyword) => lowerText.includes(keyword))) {
+                return true
+            }
+        }
+
+        return false
     }
 
     /**
