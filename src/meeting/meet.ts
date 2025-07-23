@@ -4,10 +4,24 @@ import { JoinError, JoinErrorCode, MeetingProviderInterface } from '../types'
 
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
+import { CAPTCHAHandler } from '../utils/CAPTCHAHandler'
 import { sleep } from '../utils/sleep'
 import { closeMeeting } from './meet/closeMeeting'
 
 export class MeetProvider implements MeetingProviderInterface {
+    private captchaHandler: CAPTCHAHandler
+
+    constructor() {
+        this.captchaHandler = new CAPTCHAHandler({
+            enabled: true,
+            maxAttempts: 3,
+            timeoutMs: 30000,
+            confidenceThreshold: 0.6,
+            languages: ['en', 'fr', 'es', 'de'],
+            retryDelayMs: 2000,
+        })
+    }
+
     async parseMeetingUrl(meeting_url: string) {
         return parseMeetingUrlFromJoinInfos(meeting_url)
     }
@@ -171,6 +185,38 @@ export class MeetProvider implements MeetingProviderInterface {
 
             if (!askToJoinClicked) {
                 throw new JoinError(JoinErrorCode.CannotJoinMeeting)
+            }
+
+            // Handle CAPTCHA challenges after clicking join button
+            try {
+                console.log('🔍 Checking for CAPTCHA challenges...')
+                const captchaResult =
+                    await this.captchaHandler.handleCAPTCHA(page)
+
+                if (!captchaResult.success) {
+                    console.error(
+                        '❌ CAPTCHA handling failed:',
+                        captchaResult.error,
+                    )
+                    throw new JoinError(
+                        JoinErrorCode.CAPTCHAFailed,
+                        captchaResult.error,
+                    )
+                } else if (captchaResult.solution) {
+                    console.log(
+                        `✅ CAPTCHA solved successfully: "${captchaResult.solution}"`,
+                    )
+                } else {
+                    console.log('✅ No CAPTCHA detected or already handled')
+                }
+            } catch (error) {
+                if (
+                    error instanceof JoinError &&
+                    error.message.includes('CAPTCHA')
+                ) {
+                    throw error
+                }
+                console.warn('⚠️ CAPTCHA handling error (non-critical):', error)
             }
 
             // Wait to be in the meeting with regular cancelCheck verification

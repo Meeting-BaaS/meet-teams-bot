@@ -4,10 +4,22 @@ import { JoinError, JoinErrorCode, MeetingProviderInterface } from '../types'
 
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/teamsUrlParser'
+import { CAPTCHAHandler } from '../utils/CAPTCHAHandler'
 import { sleep } from '../utils/sleep'
 
 export class TeamsProvider implements MeetingProviderInterface {
-    constructor() {}
+    private captchaHandler: CAPTCHAHandler
+
+    constructor() {
+        this.captchaHandler = new CAPTCHAHandler({
+            enabled: true,
+            maxAttempts: 3,
+            timeoutMs: 30000,
+            confidenceThreshold: 0.6,
+            languages: ['en', 'fr', 'es', 'de'],
+            retryDelayMs: 2000,
+        })
+    }
     async parseMeetingUrl(meeting_url: string) {
         return parseMeetingUrlFromJoinInfos(meeting_url)
     }
@@ -290,6 +302,29 @@ export class TeamsProvider implements MeetingProviderInterface {
 
         try {
             await typeBotName(page, GLOBAL.get().bot_name, 20)
+
+            // Check for CAPTCHA before clicking "Join now"
+            console.log('🔍 Pre-join CAPTCHA check...')
+            const preJoinCaptchaResult =
+                await this.captchaHandler.handleCAPTCHA(page)
+            if (
+                !preJoinCaptchaResult.success &&
+                preJoinCaptchaResult.error !== 'No CAPTCHA detected'
+            ) {
+                console.error(
+                    '❌ Pre-join CAPTCHA handling failed:',
+                    preJoinCaptchaResult.error,
+                )
+                throw new JoinError(
+                    JoinErrorCode.CAPTCHAFailed,
+                    preJoinCaptchaResult.error,
+                )
+            } else if (preJoinCaptchaResult.solution) {
+                console.log(
+                    `✅ Pre-join CAPTCHA solved: "${preJoinCaptchaResult.solution}"`,
+                )
+            }
+
             await clickWithInnerText(page, 'button', 'Join now', 20)
         } catch (e) {
             console.error(
@@ -299,9 +334,41 @@ export class TeamsProvider implements MeetingProviderInterface {
             throw new Error('RetryableError')
         }
 
+        // Handle CAPTCHA challenges after clicking "Join now"
+        try {
+            console.log('🔍 Checking for CAPTCHA challenges...')
+            const captchaResult = await this.captchaHandler.handleCAPTCHA(page)
+
+            if (!captchaResult.success) {
+                console.error(
+                    '❌ CAPTCHA handling failed:',
+                    captchaResult.error,
+                )
+                throw new JoinError(
+                    JoinErrorCode.CAPTCHAFailed,
+                    captchaResult.error,
+                )
+            } else if (captchaResult.solution) {
+                console.log(
+                    `✅ CAPTCHA solved successfully: "${captchaResult.solution}"`,
+                )
+            } else {
+                console.log('✅ No CAPTCHA detected or already handled')
+            }
+        } catch (error) {
+            if (
+                error instanceof JoinError &&
+                error.message.includes('CAPTCHA')
+            ) {
+                throw error
+            }
+            console.warn('⚠️ CAPTCHA handling error (non-critical):', error)
+        }
+
         // Wait to be in the meeting
         console.log('Waiting to confirm meeting join...')
         let inMeeting = false
+        let loopCount = 0
 
         while (!inMeeting) {
             // Check if we have been refused
@@ -315,10 +382,85 @@ export class TeamsProvider implements MeetingProviderInterface {
                 throw new JoinError(JoinErrorCode.ApiRequest)
             }
 
+            // Check for CAPTCHA if we're stuck in the loop
+            loopCount++
+            if (loopCount >= 5) {
+                console.log('🔄 Loop detection: Checking for CAPTCHA...')
+                const loopCaptchaResult =
+                    await this.captchaHandler.handleCAPTCHA(page)
+                if (loopCaptchaResult.success && loopCaptchaResult.solution) {
+                    console.log(
+                        `✅ Loop CAPTCHA solved: "${loopCaptchaResult.solution}"`,
+                    )
+                    loopCount = 0 // Reset counter after solving CAPTCHA
+                } else {
+                    console.log(
+                        `ℹ️ Loop CAPTCHA check result: ${loopCaptchaResult.success ? 'No CAPTCHA found' : loopCaptchaResult.error}`,
+                    )
+                }
+            }
+
             // Check if we are in the meeting (multiple indicators)
             inMeeting = await isInTeamsMeeting(page)
 
             if (!inMeeting) {
+                // Debug: Let's see what's actually on the page
+                if (loopCount % 10 === 0) {
+                    // Every 10 seconds
+                    console.log('🔍 Debug: Checking page content...')
+                    try {
+                        const pageText = await page.evaluate(() =>
+                            document.body.innerText.substring(0, 500),
+                        )
+                        console.log('📄 Page text preview:', pageText)
+
+                        // Check for common blocking elements
+                        const blockingElements = await page.evaluate(() => {
+                            const elements = []
+                            // Check for error messages
+                            const errorSelectors = [
+                                '[role="alert"]',
+                                '.error',
+                                '.warning',
+                                '[data-testid*="error"]',
+                            ]
+                            errorSelectors.forEach((selector) => {
+                                const found =
+                                    document.querySelectorAll(selector)
+                                found.forEach((el) =>
+                                    elements.push(
+                                        `${selector}: ${el.textContent}`,
+                                    ),
+                                )
+                            })
+                            // Check for modal dialogs
+                            const modalSelectors = [
+                                '[role="dialog"]',
+                                '.modal',
+                                '[aria-modal="true"]',
+                            ]
+                            modalSelectors.forEach((selector) => {
+                                const found =
+                                    document.querySelectorAll(selector)
+                                found.forEach((el) =>
+                                    elements.push(
+                                        `${selector}: ${el.textContent?.substring(0, 100)}`,
+                                    ),
+                                )
+                            })
+                            return elements
+                        })
+
+                        if (blockingElements.length > 0) {
+                            console.log(
+                                '🚫 Blocking elements found:',
+                                blockingElements,
+                            )
+                        }
+                    } catch (e) {
+                        console.log('⚠️ Debug check failed:', e)
+                    }
+                }
                 await sleep(1000)
             }
         }

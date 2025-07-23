@@ -10,6 +10,12 @@ export class CleanupState extends BaseState {
         try {
             console.info('🧹 Starting cleanup sequence')
 
+            // Disable CAPTCHA detection during cleanup
+            const { CAPTCHAHandler } = await import(
+                '../../utils/CAPTCHAHandler'
+            )
+            CAPTCHAHandler.setCleanupMode(true)
+
             // Use Promise.race to implement the timeout
             const cleanupPromise = this.performCleanup()
             const timeoutPromise = new Promise((_, reject) => {
@@ -70,6 +76,12 @@ export class CleanupState extends BaseState {
                 (async () => {
                     console.info('🧹 Step 4/5: Stopping HTML cleaner')
                     await this.stopHtmlCleaner()
+                })(),
+
+                // 5. Clean up CAPTCHA resources (with 3s timeout)
+                (async () => {
+                    console.info('🧹 Step 4.5/5: Cleaning up CAPTCHA resources')
+                    await this.cleanupCAPTCHAResources()
                 })(),
             ])
 
@@ -164,15 +176,19 @@ export class CleanupState extends BaseState {
 
     private async stopScreenRecorder(): Promise<void> {
         try {
-            if (ScreenRecorderManager.getInstance().isCurrentlyRecording()) {
-                console.log('Stopping ScreenRecorder from cleanup state...')
-                await ScreenRecorderManager.getInstance().stopRecording()
-                console.log('ScreenRecorder stopped successfully')
+            const recorder = ScreenRecorderManager.getInstance()
+            if (recorder.isCurrentlyRecording()) {
+                console.log('🎬 Stopping ScreenRecorder from cleanup state...')
+                await recorder.stopRecording()
+                console.log('✅ ScreenRecorder stopped successfully')
             } else {
-                console.log('ScreenRecorder not recording, nothing to stop')
+                // Check if FFmpeg process is running but not recording (screenshots only)
+                console.log(
+                    '📸 ScreenRecorder not in recording mode - may have screenshots only',
+                )
             }
         } catch (error) {
-            console.error('Error stopping ScreenRecorder:', error)
+            console.error('❌ Error stopping ScreenRecorder:', error)
             // Don't throw error if recording was already stopped
             if (
                 error instanceof Error &&
@@ -180,7 +196,7 @@ export class CleanupState extends BaseState {
                 error.message.includes('not recording')
             ) {
                 console.log(
-                    'ScreenRecorder was already stopped, continuing cleanup',
+                    'ℹ️ ScreenRecorder was already stopped, continuing cleanup',
                 )
             } else {
                 throw error
@@ -210,6 +226,27 @@ export class CleanupState extends BaseState {
             }
         } catch (error) {
             console.error('Failed to cleanup browser resources:', error)
+        }
+    }
+
+    private async cleanupCAPTCHAResources(): Promise<void> {
+        try {
+            // Clean up any active CAPTCHA handlers
+            if (this.context.provider) {
+                // Access the CAPTCHA handler if it exists
+                const provider = this.context.provider as any
+                if (provider.captchaHandler) {
+                    console.log('🧹 Cleaning up CAPTCHA handler...')
+                    // Note: CAPTCHA handlers are stateless, so just log for now
+                    console.log('🧹 CAPTCHA handler cleanup completed')
+                }
+            }
+
+            // Note: Tesseract workers are terminated immediately after use
+            // Temp files are preserved for debugging
+            console.log('🧹 CAPTCHA resources cleanup completed')
+        } catch (error) {
+            console.error('🧹 Error cleaning up CAPTCHA resources:', error)
         }
     }
 }

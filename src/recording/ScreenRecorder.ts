@@ -20,8 +20,8 @@ const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = '192k' // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
 const SCREENSHOT_PERIOD = 5 // every 5 seconds instead of 2
-const SCREENSHOT_WIDTH = 480 // reduced for smaller file size
-const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (16:9 ratio)
+const SCREENSHOT_WIDTH = 1280 // Increased for better OCR quality
+const SCREENSHOT_HEIGHT = 720 // Increased for better OCR quality (16:9 ratio)
 interface ScreenRecordingConfig {
     display: string
     audioDevice?: string
@@ -247,13 +247,13 @@ export class ScreenRecorder extends EventEmitter {
                 '-map',
                 '1:v:0',
                 '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
-                '-q:v',
-                '3', // High quality JPEG compression
+                `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}:flags=lanczos`,
+                '-pix_fmt',
+                'rgb24',
                 '-f',
                 'image2',
                 '-y',
-                screenshotPattern.replace('.png', '.jpg'),
+                screenshotPattern,
 
                 // === OUTPUT 3: STREAMING AUDIO ===
                 '-map',
@@ -309,7 +309,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-g',
                 '30', // Keyframe every 30 frames (1 sec at 30fps) for precise trimming
                 '-keyint_min',
-                '30', // Force minimum keyframe interval 
+                '30', // Force minimum keyframe interval
                 '-bf',
                 '0',
                 '-refs',
@@ -344,13 +344,13 @@ export class ScreenRecorder extends EventEmitter {
                 '-map',
                 '0:v:0',
                 '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
-                '-q:v',
-                '3', // High quality JPEG compression
+                `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}:flags=lanczos`,
+                '-pix_fmt',
+                'rgb24',
                 '-f',
                 'image2',
                 '-y',
-                screenshotPattern.replace('.png', '.jpg'),
+                screenshotPattern,
 
                 // === OUTPUT 4: STREAMING AUDIO ===
                 '-map',
@@ -736,13 +736,26 @@ export class ScreenRecorder extends EventEmitter {
         )
 
         // 7. Extract audio from the final trimmed video (ensures perfect sync)
-        await this.extractAudioFromVideo(this.outputPath, this.audioOutputPath)
-        console.log(
-            `✅ Audio extracted from final video: ${this.audioOutputPath}`,
-        )
+        try {
+            await this.extractAudioFromVideo(
+                this.outputPath,
+                this.audioOutputPath,
+            )
+            console.log(
+                `✅ Audio extracted from final video: ${this.audioOutputPath}`,
+            )
 
-        // 8. Create audio chunks from the extracted audio
-        await this.createAudioChunks(this.audioOutputPath)
+            // 8. Create audio chunks from the extracted audio
+            await this.createAudioChunks(this.audioOutputPath)
+        } catch (error) {
+            console.warn(
+                `⚠️ Audio extraction failed (likely due to bot removal): ${error}`,
+            )
+            console.warn(
+                `⚠️ Continuing without audio extraction to prevent bot hang`,
+            )
+            // Don't throw - allow cleanup to continue
+        }
 
         // 9. Cleanup temporary files
         await this.cleanupTempFiles([
@@ -979,10 +992,19 @@ file '${absoluteInputPath}'`
         console.log(
             `🎵 Creating audio chunks (${chunkDuration}s each) from ${duration.toFixed(1)}s audio`,
         )
-        await this.runFFmpeg(args)
-
-        // Upload created chunks
-        await this.uploadAudioChunks(chunksDir, botUuid)
+        try {
+            await this.runFFmpeg(args)
+            // Upload created chunks
+            await this.uploadAudioChunks(chunksDir, botUuid)
+        } catch (error) {
+            console.warn(
+                `⚠️ Audio chunking failed (likely due to bot removal): ${error}`,
+            )
+            console.warn(
+                `⚠️ Continuing without audio chunks to prevent bot hang`,
+            )
+            // Don't throw - allow cleanup to continue
+        }
     }
 
     private async getDuration(filePath: string): Promise<number> {
@@ -1011,17 +1033,45 @@ file '${absoluteInputPath}'`
     private async runFFmpeg(args: string[]): Promise<void> {
         return new Promise((resolve, reject) => {
             const process = spawn('ffmpeg', args)
+            let stderr = ''
+
+            // Capture stderr for better error reporting
+            process.stderr?.on('data', (data) => {
+                stderr += data.toString()
+            })
 
             process.on('close', (code) => {
                 if (code === 0) {
                     resolve()
                 } else {
-                    reject(new Error(`FFmpeg failed with code ${code}`))
+                    // Provide more specific error information
+                    const errorMsg = `FFmpeg failed with code ${code}`
+                    const stderrPreview = stderr
+                        .split('\n')
+                        .slice(-3)
+                        .join('\n') // Last 3 lines
+                    console.error(`❌ ${errorMsg}`)
+                    if (stderrPreview) {
+                        console.error(`❌ FFmpeg stderr: ${stderrPreview}`)
+                    }
+                    reject(new Error(errorMsg))
                 }
             })
 
             process.on('error', (error) => {
+                console.error(`❌ FFmpeg process error: ${error.message}`)
                 reject(error)
+            })
+
+            // Add timeout to prevent hanging
+            const timeout = setTimeout(() => {
+                console.error(`❌ FFmpeg timeout after 30s, killing process`)
+                process.kill('SIGKILL')
+                reject(new Error('FFmpeg timeout'))
+            }, 30000)
+
+            process.on('close', () => {
+                clearTimeout(timeout)
             })
         })
     }

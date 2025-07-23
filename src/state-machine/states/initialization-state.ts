@@ -46,6 +46,9 @@ export class InitializationState extends BaseState {
                     error instanceof Error ? error.stack : undefined
                 throw enhancedError
             }
+
+            // Note: Continuous screenshots will be started in WaitingRoomState when page is available
+
             // All initialization successful
             return this.transition(MeetingStateType.WaitingRoom)
         } catch (error) {

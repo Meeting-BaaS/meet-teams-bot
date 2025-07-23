@@ -60,7 +60,7 @@ export class PathManager {
             case 'preprod':
                 return path.join(EFS_MOUNT_POINT, 'preprod', this.botUuid)
             default:
-                return path.join('./data', this.botUuid)
+                return path.join('./recordings', this.botUuid) // Match shell script output directory
         }
     }
 

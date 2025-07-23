@@ -5,9 +5,10 @@ import {
     StateTransition,
 } from './types'
 
+import { GLOBAL } from '../singleton'
+import { CAPTCHAHandler } from '../utils/CAPTCHAHandler'
 import { getStateInstance } from './states'
 import { MeetingContext } from './types'
-import { GLOBAL } from '../singleton'
 
 export class MeetingStateMachine {
     private currentState: MeetingStateType
@@ -16,6 +17,7 @@ export class MeetingStateMachine {
     private forceStop: boolean = false
     private wasInRecordingState: boolean = false
     private normalTermination: boolean = false
+    private captchaHandler: CAPTCHAHandler
 
     constructor(initialContext: Partial<MeetingContext>) {
         this.currentState = MeetingStateType.Initialization
@@ -23,6 +25,16 @@ export class MeetingStateMachine {
             ...initialContext,
             error: null,
         } as MeetingContext
+
+        // Initialize CAPTCHA handler
+        this.captchaHandler = new CAPTCHAHandler({
+            enabled: true,
+            maxAttempts: 2, // Lower attempts for state machine integration
+            timeoutMs: 15000, // Shorter timeout for state machine
+            confidenceThreshold: 0.6,
+            languages: ['en', 'fr', 'es', 'de'],
+            retryDelayMs: 1000,
+        })
 
         // Setup global dialog observer functions
         this.setupGlobalDialogObserver()
@@ -76,6 +88,31 @@ export class MeetingStateMachine {
                     if (this.context.playwrightPage?.isClosed()) {
                         this.context.stopGlobalDialogObserver?.()
                         return
+                    }
+
+                    // Check for CAPTCHA challenges first
+                    try {
+                        const captchaResult =
+                            await this.captchaHandler.handleCAPTCHA(
+                                this.context.playwrightPage!,
+                            )
+
+                        if (captchaResult.success && captchaResult.solution) {
+                            console.info(
+                                `[GlobalDialogObserver] CAPTCHA solved successfully: "${captchaResult.solution}" in state ${this.currentState}`,
+                            )
+                        } else if (
+                            !captchaResult.success &&
+                            captchaResult.error
+                        ) {
+                            console.warn(
+                                `[GlobalDialogObserver] CAPTCHA handling failed: ${captchaResult.error} in state ${this.currentState}`,
+                            )
+                        }
+                    } catch (captchaError) {
+                        console.warn(
+                            `[GlobalDialogObserver] CAPTCHA detection error: ${captchaError}`,
+                        )
                     }
 
                     // Chercher le dialogue "Got it"
