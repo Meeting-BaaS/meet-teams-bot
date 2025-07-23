@@ -1,6 +1,7 @@
 import { SoundContext, VideoContext } from '../../media_context'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 
+import { CAPTCHAHandler } from '../../utils/CAPTCHAHandler'
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
@@ -9,6 +10,10 @@ export class CleanupState extends BaseState {
     async execute(): StateExecuteResult {
         try {
             console.info('🧹 Starting cleanup sequence')
+
+            // Set CAPTCHA handler to cleanup mode to prevent detection during shutdown
+            CAPTCHAHandler.setCleanupMode(true)
+            console.info('🧹 CAPTCHA handler set to cleanup mode')
 
             // Use Promise.race to implement the timeout
             const cleanupPromise = this.performCleanup()
