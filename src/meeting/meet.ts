@@ -5,10 +5,24 @@ import { MeetingProviderInterface } from '../types'
 
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
+import { CAPTCHAHandler } from '../utils/CAPTCHAHandler'
 import { sleep } from '../utils/sleep'
 import { closeMeeting } from './meet/closeMeeting'
 
 export class MeetProvider implements MeetingProviderInterface {
+    private captchaHandler: CAPTCHAHandler
+
+    constructor() {
+        this.captchaHandler = new CAPTCHAHandler({
+            enabled: true,
+            maxAttempts: 3,
+            timeoutMs: 30000,
+            confidenceThreshold: 0.6,
+            languages: ['en', 'fr', 'es', 'de'],
+            retryDelayMs: 2000,
+        })
+    }
+
     async parseMeetingUrl(meeting_url: string) {
         return parseMeetingUrlFromJoinInfos(meeting_url)
     }
@@ -89,6 +103,21 @@ export class MeetProvider implements MeetingProviderInterface {
                 await activateMicrophone(page)
             } else {
                 await deactivateMicrophone(page)
+            }
+
+            // Handle CAPTCHA before clicking join button
+            console.log('🔍 Checking for CAPTCHA before joining...')
+            const captchaResult = await this.captchaHandler.handleCAPTCHA(
+                page,
+                'waiting-room',
+            )
+            if (!captchaResult.success) {
+                console.warn(
+                    `⚠️ CAPTCHA handling failed: ${captchaResult.error}`,
+                )
+                // Continue anyway - don't let CAPTCHA failure block joining
+            } else if (captchaResult.solution) {
+                console.log(`✅ CAPTCHA solved: "${captchaResult.solution}"`)
             }
 
             // Try multiple approaches to find the join button
@@ -181,6 +210,20 @@ export class MeetProvider implements MeetingProviderInterface {
                 if (cancelCheck()) {
                     GLOBAL.setError(MeetingEndReason.ApiRequest)
                     throw new Error('API request to stop recording')
+                }
+
+                // Handle CAPTCHA during join process
+                console.log('🔍 Checking for CAPTCHA during join process...')
+                const captchaResult = await this.captchaHandler.handleCAPTCHA(
+                    page,
+                    'waiting-room',
+                )
+                if (captchaResult.success && captchaResult.solution) {
+                    console.log(
+                        `✅ CAPTCHA solved during join: "${captchaResult.solution}"`,
+                    )
+                    // Wait a bit for CAPTCHA to be processed
+                    await sleep(2000)
                 }
 
                 if (await isInMeeting(page)) {
