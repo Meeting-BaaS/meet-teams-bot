@@ -206,16 +206,18 @@ export class CleanupState extends BaseState {
     }
     private async cleanupBrowserResources(): Promise<void> {
         try {
-            // 1. Stop branding
-            if (this.context.brandingProcess) {
-                this.context.brandingProcess.kill()
-            }
-
-            // 2. Stop media contexts
+            // 1. Stop media contexts
             VideoContext.instance?.stop()
             SoundContext.instance?.stop()
 
-            // 3. Close pages and clean the browser
+            // 3. Stop virtual camera if active
+            if (this.context.virtualCamera) {
+                console.log('Stopping virtual camera...')
+                await this.context.virtualCamera.stop()
+                this.context.virtualCamera = undefined
+            }
+
+            // 4. Close pages and clean the browser
             await Promise.all([
                 this.context.playwrightPage?.close().catch(() => {}),
                 this.context.browserContext?.close().catch(() => {}),

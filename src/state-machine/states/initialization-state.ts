@@ -1,4 +1,3 @@
-import { generateBranding, playBranding } from '../../branding'
 import { openBrowser } from '../../browser/browser'
 import { GLOBAL } from '../../singleton'
 
@@ -22,16 +21,6 @@ export class InitializationState extends BaseState {
             // Setup path manager first (important for logs)
             await this.setupPathManager()
 
-            // Setup branding if needed - non-bloquant
-            if (GLOBAL.get().custom_branding_bot_path) {
-                this.setupBranding().catch((error) => {
-                    console.warn(
-                        'Branding setup failed, continuing anyway:',
-                        error,
-                    )
-                })
-            }
-
             // Setup browser - étape critique
             try {
                 await this.setupBrowser()
@@ -45,20 +34,15 @@ export class InitializationState extends BaseState {
                     error instanceof Error ? error.stack : undefined
                 throw enhancedError
             }
+
+            // Virtual camera will be set up when the meeting page is opened
+            // This allows it to be injected into the main meeting page
+
             // All initialization successful
             return this.transition(MeetingStateType.WaitingRoom)
         } catch (error) {
             return this.handleError(error as Error)
         }
-    }
-
-    private async setupBranding(): Promise<void> {
-        this.context.brandingProcess = generateBranding(
-            GLOBAL.get().bot_name,
-            GLOBAL.get().custom_branding_bot_path,
-        )
-        await this.context.brandingProcess.wait
-        playBranding()
     }
 
     private async setupBrowser(): Promise<void> {

@@ -43,6 +43,7 @@ ENV NODE_ENV=production
 ENV DISPLAY=:99
 ENV PULSE_RUNTIME_PATH=/tmp/pulse
 ENV XDG_RUNTIME_DIR=/tmp/pulse
+ENV VIRTUAL_CAMERA_ENABLED=true
 
 # Create optimized startup script
 RUN echo '#!/bin/bash\n\
@@ -91,7 +92,10 @@ if ! pactl list sources short | grep -q "virtual_speaker.monitor"; then\n\
     echo "❌ virtual_speaker.monitor not found - audio setup failed"\n\
     exit 1\n\
 fi\n\
-\necho "✅ Virtual display and audio ready"\n\necho "🔍 VNC available at localhost:5900 (password: debug)"\n\n# Start application\ncd /app/\nnode build/src/main.js\n\n# Cleanup on exit\ntrap "kill $PULSE_PID $VNC_PID $XVFB_PID 2>/dev/null || true" EXIT\n' > /start.sh && chmod +x /start.sh
+\necho "✅ Virtual display and audio ready"\n\
+\necho "🔍 VNC available at localhost:5900 (password: debug)"\n\
+\necho "📹 Web-based virtual camera ready (enabled)"\n\
+\n# Start application\ncd /app/\nnode build/src/main.js\n\n# Cleanup on exit\ntrap "kill $PULSE_PID $VNC_PID $XVFB_PID 2>/dev/null || true" EXIT\n' > /start.sh && chmod +x /start.sh
 
 # Expose VNC port for debugging
 EXPOSE 5900

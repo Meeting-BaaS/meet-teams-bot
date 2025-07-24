@@ -40,7 +40,6 @@ export type MeetingParams = {
     meetingProvider: MeetingProvider
     event?: { id: number }
     agenda?: any
-    custom_branding_bot_path?: string
     vocabulary: string[]
     force_lang: boolean
     translation_lang?: string
@@ -84,6 +83,13 @@ export type MeetingParams = {
     extra?: any
     zoom_sdk_id?: string
     zoom_sdk_pwd?: string
+
+    // Virtual camera configuration
+    virtual_camera_enabled?: boolean
+    virtual_camera_width?: number
+    virtual_camera_height?: number
+    virtual_camera_type?: 'animated' | 'static' | 'video' | 'screen'
+    virtual_camera_content?: string
 }
 
 export type StopRecordParams = {
