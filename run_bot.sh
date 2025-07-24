@@ -50,11 +50,24 @@ check_docker() {
     fi
 }
 
+# List available Docker images
+list_images() {
+    print_info "Available Meet Teams Bot Docker images:"
+    docker images meet-teams-bot --format "table {{.Tag}}\t{{.CreatedAt}}\t{{.Size}}" | head -10
+    echo
+    print_info "To use a specific image, set IMAGE_TAG environment variable:"
+    print_info "  IMAGE_TAG=20250724-1325 ./run_bot.sh run params.json"
+}
+
 # Build Docker image
 build_image() {
+    local timestamp=$(date +%Y%m%d-%H%M)
+    local image_tag="meet-teams-bot:${timestamp}"
+    
     print_info "Building Meet Teams Bot Docker image..."
-    docker build -t meet-teams-bot .
-    print_success "Docker image built successfully"
+    print_info "Image tag: $image_tag"
+    docker build -t "$image_tag" -t meet-teams-bot:latest .
+    print_success "Docker image built successfully with tag: $image_tag"
 }
 
 # Create output directory
@@ -188,13 +201,23 @@ run_with_config() {
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
+    # Determine which image to use
+    local image_name="meet-teams-bot"
+    if [ -n "${IMAGE_TAG:-}" ]; then
+        image_name="meet-teams-bot:${IMAGE_TAG}"
+        print_info "Using specific image tag: $IMAGE_TAG"
+    else
+        image_name="meet-teams-bot:latest"
+        print_info "Using latest image"
+    fi
+    
     # Run the bot
     echo "$processed_config" | docker run -i \
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/data" \
-        meet-teams-bot 2>&1 | while IFS= read -r line; do
+        "$image_name" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
             elif [[ $line == *"Virtual display started"* ]]; then
@@ -254,9 +277,10 @@ run_with_config_and_overrides() {
     print_info "Output directory: $output_dir"
     
     # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
+    local port=${PORT:-3000}
+    local docker_args="-p $port:3000"
     if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
+        docker_args="-p 5900:5900 -p $port:3000"
         print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
         print_info "💻 Connect with VNC viewer to: localhost:5900"
         print_info "📱 On Mac, you can use: open vnc://localhost:5900"
@@ -287,13 +311,23 @@ run_with_config_and_overrides() {
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
+    # Determine which image to use
+    local image_name="meet-teams-bot"
+    if [ -n "${IMAGE_TAG:-}" ]; then
+        image_name="meet-teams-bot:${IMAGE_TAG}"
+        print_info "Using specific image tag: $IMAGE_TAG"
+    else
+        image_name="meet-teams-bot:latest"
+        print_info "Using latest image"
+    fi
+    
     # Run the bot
     echo "$processed_config" | docker run -i \
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/data" \
-        meet-teams-bot 2>&1 | while IFS= read -r line; do
+        "$image_name" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
             elif [[ $line == *"Virtual display started"* ]]; then
@@ -358,9 +392,10 @@ run_with_json() {
     print_info "Output directory: $output_dir"
     
     # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
+    local port=${PORT:-3000}
+    local docker_args="-p $port:3000"
     if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
+        docker_args="-p 5900:5900 -p $port:3000"
         print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
         print_info "💻 Connect with VNC viewer to: localhost:5900"
         print_info "📱 On Mac, you can use: open vnc://localhost:5900"
@@ -384,12 +419,22 @@ run_with_json() {
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
+    # Determine which image to use
+    local image_name="meet-teams-bot"
+    if [ -n "${IMAGE_TAG:-}" ]; then
+        image_name="meet-teams-bot:${IMAGE_TAG}"
+        print_info "Using specific image tag: $IMAGE_TAG"
+    else
+        image_name="meet-teams-bot:latest"
+        print_info "Using latest image"
+    fi
+    
     echo "$processed_config" | docker run -i \
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/data" \
-        meet-teams-bot
+        "$image_name"
     
     print_success "Bot execution completed"
     print_info "Recordings saved to: $output_dir"
@@ -741,6 +786,7 @@ show_help() {
     echo
     echo "Usage:"
     echo "  $0 build                     - Build the Docker image"
+    echo "  $0 list                      - List available Docker images"
     echo "  $0 run <config_file> [url]   - Run bot with configuration file (optional meeting URL override)"
     echo "  $0 debug <config_file> [url] - Run bot in DEBUG mode (speakers logs + VNC enabled)"
     echo "  $0 run-json '<json>'         - Run bot with JSON configuration"
@@ -753,6 +799,7 @@ show_help() {
     echo "  RECORDING=true|false         - Enable/disable video recording (default: true)"
     echo "  DEBUG=true|false            - Enable/disable debug mode with VNC (default: false)"
     echo "  DEBUG_LOGS=true|false       - Enable/disable speakers debug logs (default: false)"
+    echo "  IMAGE_TAG=<tag>             - Use specific Docker image tag (default: latest)"
     echo
     echo "Examples:"
     echo "  $0 build"
@@ -771,6 +818,8 @@ show_help() {
     echo "  DEBUG=true $0 test 60              # Test with VNC debug access"
     echo "  $0 test-api-request     # Test API request stop after 2 minutes"
     echo "  $0 clean"
+    echo "  $0 list                  # List available Docker images"
+    echo "  IMAGE_TAG=20250724-1325 $0 run params.json  # Use specific image"
     echo
     echo "Recording Modes:"
     echo "  • screen (default)    - Direct screen capture via FFmpeg (recommended)"
@@ -795,6 +844,10 @@ main() {
         "build")
             check_docker
             build_image
+            ;;
+        "list")
+            check_docker
+            list_images
             ;;
         "run")
             local default_config="bot.config.json"

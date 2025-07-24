@@ -123,6 +123,17 @@ export class WaitingRoomState extends BaseState {
 
                     // Inject virtual camera script immediately - don't wait for page load
                     await this.context.playwrightPage.evaluate(() => {
+                        // Get config from global settings
+                        const config = {
+                            width: 1280,
+                            height: 720,
+                            type: 'animated',
+                            content: 'Virtual camera with animated background',
+                            userImageUrl: 'https://i.ibb.co/N9YtnDZ/ducobu.jpg',
+                            showUserImage: true,
+                            imagePosition: 'corner',
+                            imageOpacity: 0.8,
+                        }
                         console.log(
                             '🎥 🎬 ===== WAITING-ROOM VIRTUAL CAMERA INJECTION =====',
                         )
@@ -139,6 +150,28 @@ export class WaitingRoomState extends BaseState {
                         // Strategy 1: Override getUserMedia immediately to prevent "Camera not found"
                         const originalGetUserMedia =
                             navigator.mediaDevices.getUserMedia
+
+                        // Load user image if provided
+                        let userImage = null
+                        let imageLoaded = false
+
+                        if (config.userImageUrl && config.showUserImage) {
+                            userImage = new Image()
+                            userImage.crossOrigin = 'anonymous'
+                            userImage.onload = () => {
+                                imageLoaded = true
+                                console.log(
+                                    '🎥 WAITING-ROOM User image loaded successfully',
+                                )
+                            }
+                            userImage.onerror = () => {
+                                console.log(
+                                    '🎥 WAITING-ROOM Failed to load user image, continuing without it',
+                                )
+                            }
+                            userImage.src = config.userImageUrl
+                        }
+
                         navigator.mediaDevices.getUserMedia = async function (
                             constraints,
                         ) {
@@ -208,6 +241,77 @@ export class WaitingRoomState extends BaseState {
                                             canvas.width,
                                             canvas.height,
                                         )
+
+                                        // Draw user image if available
+                                        if (
+                                            userImage &&
+                                            imageLoaded &&
+                                            config.showUserImage
+                                        ) {
+                                            ctx.save()
+                                            ctx.globalAlpha =
+                                                config.imageOpacity || 0.8
+
+                                            const imageSize =
+                                                Math.min(
+                                                    canvas.width,
+                                                    canvas.height,
+                                                ) * 0.3
+                                            let x, y
+
+                                            switch (config.imagePosition) {
+                                                case 'center':
+                                                    x =
+                                                        (canvas.width -
+                                                            imageSize) /
+                                                        2
+                                                    y =
+                                                        (canvas.height -
+                                                            imageSize) /
+                                                        2
+                                                    break
+                                                case 'corner':
+                                                    x = 20
+                                                    y = 20
+                                                    break
+                                                case 'background':
+                                                    x =
+                                                        (canvas.width -
+                                                            imageSize) /
+                                                        2
+                                                    y =
+                                                        (canvas.height -
+                                                            imageSize) /
+                                                        2
+                                                    ctx.globalAlpha = 0.3
+                                                    break
+                                                default:
+                                                    x = 20
+                                                    y = 20
+                                            }
+
+                                            // Draw rounded rectangle background for image
+                                            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+                                            ctx.beginPath()
+                                            ctx.roundRect(
+                                                x - 10,
+                                                y - 10,
+                                                imageSize + 20,
+                                                imageSize + 20,
+                                                10,
+                                            )
+                                            ctx.fill()
+
+                                            // Draw the image
+                                            ctx.drawImage(
+                                                userImage,
+                                                x,
+                                                y,
+                                                imageSize,
+                                                imageSize,
+                                            )
+                                            ctx.restore()
+                                        }
 
                                         // Add some animated elements
                                         ctx.fillStyle =

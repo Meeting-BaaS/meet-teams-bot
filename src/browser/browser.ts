@@ -79,6 +79,27 @@ export async function openBrowser(
             process.env.VIRTUAL_CAMERA_ENABLED,
         )
         if (process.env.VIRTUAL_CAMERA_ENABLED === 'true') {
+            // Get virtual camera configuration from environment or defaults
+            const virtualCameraConfig = {
+                width: parseInt(process.env.VIRTUAL_CAMERA_WIDTH || '1280'),
+                height: parseInt(process.env.VIRTUAL_CAMERA_HEIGHT || '720'),
+                type: (process.env.VIRTUAL_CAMERA_TYPE || 'animated') as
+                    | 'animated'
+                    | 'static'
+                    | 'video'
+                    | 'screen',
+                content:
+                    process.env.VIRTUAL_CAMERA_CONTENT ||
+                    'Virtual camera with animated background',
+                userImageUrl: process.env.VIRTUAL_CAMERA_USER_IMAGE_URL,
+                showUserImage:
+                    process.env.VIRTUAL_CAMERA_SHOW_USER_IMAGE === 'true',
+                imagePosition: (process.env.VIRTUAL_CAMERA_IMAGE_POSITION ||
+                    'corner') as 'center' | 'corner' | 'background',
+                imageOpacity: parseFloat(
+                    process.env.VIRTUAL_CAMERA_IMAGE_OPACITY || '0.8',
+                ),
+            }
             try {
                 console.log(
                     '🎥 Injecting virtual camera at browser context level...',
@@ -86,7 +107,64 @@ export async function openBrowser(
                 console.log('🎥 About to inject virtual camera script...')
 
                 // Strategy 1: Add init script for early injection
+                // Get virtual camera configuration from environment or defaults
+                const virtualCameraConfig = {
+                    width: parseInt(process.env.VIRTUAL_CAMERA_WIDTH || '1280'),
+                    height: parseInt(
+                        process.env.VIRTUAL_CAMERA_HEIGHT || '720',
+                    ),
+                    type: (process.env.VIRTUAL_CAMERA_TYPE || 'animated') as
+                        | 'animated'
+                        | 'static'
+                        | 'video'
+                        | 'screen',
+                    content:
+                        process.env.VIRTUAL_CAMERA_CONTENT ||
+                        'Virtual camera with animated background',
+                    userImageUrl: process.env.VIRTUAL_CAMERA_USER_IMAGE_URL,
+                    showUserImage:
+                        process.env.VIRTUAL_CAMERA_SHOW_USER_IMAGE === 'true',
+                    imagePosition: (process.env.VIRTUAL_CAMERA_IMAGE_POSITION ||
+                        'corner') as 'center' | 'corner' | 'background',
+                    imageOpacity: parseFloat(
+                        process.env.VIRTUAL_CAMERA_IMAGE_OPACITY || '0.8',
+                    ),
+                }
+
+                // Inject virtual camera script with configuration
                 await context.addInitScript(() => {
+                    console.log(
+                        '🎥 🔥 ===== VIRTUAL CAMERA SCRIPT STARTED =====',
+                    )
+                    console.log(
+                        '🎥 🔥 Script execution time:',
+                        new Date().toISOString(),
+                    )
+                    console.log('🎥 🔥 Current URL:', window.location.href)
+                    console.log(
+                        '🎥 🔥 Document ready state:',
+                        document.readyState,
+                    )
+                    console.log('🎥 🔥 Navigator available:', !!navigator)
+                    console.log(
+                        '🎥 🔥 MediaDevices available:',
+                        !!navigator.mediaDevices,
+                    )
+
+                    // Get config from environment variables (these will be available in the browser context)
+                    const config = {
+                        width: 1280,
+                        height: 720,
+                        type: 'animated',
+                        content: 'Virtual camera with animated background',
+                        userImageUrl:
+                            'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTKddif1JWx9c-ZpPAPB9sHlMLP4isH50nwPw&s',
+                        showUserImage: true,
+                        imagePosition: 'corner',
+                        imageOpacity: 0.8,
+                    }
+
+                    console.log('🎥 🔥 Config loaded:', config)
                     console.log(
                         '🎥 🎬 ===== VIRTUAL CAMERA SCRIPT EXECUTING =====',
                     )
@@ -102,6 +180,50 @@ export async function openBrowser(
                     console.log(
                         '🎥 🎥 Virtual camera: Overriding getUserMedia immediately...',
                     )
+                    console.log('🎥 🖼️ User image config:', {
+                        showUserImage: config.showUserImage,
+                        userImageUrl: config.userImageUrl,
+                        imagePosition: config.imagePosition,
+                        imageOpacity: config.imageOpacity,
+                    })
+
+                    // Load user image if provided
+                    let userImage = null
+                    let imageLoaded = false
+
+                    if (config.userImageUrl && config.showUserImage) {
+                        console.log(
+                            '🎥 🖼️ Attempting to load user image from:',
+                            config.userImageUrl,
+                        )
+                        userImage = new Image()
+                        userImage.crossOrigin = 'anonymous'
+                        userImage.onload = () => {
+                            imageLoaded = true
+                            console.log(
+                                '🎥 ✅ User image loaded successfully, dimensions:',
+                                userImage.width,
+                                'x',
+                                userImage.height,
+                            )
+                        }
+                        userImage.onerror = (error) => {
+                            console.log(
+                                '🎥 ❌ Failed to load user image:',
+                                error,
+                            )
+                            console.log(
+                                '🎥 ❌ Image URL that failed:',
+                                config.userImageUrl,
+                            )
+                        }
+                        userImage.src = config.userImageUrl
+                        console.log('🎥 🖼️ Image loading started...')
+                    } else {
+                        console.log(
+                            '🎥 🖼️ User image not configured or disabled',
+                        )
+                    }
 
                     // Store original getUserMedia
                     const originalGetUserMedia =
@@ -160,6 +282,61 @@ export async function openBrowser(
                             ctx.fillStyle = `hsl(${hue}, 70%, 50%)`
                             ctx.fillRect(0, 0, canvas.width, canvas.height)
 
+                            // Draw user image if available
+                            if (
+                                userImage &&
+                                imageLoaded &&
+                                config.showUserImage
+                            ) {
+                                ctx.save()
+                                ctx.globalAlpha = config.imageOpacity || 0.8
+
+                                const imageSize =
+                                    Math.min(canvas.width, canvas.height) * 0.3
+                                let x, y
+
+                                switch (config.imagePosition) {
+                                    case 'center':
+                                        x = (canvas.width - imageSize) / 2
+                                        y = (canvas.height - imageSize) / 2
+                                        break
+                                    case 'corner':
+                                        x = 20
+                                        y = 20
+                                        break
+                                    case 'background':
+                                        x = (canvas.width - imageSize) / 2
+                                        y = (canvas.height - imageSize) / 2
+                                        ctx.globalAlpha = 0.3
+                                        break
+                                    default:
+                                        x = 20
+                                        y = 20
+                                }
+
+                                // Draw rounded rectangle background for image
+                                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+                                ctx.beginPath()
+                                ctx.roundRect(
+                                    x - 10,
+                                    y - 10,
+                                    imageSize + 20,
+                                    imageSize + 20,
+                                    10,
+                                )
+                                ctx.fill()
+
+                                // Draw the image
+                                ctx.drawImage(
+                                    userImage,
+                                    x,
+                                    y,
+                                    imageSize,
+                                    imageSize,
+                                )
+                                ctx.restore()
+                            }
+
                             // Add some animated elements
                             ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'
                             ctx.font = '48px Arial'
@@ -169,7 +346,6 @@ export async function openBrowser(
                                 canvas.width / 2,
                                 canvas.height / 2 - 50,
                             )
-
                             ctx.font = '24px Arial'
                             ctx.fillText(
                                 `Frame: ${frameCount}`,
@@ -317,6 +493,30 @@ export async function openBrowser(
                     )
                     await page.addInitScript(() => {
                         console.log(
+                            '🎥 🔥 ===== PAGE-LEVEL SCRIPT STARTED =====',
+                        )
+                        console.log(
+                            '🎥 🔥 PAGE-LEVEL Script execution time:',
+                            new Date().toISOString(),
+                        )
+                        console.log(
+                            '🎥 🔥 PAGE-LEVEL Current URL:',
+                            window.location.href,
+                        )
+                        console.log(
+                            '🎥 🔥 PAGE-LEVEL Document ready state:',
+                            document.readyState,
+                        )
+                        console.log(
+                            '🎥 🔥 PAGE-LEVEL Navigator available:',
+                            !!navigator,
+                        )
+                        console.log(
+                            '🎥 🔥 PAGE-LEVEL MediaDevices available:',
+                            !!navigator.mediaDevices,
+                        )
+
+                        console.log(
                             '🎥 🎬 ===== PAGE-LEVEL VIRTUAL CAMERA INJECTION =====',
                         )
                         console.log(
@@ -328,6 +528,61 @@ export async function openBrowser(
                             '🎥 📄 Page ready state:',
                             document.readyState,
                         )
+
+                        // User image configuration
+                        const config = {
+                            width: 1280,
+                            height: 720,
+                            type: 'animated',
+                            content: 'Virtual camera with animated background',
+                            userImageUrl:
+                                'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTKddif1JWx9c-ZpPAPB9sHlMLP4isH50nwPw&s',
+                            showUserImage: true,
+                            imagePosition: 'corner',
+                            imageOpacity: 0.8,
+                        }
+
+                        console.log('🎥 🔥 PAGE-LEVEL Config loaded:', config)
+
+                        // Load user image if provided
+                        let userImage = null
+                        let imageLoaded = false
+
+                        if (config.userImageUrl && config.showUserImage) {
+                            console.log(
+                                '🎥 🖼️ PAGE-LEVEL Attempting to load user image from:',
+                                config.userImageUrl,
+                            )
+                            userImage = new Image()
+                            userImage.crossOrigin = 'anonymous'
+                            userImage.onload = () => {
+                                imageLoaded = true
+                                console.log(
+                                    '🎥 ✅ PAGE-LEVEL User image loaded successfully, dimensions:',
+                                    userImage.width,
+                                    'x',
+                                    userImage.height,
+                                )
+                            }
+                            userImage.onerror = (error) => {
+                                console.log(
+                                    '🎥 ❌ PAGE-LEVEL Failed to load user image:',
+                                    error,
+                                )
+                                console.log(
+                                    '🎥 ❌ PAGE-LEVEL Image URL that failed:',
+                                    config.userImageUrl,
+                                )
+                            }
+                            userImage.src = config.userImageUrl
+                            console.log(
+                                '🎥 🖼️ PAGE-LEVEL Image loading started...',
+                            )
+                        } else {
+                            console.log(
+                                '🎥 🖼️ PAGE-LEVEL User image not configured or disabled',
+                            )
+                        }
 
                         // Same virtual camera logic as above
                         const originalGetUserMedia =
@@ -360,12 +615,73 @@ export async function openBrowser(
                             let startTime = Date.now()
 
                             function animate() {
+                                // Clear canvas
                                 ctx.fillStyle = '#000'
                                 ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+                                // Create animated background
                                 const time = (Date.now() - startTime) / 1000
                                 const hue = (time * 30) % 360
                                 ctx.fillStyle = `hsl(${hue}, 70%, 50%)`
                                 ctx.fillRect(0, 0, canvas.width, canvas.height)
+
+                                // Draw user image if available
+                                if (
+                                    userImage &&
+                                    imageLoaded &&
+                                    config.showUserImage
+                                ) {
+                                    ctx.save()
+                                    ctx.globalAlpha = config.imageOpacity || 0.8
+
+                                    const imageSize =
+                                        Math.min(canvas.width, canvas.height) *
+                                        0.3
+                                    let x, y
+
+                                    switch (config.imagePosition) {
+                                        case 'center':
+                                            x = (canvas.width - imageSize) / 2
+                                            y = (canvas.height - imageSize) / 2
+                                            break
+                                        case 'corner':
+                                            x = 20
+                                            y = 20
+                                            break
+                                        case 'background':
+                                            x = (canvas.width - imageSize) / 2
+                                            y = (canvas.height - imageSize) / 2
+                                            ctx.globalAlpha = 0.3
+                                            break
+                                        default:
+                                            x = 20
+                                            y = 20
+                                    }
+
+                                    // Draw rounded rectangle background for image
+                                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+                                    ctx.beginPath()
+                                    ctx.roundRect(
+                                        x - 10,
+                                        y - 10,
+                                        imageSize + 20,
+                                        imageSize + 20,
+                                        10,
+                                    )
+                                    ctx.fill()
+
+                                    // Draw the image
+                                    ctx.drawImage(
+                                        userImage,
+                                        x,
+                                        y,
+                                        imageSize,
+                                        imageSize,
+                                    )
+                                    ctx.restore()
+                                }
+
+                                // Add some animated elements
                                 ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'
                                 ctx.font = '48px Arial'
                                 ctx.textAlign = 'center'
@@ -385,6 +701,7 @@ export async function openBrowser(
                                     canvas.width / 2,
                                     canvas.height / 2 + 50,
                                 )
+
                                 frameCount++
                                 requestAnimationFrame(animate)
                             }
@@ -431,6 +748,23 @@ export async function openBrowser(
                         console.log(
                             '🎥 ✅ PAGE-LEVEL Virtual camera override installed',
                         )
+
+                        // Force create virtual camera immediately
+                        console.log(
+                            '🎥 🚀 PAGE-LEVEL Forcing virtual camera creation...',
+                        )
+                        setTimeout(() => {
+                            const camera = createVirtualCamera()
+                            if (camera) {
+                                console.log(
+                                    '🎥 ✅ PAGE-LEVEL Virtual camera created immediately',
+                                )
+                            } else {
+                                console.log(
+                                    '🎥 ❌ PAGE-LEVEL Failed to create virtual camera immediately',
+                                )
+                            }
+                        }, 1000) // Wait 1 second for page to be ready
                     })
                 })
 

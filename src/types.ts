@@ -90,6 +90,10 @@ export type MeetingParams = {
     virtual_camera_height?: number
     virtual_camera_type?: 'animated' | 'static' | 'video' | 'screen'
     virtual_camera_content?: string
+    virtual_camera_user_image_url?: string // URL to user's branding image
+    virtual_camera_show_user_image?: boolean // Whether to display user image
+    virtual_camera_image_position?: 'center' | 'corner' | 'background' // Where to position the image
+    virtual_camera_image_opacity?: number // Opacity of the user image (0-1)
 }
 
 export type StopRecordParams = {

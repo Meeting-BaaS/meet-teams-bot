@@ -33,5 +33,9 @@
     "virtual_camera_width": 1280,
     "virtual_camera_height": 720,
     "virtual_camera_type": "animated",
-    "virtual_camera_content": "Virtual camera with animated background"
+    "virtual_camera_content": "Virtual camera with animated background",
+    "virtual_camera_user_image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTKddif1JWx9c-ZpPAPB9sHlMLP4isH50nwPw&s",
+    "virtual_camera_show_user_image": true,
+    "virtual_camera_image_position": "corner",
+    "virtual_camera_image_opacity": 0.8
 }
