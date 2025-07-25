@@ -13,6 +13,7 @@ import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
 import { sleep } from '../utils/sleep'
 import { generateSyncSignal } from '../utils/SyncSignal'
+import { normalizeRecordingMode } from '../types'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
@@ -50,7 +51,9 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private generateOutputPaths(): void {
-        if (GLOBAL.get().recording_mode === 'audio_only') {
+        if (
+            normalizeRecordingMode(GLOBAL.get().recording_mode) === 'audio_only'
+        ) {
             this.audioOutputPath =
                 PathManager.getInstance().getOutputPath() + '.wav'
         } else {
@@ -97,7 +100,9 @@ export class ScreenRecorder extends EventEmitter {
             console.log('Native recording started successfully')
             this.emit('started', {
                 outputPath: this.outputPath,
-                isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
+                isAudioOnly:
+                    normalizeRecordingMode(GLOBAL.get().recording_mode) ===
+                    'audio_only',
             })
         } catch (error) {
             console.error('Failed to start native recording:', error)
@@ -641,7 +646,9 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private async syncAndMergeFiles(): Promise<void> {
-        if (GLOBAL.get().recording_mode === 'audio_only') {
+        if (
+            normalizeRecordingMode(GLOBAL.get().recording_mode) === 'audio_only'
+        ) {
             // Audio-only mode: just copy raw audio to final output
             const tempDir = PathManager.getInstance().getTempPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')

@@ -1,7 +1,7 @@
 import { BrowserContext, Page } from '@playwright/test'
 
 import { MeetingEndReason } from '../state-machine/types'
-import { MeetingProviderInterface } from '../types'
+import { MeetingProviderInterface, normalizeRecordingMode } from '../types'
 
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
@@ -208,7 +208,10 @@ export class MeetProvider implements MeetingProviderInterface {
 
             await clickOutsideModal(page)
             const maxAttempts = 3
-            if (GLOBAL.get().recording_mode !== 'audio_only') {
+            if (
+                normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                'audio_only'
+            ) {
                 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                     if (await changeLayout(page, attempt)) {
                         console.log(
@@ -222,7 +225,10 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
-            if (GLOBAL.get().recording_mode !== 'gallery_view') {
+            if (
+                normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                'gallery_view'
+            ) {
                 await findShowEveryOne(page, true, cancelCheck)
             }
         } catch (error) {

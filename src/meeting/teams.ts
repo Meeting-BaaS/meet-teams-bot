@@ -1,7 +1,7 @@
 import { BrowserContext, Page } from '@playwright/test'
 
 import { MeetingEndReason } from '../state-machine/types'
-import { MeetingProviderInterface } from '../types'
+import { MeetingProviderInterface, normalizeRecordingMode } from '../types'
 
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/teamsUrlParser'
@@ -368,7 +368,10 @@ export class TeamsProvider implements MeetingProviderInterface {
         // Once in the meeting, configure the view
         try {
             if (await clickWithInnerText(page, 'button', 'View', 10, false)) {
-                if (GLOBAL.get().recording_mode !== 'gallery_view') {
+                if (
+                    normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                    'gallery_view'
+                ) {
                     await clickWithInnerText(page, 'button', 'View', 10)
                     await clickWithInnerText(page, 'div', 'Speaker', 20)
                 }
