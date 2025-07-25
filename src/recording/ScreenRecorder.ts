@@ -1027,23 +1027,9 @@ file '${absoluteInputPath}'`
         )
 
         // Estimate file size for timeout calculation
-        let estimatedSizeMB = 100 // Default estimate
-        try {
-            if (fs.existsSync(videoPath)) {
-                const videoStats = fs.statSync(videoPath)
-                const audioStats = fs.existsSync(audioPath)
-                    ? fs.statSync(audioPath)
-                    : { size: 0 }
-                estimatedSizeMB = Math.round(
-                    (videoStats.size + audioStats.size) / (1024 * 1024),
-                )
-            }
-        } catch (error) {
-            console.warn(
-                'Could not estimate file size for timeout calculation:',
-                error,
-            )
-        }
+        const videoSizeMB = this.estimateFileSizeMB(videoPath)
+        const audioSizeMB = this.estimateFileSizeMB(audioPath)
+        const estimatedSizeMB = videoSizeMB + audioSizeMB
 
         await this.runFFmpeg(args, 'mergeWithSync', estimatedSizeMB)
     }
@@ -1080,18 +1066,7 @@ file '${absoluteInputPath}'`
         )
 
         // Estimate file size for timeout calculation
-        let estimatedSizeMB = 100 // Default estimate
-        try {
-            if (fs.existsSync(inputPath)) {
-                const stats = fs.statSync(inputPath)
-                estimatedSizeMB = Math.round(stats.size / (1024 * 1024))
-            }
-        } catch (error) {
-            console.warn(
-                'Could not estimate file size for timeout calculation:',
-                error,
-            )
-        }
+        const estimatedSizeMB = this.estimateFileSizeMB(inputPath)
 
         await this.runFFmpeg(args, 'finalTrimFromOffset', estimatedSizeMB)
     }
@@ -1119,18 +1094,7 @@ file '${absoluteInputPath}'`
         )
 
         // Estimate file size for timeout calculation
-        let estimatedSizeMB = 100 // Default estimate
-        try {
-            if (fs.existsSync(videoPath)) {
-                const stats = fs.statSync(videoPath)
-                estimatedSizeMB = Math.round(stats.size / (1024 * 1024))
-            }
-        } catch (error) {
-            console.warn(
-                'Could not estimate file size for timeout calculation:',
-                error,
-            )
-        }
+        const estimatedSizeMB = this.estimateFileSizeMB(videoPath)
 
         await this.runFFmpeg(args, 'extractAudioFromVideo', estimatedSizeMB)
     }
@@ -1175,18 +1139,7 @@ file '${absoluteInputPath}'`
         )
         try {
             // Estimate file size for timeout calculation
-            let estimatedSizeMB = 100 // Default estimate
-            try {
-                if (fs.existsSync(audioPath)) {
-                    const stats = fs.statSync(audioPath)
-                    estimatedSizeMB = Math.round(stats.size / (1024 * 1024))
-                }
-            } catch (error) {
-                console.warn(
-                    'Could not estimate file size for timeout calculation:',
-                    error,
-                )
-            }
+            const estimatedSizeMB = this.estimateFileSizeMB(audioPath)
 
             await this.runFFmpeg(args, 'createAudioChunks', estimatedSizeMB)
             // Upload created chunks
@@ -1200,6 +1153,24 @@ file '${absoluteInputPath}'`
             )
             // Don't throw - allow cleanup to continue
         }
+    }
+
+    /**
+     * Estimate file size in MB for timeout calculation
+     */
+    private estimateFileSizeMB(filePath: string): number {
+        try {
+            if (fs.existsSync(filePath)) {
+                const stats = fs.statSync(filePath)
+                return Math.round(stats.size / (1024 * 1024))
+            }
+        } catch (error) {
+            console.warn(
+                'Could not estimate file size for timeout calculation:',
+                error,
+            )
+        }
+        return 100 // Default estimate
     }
 
     private async getDuration(filePath: string): Promise<number> {
