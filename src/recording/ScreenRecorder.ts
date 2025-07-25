@@ -13,9 +13,10 @@ import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
 import { sleep } from '../utils/sleep'
 import { generateSyncSignal } from '../utils/SyncSignal'
+import { normalizeRecordingMode } from '../types'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
-const GRACE_PERIOD_SECONDS = 900 // 15 minutes
+const GRACE_PERIOD_SECONDS = 3
 const STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = '192k' // Improved audio bitrate
@@ -23,6 +24,53 @@ const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability
 const SCREENSHOT_PERIOD = 5 // every 5 seconds instead of 2
 const SCREENSHOT_WIDTH = 1280 // Increased for better OCR quality
 const SCREENSHOT_HEIGHT = 720 // Increased for better OCR quality (16:9 ratio)
+
+// Dynamic timeout configuration
+const FFMPEG_TIMEOUTS = {
+    SIMPLE_OPERATIONS: 5 * 60 * 1000, // 5 minutes
+    COMPLEX_OPERATIONS: 30 * 60 * 1000, // 30 minutes
+    CRITICAL_OPERATIONS: 45 * 60 * 1000, // 45 minutes
+    MAX_CEILING: 60 * 60 * 1000, // 60 minutes (1 hour ceiling)
+}
+
+/**
+ * Calculate dynamic timeout for FFmpeg operations based on operation type and file size
+ */
+const calculateFFmpegTimeout = (
+    operation: string,
+    fileSizeMB?: number,
+): number => {
+    const baseTimeout = 60000 // 1 minute base
+
+    let timeout = baseTimeout
+
+    switch (operation) {
+        case 'mergeWithSync':
+        case 'finalTrimFromOffset':
+        case 'extractAudioFromVideo':
+        case 'createAudioChunks':
+            // Critical operations: Dynamic scaling based on file size with ceiling
+            timeout = Math.max(
+                FFMPEG_TIMEOUTS.COMPLEX_OPERATIONS,
+                (fileSizeMB || 100) * 1000,
+            )
+            return Math.min(timeout, FFMPEG_TIMEOUTS.MAX_CEILING)
+        case 'addSilencePadding':
+        case 'trimAudioStart':
+            // Simple audio operations
+            return FFMPEG_TIMEOUTS.SIMPLE_OPERATIONS
+        case 'getDuration':
+            // Metadata operations
+            return 30 * 1000 // 30 seconds
+        default:
+            // Default to complex operations timeout
+            return Math.min(
+                FFMPEG_TIMEOUTS.COMPLEX_OPERATIONS,
+                FFMPEG_TIMEOUTS.MAX_CEILING,
+            )
+    }
+}
+
 interface ScreenRecordingConfig {
     display: string
     audioDevice?: string
@@ -51,7 +99,10 @@ export class ScreenRecorder extends EventEmitter {
 
     private generateOutputPaths(): void {
         try {
-            if (GLOBAL.get().recording_mode === 'audio_only') {
+            if (
+                normalizeRecordingMode(GLOBAL.get().recording_mode) ===
+                'audio_only'
+            ) {
                 this.audioOutputPath =
                     PathManager.getInstance().getOutputPath() + '.wav'
             } else {
@@ -103,7 +154,9 @@ export class ScreenRecorder extends EventEmitter {
             console.log('Native recording started successfully')
             this.emit('started', {
                 outputPath: this.outputPath,
-                isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
+                isAudioOnly:
+                    normalizeRecordingMode(GLOBAL.get().recording_mode) ===
+                    'audio_only',
             })
         } catch (error) {
             console.error('Failed to start native recording:', error)
@@ -211,7 +264,9 @@ export class ScreenRecorder extends EventEmitter {
             `${timestamp}_%4d.png`,
         )
 
-        if (GLOBAL.get().recording_mode === 'audio_only') {
+        if (
+            normalizeRecordingMode(GLOBAL.get().recording_mode) === 'audio_only'
+        ) {
             // Audio-only recording with screenshots
             const tempDir = PathManager.getInstance().getTempPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')
@@ -669,7 +724,9 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private async syncAndMergeFiles(): Promise<void> {
-        if (GLOBAL.get().recording_mode === 'audio_only') {
+        if (
+            normalizeRecordingMode(GLOBAL.get().recording_mode) === 'audio_only'
+        ) {
             // Audio-only mode: just copy raw audio to final output
             const tempDir = PathManager.getInstance().getTempPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')
@@ -868,7 +925,7 @@ export class ScreenRecorder extends EventEmitter {
         ]
 
         console.log(`🔇 Creating ${paddingSeconds.toFixed(3)}s silence file`)
-        await this.runFFmpeg(silenceArgs)
+        await this.runFFmpeg(silenceArgs, 'addSilencePadding', paddingSeconds)
 
         // Create concat list with absolute paths (no escaping needed)
         const absoluteSilencePath = path.resolve(silenceFile)
@@ -903,7 +960,7 @@ file '${absoluteInputPath}'`
         console.log(
             `🔇 Concatenating with demuxer (re-encoding for clean timestamps)`,
         )
-        await this.runFFmpeg(concatArgs)
+        await this.runFFmpeg(concatArgs, 'addSilencePadding', paddingSeconds)
 
         // Cleanup temp files
         if (fs.existsSync(silenceFile)) {
@@ -939,7 +996,7 @@ file '${absoluteInputPath}'`
         console.log(
             `✂️ Trimming ${trimSeconds.toFixed(3)}s from audio start (re-encoding for clean timestamps)`,
         )
-        await this.runFFmpeg(args)
+        await this.runFFmpeg(args, 'trimAudioStart', trimSeconds)
     }
 
     private async mergeWithSync(
@@ -968,7 +1025,27 @@ file '${absoluteInputPath}'`
         console.log(
             `🎬 Merging video and audio (ultra-fast copy + AAC audio - keyframes already optimized)`,
         )
-        await this.runFFmpeg(args)
+
+        // Estimate file size for timeout calculation
+        let estimatedSizeMB = 100 // Default estimate
+        try {
+            if (fs.existsSync(videoPath)) {
+                const videoStats = fs.statSync(videoPath)
+                const audioStats = fs.existsSync(audioPath)
+                    ? fs.statSync(audioPath)
+                    : { size: 0 }
+                estimatedSizeMB = Math.round(
+                    (videoStats.size + audioStats.size) / (1024 * 1024),
+                )
+            }
+        } catch (error) {
+            console.warn(
+                'Could not estimate file size for timeout calculation:',
+                error,
+            )
+        }
+
+        await this.runFFmpeg(args, 'mergeWithSync', estimatedSizeMB)
     }
 
     private async finalTrimFromOffset(
@@ -1001,7 +1078,22 @@ file '${absoluteInputPath}'`
         console.log(
             `✂️ Final trim: ultra-fast copy mode ${duration.toFixed(2)}s from ${calcOffset.toFixed(3)}s (frequent keyframes = no freeze)`,
         )
-        await this.runFFmpeg(args)
+
+        // Estimate file size for timeout calculation
+        let estimatedSizeMB = 100 // Default estimate
+        try {
+            if (fs.existsSync(inputPath)) {
+                const stats = fs.statSync(inputPath)
+                estimatedSizeMB = Math.round(stats.size / (1024 * 1024))
+            }
+        } catch (error) {
+            console.warn(
+                'Could not estimate file size for timeout calculation:',
+                error,
+            )
+        }
+
+        await this.runFFmpeg(args, 'finalTrimFromOffset', estimatedSizeMB)
     }
 
     private async extractAudioFromVideo(
@@ -1025,7 +1117,22 @@ file '${absoluteInputPath}'`
         console.log(
             '🎵 Extracting audio from video (converting to WAV PCM 16kHz mono)',
         )
-        await this.runFFmpeg(args)
+
+        // Estimate file size for timeout calculation
+        let estimatedSizeMB = 100 // Default estimate
+        try {
+            if (fs.existsSync(videoPath)) {
+                const stats = fs.statSync(videoPath)
+                estimatedSizeMB = Math.round(stats.size / (1024 * 1024))
+            }
+        } catch (error) {
+            console.warn(
+                'Could not estimate file size for timeout calculation:',
+                error,
+            )
+        }
+
+        await this.runFFmpeg(args, 'extractAudioFromVideo', estimatedSizeMB)
     }
 
     private async createAudioChunks(audioPath: string): Promise<void> {
@@ -1067,7 +1174,21 @@ file '${absoluteInputPath}'`
             `🎵 Creating audio chunks (${chunkDuration}s each) from ${duration.toFixed(1)}s audio`,
         )
         try {
-            await this.runFFmpeg(args)
+            // Estimate file size for timeout calculation
+            let estimatedSizeMB = 100 // Default estimate
+            try {
+                if (fs.existsSync(audioPath)) {
+                    const stats = fs.statSync(audioPath)
+                    estimatedSizeMB = Math.round(stats.size / (1024 * 1024))
+                }
+            } catch (error) {
+                console.warn(
+                    'Could not estimate file size for timeout calculation:',
+                    error,
+                )
+            }
+
+            await this.runFFmpeg(args, 'createAudioChunks', estimatedSizeMB)
             // Upload created chunks
             await this.uploadAudioChunks(chunksDir, botUuid)
         } catch (error) {
@@ -1104,7 +1225,17 @@ file '${absoluteInputPath}'`
         // }
     }
 
-    private async runFFmpeg(args: string[]): Promise<void> {
+    private async runFFmpeg(
+        args: string[],
+        operation: string = 'unknown',
+        fileSizeMB?: number,
+    ): Promise<void> {
+        const timeout = calculateFFmpegTimeout(operation, fileSizeMB)
+
+        console.log(
+            `⏱️ FFmpeg ${operation}: timeout set to ${timeout / 1000}s${fileSizeMB ? ` (estimated file size: ${fileSizeMB}MB)` : ''}`,
+        )
+
         return new Promise((resolve, reject) => {
             const process = spawn('ffmpeg', args)
             let stderr = ''
@@ -1137,15 +1268,17 @@ file '${absoluteInputPath}'`
                 reject(error)
             })
 
-            // Add timeout to prevent hanging
-            const timeout = setTimeout(() => {
-                console.error(`❌ FFmpeg timeout after 30s, killing process`)
+            // Add dynamic timeout to prevent hanging
+            const timeoutId = setTimeout(() => {
+                console.error(
+                    `❌ FFmpeg timeout after ${timeout / 1000}s for ${operation}, killing process`,
+                )
                 process.kill('SIGKILL')
-                reject(new Error('FFmpeg timeout'))
-            }, 30000)
+                reject(new Error(`FFmpeg timeout for ${operation}`))
+            }, timeout)
 
             process.on('close', () => {
-                clearTimeout(timeout)
+                clearTimeout(timeoutId)
             })
         })
     }
@@ -1169,6 +1302,17 @@ file '${absoluteInputPath}'`
 
             process.on('error', (error) => {
                 reject(error)
+            })
+
+            // Add timeout for metadata operations
+            const timeoutId = setTimeout(() => {
+                console.error(`❌ FFprobe timeout after 30s, killing process`)
+                process.kill('SIGKILL')
+                reject(new Error('FFprobe timeout'))
+            }, 30000)
+
+            process.on('close', () => {
+                clearTimeout(timeoutId)
             })
         })
     }
