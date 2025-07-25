@@ -594,7 +594,7 @@ export class ScreenRecorder extends EventEmitter {
             }
         } catch (error) {
             console.error('Failed to upload video file:', error)
-            // Don't throw - mark as uploaded to prevent retry loops
+            // Don't throw - mark as uploaded to allow process completion
         }
 
         this.filesUploaded = true
