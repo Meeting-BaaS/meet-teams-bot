@@ -622,10 +622,10 @@ async function changeLayout(
             return false
         }
 
-        // 2. Cliquer sur "Change layout"
-        console.log('Looking for Change layout menu item...')
+        // 2. Cliquer sur "Change layout" ou "Adjust view"
+        console.log('Looking for Change layout/Adjust view menu item...')
         const changeLayoutItem = page.locator(
-            '[role="menu"] [role="menuitem"]:has(span:has-text("Change layout"))',
+            '[role="menu"] [role="menuitem"]:has(span:has-text("Change layout"), span:has-text("Adjust view"))',
         )
         await changeLayoutItem.waitFor({ state: 'visible', timeout: 3000 })
         await changeLayoutItem.click()
