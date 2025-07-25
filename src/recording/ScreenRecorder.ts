@@ -15,7 +15,7 @@ import { sleep } from '../utils/sleep'
 import { generateSyncSignal } from '../utils/SyncSignal'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
-const GRACE_PERIOD_SECONDS = 3
+const GRACE_PERIOD_SECONDS = 900 // 15 minutes
 const STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = '192k' // Improved audio bitrate
@@ -50,13 +50,19 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private generateOutputPaths(): void {
-        if (GLOBAL.get().recording_mode === 'audio_only') {
-            this.audioOutputPath =
-                PathManager.getInstance().getOutputPath() + '.wav'
-        } else {
-            this.outputPath = PathManager.getInstance().getOutputPath() + '.mp4'
-            this.audioOutputPath =
-                PathManager.getInstance().getOutputPath() + '.wav'
+        try {
+            if (GLOBAL.get().recording_mode === 'audio_only') {
+                this.audioOutputPath =
+                    PathManager.getInstance().getOutputPath() + '.wav'
+            } else {
+                this.outputPath =
+                    PathManager.getInstance().getOutputPath() + '.mp4'
+                this.audioOutputPath =
+                    PathManager.getInstance().getOutputPath() + '.wav'
+            }
+        } catch (error) {
+            console.error('Failed to generate output paths:', error)
+            throw new Error('Failed to generate output paths')
         }
     }
 
@@ -423,13 +429,18 @@ export class ScreenRecorder extends EventEmitter {
 
         try {
             this.ffmpegProcess.stdout?.on('data', (data: Buffer) => {
-                if (Streaming.instance) {
-                    const float32Array = new Float32Array(
-                        data.buffer,
-                        data.byteOffset,
-                        data.length / 4,
-                    )
-                    Streaming.instance.processAudioChunk(float32Array)
+                try {
+                    if (Streaming.instance) {
+                        const float32Array = new Float32Array(
+                            data.buffer,
+                            data.byteOffset,
+                            data.length / 4,
+                        )
+                        Streaming.instance.processAudioChunk(float32Array)
+                    }
+                } catch (error) {
+                    console.error('Failed to process audio chunk:', error)
+                    // Don't throw - continue processing other chunks
                 }
             })
         } catch (error) {
@@ -443,45 +454,50 @@ export class ScreenRecorder extends EventEmitter {
     ): Promise<void> {
         if (!S3Uploader.getInstance()) return
 
-        const files = fs.readdirSync(chunksDir)
-        const chunkFiles = files.filter(
-            (file) => file.startsWith(`${botUuid}-`) && file.endsWith('.wav'),
-        )
+        try {
+            const files = fs.readdirSync(chunksDir)
+            const chunkFiles = files.filter(
+                (file) =>
+                    file.startsWith(`${botUuid}-`) && file.endsWith('.wav'),
+            )
 
-        console.log(`📤 Uploading ${chunkFiles.length} audio chunks...`)
+            console.log(`📤 Uploading ${chunkFiles.length} audio chunks...`)
 
-        for (const filename of chunkFiles) {
-            const chunkPath = path.join(chunksDir, filename)
+            for (const filename of chunkFiles) {
+                const chunkPath = path.join(chunksDir, filename)
 
-            if (!fs.existsSync(chunkPath)) {
-                console.warn(`Chunk file not found: ${chunkPath}`)
-                continue
-            }
-
-            try {
-                const stats = fs.statSync(chunkPath)
-                if (stats.size === 0) {
-                    console.warn(`Chunk file is empty: ${filename}`)
+                if (!fs.existsSync(chunkPath)) {
+                    console.warn(`Chunk file not found: ${chunkPath}`)
                     continue
                 }
 
-                const s3Key = `${botUuid}/${filename}`
-                console.log(
-                    `📤 Uploading chunk: ${filename} (${stats.size} bytes)`,
-                )
+                try {
+                    const stats = fs.statSync(chunkPath)
+                    if (stats.size === 0) {
+                        console.warn(`Chunk file is empty: ${filename}`)
+                        continue
+                    }
 
-                await S3Uploader.getInstance().uploadFile(
-                    chunkPath,
-                    GLOBAL.get().aws_s3_temporary_audio_bucket,
-                    s3Key,
-                    [],
-                    true,
-                )
+                    const s3Key = `${botUuid}/${filename}`
+                    console.log(
+                        `📤 Uploading chunk: ${filename} (${stats.size} bytes)`,
+                    )
 
-                console.log(`✅ Chunk uploaded: ${filename}`)
-            } catch (error) {
-                console.error(`Failed to upload chunk ${filename}:`, error)
+                    await S3Uploader.getInstance().uploadFile(
+                        chunkPath,
+                        GLOBAL.get().aws_s3_temporary_audio_bucket,
+                        s3Key,
+                        [],
+                        true,
+                    )
+
+                    console.log(`✅ Chunk uploaded: ${filename}`)
+                } catch (error) {
+                    console.error(`Failed to upload chunk ${filename}:`, error)
+                }
             }
+        } catch (error) {
+            console.error('Failed to read chunks directory:', error)
         }
     }
 
@@ -492,28 +508,40 @@ export class ScreenRecorder extends EventEmitter {
 
         const identifier = PathManager.getInstance().getIdentifier()
 
-        if (fs.existsSync(this.audioOutputPath)) {
-            console.log(
-                `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
-            )
-            await S3Uploader.getInstance().uploadFile(
-                this.audioOutputPath,
-                GLOBAL.get().remote?.aws_s3_video_bucket!,
-                `${identifier}.wav`,
-            )
-            fs.unlinkSync(this.audioOutputPath)
+        try {
+            if (fs.existsSync(this.audioOutputPath)) {
+                console.log(
+                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                )
+                await S3Uploader.getInstance().uploadFile(
+                    this.audioOutputPath,
+                    GLOBAL.get().remote?.aws_s3_video_bucket!,
+                    `${identifier}.wav`,
+                )
+                fs.unlinkSync(this.audioOutputPath)
+            }
+        } catch (error) {
+            console.error('Failed to upload audio file:', error)
+            // Don't throw - continue with video upload
         }
-        if (fs.existsSync(this.outputPath)) {
-            console.log(
-                `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
-            )
-            await S3Uploader.getInstance().uploadFile(
-                this.outputPath,
-                GLOBAL.get().remote?.aws_s3_video_bucket!,
-                `${identifier}.mp4`,
-            )
-            fs.unlinkSync(this.outputPath)
+
+        try {
+            if (fs.existsSync(this.outputPath)) {
+                console.log(
+                    `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                )
+                await S3Uploader.getInstance().uploadFile(
+                    this.outputPath,
+                    GLOBAL.get().remote?.aws_s3_video_bucket!,
+                    `${identifier}.mp4`,
+                )
+                fs.unlinkSync(this.outputPath)
+            }
+        } catch (error) {
+            console.error('Failed to upload video file:', error)
+            // Don't throw - mark as uploaded to prevent retry loops
         }
+
         this.filesUploaded = true
     }
 
