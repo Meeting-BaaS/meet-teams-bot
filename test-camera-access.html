@@ -1,0 +1,233 @@
+<!doctype html>
+<html>
+    <head>
+        <title>Camera Access Test</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 20px;
+            }
+            .status {
+                padding: 10px;
+                margin: 10px 0;
+                border-radius: 5px;
+            }
+            .success {
+                background: #d4edda;
+                color: #155724;
+            }
+            .error {
+                background: #f8d7da;
+                color: #721c24;
+            }
+            .info {
+                background: #d1ecf1;
+                color: #0c5460;
+            }
+            video {
+                border: 2px solid #333;
+                margin: 10px 0;
+            }
+            button {
+                padding: 10px 20px;
+                margin: 5px;
+            }
+            .device-list {
+                background: #f8f9fa;
+                padding: 10px;
+                margin: 10px 0;
+                border-radius: 5px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>🔍 Camera Access Test</h1>
+
+        <div id="status" class="status info">Initializing...</div>
+
+        <button onclick="listDevices()">📹 List All Devices</button>
+        <button onclick="testCameraAccess()">🎥 Test Camera Access</button>
+        <button onclick="testSpecificCamera()">
+            🎯 Test Rust Virtual Camera
+        </button>
+
+        <div id="deviceList" class="device-list"></div>
+        <video id="video" width="640" height="480" autoplay muted></video>
+
+        <script>
+            let rustCameraId = null
+
+            function updateStatus(message, type = 'info') {
+                const status = document.getElementById('status')
+                status.textContent = message
+                status.className = `status ${type}`
+                console.log(`[${type.toUpperCase()}] ${message}`)
+            }
+
+            async function listDevices() {
+                try {
+                    updateStatus('Requesting camera permissions...', 'info')
+
+                    // Request camera access to get device labels
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: true,
+                        audio: false,
+                    })
+                    stream.getTracks().forEach((track) => track.stop())
+
+                    updateStatus(
+                        'Camera permissions granted, enumerating devices...',
+                        'info',
+                    )
+
+                    const devices =
+                        await navigator.mediaDevices.enumerateDevices()
+                    const videoDevices = devices.filter(
+                        (device) => device.kind === 'videoinput',
+                    )
+
+                    updateStatus(
+                        `Found ${videoDevices.length} video device(s)`,
+                        'success',
+                    )
+
+                    const deviceList = document.getElementById('deviceList')
+                    deviceList.innerHTML =
+                        '<h3>📹 Available Video Devices:</h3>'
+
+                    videoDevices.forEach((device, index) => {
+                        const deviceInfo = document.createElement('div')
+                        deviceInfo.innerHTML = `
+                        <strong>Device ${index + 1}:</strong> ${device.label || 'Unnamed Camera'}<br>
+                        <small>ID: ${device.deviceId}</small><br>
+                        <button onclick="testDevice('${device.deviceId}', '${device.label}')">Test This Device</button>
+                        <hr>
+                    `
+                        deviceList.appendChild(deviceInfo)
+
+                        // Check if this is our Rust virtual camera
+                        if (
+                            device.label &&
+                            device.label.includes('rust-image-camera')
+                        ) {
+                            rustCameraId = device.deviceId
+                            updateStatus(
+                                '✅ Rust Virtual Camera found!',
+                                'success',
+                            )
+                        }
+                    })
+
+                    if (!rustCameraId) {
+                        updateStatus(
+                            '❌ Rust Virtual Camera not found in device list',
+                            'error',
+                        )
+                    }
+                } catch (error) {
+                    updateStatus(
+                        `❌ Error listing devices: ${error.message}`,
+                        'error',
+                    )
+                    console.error('Device enumeration error:', error)
+                }
+            }
+
+            async function testCameraAccess() {
+                try {
+                    updateStatus('Testing general camera access...', 'info')
+
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                        },
+                        audio: false,
+                    })
+
+                    const video = document.getElementById('video')
+                    video.srcObject = stream
+
+                    updateStatus(
+                        '✅ General camera access successful!',
+                        'success',
+                    )
+                } catch (error) {
+                    updateStatus(
+                        `❌ Camera access failed: ${error.message}`,
+                        'error',
+                    )
+                    console.error('Camera access error:', error)
+                }
+            }
+
+            async function testSpecificCamera() {
+                if (!rustCameraId) {
+                    updateStatus(
+                        '❌ Rust Virtual Camera not found. Please list devices first.',
+                        'error',
+                    )
+                    return
+                }
+
+                try {
+                    updateStatus('Testing Rust Virtual Camera...', 'info')
+
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            deviceId: { exact: rustCameraId },
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                        },
+                        audio: false,
+                    })
+
+                    const video = document.getElementById('video')
+                    video.srcObject = stream
+
+                    updateStatus('✅ Rust Virtual Camera working!', 'success')
+                } catch (error) {
+                    updateStatus(
+                        `❌ Rust Virtual Camera test failed: ${error.message}`,
+                        'error',
+                    )
+                    console.error('Rust camera error:', error)
+                }
+            }
+
+            async function testDevice(deviceId, deviceLabel) {
+                try {
+                    updateStatus(`Testing device: ${deviceLabel}`, 'info')
+
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                            deviceId: { exact: deviceId },
+                            width: { ideal: 640 },
+                            height: { ideal: 480 },
+                        },
+                        audio: false,
+                    })
+
+                    const video = document.getElementById('video')
+                    video.srcObject = stream
+
+                    updateStatus(
+                        `✅ Device test successful: ${deviceLabel}`,
+                        'success',
+                    )
+                } catch (error) {
+                    updateStatus(
+                        `❌ Device test failed: ${error.message}`,
+                        'error',
+                    )
+                    console.error('Device test error:', error)
+                }
+            }
+
+            // Auto-run device enumeration on page load
+            window.addEventListener('load', () => {
+                updateStatus('Page loaded, ready to test cameras...', 'info')
+            })
+        </script>
+    </body>
+</html>
