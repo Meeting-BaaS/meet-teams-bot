@@ -19,11 +19,12 @@ RUN apt-get update && apt-get install -y \
     xvfb x11vnc x11-utils pulseaudio pulseaudio-utils unclutter \
     # Media processing
     ffmpeg \
-    # PipeWire and virtual camera dependencies
-    pipewire pipewire-pulse libpipewire-0.3-dev libspa-0.2-dev \
-    build-essential pkg-config libclang-dev \
     # Utilities
     curl unzip \
+    # PipeWire and virtual camera dependencies
+    libpipewire-0.3-dev libspa-0.2-dev build-essential pkg-config \
+    # Image processing
+    libimage-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AWS CLI v2
@@ -43,14 +44,6 @@ RUN npx playwright install chromium && \
 COPY . .
 RUN npm run build
 
-# Build the Rust virtual camera
-WORKDIR /app/virtual-camera
-RUN cargo build --release
-
-# Copy test script and make it executable
-COPY test-virtual-camera.sh /app/test-virtual-camera.sh
-RUN chmod +x /app/test-virtual-camera.sh
-
 # Environment configuration
 ENV NODE_OPTIONS="--max-old-space-size=2048"
 ENV SERVERLESS=true
@@ -58,20 +51,15 @@ ENV NODE_ENV=production
 ENV DISPLAY=:99
 ENV PULSE_RUNTIME_PATH=/tmp/pulse
 ENV XDG_RUNTIME_DIR=/tmp/pulse
-ENV PIPEWIRE_RUNTIME_DIR=/tmp/pipewire
-ENV PIPEWIRE_REMOTE=pipewire-0
 
 # Create optimized startup script
 RUN echo '#!/bin/bash\n\
 set -e\n\
-\necho "🖥️ Starting virtual display and audio..."\n\
+\necho "🖥️  Starting virtual display and audio..."\n\
 export DISPLAY=:99\n\
 export PULSE_RUNTIME_PATH=/tmp/pulse\n\
 export XDG_RUNTIME_DIR=/tmp/pulse\n\
-export PIPEWIRE_RUNTIME_DIR=/tmp/pipewire\n\
-export PIPEWIRE_REMOTE=pipewire-0\n\
 mkdir -p $PULSE_RUNTIME_PATH\n\
-mkdir -p $PIPEWIRE_RUNTIME_DIR\n\
 \n# Start virtual display with enhanced cursor hiding\n\
 Xvfb :99 -screen 0 1280x880x24 -ac +extension GLX +render -noreset -nocursor -nolisten tcp &\n\
 XVFB_PID=$!\n\
@@ -81,11 +69,7 @@ unclutter -display :99 -idle 0 -root &\n\
 \n# Start VNC server for debugging with cursor disabled\n\
 x11vnc -display :99 -forever -passwd debug -listen 0.0.0.0 -rfbport 5900 \\\n    -shared -noxdamage -noxfixes -noscr -fixscreen 3 -bg -o /tmp/x11vnc.log \\\n    -nocursor -noxfixes -nomodtweak &\n\
 VNC_PID=$!\n\
-\n# Initialize PipeWire and PulseAudio\n\
-pipewire &\n\
-PIPEWIRE_PID=$!\n\
-sleep 2\n\
-\n# Start PulseAudio compatibility layer\n\
+\n# Initialize PulseAudio\n\
 pulseaudio --start --log-target=stderr --log-level=notice &\n\
 PULSE_PID=$!\n\
 sleep 4\n\
@@ -116,21 +100,19 @@ if ! pactl list sources short | grep -q "virtual_speaker.monitor"; then\n\
     exit 1\n\
 fi\n\
 \necho "✅ Virtual display and audio ready"\n\
-\necho "📹 Starting Rust virtual camera..."\n\
+\necho "🎥 Starting virtual camera..."\n\
+# Build and start virtual camera\n\
 cd /app/virtual-camera\n\
-# Start virtual camera in background with test logo\n\
-./target/release/rust_virtual_camera test_logo.png &\n\
+cargo build --release\n\
+DISPLAY=:99 ./target/release/rust_virtual_camera test_logo.png &\n\
 VIRTUAL_CAMERA_PID=$!\n\
 sleep 3\n\
-\necho "🔍 VNC available at localhost:5900 (password: debug)"\n\
-echo "📹 Virtual camera 'rust-image-camera' should be available"\n\
-echo "🧪 Run './test-virtual-camera.sh' to verify virtual camera setup"\n\
-\n# Start application\n\
-cd /app/\n\
-node build/src/main.js\n\
-\n# Cleanup on exit\ntrap "kill $PULSE_PID $PIPEWIRE_PID $VNC_PID $XVFB_PID $VIRTUAL_CAMERA_PID 2>/dev/null || true" EXIT\n' > /start.sh && chmod +x /start.sh
+\necho "✅ Virtual camera started"\n\
+echo "🔍 VNC available at localhost:5900 (password: debug)"\n\
+\n# Start application\ncd /app/\nnode build/src/main.js\n\
+\n# Cleanup on exit\ntrap "kill $PULSE_PID $VNC_PID $XVFB_PID $VIRTUAL_CAMERA_PID 2>/dev/null || true" EXIT\n' > /start.sh && chmod +x /start.sh
 
 # Expose VNC port for debugging
 EXPOSE 5900
 
-ENTRYPOINT ["/start.sh"]
+ENTRYPOINT ["/start.sh"] 

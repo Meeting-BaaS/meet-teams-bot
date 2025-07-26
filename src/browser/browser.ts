@@ -32,7 +32,18 @@ export async function openBrowser(
                 '--disable-webrtc-hw-decoding',
                 '--disable-webrtc-hw-encoding',
                 '--enable-webrtc-capture-audio', // Ensure WebRTC can capture audio
+                '--enable-webrtc-capture-video', // Ensure WebRTC can capture video
                 '--force-webrtc-ip-handling-policy=default', // Better WebRTC handling
+
+                // PipeWire video device access
+                '--use-fake-ui-for-media-stream', // Allow camera access without prompts
+                '--allow-running-insecure-content', // Allow insecure content for local testing
+                '--enable-features=WebRTCPipeWireCapturer', // Enable PipeWire video capture for WebRTC
+                '--disable-features=VizDisplayCompositor', // Disable display compositor for better compatibility
+                '--disable-gpu-sandbox', // Disable GPU sandbox for video device access
+                '--disable-software-rasterizer', // Disable software rasterizer
+                '--enable-logging=stderr', // Enable detailed logging
+                '--vmodule=*/webrtc/*=3,*/media/*=3', // Enable WebRTC and media logging
 
                 // Performance and resource management optimizations
                 '--disable-blink-features=AutomationControlled',

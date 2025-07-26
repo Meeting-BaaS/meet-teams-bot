@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Rust Virtual Camera Browser Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        video { border: 2px solid #333; margin: 10px 0; max-width: 100%; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .device-info { background: #f8f9fa; padding: 10px; margin: 10px 0; border-radius: 5px; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Rust Virtual Camera Browser Test</h1>
+        
+        <div id="status" class="status info">Initializing...</div>
+        
+        <div>
+            <button onclick="listAllDevices()">🔍 List All Devices</button>
+            <button onclick="testRustCamera()">🎥 Test Rust Camera</button>
+            <button onclick="testAnyCamera()">📹 Test Any Camera</button>
+        </div>
+        
+        <div id="deviceList"></div>
+        
+        <video id="video" width="640" height="480" autoplay muted></video>
+        
+        <div id="debugInfo" class="device-info"></div>
+    </div>
+
+    <script>
+        let rustCameraFound = false;
+        let rustCameraId = null;
+        
+        function updateStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+        
+        function logDebug(message) {
+            const debug = document.getElementById('debugInfo');
+            const timestamp = new Date().toLocaleTimeString();
+            debug.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            console.log(`[${timestamp}] ${message}`);
+        }
+        
+        async function listAllDevices() {
+            try {
+                updateStatus('Requesting camera permissions...', 'info');
+                
+                // Request camera access to get device labels
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                stream.getTracks().forEach(track => track.stop());
+                
+                logDebug('Camera permissions granted');
+                
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                
+                logDebug(`Found ${videoDevices.length} video input devices`);
+                
+                const deviceList = document.getElementById('deviceList');
+                deviceList.innerHTML = '<h3>📹 Available Video Devices:</h3>';
+                
+                videoDevices.forEach((device, index) => {
+                    const deviceDiv = document.createElement('div');
+                    deviceDiv.className = 'device-info';
+                    
+                    // Check if this is our Rust Virtual Camera
+                    const isRustCamera = device.label && (
+                        device.label.toLowerCase().includes('rust') ||
+                        device.label.toLowerCase().includes('virtual') ||
+                        device.label.toLowerCase().includes('image-camera')
+                    );
+                    
+                    if (isRustCamera) {
+                        rustCameraFound = true;
+                        rustCameraId = device.deviceId;
+                        deviceDiv.style.border = '2px solid #28a745';
+                        deviceDiv.style.background = '#d4edda';
+                    }
+                    
+                    deviceDiv.innerHTML = `
+                        <strong>Device ${index + 1}${isRustCamera ? ' 🎯 (RUST VIRTUAL CAMERA)' : ''}</strong><br>
+                        <strong>Label:</strong> ${device.label || 'No label'}<br>
+                        <strong>ID:</strong> ${device.deviceId}<br>
+                        <strong>Group ID:</strong> ${device.groupId || 'No group ID'}<br>
+                        <button onclick="testSpecificDevice('${device.deviceId}', '${device.label}')">Test This Device</button>
+                    `;
+                    
+                    deviceList.appendChild(deviceDiv);
+                    logDebug(`Device ${index + 1}: ${device.label || 'Unnamed device'} (${isRustCamera ? 'RUST CAMERA' : 'Regular camera'})`);
+                });
+                
+                if (rustCameraFound) {
+                    updateStatus(`✅ Rust Virtual Camera found! (${videoDevices.length} total devices)`, 'success');
+                } else {
+                    updateStatus(`❌ Rust Virtual Camera NOT found (${videoDevices.length} devices available)`, 'error');
+                }
+                
+            } catch (error) {
+                updateStatus(`❌ Error listing devices: ${error.message}`, 'error');
+                logDebug(`Error: ${error.message}`);
+            }
+        }
+        
+        async function testRustCamera() {
+            if (!rustCameraFound) {
+                updateStatus('❌ Rust Virtual Camera not found. Please list devices first.', 'error');
+                return;
+            }
+            
+            try {
+                updateStatus('🎥 Testing Rust Virtual Camera...', 'info');
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        deviceId: { exact: rustCameraId },
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    },
+                    audio: false
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+                
+                updateStatus('✅ Rust Virtual Camera working!', 'success');
+                logDebug('Rust Virtual Camera stream started successfully');
+                
+            } catch (error) {
+                updateStatus(`❌ Rust Virtual Camera test failed: ${error.message}`, 'error');
+                logDebug(`Rust camera error: ${error.message}`);
+            }
+        }
+        
+        async function testAnyCamera() {
+            try {
+                updateStatus('📹 Testing any available camera...', 'info');
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    },
+                    audio: false
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+                
+                updateStatus('✅ Camera test successful!', 'success');
+                logDebug('Camera stream started successfully');
+                
+            } catch (error) {
+                updateStatus(`❌ Camera test failed: ${error.message}`, 'error');
+                logDebug(`Camera error: ${error.message}`);
+            }
+        }
+        
+        async function testSpecificDevice(deviceId, deviceLabel) {
+            try {
+                updateStatus(`🎥 Testing device: ${deviceLabel}`, 'info');
+                
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        deviceId: { exact: deviceId },
+                        width: { ideal: 640 },
+                        height: { ideal: 480 }
+                    },
+                    audio: false
+                });
+                
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+                
+                updateStatus(`✅ Device test successful: ${deviceLabel}`, 'success');
+                logDebug(`Device test successful: ${deviceLabel}`);
+                
+            } catch (error) {
+                updateStatus(`❌ Device test failed: ${error.message}`, 'error');
+                logDebug(`Device test error: ${error.message}`);
+            }
+        }
+        
+        // Auto-run device listing on page load
+        window.addEventListener('load', () => {
+            updateStatus('Page loaded, checking for devices...', 'info');
+            setTimeout(listAllDevices, 1000);
+        });
+    </script>
+</body>
+</html> 

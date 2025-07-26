@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Virtual Camera Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        video { border: 2px solid #333; margin: 10px 0; }
+        select { padding: 5px; margin: 10px 0; }
+        button { padding: 10px 20px; margin: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Virtual Camera Test</h1>
+    
+    <div>
+        <label for="cameraSelect">Select Camera:</label>
+        <select id="cameraSelect">
+            <option value="">Loading cameras...</option>
+        </select>
+    </div>
+    
+    <div>
+        <button onclick="startCamera()">Start Camera</button>
+        <button onclick="stopCamera()">Stop Camera</button>
+    </div>
+    
+    <video id="video" width="640" height="480" autoplay></video>
+    
+    <div id="status"></div>
+
+    <script>
+        let stream = null;
+        
+        async function loadCameras() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                
+                const select = document.getElementById('cameraSelect');
+                select.innerHTML = '';
+                
+                videoDevices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${device.deviceId.slice(0, 8)}...`;
+                    select.appendChild(option);
+                });
+                
+                document.getElementById('status').innerHTML = `Found ${videoDevices.length} camera(s)`;
+            } catch (error) {
+                document.getElementById('status').innerHTML = `Error loading cameras: ${error.message}`;
+            }
+        }
+        
+        async function startCamera() {
+            try {
+                const cameraId = document.getElementById('cameraSelect').value;
+                const constraints = {
+                    video: cameraId ? { deviceId: { exact: cameraId } } : true
+                };
+                
+                stream = await navigator.mediaDevices.getUserMedia(constraints);
+                document.getElementById('video').srcObject = stream;
+                document.getElementById('status').innerHTML = 'Camera started successfully!';
+            } catch (error) {
+                document.getElementById('status').innerHTML = `Error starting camera: ${error.message}`;
+            }
+        }
+        
+        function stopCamera() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                document.getElementById('video').srcObject = null;
+                document.getElementById('status').innerHTML = 'Camera stopped';
+            }
+        }
+        
+        // Load cameras when page loads
+        window.onload = loadCameras;
+    </script>
+</body>
+</html> 

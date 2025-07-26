@@ -1,0 +1,12 @@
+[package]
+name = "rust_virtual_camera"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+image = "0.24"
+pipewire = "0.8.0"
+libspa-sys = "0.8.0"
+nix = "0.27"
