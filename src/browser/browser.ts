@@ -38,12 +38,15 @@ export async function openBrowser(
                 // PipeWire video device access
                 '--use-fake-ui-for-media-stream', // Allow camera access without prompts
                 '--allow-running-insecure-content', // Allow insecure content for local testing
-                '--enable-features=WebRTCPipeWireCapturer', // Enable PipeWire video capture for WebRTC
+                '--enable-features=WebRtcPipeWireCamera', // Enable PipeWire video capture for WebRTC (newer flag)
                 '--disable-features=VizDisplayCompositor', // Disable display compositor for better compatibility
                 '--disable-gpu-sandbox', // Disable GPU sandbox for video device access
                 '--disable-software-rasterizer', // Disable software rasterizer
                 '--enable-logging=stderr', // Enable detailed logging
                 '--vmodule=*/webrtc/*=3,*/media/*=3', // Enable WebRTC and media logging
+                '--use-fake-device-for-media-stream', // Use fake devices for media stream testing
+                '--allow-file-access-from-files', // Allow file access for testing
+                '--disable-web-security', // Disable web security for testing
 
                 // Performance and resource management optimizations
                 '--disable-blink-features=AutomationControlled',
