@@ -35,18 +35,18 @@ export async function openBrowser(
                 '--enable-webrtc-capture-video', // Ensure WebRTC can capture video
                 '--force-webrtc-ip-handling-policy=default', // Better WebRTC handling
 
-                // PipeWire video device access
-                '--use-fake-ui-for-media-stream', // Allow camera access without prompts
-                '--allow-running-insecure-content', // Allow insecure content for local testing
-                '--enable-features=WebRtcPipeWireCamera', // Enable PipeWire video capture for WebRTC (newer flag)
-                '--disable-features=VizDisplayCompositor', // Disable display compositor for better compatibility
-                '--disable-gpu-sandbox', // Disable GPU sandbox for video device access
-                '--disable-software-rasterizer', // Disable software rasterizer
-                '--enable-logging=stderr', // Enable detailed logging
-                '--vmodule=*/webrtc/*=3,*/media/*=3', // Enable WebRTC and media logging
-                '--use-fake-device-for-media-stream', // Use fake devices for media stream testing
-                '--allow-file-access-from-files', // Allow file access for testing
-                '--disable-web-security', // Disable web security for testing
+                // Fake camera configuration
+                '--use-fake-ui-for-media-stream',
+                '--use-fake-device-for-media-stream',
+                '--use-file-for-fake-video-capture=/app/virtual-camera/test_logo.mjpeg',
+                '--use-file-for-fake-audio-capture=/dev/zero',
+
+                // General Docker configuration
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--ignore-certificate-errors',
+                '--enable-logging=stderr',
+                '--vmodule=*/webrtc/*=2,*/libjingle/*=2',
 
                 // Performance and resource management optimizations
                 '--disable-blink-features=AutomationControlled',
