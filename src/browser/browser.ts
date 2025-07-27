@@ -41,7 +41,7 @@ export async function openBrowser(
                 // Fake camera configuration
                 '--use-fake-ui-for-media-stream',
                 '--use-fake-device-for-media-stream',
-                '--use-file-for-fake-video-capture=/app/virtual-camera/test_logo.mjpeg',
+                '--use-file-for-fake-video-capture=/app/virtual-camera/test_logo_640x480.y4m',
                 '--use-file-for-fake-audio-capture=/dev/zero',
 
                 // Performance and resource management optimizations
