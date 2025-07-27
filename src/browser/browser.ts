@@ -1,5 +1,4 @@
 import { BrowserContext, chromium } from '@playwright/test'
-import { GLOBAL } from '../singleton'
 
 export async function openBrowser(
     slowMo: boolean = false,
@@ -38,6 +37,12 @@ export async function openBrowser(
                 '--disable-webrtc-hw-encoding',
                 '--enable-webrtc-capture-audio', // Ensure WebRTC can capture audio
                 '--force-webrtc-ip-handling-policy=default', // Better WebRTC handling
+
+                // Fake camera configuration
+                '--use-fake-ui-for-media-stream',
+                '--use-fake-device-for-media-stream',
+                '--use-file-for-fake-video-capture=/app/virtual-camera/test_logo.mjpeg',
+                '--use-file-for-fake-audio-capture=/dev/zero',
 
                 // Performance and resource management optimizations
                 '--disable-blink-features=AutomationControlled',
