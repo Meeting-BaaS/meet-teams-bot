@@ -2,7 +2,6 @@ import { Events } from '../../events'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { Streaming } from '../../streaming'
-import { embedBranding } from '../../utils/embed-branding'
 
 import {
     MeetingEndReason,
@@ -112,16 +111,8 @@ export class WaitingRoomState extends BaseState {
                 )
             console.info('Meeting page opened successfully')
 
-            // Inject virtual camera immediately if enabled - before page loads
-            if (
-                GLOBAL.get().custom_branding_bot_path &&
-                this.context.playwrightPage
-            ) {
-                await embedBranding(
-                    this.context.playwrightPage,
-                    GLOBAL.get().custom_branding_bot_path,
-                )
-            }
+            // Chrome fake camera flags handle virtual camera
+            console.log('🎥 Using Chrome fake camera flags for virtual camera')
         } catch (error) {
             console.error('Failed to open meeting page:', {
                 error,

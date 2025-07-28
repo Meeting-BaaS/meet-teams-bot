@@ -38,6 +38,9 @@ export class MeetProvider implements MeetingProviderInterface {
                 await browserContext.grantPermissions(['camera'])
             }
 
+            // Let Chrome's fake camera flags handle the virtual camera
+            console.log('🎥 Using Chrome fake camera flags for Google Meet...')
+
             console.log(`Navigating to ${link}...`)
             await page.goto(link, {
                 waitUntil: 'networkidle',
@@ -208,7 +211,10 @@ export class MeetProvider implements MeetingProviderInterface {
 
             await clickOutsideModal(page)
             const maxAttempts = 3
-            if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'audio_only') {
+            if (
+                normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                'audio_only'
+            ) {
                 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                     if (await changeLayout(page, attempt)) {
                         console.log(
@@ -222,7 +228,10 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
-            if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'gallery_view') {
+            if (
+                normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                'gallery_view'
+            ) {
                 await findShowEveryOne(page, true, cancelCheck)
             }
         } catch (error) {

@@ -43,6 +43,14 @@ export async function openBrowser(
                 '--use-fake-device-for-media-stream',
                 '--use-file-for-fake-video-capture=/app/virtual-camera/test_logo_640x480.y4m',
                 '--use-file-for-fake-audio-capture=/dev/zero',
+                '--disable-features=WebRtcHideLocalIpsWithMdns',
+                '--disable-features=WebRtcUseEchoCanceller3',
+                '--disable-features=WebRtcUseMinMaxVEADimensions',
+                // Additional debugging for fake camera
+                '--enable-logging=stderr',
+                '--vmodule=*/webrtc/*=2,*/libjingle/*=2',
+                '--vmodule=*media*=2',
+                '--vmodule=*camera*=2',
 
                 // Performance and resource management optimizations
                 '--disable-blink-features=AutomationControlled',

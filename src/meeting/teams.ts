@@ -45,6 +45,9 @@ export class TeamsProvider implements MeetingProviderInterface {
             })
         }
 
+        // Let Chrome's fake camera flags handle the virtual camera
+        console.log('🎥 Using Chrome fake camera flags for Teams...')
+
         try {
             await page.goto(link, {
                 waitUntil: 'domcontentloaded',
@@ -368,7 +371,10 @@ export class TeamsProvider implements MeetingProviderInterface {
         // Once in the meeting, configure the view
         try {
             if (await clickWithInnerText(page, 'button', 'View', 10, false)) {
-                if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'gallery_view') {
+                if (
+                    normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                    'gallery_view'
+                ) {
                     await clickWithInnerText(page, 'button', 'View', 10)
                     await clickWithInnerText(page, 'div', 'Speaker', 20)
                 }
