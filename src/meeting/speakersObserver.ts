@@ -20,6 +20,12 @@ export class SpeakersObserver {
         botName: string,
         onSpeakersChange: (speakers: SpeakerData[]) => void,
     ): Promise<void> {
+        // TEMPORARILY DISABLED - Speaker observation is disabled
+        console.log(
+            '[SpeakersObserver] Speaker observation is temporarily disabled',
+        )
+        return
+
         if (this.isObserving) {
             console.warn('[SpeakersObserver] Already running')
             return

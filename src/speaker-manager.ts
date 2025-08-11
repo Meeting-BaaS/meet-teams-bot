@@ -28,6 +28,9 @@ export class SpeakerManager {
     }
 
     public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
+        // TEMPORARILY DISABLED - Speaker observation is disabled
+        return
+
         try {
             // Send the speaker state to the streaming service only if RECORDING is enabled
             if (Streaming.instance) {
