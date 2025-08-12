@@ -208,7 +208,10 @@ export class MeetProvider implements MeetingProviderInterface {
 
             await clickOutsideModal(page)
             const maxAttempts = 3
-            if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'audio_only') {
+            if (
+                normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                'audio_only'
+            ) {
                 for (let attempt = 1; attempt <= maxAttempts; attempt++) {
                     if (await changeLayout(page, attempt)) {
                         console.log(
@@ -222,7 +225,10 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
-            if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'gallery_view') {
+            if (
+                normalizeRecordingMode(GLOBAL.get().recording_mode) !==
+                'gallery_view'
+            ) {
                 await findShowEveryOne(page, true, cancelCheck)
             }
         } catch (error) {
@@ -454,12 +460,16 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
     for (const text of deniedTexts) {
         const element = page.locator(`text=${text}`)
         if ((await element.count()) > 0) {
-            console.log('XXXXXXXXXXXXXXXXXX User has denied entry')
-            GLOBAL.setError(MeetingEndReason.BotNotAccepted)
+            if (text === 'denied') {
+                console.log('XXXXXXXXXXXXXXXXXX User has denied entry')
+                GLOBAL.setError(MeetingEndReason.DeniedEntry)
+            } else {
+                console.log('XXXXXXXXXXXXXXXXXX Cannot join meeting')
+                GLOBAL.setError(MeetingEndReason.CannotJoinMeeting)
+            }
             return true
         }
     }
-
     return false
 }
 

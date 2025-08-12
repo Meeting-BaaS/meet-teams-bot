@@ -28,6 +28,7 @@ export enum MeetingEndReason {
     // Error end reasons
     BotRemovedTooEarly = 'botRemovedTooEarly',
     BotNotAccepted = 'botNotAccepted',
+    DeniedEntry = 'deniedEntry',
     CannotJoinMeeting = 'cannotJoinMeeting',
     TimeoutWaitingToStart = 'timeoutWaitingToStart',
     InvalidMeetingUrl = 'invalidMeetingUrl',
@@ -52,6 +53,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
             return 'Bot was removed too early; the video is too short.'
         case MeetingEndReason.BotNotAccepted:
             return 'Bot was not accepted into the meeting.'
+        case MeetingEndReason.DeniedEntry:
+            return 'Bot was denied entry to the meeting.'
         case MeetingEndReason.CannotJoinMeeting:
             return 'Cannot join meeting - meeting is not reachable.'
         case MeetingEndReason.TimeoutWaitingToStart:
