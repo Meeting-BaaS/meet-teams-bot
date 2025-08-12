@@ -74,6 +74,9 @@ export class ErrorState extends BaseState {
                     case MeetingEndReason.BotNotAccepted:
                         await Events.botRejected()
                         break
+                    case MeetingEndReason.DeniedEntry:
+                        await Events.botDeniedEntry()
+                        break
                     case MeetingEndReason.BotRemoved:
                         await Events.botRemoved()
                         break

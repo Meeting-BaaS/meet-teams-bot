@@ -56,6 +56,10 @@ export class Events {
         return Events.EVENTS?.sendOnce('bot_rejected')
     }
 
+    static async botDeniedEntry() {
+        return Events.EVENTS?.sendOnce('bot_denied_entry')
+    }
+
     static async botRemoved() {
         return Events.EVENTS?.sendOnce('bot_removed')
     }

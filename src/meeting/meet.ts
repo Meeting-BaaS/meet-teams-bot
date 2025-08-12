@@ -190,8 +190,8 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
 
                 if (await notAcceptedInMeeting(page)) {
-                    GLOBAL.setError(MeetingEndReason.BotNotAccepted)
-                    throw new Error('Bot not accepted into meeting')
+                    // Error already set by notAcceptedInMeeting function
+                    throw new Error('Meeting access denied or cannot join')
                 }
 
                 await sleep(1000)
@@ -459,12 +459,18 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
 
     for (const text of deniedTexts) {
         const element = page.locator(`text=${text}`)
-        if ((await element.count()) > 0) {
+        const count = await element.count()
+
+        if (count > 0) {
             if (text === 'denied') {
-                console.log('XXXXXXXXXXXXXXXXXX User has denied entry')
+                console.log(
+                    'XXXXXXXXXXXXXXXXXX User has denied entry - setting DeniedEntry error',
+                )
                 GLOBAL.setError(MeetingEndReason.DeniedEntry)
             } else {
-                console.log('XXXXXXXXXXXXXXXXXX Cannot join meeting')
+                console.log(
+                    `XXXXXXXXXXXXXXXXXX Cannot join meeting - setting CannotJoinMeeting error for text: "${text}"`,
+                )
                 GLOBAL.setError(MeetingEndReason.CannotJoinMeeting)
             }
             return true
