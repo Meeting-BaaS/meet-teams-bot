@@ -345,8 +345,7 @@ async function findShowEveryOne(
             }
 
             if (await notAcceptedInMeeting(page)) {
-                console.log('Bot not accepted, exiting meeting')
-                GLOBAL.setError(MeetingEndReason.BotNotAccepted)
+                // Error already set by notAcceptedInMeeting function
                 throw new Error('Bot not accepted into meeting')
             }
 
