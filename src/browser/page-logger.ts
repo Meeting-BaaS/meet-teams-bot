@@ -19,6 +19,47 @@ export function listenPage(page: Page) {
         try {
             const text = message.text()
             const location = message.location()
+            const type = message.type()
+
+            // Always capture errors and warnings for debugging
+            if (type === 'error' || type === 'warning') {
+                const args = await Promise.all(
+                    message.args().map(async (arg) => {
+                        try {
+                            const value = await arg.jsonValue()
+                            return formatValue(value)
+                        } catch {
+                            return 'Unable to serialize value'
+                        }
+                    }),
+                )
+                
+                const tags = `${location.url}:${location.lineNumber}`
+                const formattedText = args.length === 1 ? args[0] : args.join(' ')
+                
+                console.log(`[BROWSER-${type.toUpperCase()}] ${tags}\n${formattedText}`)
+                return
+            }
+
+            // Always capture our Meet-Browser debugging logs
+            if (text.includes('[Meet-Browser]')) {
+                const args = await Promise.all(
+                    message.args().map(async (arg) => {
+                        try {
+                            const value = await arg.jsonValue()
+                            return formatValue(value)
+                        } catch {
+                            return 'Unable to serialize value'
+                        }
+                    }),
+                )
+                
+                const tags = `${location.url}:${location.lineNumber}`
+                const formattedText = args.length === 1 ? args[0] : args.join(' ')
+                
+                console.log(`[BROWSER-DEBUG] ${tags}\n${formattedText}`)
+                return
+            }
 
             // Only show DEBUG logs when --debug flag is used
             const isDebugLog = text.includes('DEBUG')
@@ -38,11 +79,11 @@ export function listenPage(page: Page) {
                 }),
             )
 
-            const type = message.type().substr(0, 3).toUpperCase()
+            const typeShort = message.type().substr(0, 3).toUpperCase()
             const tags = `${location.url}:${location.lineNumber}`
             const formattedText = args.length === 1 ? args[0] : args.join(' ')
 
-            switch (type) {
+            switch (typeShort) {
                 case 'LOG':
                     console.log(`${tags}\n${formattedText}`)
                     break
@@ -66,11 +107,17 @@ export function listenPage(page: Page) {
                     break
                 default:
                     console.log(
-                        `DEFAULT CASE ${type} ! ${tags}\n${formattedText}`,
+                        `DEFAULT CASE ${typeShort} ! ${tags}\n${formattedText}`,
                     )
             }
         } catch (e) {
             console.log(`Failed to log forward logs: ${e}`)
         }
+    })
+
+    // Capture JavaScript errors that might not go through console
+    page.on('pageerror', (error) => {
+        console.error(`[BROWSER-PAGE-ERROR] ${error.message}`)
+        console.error(`[BROWSER-PAGE-ERROR] Stack: ${error.stack}`)
     })
 }

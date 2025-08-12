@@ -83,6 +83,69 @@ export class MeetSpeakersObserver {
                 let lastValidSpeakerCheck = Date.now()
                 const FREEZE_TIMEOUT_MS = 30000 // 30 seconds
 
+                // Add targeted element logging function
+                function logKeyElements() {
+                    try {
+                        console.log('[Meet-Browser] 🔍 Key elements check:')
+                        
+                        // Check People panel
+                        const participantsList = document.querySelector("[aria-label='Participants']")
+                        console.log('[Meet-Browser] Participants panel:', {
+                            exists: !!participantsList,
+                            ariaLabel: participantsList?.getAttribute('aria-label'),
+                            className: participantsList?.className,
+                            childCount: participantsList?.children?.length || 0
+                        })
+                        
+                        // Check People button
+                        const peopleButton = document.querySelector("[aria-label='Show everyone']") as HTMLElement
+                        console.log('[Meet-Browser] People button:', {
+                            exists: !!peopleButton,
+                            ariaLabel: peopleButton?.getAttribute('aria-label'),
+                            className: peopleButton?.className,
+                            visible: peopleButton?.offsetParent !== null
+                        })
+                        
+                        // Log all elements with relevant aria-labels (truncated)
+                        const relevantElements = Array.from(document.querySelectorAll('[aria-label]'))
+                            .filter(el => {
+                                const label = el.getAttribute('aria-label')?.toLowerCase() || ''
+                                return label.includes('participant') || 
+                                       label.includes('people') || 
+                                       label.includes('show everyone')
+                            })
+                            .map(el => ({
+                                tag: el.tagName,
+                                ariaLabel: el.getAttribute('aria-label'),
+                                className: el.className,
+                                text: el.textContent?.trim().substring(0, 30) || '',
+                                visible: (el as HTMLElement).offsetParent !== null
+                            }))
+                        
+                        console.log('[Meet-Browser] Relevant elements found:', relevantElements)
+                        
+                        // Log elements with specific dimensions (for getSpeakerRootToObserve)
+                        const dimensionElements = Array.from(document.querySelectorAll('div'))
+                            .filter(div => {
+                                const width = div.offsetWidth
+                                const height = div.offsetHeight
+                                return width === 360 && (height === 64 || height === 63 || height === 50.99 || height === 51 || height === 66.63)
+                            })
+                            .map(div => ({
+                                width: div.offsetWidth,
+                                height: div.offsetHeight,
+                                className: div.className,
+                                ariaLabel: div.getAttribute('aria-label'),
+                                text: div.textContent?.trim().substring(0, 20) || ''
+                            }))
+                        
+                        console.log('[Meet-Browser] Dimension-matched elements:', dimensionElements)
+                        
+                    } catch (error) {
+                        console.error('[Meet-Browser] Error in element logging:', error)
+                    }
+                }
+
                 // EXACT SAME getSpeakerRootToObserve as extension
                 async function getSpeakerRootToObserve(
                     recordingMode: string,
@@ -553,15 +616,24 @@ export class MeetSpeakersObserver {
                 // setupMutationObserver
                 async function setupMutationObserver(): Promise<boolean> {
                     try {
-                        const observe_parameters =
-                            await getSpeakerRootToObserve(recordingMode)
-
+                        console.log('[Meet-Browser] 🔧 Setting up mutation observer...')
+                        
+                        const observe_parameters = await getSpeakerRootToObserve(recordingMode)
+                        
                         if (!observe_parameters || !observe_parameters[0]) {
                             console.warn(
-                                '[Meet-Browser] No valid root element to observe',
+                                '[Meet-Browser] ❌ No valid root element to observe',
                             )
                             return false
                         }
+                        
+                        // Log just the essential info
+                        const rootElement = observe_parameters[0] as Element
+                        console.log('[Meet-Browser] ✅ Observer root:', {
+                            tag: rootElement.tagName,
+                            className: rootElement.className?.substring(0, 50) || '',
+                            ariaLabel: rootElement.getAttribute('aria-label') || ''
+                        })
 
                         MUTATION_OBSERVER!.disconnect()
                         MUTATION_OBSERVER!.observe(
@@ -569,21 +641,21 @@ export class MeetSpeakersObserver {
                             observe_parameters[1],
                         )
                         console.log(
-                            '[Meet-Browser] Mutation observer successfully set up',
+                            '[Meet-Browser] ✅ Mutation observer successfully set up',
                         )
                         lastMutationTime = Date.now()
                         return true
                     } catch (e) {
-                        console.warn(
-                            '[Meet-Browser] Failed to setup mutation observer:',
-                            e,
-                        )
+                        console.error('[Meet-Browser] ❌ Failed to setup mutation observer:', e)
                         return false
                     }
                 }
 
                 async function observeSpeakers() {
                     try {
+                        // Log key elements at startup
+                        logKeyElements()
+                        
                         // But only send if isSpeaking === true
                         const currentSpeakersList = getSpeakerFromDocument(
                             recordingMode,
@@ -615,16 +687,32 @@ export class MeetSpeakersObserver {
                         await setupMutationObserver()
 
                         // periodic check + People panel check
+                        let healthCheckCounter = 0
                         periodicCheck = setInterval(async () => {
                             if (document.visibilityState !== 'hidden') {
+                                healthCheckCounter++
+                                
+                                // Log health check every 3rd iteration (every 30 seconds)
+                                if (healthCheckCounter % 3 === 0) {
+                                    console.log('[Meet-Browser] 🔋 Health check:', {
+                                        participantsPanelExists: !!document.querySelector("[aria-label='Participants']"),
+                                        mutationObserverActive: !!MUTATION_OBSERVER,
+                                        timeSinceLastMutation: Math.floor((Date.now() - lastMutationTime) / 1000) + 's'
+                                    })
+                                }
+                                
                                 // Check if People panel is still open - CRITICAL FOR SPEAKER DETECTION
                                 const participantsList = document.querySelector(
                                     "[aria-label='Participants']",
                                 )
                                 if (!participantsList) {
                                     console.warn(
-                                        '[Meet-Browser] People panel closed! Trying to reopen...',
+                                        '[Meet-Browser] ❌ People panel closed! Trying to reopen...',
                                     )
+                                    
+                                    // Log current DOM state when panel is missing
+                                    logKeyElements()
+                                    
                                     // Try to reopen the panel
                                     const possibleSelectors = [
                                         "[aria-label='Show everyone']",
@@ -657,8 +745,12 @@ export class MeetSpeakersObserver {
                                     freezeTimeout
                                 ) {
                                     console.warn(
-                                        `[Meet-Browser] No mutations detected for ${freezeTimeout / 1000}s, resetting observer`,
+                                        `[Meet-Browser] ⚠️ No mutations detected for ${freezeTimeout / 1000}s, resetting observer`,
                                     )
+                                    
+                                    // Log current DOM state when mutations freeze
+                                    logKeyElements()
+                                    
                                     await setupMutationObserver()
                                 }
                                 checkSpeakers()
