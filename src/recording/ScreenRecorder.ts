@@ -1175,7 +1175,8 @@ file '${absoluteInputPath}'`
     }
 
     private async createAudioChunks(audioPath: string): Promise<void> {
-        if (!GLOBAL.get().speech_to_text_provider) return
+        // We are commenting this, logic being that users might want to call the transcribe / retranscribe route even if speech to text is not enabled initially
+        // if (!GLOBAL.get().speech_to_text_provider) return
 
         const chunksDir = PathManager.getInstance().getAudioTmpPath()
         if (!fs.existsSync(chunksDir)) {
