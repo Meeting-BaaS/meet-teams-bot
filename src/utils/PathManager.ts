@@ -8,7 +8,6 @@ export class PathManager {
     private static instance: PathManager
     private environment: string
     private botUuid: string | null
-    private secret: string | null
     private isServerless: boolean
 
     private constructor() {
@@ -16,7 +15,6 @@ export class PathManager {
         this.environment = global.environ
         this.isServerless = GLOBAL.isServerless()
         this.botUuid = global.bot_uuid
-        this.secret = global.secret
     }
 
     public static getInstance(): PathManager {
@@ -48,7 +46,7 @@ export class PathManager {
     }
 
     public getIdentifier(): string {
-        return `${this.secret}-${this.botUuid}`
+        return `${this.botUuid}`
     }
 
     public getBasePath(): string {
