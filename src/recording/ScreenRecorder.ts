@@ -8,13 +8,13 @@ import { Page } from 'playwright'
 import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
 
+import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { normalizeRecordingMode } from '../types'
 import { calculateVideoOffset } from '../utils/CalculVideoOffset'
 import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
 import { sleep } from '../utils/sleep'
 import { generateSyncSignal } from '../utils/SyncSignal'
-import { HtmlSnapshotService } from '../services/html-snapshot-service'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
@@ -117,12 +117,12 @@ export class ScreenRecorder extends EventEmitter {
                 'audio_only'
             ) {
                 this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.wav'
+                    PathManager.getInstance().getOutputPath() + '.flac'
             } else {
                 this.outputPath =
                     PathManager.getInstance().getOutputPath() + '.mp4'
                 this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.wav'
+                    PathManager.getInstance().getOutputPath() + '.flac'
             }
         } catch (error) {
             console.error('Failed to generate output paths:', error)
@@ -288,7 +288,7 @@ export class ScreenRecorder extends EventEmitter {
         ) {
             // Audio-only recording with screenshots
             const tempDir = PathManager.getInstance().getTempPath()
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            const rawAudioPath = path.join(tempDir, 'raw.flac')
 
             args.push(
                 // === AUDIO INPUT ===
@@ -309,19 +309,19 @@ export class ScreenRecorder extends EventEmitter {
                 '-i',
                 this.config.display,
 
-                // === OUTPUT 1: RAW AUDIO ===
+                // === OUTPUT 1: RAW AUDIO (FLAC) ===
                 '-map',
                 '0:a:0',
-                '-acodec',
-                'pcm_s16le',
+                '-c:a',
+                'flac',
+                '-ar',
+                '32000', // Match your Rust code: 32kHz
                 '-ac',
                 '1',
-                '-ar',
-                AUDIO_SAMPLE_RATE.toString(),
+                '-compression_level',
+                '8', // High compression for FLAC
                 '-avoid_negative_ts',
                 'make_zero',
-                '-f',
-                'wav',
                 '-y',
                 rawAudioPath,
 
@@ -354,7 +354,7 @@ export class ScreenRecorder extends EventEmitter {
             // Separate audio and video recording
             const tempDir = PathManager.getInstance().getTempPath()
             const rawVideoPath = path.join(tempDir, 'raw.mp4')
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            const rawAudioPath = path.join(tempDir, 'raw.flac')
 
             args.push(
                 // === VIDEO INPUT ===
@@ -407,20 +407,20 @@ export class ScreenRecorder extends EventEmitter {
                 '-y',
                 rawVideoPath,
 
-                // === OUTPUT 2: RAW AUDIO ===
+                // === OUTPUT 2: RAW AUDIO (FLAC) ===
                 '-map',
                 '1:a:0',
                 '-vn',
-                '-acodec',
-                'pcm_s16le',
+                '-c:a',
+                'flac',
+                '-ar',
+                '32000', // Match your Rust code: 32kHz
                 '-ac',
                 '1',
-                '-ar',
-                AUDIO_SAMPLE_RATE.toString(),
+                '-compression_level',
+                '8', // High compression for FLAC
                 '-avoid_negative_ts',
                 'make_zero',
-                '-f',
-                'wav',
                 '-y',
                 rawAudioPath,
 
@@ -593,10 +593,12 @@ export class ScreenRecorder extends EventEmitter {
             const files = fs.readdirSync(chunksDir)
             const chunkFiles = files.filter(
                 (file) =>
-                    file.startsWith(`${botUuid}-`) && file.endsWith('.wav'),
+                    file.startsWith(`${botUuid}-`) && file.endsWith('.flac'),
             )
 
-            console.log(`📤 Uploading ${chunkFiles.length} audio chunks...`)
+            console.log(
+                `📤 Uploading ${chunkFiles.length} FLAC audio chunks...`,
+            )
 
             for (const filename of chunkFiles) {
                 const chunkPath = path.join(chunksDir, filename)
@@ -646,12 +648,12 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.audioOutputPath)) {
                 console.log(
-                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                    `📤 Uploading FLAC audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
-                    `${identifier}.wav`,
+                    `${identifier}.flac`,
                 )
                 fs.unlinkSync(this.audioOutputPath)
             }
@@ -807,18 +809,18 @@ export class ScreenRecorder extends EventEmitter {
         if (
             normalizeRecordingMode(GLOBAL.get().recording_mode) === 'audio_only'
         ) {
-            // Audio-only mode: just copy raw audio to final output
+            // Audio-only mode: just copy raw FLAC to final output
             const tempDir = PathManager.getInstance().getTempPath()
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            const rawAudioPath = path.join(tempDir, 'raw.flac')
 
             console.log('🔄 Processing audio-only recording...')
 
             if (fs.existsSync(rawAudioPath)) {
-                // Copy raw audio to final output location
+                // Copy raw FLAC to final output location
                 fs.copyFileSync(rawAudioPath, this.audioOutputPath)
                 console.log(`✅ Audio copied to: ${this.audioOutputPath}`)
 
-                // Create audio chunks from the final audio file
+                // Create audio chunks from the final FLAC file
                 await this.createAudioChunks(this.audioOutputPath)
             } else {
                 console.error('❌ Raw audio file not found:', rawAudioPath)
@@ -831,7 +833,7 @@ export class ScreenRecorder extends EventEmitter {
         // Video mode: efficient sync and merge process for long recordings
         const tempDir = PathManager.getInstance().getTempPath()
         const rawVideoPath = path.join(tempDir, 'raw.mp4')
-        const rawAudioPath = path.join(tempDir, 'raw.wav')
+        const rawAudioPath = path.join(tempDir, 'raw.flac')
 
         console.log(
             '🔄 Starting efficient sync and merge for long recording...',
@@ -903,7 +905,7 @@ export class ScreenRecorder extends EventEmitter {
         console.log(`🔇 Audio padding needed: ${audioPadding.toFixed(3)}s`)
 
         // 5. Prepare audio with padding or trimming if needed
-        const processedAudioPath = path.join(tempDir, 'processed.wav')
+        const processedAudioPath = path.join(tempDir, 'processed.flac')
         if (audioPadding > 0) {
             console.log(
                 `🔇 Adding ${audioPadding.toFixed(3)}s silence to audio start (video ahead)...`,
@@ -946,17 +948,17 @@ export class ScreenRecorder extends EventEmitter {
             finalDuration,
         )
 
-        // 7. Extract audio from the final trimmed video (ensures perfect sync)
+        // 7. Extract audio from the final trimmed video and convert to FLAC
         try {
-            await this.extractAudioFromVideo(
+            await this.extractAudioFromVideoAsFlac(
                 this.outputPath,
                 this.audioOutputPath,
             )
             console.log(
-                `✅ Audio extracted from final video: ${this.audioOutputPath}`,
+                `✅ Audio extracted and converted to FLAC: ${this.audioOutputPath}`,
             )
 
-            // 8. Create audio chunks from the extracted audio
+            // 8. Create audio chunks from the extracted FLAC audio
             await this.createAudioChunks(this.audioOutputPath)
         } catch (error) {
             console.warn(
@@ -985,26 +987,30 @@ export class ScreenRecorder extends EventEmitter {
         paddingSeconds: number,
     ): Promise<void> {
         const tempDir = PathManager.getInstance().getTempPath()
-        const silenceFile = path.join(tempDir, 'silence.wav')
+        const silenceFile = path.join(tempDir, 'silence.flac')
         const concatListFile = path.join(tempDir, 'concat_list.txt')
 
-        // Create silence file with exact same format as input
+        // Create silence file with exact same format as input (FLAC)
         const silenceArgs = [
             '-f',
             'lavfi',
             '-i',
-            `anullsrc=channel_layout=mono:sample_rate=${AUDIO_SAMPLE_RATE}:duration=${paddingSeconds}`,
+            `anullsrc=channel_layout=mono:sample_rate=32000:duration=${paddingSeconds}`,
             '-c:a',
-            'pcm_s16le',
+            'flac',
             '-ar',
-            AUDIO_SAMPLE_RATE.toString(),
+            '32000',
             '-ac',
             '1',
+            '-compression_level',
+            '8',
             '-y',
             silenceFile,
         ]
 
-        console.log(`🔇 Creating ${paddingSeconds.toFixed(3)}s silence file`)
+        console.log(
+            `🔇 Creating ${paddingSeconds.toFixed(3)}s FLAC silence file`,
+        )
         await this.runFFmpeg(silenceArgs, 'addSilencePadding', paddingSeconds)
 
         // Create concat list with absolute paths (no escaping needed)
@@ -1028,11 +1034,13 @@ file '${absoluteInputPath}'`
             '-i',
             concatListFile,
             '-c:a',
-            'pcm_s16le', // Re-encode instead of copy to ensure clean timestamps
+            'flac', // Keep FLAC format
             '-ar',
-            AUDIO_SAMPLE_RATE.toString(),
+            '32000',
             '-ac',
             '1',
+            '-compression_level',
+            '8',
             '-y',
             outputAudioPath,
         ]
@@ -1062,11 +1070,13 @@ file '${absoluteInputPath}'`
             '-ss',
             trimSeconds.toString(),
             '-c:a',
-            'pcm_s16le', // Re-encode instead of copy to ensure clean timestamps
+            'flac', // Keep FLAC format
             '-ar',
-            AUDIO_SAMPLE_RATE.toString(),
+            '32000',
             '-ac',
             '1',
+            '-compression_level',
+            '8',
             '-avoid_negative_ts',
             'make_zero',
             '-y',
@@ -1151,7 +1161,7 @@ file '${absoluteInputPath}'`
         await this.runFFmpeg(args, 'finalTrimFromOffset', estimatedSizeMB)
     }
 
-    private async extractAudioFromVideo(
+    private async extractAudioFromVideoAsFlac(
         videoPath: string,
         audioPath: string,
     ): Promise<void> {
@@ -1160,23 +1170,29 @@ file '${absoluteInputPath}'`
             videoPath,
             '-vn',
             '-c:a',
-            'pcm_s16le',
+            'flac',
             '-ar',
-            AUDIO_SAMPLE_RATE.toString(),
+            '32000', // Match your Rust code: 32kHz
             '-ac',
             '1',
+            '-compression_level',
+            '8', // High compression for FLAC
             '-y',
             audioPath,
         ]
 
         console.log(
-            '🎵 Extracting audio from video (converting to WAV PCM 16kHz mono)',
+            '🎵 Extracting audio from video (converting to FLAC 32kHz mono)',
         )
 
         // Estimate file size for timeout calculation
         const estimatedSizeMB = this.estimateFileSizeMB(videoPath)
 
-        await this.runFFmpeg(args, 'extractAudioFromVideo', estimatedSizeMB)
+        await this.runFFmpeg(
+            args,
+            'extractAudioFromVideoAsFlac',
+            estimatedSizeMB,
+        )
     }
 
     private async createAudioChunks(audioPath: string): Promise<void> {
@@ -1193,29 +1209,31 @@ file '${absoluteInputPath}'`
 
         // Calculate chunk duration (max 1 hour = 3600 seconds)
         const chunkDuration = Math.min(duration, TRANSCRIPTION_CHUNK_DURATION)
-        const chunkPattern = path.join(chunksDir, `${botUuid}-%d.wav`)
+        const chunkPattern = path.join(chunksDir, `${botUuid}-%d.flac`)
 
         const args = [
             '-i',
             audioPath,
-            '-acodec',
-            'pcm_s16le',
+            '-c:a',
+            'flac', // Keep FLAC format
+            '-ar',
+            '32000', // Match your Rust code: 32kHz
             '-ac',
             '1',
-            '-ar',
-            AUDIO_SAMPLE_RATE.toString(),
+            '-compression_level',
+            '8', // High compression for FLAC
             '-f',
             'segment',
             '-segment_time',
             chunkDuration.toString(),
             '-segment_format',
-            'wav',
+            'flac',
             '-y',
             chunkPattern,
         ]
 
         console.log(
-            `🎵 Creating audio chunks (${chunkDuration}s each) from ${duration.toFixed(1)}s audio`,
+            `🎵 Creating FLAC audio chunks (${chunkDuration}s each) from ${duration.toFixed(1)}s audio`,
         )
         try {
             // Estimate file size for timeout calculation
