@@ -1,12 +1,12 @@
 import { BrowserContext, Page } from '@playwright/test'
 
 import { MeetingEndReason } from '../state-machine/types'
-import { MeetingProviderInterface, normalizeRecordingMode } from '../types'
+import { MeetingProviderInterface } from '../types'
 
+import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/teamsUrlParser'
 import { sleep } from '../utils/sleep'
-import { HtmlSnapshotService } from '../services/html-snapshot-service'
 
 export class TeamsProvider implements MeetingProviderInterface {
     constructor() {}
@@ -379,7 +379,7 @@ export class TeamsProvider implements MeetingProviderInterface {
             await htmlSnapshot.captureSnapshot(page, 'teams_configure_view_start')
             
             if (await clickWithInnerText(page, 'button', 'View', 10, false)) {
-                if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'gallery_view') {
+                if (GLOBAL.get().recording_mode !== 'gallery_view') {
                     await clickWithInnerText(page, 'button', 'View', 10)
                     await clickWithInnerText(page, 'div', 'Speaker', 20)
                 }

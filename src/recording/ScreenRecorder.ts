@@ -8,13 +8,13 @@ import { Page } from 'playwright'
 import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
 
-import { normalizeRecordingMode } from '../types'
+
+import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { calculateVideoOffset } from '../utils/CalculVideoOffset'
 import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
 import { sleep } from '../utils/sleep'
 import { generateSyncSignal } from '../utils/SyncSignal'
-import { HtmlSnapshotService } from '../services/html-snapshot-service'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
@@ -113,8 +113,7 @@ export class ScreenRecorder extends EventEmitter {
     private generateOutputPaths(): void {
         try {
             if (
-                normalizeRecordingMode(GLOBAL.get().recording_mode) ===
-                'audio_only'
+                GLOBAL.get().recording_mode === 'audio_only'
             ) {
                 this.audioOutputPath =
                     PathManager.getInstance().getOutputPath() + '.wav'
@@ -172,8 +171,7 @@ export class ScreenRecorder extends EventEmitter {
             this.emit('started', {
                 outputPath: this.outputPath,
                 isAudioOnly:
-                    normalizeRecordingMode(GLOBAL.get().recording_mode) ===
-                    'audio_only',
+                    GLOBAL.get().recording_mode === 'audio_only',
             })
         } catch (error) {
             console.error('Failed to start native recording:', error)
@@ -284,7 +282,7 @@ export class ScreenRecorder extends EventEmitter {
         )
 
         if (
-            normalizeRecordingMode(GLOBAL.get().recording_mode) === 'audio_only'
+            GLOBAL.get().recording_mode === 'audio_only'
         ) {
             // Audio-only recording with screenshots
             const tempDir = PathManager.getInstance().getTempPath()
@@ -805,7 +803,7 @@ export class ScreenRecorder extends EventEmitter {
 
     private async syncAndMergeFiles(): Promise<void> {
         if (
-            normalizeRecordingMode(GLOBAL.get().recording_mode) === 'audio_only'
+            GLOBAL.get().recording_mode === 'audio_only'
         ) {
             // Audio-only mode: just copy raw audio to final output
             const tempDir = PathManager.getInstance().getTempPath()

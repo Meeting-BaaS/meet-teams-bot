@@ -1,13 +1,13 @@
 import { BrowserContext, Page } from '@playwright/test'
 
 import { MeetingEndReason } from '../state-machine/types'
-import { MeetingProviderInterface, normalizeRecordingMode } from '../types'
+import { MeetingProviderInterface } from '../types'
 
+import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
 import { closeMeeting } from './meet/closeMeeting'
-import { HtmlSnapshotService } from '../services/html-snapshot-service'
 
 export class MeetProvider implements MeetingProviderInterface {
     async parseMeetingUrl(meeting_url: string) {
@@ -216,7 +216,7 @@ export class MeetProvider implements MeetingProviderInterface {
 
             await clickOutsideModal(page)
             const maxAttempts = 3
-            if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'audio_only') {
+            if (GLOBAL.get().recording_mode !== 'audio_only') {
                 // Capture DOM state before layout change attempts
                 await htmlSnapshot.captureSnapshot(page, 'meet_layout_change_before_attempts')
 
@@ -233,7 +233,7 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
-            if (normalizeRecordingMode(GLOBAL.get().recording_mode) !== 'gallery_view') {
+            if (GLOBAL.get().recording_mode !== 'gallery_view') {
                 // Capture DOM state before opening people panel
                 await htmlSnapshot.captureSnapshot(page, 'meet_people_panel_before_open')
                 

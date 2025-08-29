@@ -3,13 +3,43 @@ import {
     getErrorMessageFromCode,
     MeetingEndReason,
 } from './state-machine/types'
-import { MeetingParams } from './types'
+import { MeetingParams, RecordingMode } from './types'
 
 class Global {
     private meetingParams: MeetingParams | null = null
     private endReason: MeetingEndReason | null = null
     private errorMessage: string | null = null
     public constructor() {}
+
+    /**
+     * Normalizes recording mode values to snake_case format.
+     * 
+     * This function handles both PascalCase and snake_case values because:
+     * 1. API requests come in snake_case format (e.g., "speaker_view")
+     * 2. The API server converts these to PascalCase (e.g., "SpeakerView") when sending to the queue
+     * 3. The smart-rabbit consumer can handle both cases via #[serde(alias = "...")] attributes
+     * 4. The recording server needs to handle both cases for consistency with the queue message format
+     * 
+     * @param mode - The recording mode value (can be either PascalCase or snake_case)
+     * @returns The normalized recording mode in snake_case format
+     */
+    private normalizeRecordingMode(mode: RecordingMode): 'speaker_view' | 'gallery_view' | 'audio_only' {
+        switch (mode) {
+            case 'speaker_view':
+            case 'SpeakerView':
+                return 'speaker_view'
+            case 'gallery_view':
+            case 'GalleryView':
+                return 'speaker_view' // gallery_view maps to speaker_view as requested
+            case 'audio_only':
+            case 'AudioOnly':
+                return 'audio_only'
+            default:
+                // Default to speaker_view if unknown
+                console.warn(`Unknown recording mode: ${mode}, defaulting to speaker_view`)
+                return 'speaker_view'
+        }
+    }
 
     public set(meetingParams: MeetingParams) {
         if (this.meetingParams !== null) {
@@ -27,7 +57,13 @@ class Global {
             throw new Error('Missing required parameter: bot_uuid')
         }
 
-        this.meetingParams = meetingParams
+        // Normalize the recording mode before setting
+        const normalizedParams = {
+            ...meetingParams,
+            recording_mode: this.normalizeRecordingMode(meetingParams.recording_mode)
+        }
+
+        this.meetingParams = normalizedParams
         console.log(
             `🤖 Bot ${meetingParams.bot_uuid} initialized with validated parameters`,
         )
