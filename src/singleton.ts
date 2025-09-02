@@ -3,27 +3,30 @@ import {
     getErrorMessageFromCode,
     MeetingEndReason,
 } from './state-machine/types'
-import { MeetingParams, RecordingMode } from './types'
+import { MeetingParams, MeetingProvider, RecordingMode } from './types'
 
 class Global {
     private meetingParams: MeetingParams | null = null
+    private meetingProvider: MeetingProvider | null = null
     private endReason: MeetingEndReason | null = null
     private errorMessage: string | null = null
     public constructor() {}
 
     /**
      * Normalizes recording mode values to snake_case format.
-     * 
+     *
      * This function handles both PascalCase and snake_case values because:
      * 1. API requests come in snake_case format (e.g., "speaker_view")
      * 2. The API server converts these to PascalCase (e.g., "SpeakerView") when sending to the queue
      * 3. The smart-rabbit consumer can handle both cases via #[serde(alias = "...")] attributes
      * 4. The recording server needs to handle both cases for consistency with the queue message format
-     * 
+     *
      * @param mode - The recording mode value (can be either PascalCase or snake_case)
      * @returns The normalized recording mode in snake_case format
      */
-    private normalizeRecordingMode(mode: RecordingMode): 'speaker_view' | 'gallery_view' | 'audio_only' {
+    private normalizeRecordingMode(
+        mode: RecordingMode,
+    ): 'speaker_view' | 'gallery_view' | 'audio_only' {
         switch (mode) {
             case 'speaker_view':
             case 'SpeakerView':
@@ -36,7 +39,9 @@ class Global {
                 return 'audio_only'
             default:
                 // Default to speaker_view if unknown
-                console.warn(`Unknown recording mode: ${mode}, defaulting to speaker_view`)
+                console.warn(
+                    `Unknown recording mode: ${mode}, defaulting to speaker_view`,
+                )
                 return 'speaker_view'
         }
     }
@@ -60,7 +65,9 @@ class Global {
         // Normalize the recording mode before setting
         const normalizedParams = {
             ...meetingParams,
-            recording_mode: this.normalizeRecordingMode(meetingParams.recording_mode)
+            recording_mode: this.normalizeRecordingMode(
+                meetingParams.recording_mode,
+            ),
         }
 
         this.meetingParams = normalizedParams
@@ -80,7 +87,10 @@ class Global {
         if (this.meetingParams === null) {
             throw new Error('Meeting params are not set')
         }
-        return this.meetingParams.remote === null
+        return (
+            this.meetingParams.core_server_url === null ||
+            this.meetingParams.core_server_url === undefined
+        )
     }
 
     public setError(reason: MeetingEndReason, message?: string): void {
@@ -95,7 +105,9 @@ class Global {
         this.endReason = reason
 
         if (NORMAL_END_REASONS.includes(reason)) {
-            console.log(`🔵 Clearing error state for normal termination: ${reason}`)
+            console.log(
+                `🔵 Clearing error state for normal termination: ${reason}`,
+            )
             // This ensures that an error message isn't propagated to the client for normal termination
             this.clearError()
         }
@@ -119,6 +131,48 @@ class Global {
         // Only clear the error message, keep the end reason
         // This allows normal termination reasons to be preserved
         this.errorMessage = null
+    }
+
+    public getS3VideoBucket(): string {
+        const bucket = process.env.AWS_S3_VIDEO_BUCKET
+        if (!bucket) {
+            throw new Error(
+                'AWS_S3_VIDEO_BUCKET environment variable is not set',
+            )
+        }
+        return bucket
+    }
+
+    public getS3AudioBucket(): string {
+        const bucket = process.env.AWS_S3_AUDIO_BUCKET
+        if (!bucket) {
+            throw new Error(
+                'AWS_S3_AUDIO_BUCKET environment variable is not set',
+            )
+        }
+        return bucket
+    }
+
+    public getS3LogsBucket(): string {
+        const bucket = process.env.AWS_S3_LOGS_BUCKET
+        if (!bucket) {
+            throw new Error(
+                'AWS_S3_LOGS_BUCKET environment variable is not set',
+            )
+        }
+        return bucket
+    }
+
+    public setMeetingProvider(provider: MeetingProvider): void {
+        this.meetingProvider = provider
+        console.log(`🎯 Meeting provider detected: ${provider}`)
+    }
+
+    public getMeetingProvider(): MeetingProvider {
+        if (this.meetingProvider === null) {
+            throw new Error('Meeting provider is not set')
+        }
+        return this.meetingProvider
     }
 }
 
