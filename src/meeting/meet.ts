@@ -476,7 +476,7 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
             const deniedTextFromGoogleElement = page.locator(`text=${deniedTextFromGoogle}`)
             if ((await deniedTextFromGoogleElement.count()) > 0) {
                 console.log('XXXXXXXXXXXXXXXXXX Google Meet timeout detected')
-                GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+                GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart, "Google Meet Timeout while waiting to start recording.")
                 return true
             }
 
