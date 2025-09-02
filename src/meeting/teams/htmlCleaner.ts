@@ -16,7 +16,10 @@ export class TeamsHtmlCleaner {
 
         // Capture DOM state before starting Teams HTML cleaning
         const htmlSnapshot = HtmlSnapshotService.getInstance()
-        await htmlSnapshot.captureSnapshot(this.page, 'teams_html_cleaner_before_cleaning')
+        await htmlSnapshot.captureSnapshot(
+            this.page,
+            'teams_html_cleaner_before_cleaning',
+        )
 
         // Wait 1 second like in original extension
         await this.page.waitForTimeout(1000)

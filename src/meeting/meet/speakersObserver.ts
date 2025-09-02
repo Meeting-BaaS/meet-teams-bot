@@ -750,8 +750,10 @@ export class MeetSpeakersObserver {
 
         // Capture DOM state after Speakers Observer is started
         const htmlSnapshot = HtmlSnapshotService.getInstance()
-        await htmlSnapshot.captureSnapshot(this.page, 'meet_speaker_observer_started')
-
+        await htmlSnapshot.captureSnapshot(
+            this.page,
+            'meet_speaker_observer_started',
+        )
     }
 
     public stopObserving(): void {

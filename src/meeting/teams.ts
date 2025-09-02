@@ -376,8 +376,11 @@ export class TeamsProvider implements MeetingProviderInterface {
         // Once in the meeting, configure the view
         try {
             // Capture DOM state before configuring Teams view
-            await htmlSnapshot.captureSnapshot(page, 'teams_configure_view_start')
-            
+            await htmlSnapshot.captureSnapshot(
+                page,
+                'teams_configure_view_start',
+            )
+
             if (await clickWithInnerText(page, 'button', 'View', 10, false)) {
                 if (GLOBAL.get().recording_mode !== 'gallery_view') {
                     await clickWithInnerText(page, 'button', 'View', 10)
