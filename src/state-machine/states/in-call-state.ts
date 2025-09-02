@@ -77,7 +77,7 @@ export class InCallState extends BaseState {
             console.error('Context state:', {
                 hasPlaywrightPage: !!this.context.playwrightPage,
                 recordingMode: GLOBAL.get().recording_mode,
-                meetingProvider: GLOBAL.get().meetingProvider,
+                meetingProvider: GLOBAL.getMeetingProvider(),
                 botName: GLOBAL.get().bot_name,
             })
             throw new Error(`Browser component setup failed: ${error as Error}`)
@@ -98,7 +98,7 @@ export class InCallState extends BaseState {
 
     private async startSpeakersObservation(): Promise<void> {
         console.log(
-            `Starting speakers observation for ${GLOBAL.get().meetingProvider}`,
+            `Starting speakers observation for ${GLOBAL.getMeetingProvider()}`,
         )
 
         // Start SpeakerManager
@@ -113,7 +113,7 @@ export class InCallState extends BaseState {
 
         // Create and start integrated speakers observer
         const speakersObserver = new SpeakersObserver(
-            GLOBAL.get().meetingProvider,
+            GLOBAL.getMeetingProvider(),
         )
 
         // Callback to handle speakers changes
@@ -152,13 +152,13 @@ export class InCallState extends BaseState {
             return
         }
 
-        console.log(`Starting HTML cleanup for ${GLOBAL.get().meetingProvider}`)
+        console.log(`Starting HTML cleanup for ${GLOBAL.getMeetingProvider()}`)
 
         try {
             // EXACT SAME LOGIC AS EXTENSION: Use centralized HtmlCleaner
             const htmlCleaner = new HtmlCleaner(
                 this.context.playwrightPage,
-                GLOBAL.get().meetingProvider,
+                GLOBAL.getMeetingProvider(),
                 GLOBAL.get().recording_mode,
             )
 
