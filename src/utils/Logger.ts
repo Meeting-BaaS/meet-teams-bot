@@ -163,7 +163,7 @@ export function setupConsoleLogger() {
 export async function uploadLogsToS3(): Promise<void> {
     try {
         const pathManager = PathManager.getInstance()
-        const logPath = currentBotLogFile || pathManager.getIdentifier()
+        const logPath = currentBotLogFile || GLOBAL.get().bot_uuid
 
         // Sound log file
         const soundLogPath = pathManager.getSoundLogPath()
@@ -191,7 +191,7 @@ export async function uploadLogsToS3(): Promise<void> {
         // Upload sound log file (internal log file)
         if (fs.existsSync(soundLogPath)) {
             logger.info(`Uploading sound logs to S3...`)
-            await s3cp(soundLogPath, s3SoundLogPath, [])
+            await s3cp(soundLogPath, s3SoundLogPath)
             logger.info(`Sound logs uploaded to S3`)
         } else {
             console.log('No sound log file found at path:', soundLogPath)
@@ -200,7 +200,7 @@ export async function uploadLogsToS3(): Promise<void> {
         // Upload speaker separation log file
         if (fs.existsSync(speakerLogPath)) {
             logger.info(`Uploading speaker separation logs to S3...`)
-            await s3cp(speakerLogPath, s3SpeakerLogPath, [])
+            await s3cp(speakerLogPath, s3SpeakerLogPath)
             logger.info(`Speaker separation logs uploaded to S3`)
         } else {
             console.log(
@@ -237,7 +237,7 @@ export async function uploadLogsToS3(): Promise<void> {
                             filename,
                         )
                         const s3ScreenshotPath = `${s3ScreenshotsPath}${filename}`
-                        await s3cp(screenshotPath, s3ScreenshotPath, [])
+                        await s3cp(screenshotPath, s3ScreenshotPath)
                     }
                     logger.info('Screenshots uploaded to S3 (fallback)')
                 }
@@ -282,7 +282,7 @@ export async function uploadLogsToS3(): Promise<void> {
                             filename,
                         )
                         const s3HtmlSnapshotPath = `${s3HtmlSnapshotsPath}${filename}`
-                        await s3cp(htmlSnapshotPath, s3HtmlSnapshotPath, [])
+                        await s3cp(htmlSnapshotPath, s3HtmlSnapshotPath)
                     }
                     logger.info('HTML snapshots uploaded to S3 (fallback)')
                 }

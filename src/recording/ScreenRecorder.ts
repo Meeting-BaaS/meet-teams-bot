@@ -533,8 +533,6 @@ export class ScreenRecorder extends EventEmitter {
                             timestamp: Date.now(),
                         }
                         this.emit('audioWarning', audioWarning)
-
-                        // Don't reset error count immediately - let it accumulate
                     }
                 }
             }
@@ -611,12 +609,19 @@ export class ScreenRecorder extends EventEmitter {
                         `📤 Uploading chunk: ${filename} (${stats.size} bytes)`,
                     )
 
+                    // Add metadata for audio chunks
+                    const chunkMetadata = {
+                        media_type: 'audio_chunk',
+                        format: 'wav',
+                        chunk_filename: filename,
+                        file_size_bytes: stats.size.toString(),
+                    }
+
                     await S3Uploader.getInstance().uploadFile(
                         chunkPath,
                         GLOBAL.getS3AudioBucket(),
                         s3Key,
-                        [],
-                        undefined, // no metadata for audio chunks
+                        chunkMetadata,
                     )
 
                     console.log(`✅ Chunk uploaded: ${filename}`)
@@ -634,19 +639,28 @@ export class ScreenRecorder extends EventEmitter {
             return
         }
 
-        const identifier = PathManager.getInstance().getIdentifier()
+        const identifier = GLOBAL.get().bot_uuid
 
         try {
             if (fs.existsSync(this.audioOutputPath)) {
                 console.log(
                     `📤 Uploading WAV audio to video bucket: ${GLOBAL.getS3VideoBucket()}`,
                 )
+                // Calculate audio duration for WAV metadata
+                const audioDuration = await this.getDuration(
+                    this.audioOutputPath,
+                )
+                const audioMetadata = {
+                    media_duration_sec: audioDuration.toString(),
+                    media_type: 'audio',
+                    format: 'wav',
+                }
+
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
                     GLOBAL.getS3VideoBucket(),
                     `${identifier}.wav`,
-                    [], // s3Args
-                    undefined, // no metadata for WAV
+                    audioMetadata,
                 )
                 fs.unlinkSync(this.audioOutputPath)
             }
@@ -667,17 +681,20 @@ export class ScreenRecorder extends EventEmitter {
                     `📊 Media duration calculated: ${this.mediaDurationSec.toFixed(2)}s`,
                 )
 
-                // Prepare S3 metadata with media duration
+                // Prepare S3 metadata with comprehensive information
                 const metadata = {
                     media_duration_sec: this.mediaDurationSec.toString(),
+                    media_type: 'video',
+                    format: 'mp4',
+                    recording_mode: GLOBAL.get().recording_mode,
+                    bot_uuid: GLOBAL.get().bot_uuid,
                 }
 
                 await S3Uploader.getInstance().uploadFile(
                     this.outputPath,
                     GLOBAL.getS3VideoBucket(),
                     `${identifier}.mp4`,
-                    [], // s3Args
-                    metadata, // S3 metadata
+                    metadata, // S3 metadata with media_duration_sec
                 )
                 fs.unlinkSync(this.outputPath)
             }

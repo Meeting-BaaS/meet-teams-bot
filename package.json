@@ -15,9 +15,12 @@
         "node": ">= 18.0.0"
     },
     "dependencies": {
+        "@aws-sdk/client-s3": "^3.879.0",
+        "@aws-sdk/lib-storage": "^3.879.0",
         "@playwright/test": "^1.53.0",
         "async": "^3.2.6",
         "axios": "0.21.1",
+        "dotenv": "^16.5.0",
         "express": "4.17.1",
         "retry-axios": "^2.5.0",
         "tslib": "^2.8.1",
