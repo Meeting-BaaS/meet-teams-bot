@@ -1,4 +1,4 @@
-import { MeetingEndReason } from "./types";
+import { MeetingEndReason } from './types'
 
 export const MEETING_CONSTANTS = {
     // Durées

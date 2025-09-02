@@ -114,7 +114,7 @@ export interface MeetingContext {
     dialogObserver?: SimpleDialogObserver
 }
 
-export interface StateTransition {
+interface StateTransition {
     nextState: MeetingStateType
     context: MeetingContext
 }
