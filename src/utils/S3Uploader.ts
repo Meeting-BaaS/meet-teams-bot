@@ -34,19 +34,29 @@ export class S3Uploader {
     private getS3Args(s3Args?: string[]): string[] {
         // Order of precedence for s3Args:
         // 1. Provided s3Args argument (if non-empty)
-        // 2. GLOBAL.get().remote?.s3_args (if non-empty)
-        // 3. process.env.S3_ARGS (if set)
-        // 4. []
+        // 2. process.env.S3_ARGS (if set)
+        // 3. Default environment-based args
         let finalS3Args: string[] = []
         if (s3Args && s3Args.length > 0) {
             finalS3Args = s3Args
-        } else if (
-            GLOBAL.get().remote?.s3_args &&
-            GLOBAL.get().remote.s3_args.length > 0
-        ) {
-            finalS3Args = GLOBAL.get().remote.s3_args
         } else if (process.env.S3_ARGS) {
             finalS3Args = process.env.S3_ARGS.split(' ')
+        } else {
+            // Build S3 args from environment variables
+            const s3ArgsFromEnv: string[] = []
+            if (process.env.AWS_ACCESS_KEY_ID) {
+                s3ArgsFromEnv.push('--profile', 'default')
+            }
+            if (process.env.AWS_ENDPOINT) {
+                s3ArgsFromEnv.push(
+                    '--endpoint-url',
+                    `https://${process.env.AWS_ENDPOINT}`,
+                )
+            }
+            if (process.env.AWS_REGION) {
+                s3ArgsFromEnv.push('--region', process.env.AWS_REGION)
+            }
+            finalS3Args = s3ArgsFromEnv
         }
         return finalS3Args
     }
@@ -56,7 +66,7 @@ export class S3Uploader {
         bucketName: string,
         s3Path: string,
         s3Args?: string[],
-        isAudio: boolean = false,
+        metadata?: Record<string, string>,
     ): Promise<string> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
@@ -71,13 +81,15 @@ export class S3Uploader {
             s3Args = this.getS3Args(s3Args)
 
             // Create the full command array
-            const fullArgs = [
-                ...s3Args,
-                's3',
-                'cp',
-                filePath,
-                s3FullPath
-            ]
+            const fullArgs = [...s3Args, 's3', 'cp', filePath, s3FullPath]
+
+            // Add metadata if provided
+            if (metadata && Object.keys(metadata).length > 0) {
+                const metadataEntries = Object.entries(metadata)
+                    .map(([key, value]) => `${key}=${value}`)
+                    .join(',')
+                fullArgs.push('--metadata', metadataEntries)
+            }
 
             console.log('🔍 S3 upload command:', 'aws', fullArgs.join(' '))
 
@@ -137,7 +149,7 @@ export class S3Uploader {
         try {
             return await this.uploadFile(
                 filePath,
-                GLOBAL.get().remote.aws_s3_log_bucket,
+                GLOBAL.getS3LogsBucket(),
                 s3Path,
                 s3_args,
             )
