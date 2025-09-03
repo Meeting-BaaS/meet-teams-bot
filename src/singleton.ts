@@ -89,6 +89,13 @@ class Global {
             console.log(`🔴 Setting global error: ${reason} but skipping because end reason is already set to ApiRequest`)
             return
         }
+        
+        // If we already have a custom error message for the same reason, preserve it
+        if (this.endReason === reason && this.errorMessage && this.errorMessage !== getErrorMessageFromCode(reason)) {
+            console.log(`🔴 Preserving existing custom error message for ${reason}: "${this.errorMessage}"`)
+            return
+        }
+        
         console.log(`🔴 Setting global error: ${reason}`)
         this.endReason = reason
         this.errorMessage = message || getErrorMessageFromCode(reason)

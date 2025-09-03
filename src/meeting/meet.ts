@@ -492,7 +492,7 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
         if ((await element.count()) > 0) {
             // Google Meet itself has timed out
             console.log('XXXXXXXXXXXXXXXXXX Google Meet itself has timed out')
-            GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart, "Google Meet has timed out waiting for the meeting to start")
+            GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart, "Google Meet has timed out while waiting for the bot to join the meeting")
             return true
         }
     }
