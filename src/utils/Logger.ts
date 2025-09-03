@@ -175,11 +175,11 @@ export async function uploadLogsToS3(): Promise<void> {
 
         // Screenshots directory
         const screenshotsPath = pathManager.getScreenshotsPath()
-        const s3ScreenshotsPath = `${logPath}/screenshots/`
+        const s3ScreenshotsPath = `${logPath}/screenshots`
 
         // HTML snapshots directory
         const htmlSnapshotsPath = pathManager.getHtmlSnapshotsPath()
-        const s3HtmlSnapshotsPath = `${logPath}/html_snapshots/`
+        const s3HtmlSnapshotsPath = `${logPath}/html_snapshots`
 
         console.log('Looking for internal log files at:', {
             soundLogPath,
@@ -236,7 +236,7 @@ export async function uploadLogsToS3(): Promise<void> {
                             screenshotsPath,
                             filename,
                         )
-                        const s3ScreenshotPath = `${s3ScreenshotsPath}${filename}`
+                        const s3ScreenshotPath = `${s3ScreenshotsPath}/${filename}`
                         await s3cp(screenshotPath, s3ScreenshotPath)
                     }
                     logger.info('Screenshots uploaded to S3 (fallback)')
@@ -281,7 +281,7 @@ export async function uploadLogsToS3(): Promise<void> {
                             htmlSnapshotsPath,
                             filename,
                         )
-                        const s3HtmlSnapshotPath = `${s3HtmlSnapshotsPath}${filename}`
+                        const s3HtmlSnapshotPath = `${s3HtmlSnapshotsPath}/${filename}`
                         await s3cp(htmlSnapshotPath, s3HtmlSnapshotPath)
                     }
                     logger.info('HTML snapshots uploaded to S3 (fallback)')
