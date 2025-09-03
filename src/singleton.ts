@@ -90,8 +90,8 @@ class Global {
             return
         }
         
-        // If we already have a custom error message for the same reason, preserve it
-        if (this.endReason === reason && this.errorMessage && this.errorMessage !== getErrorMessageFromCode(reason)) {
+        // If we already have a custom error message for the same reason, and no new message is provided, preserve the existing custom message
+        if (this.endReason === reason && !message && this.errorMessage && this.errorMessage !== getErrorMessageFromCode(reason)) {
             console.log(`🔴 Preserving existing custom error message for ${reason}: "${this.errorMessage}"`)
             return
         }
