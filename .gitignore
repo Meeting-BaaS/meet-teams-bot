@@ -1,5 +1,8 @@
 [0-9a-zA-Z]*-[0-9a-zA-Z]*-[0-9a-zA-Z]*-[0-9a-zA-Z]*-[0-9a-zA-Z]*
 
+.env
+bot.config.json
+
 # Logs
 logs
 *.log
