@@ -86,10 +86,7 @@ export class Api {
 
         const resp = await axios({
             method: 'POST',
-            url: '/bots/end_meeting_trampoline',
-            params: {
-                bot_uuid: GLOBAL.get().bot_uuid,
-            },
+            url: `/bots/${GLOBAL.get().bot_uuid}/meeting_success`,
             data: successRequest,
         })
         return resp.data
@@ -102,7 +99,7 @@ export class Api {
         return (
             await axios({
                 method: 'POST',
-                url: `/bots/transcripts/${GLOBAL.get().bot_uuid}/diarization`,
+                url: `/bots/${GLOBAL.get().bot_uuid}/diarization`,
                 data: transcript,
             })
         ).data
@@ -115,7 +112,7 @@ export class Api {
         return (
             await axios({
                 method: 'PATCH',
-                url: `/bots/transcripts/${GLOBAL.get().bot_uuid}/diarization`,
+                url: `/bots/${GLOBAL.get().bot_uuid}/diarization`,
                 data: transcript,
             })
         ).data
@@ -146,10 +143,9 @@ export class Api {
         try {
             await axios({
                 method: 'POST',
-                url: `/bots/start_record_failed`,
+                url: `/bots/${GLOBAL.get().bot_uuid}/meeting_failed`,
                 timeout: 10000,
                 data: failureRequest,
-                params: { bot_uuid: GLOBAL.get().bot_uuid },
             })
             console.log('Successfully notified backend of recording failure')
         } catch (error) {

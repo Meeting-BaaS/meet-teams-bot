@@ -222,7 +222,7 @@ run_with_config() {
     fi
     
     # Run the bot
-    echo "$processed_config" | docker run -i \
+    echo "$processed_config" | docker run --add-host=host.docker.internal:host-gateway -i \
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
@@ -321,7 +321,7 @@ run_with_config_and_overrides() {
     fi
     
     # Run the bot
-    echo "$processed_config" | docker run -i \
+    echo "$processed_config" | docker run --add-host=host.docker.internal:host-gateway -i \
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
@@ -417,7 +417,7 @@ run_with_json() {
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
-    echo "$processed_config" | docker run -i \
+    echo "$processed_config" | docker run --add-host=host.docker.internal:host-gateway -i \
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
