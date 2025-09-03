@@ -458,7 +458,7 @@ async function sendEntryMessage(
 }
 
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
-    // User has denied entry
+    // Generic user-denied entry texts
     const deniedTexts = [
         'denied',
         "You've been removed",
@@ -472,7 +472,7 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
     ]
 
     // Google Meet has its own timeout which would deny entry into the meeting after ~10 minutes
-    const timeoutTextFromGoogle = [
+    const timeoutTextsFromGoogle = [
         "No one responded to your request to join the call"
     ]
 
@@ -488,7 +488,7 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
     }
 
     // Check for Google Meet timeout texts
-    for (const text of timeoutTextFromGoogle) {
+    for (const text of timeoutTextsFromGoogle) {
         const element = page.locator(`text=${text}`)
         if ((await element.count()) > 0) {
             // Google Meet itself has timed out

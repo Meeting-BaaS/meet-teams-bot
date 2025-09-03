@@ -103,9 +103,11 @@ async function handleFailedRecording(): Promise<void> {
     console.log(`Recording failed with reason: ${endReason || 'Unknown'}`)
 
     // Send failure webhook to user before sending to backend
-    const errorMessage = endReason
-        ? getErrorMessageFromCode(endReason)
-        : 'Recording did not complete successfully'
+    const errorMessage =
+        (GLOBAL.hasError() && GLOBAL.getErrorMessage()) ||
+        (endReason
+            ? getErrorMessageFromCode(endReason)
+            : 'Recording did not complete successfully')
     await Events.recordingFailed(errorMessage)
 
     console.log(`📤 Sending error to backend`)

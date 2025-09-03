@@ -117,7 +117,7 @@ export class Api {
     ): Promise<void> {
         const code = errorCode || GLOBAL.getEndReason?.()
         const msg =
-            message ||
+            message || GLOBAL.getErrorMessage?.() ||
             (code
                 ? getErrorMessageFromCode(code as MeetingEndReason)
                 : 'Unknown error')
