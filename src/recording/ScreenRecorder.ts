@@ -275,7 +275,7 @@ export class ScreenRecorder extends EventEmitter {
         const timestamp = Date.now()
         const screenshotPattern = path.join(
             screenshotsPath,
-            `${timestamp}_%4d.png`,
+            `${timestamp}_%4d.jpg`,
         )
 
         if (GLOBAL.get().recording_mode === 'audio_only') {
@@ -323,6 +323,8 @@ export class ScreenRecorder extends EventEmitter {
                 '1:v:0',
                 '-vf',
                 `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+                '-c:v',
+                'mjpeg', // Explicitly use JPEG codec
                 '-q:v',
                 '3', // High quality JPEG compression
                 '-f',
@@ -422,6 +424,8 @@ export class ScreenRecorder extends EventEmitter {
                 '0:v:0',
                 '-vf',
                 `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+                '-c:v',
+                'mjpeg', // Explicitly use JPEG codec
                 '-q:v',
                 '3', // High quality JPEG compression
                 '-f',
