@@ -195,7 +195,6 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
 
                 if (await notAcceptedInMeeting(page)) {
-                    GLOBAL.setError(MeetingEndReason.BotNotAccepted)
                     throw new Error('Bot not accepted into meeting')
                 }
 
@@ -354,7 +353,6 @@ async function findShowEveryOne(
 
             if (await notAcceptedInMeeting(page)) {
                 console.log('Bot not accepted, exiting meeting')
-                GLOBAL.setError(MeetingEndReason.BotNotAccepted)
                 throw new Error('Bot not accepted into meeting')
             }
 
@@ -464,6 +462,7 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
         "You've been removed",
         'we encountered a problem joining',
         "You can't join",
+        "You left the meeting" // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
     ]
 
     // Google Meet itself has denied entry

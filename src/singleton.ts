@@ -84,6 +84,11 @@ class Global {
     }
 
     public setError(reason: MeetingEndReason, message?: string): void {
+        // ApiRequest is a special case where we don't want to override an existing error
+        if(this.endReason === MeetingEndReason.ApiRequest) {
+            console.log(`🔴 Setting global error: ${reason} but skipping because end reason is already set to ApiRequest`)
+            return
+        }
         console.log(`🔴 Setting global error: ${reason}`)
         this.endReason = reason
         this.errorMessage = message || getErrorMessageFromCode(reason)
