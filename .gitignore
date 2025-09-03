@@ -1,35 +1,59 @@
-[0-9a-zA-Z]*-[0-9a-zA-Z]*-[0-9a-zA-Z]*-[0-9a-zA-Z]*-[0-9a-zA-Z]*
-
-# Logs
-logs
-*.log
-npm-debug.log*
-
-# Dependencies
+# Node.js
 node_modules/
-
-# Coverage
-coverage
-
-# Transpiled files
-build/
-
-# VS Code
-.vscode
-!.vscode/tasks.js
-
-# JetBrains IDEs
-.idea/
-
-# Optional npm cache directory
+npm-debug.log*
 .npm
 
-# Prevent yarn usage (project uses npm)
-yarn.lock
+# Environment variables
+.env
+.env.local
+.env.*.local
 
-# Optional eslint cache
-.eslintcache
+# Build output
+build/
+dist/
 
-# Misc
+# Logs
+logs/
+*.log
+
+# Coverage reports
+coverage/
+.nyc_output
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Recordings and data
+recordings/
+data/
+*.mp4
+*.wav
+*.mkv
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Package managers (enforce npm usage)
+yarn.lock
+pnpm-lock.yaml
+
+# Build info
 buildInfo.json
