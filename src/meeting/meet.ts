@@ -458,28 +458,50 @@ async function sendEntryMessage(
 }
 
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
+    // User has denied entry
     const deniedTexts = [
         'denied',
         "You've been removed",
         'we encountered a problem joining',
         "You can't join",
     ]
-    // Google Meet has its own timeout which would deny entry into the meeting after ~10 minutes
-    // To handle this, we check for this text and return a different error message
-    const deniedTextFromGoogle = "No one responded to your request to join the call"
 
+    // Google Meet itself has denied entry
+    const googleMeetDeniedTexts = [
+        "You can't join this video call"
+    ]
+
+    // Google Meet has its own timeout which would deny entry into the meeting after ~10 minutes
+    const timeoutTextFromGoogle = [
+        "No one responded to your request to join the call"
+    ]
+
+    // Check for Google Meet denied texts first since the message overlaps with the user denied entry message
+    for (const text of googleMeetDeniedTexts) {
+        const element = page.locator(`text=${text}`)
+        if ((await element.count()) > 0) {
+            // Google Meet itself has denied entry
+            console.log('XXXXXXXXXXXXXXXXXX Google Meet itself has denied entry')
+            GLOBAL.setError(MeetingEndReason.BotNotAccepted, "Google Meet has denied entry")
+            return true
+        }
+    }
+
+    // Check for Google Meet timeout texts
+    for (const text of timeoutTextFromGoogle) {
+        const element = page.locator(`text=${text}`)
+        if ((await element.count()) > 0) {
+            // Google Meet itself has timed out
+            console.log('XXXXXXXXXXXXXXXXXX Google Meet itself has timed out')
+            GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart, "Google Meet has timed out waiting for the meeting to start")
+            return true
+        }
+    }
+
+    // Check for user denied entry texts
     for (const text of deniedTexts) {
         const element = page.locator(`text=${text}`)
         if ((await element.count()) > 0) {
-
-            // Google Meet timeout detection
-            const deniedTextFromGoogleElement = page.locator(`text=${deniedTextFromGoogle}`)
-            if ((await deniedTextFromGoogleElement.count()) > 0) {
-                console.log('XXXXXXXXXXXXXXXXXX Google Meet timeout detected')
-                GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart, "Google Meet Timeout while waiting to start recording.")
-                return true
-            }
-
             // User has denied entry
             console.log('XXXXXXXXXXXXXXXXXX User has denied entry')
             GLOBAL.setError(MeetingEndReason.BotNotAccepted)
