@@ -156,6 +156,13 @@ export class SimpleDialogObserver {
                         'div[role="dialog"]:has-text("background"):has(button), div[role="dialog"]:has-text("feed"):has(button)',
                     buttonTexts: ['Got it', 'OK', 'Dismiss'],
                 },
+                // Recording notification modal
+                {
+                    name: 'recording_notification',
+                    selector:
+                        'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
+                    buttonTexts: ['Join now'],
+                },
                 // Generic dismiss modals (fallback)
                 {
                     name: 'generic_dismiss',
