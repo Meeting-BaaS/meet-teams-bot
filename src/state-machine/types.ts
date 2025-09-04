@@ -32,6 +32,7 @@ export enum MeetingEndReason {
     TimeoutWaitingToStart = 'timeoutWaitingToStart',
     InvalidMeetingUrl = 'invalidMeetingUrl',
     StreamingSetupFailed = 'streamingSetupFailed',
+    LoginRequired = 'loginRequired',
     Internal = 'internalError',
 }
 
@@ -60,6 +61,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
             return 'Invalid meeting URL provided.'
         case MeetingEndReason.StreamingSetupFailed:
             return 'Failed to set up streaming audio.'
+        case MeetingEndReason.LoginRequired:
+            return 'Login required to access the meeting.'
         case MeetingEndReason.Internal:
             return 'Internal error occurred during recording.'
         default:

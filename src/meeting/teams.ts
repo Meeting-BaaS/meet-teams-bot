@@ -122,6 +122,11 @@ export class TeamsProvider implements MeetingProviderInterface {
             for (let i = 0; i < maxAttempts; i++) {
                 if (cancelCheck?.()) break
 
+                // Check if we've been redirected to a login page
+                if (await isOnMicrosoftLoginPage(page)) {
+                    throw new Error('LoginRequired')
+                }
+
                 // Check all buttons in one pass with more attempts
                 const [continueOnBrowser, joinNow, continueWithoutAudio] =
                     await Promise.all([
@@ -190,6 +195,11 @@ export class TeamsProvider implements MeetingProviderInterface {
             for (let i = 0; i < 5; i++) {
                 if (cancelCheck?.()) break
 
+                // Check if we've been redirected to a login page
+                if (await isOnMicrosoftLoginPage(page)) {
+                    throw new Error('LoginRequired')
+                }
+
                 const found = await clickWithInnerText(
                     page,
                     'button',
@@ -207,6 +217,9 @@ export class TeamsProvider implements MeetingProviderInterface {
                 await sleep(500)
             }
         } catch (e) {
+            if (e instanceof Error && e.message === 'LoginRequired') {
+                throw e // Re-throw LoginRequired errors
+            }
             console.warn('Failed during Teams button handling:', e)
         }
 
@@ -221,6 +234,8 @@ export class TeamsProvider implements MeetingProviderInterface {
                 : isLiveInterface
                   ? 'live 💃🏼'
                   : 'old 👴🏻',
+            'url: ',
+            currentUrl,
         )
 
         try {
@@ -376,8 +391,11 @@ export class TeamsProvider implements MeetingProviderInterface {
         // Once in the meeting, configure the view
         try {
             // Capture DOM state before configuring Teams view
-            await htmlSnapshot.captureSnapshot(page, 'teams_configure_view_start')
-            
+            await htmlSnapshot.captureSnapshot(
+                page,
+                'teams_configure_view_start',
+            )
+
             if (await clickWithInnerText(page, 'button', 'View', 10, false)) {
                 if (GLOBAL.get().recording_mode !== 'gallery_view') {
                     await clickWithInnerText(page, 'button', 'View', 10)
@@ -390,6 +408,11 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
 
     async findEndMeeting(page: Page): Promise<boolean> {
+        // Check if we're on a Microsoft login page
+        if (await isOnMicrosoftLoginPage(page)) {
+            return true
+        }
+
         return await isRemovedFromTheMeeting(page)
     }
 
@@ -575,6 +598,16 @@ async function checkPageForText(page: Page, text: string): Promise<boolean> {
     }
 }
 
+async function isOnMicrosoftLoginPage(page: Page): Promise<boolean> {
+    const currentUrl = await page.url()
+    if (currentUrl.includes('login.microsoft')) {
+        console.log('Detected Microsoft login page, login required')
+        GLOBAL.setError(MeetingEndReason.LoginRequired)
+        return true
+    }
+    return false
+}
+
 async function isRemovedFromTheMeeting(page: Page): Promise<boolean> {
     try {
         if (!(await ensurePageLoaded(page))) {
@@ -600,6 +633,11 @@ async function isRemovedFromTheMeeting(page: Page): Promise<boolean> {
 }
 
 async function isBotNotAccepted(page: Page): Promise<boolean> {
+    // Check if we're on a Microsoft login page
+    if (await isOnMicrosoftLoginPage(page)) {
+        return true
+    }
+
     const deniedTexts = [
         'Sorry, but you were denied access to the meeting.',
         'Someone in the meeting should let you in soon',

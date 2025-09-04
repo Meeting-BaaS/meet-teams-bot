@@ -1,8 +1,8 @@
 import { Events } from '../../events'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
+import { HtmlSnapshotService } from '../../services/html-snapshot-service'
 import { GLOBAL } from '../../singleton'
 import { Streaming } from '../../streaming'
-import { HtmlSnapshotService } from '../../services/html-snapshot-service'
 
 import {
     MeetingEndReason,
@@ -41,7 +41,10 @@ export class WaitingRoomState extends BaseState {
             // Capture DOM state after meeting page is opened (void to avoid blocking)
             if (this.context.playwrightPage) {
                 const htmlSnapshot = HtmlSnapshotService.getInstance()
-                void htmlSnapshot.captureSnapshot(this.context.playwrightPage, 'waiting_room_page_opened')
+                void htmlSnapshot.captureSnapshot(
+                    this.context.playwrightPage,
+                    'waiting_room_page_opened',
+                )
             }
 
             this.context.streamingService = new Streaming(
@@ -158,12 +161,13 @@ export class WaitingRoomState extends BaseState {
             }, timeoutMs)
 
             const checkStopSignal = setInterval(() => {
-                if (GLOBAL.getEndReason() === MeetingEndReason.ApiRequest) {
+                if (
+                    GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
+                    GLOBAL.getEndReason() === MeetingEndReason.LoginRequired
+                ) {
                     clearInterval(checkStopSignal)
                     clearTimeout(timeout)
-                    GLOBAL.setError(MeetingEndReason.ApiRequest)
-                    const apiError = new Error('API request to stop recording')
-                    reject(apiError)
+                    reject()
                 }
             }, 1000)
 
