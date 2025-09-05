@@ -72,7 +72,7 @@ build_image() {
 
 # Create output directory
 create_output_dir() {
-    local output_dir="./recordings"
+    local output_dir="./output"
     mkdir -p "$output_dir"
     echo "$output_dir"
 }
@@ -225,6 +225,8 @@ run_with_config() {
     echo "$processed_config" | docker run --add-host=host.docker.internal:host-gateway -i \
         $docker_args \
         -e RECORDING="$recording_mode" \
+        -e HOST_USER_ID=$(id -u) \
+        -e HOST_GROUP_ID=$(id -g) \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/data" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
