@@ -281,6 +281,7 @@ export class MeetHtmlCleaner {
                         while (depth >= 0 && element) {
                             element.style.opacity = '0'
                             element.style.border = 'transparent'
+                            element.style.clipPath = 'none'
                             element = element.parentElement
                             depth--
                         }
