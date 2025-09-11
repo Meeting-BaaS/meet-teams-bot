@@ -1,0 +1,7 @@
+{
+  "ignoreFiles": [],
+  "ignoreExportsUsedInFile": {
+    "src/types.ts": ["SpeechToTextApiParameter", "AutomaticLeave", "RecognizerTranscript"],
+    "src/recording/ScreenRecorder.ts": ["ScreenRecorder"]
+  }
+}

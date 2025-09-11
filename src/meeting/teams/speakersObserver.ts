@@ -633,7 +633,10 @@ export class TeamsSpeakersObserver {
 
         // Capture DOM state after Speakers Observer is started
         const htmlSnapshot = HtmlSnapshotService.getInstance()
-        await htmlSnapshot.captureSnapshot(this.page, 'teams_speaker_observer_started')
+        await htmlSnapshot.captureSnapshot(
+            this.page,
+            'teams_speaker_observer_started',
+        )
     }
 
     public stopObserving(): void {

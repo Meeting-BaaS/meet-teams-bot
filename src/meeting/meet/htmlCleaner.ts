@@ -16,7 +16,10 @@ export class MeetHtmlCleaner {
 
         // Capture DOM state before starting HTML cleaning
         const htmlSnapshot = HtmlSnapshotService.getInstance()
-        await htmlSnapshot.captureSnapshot(this.page, 'meet_html_cleaner_before_cleaning')
+        await htmlSnapshot.captureSnapshot(
+            this.page,
+            'meet_html_cleaner_before_cleaning',
+        )
 
         // Inject Meet provider logic into browser context
         await this.page.evaluate(async (recordingMode) => {
