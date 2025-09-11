@@ -35,7 +35,9 @@ if (DEBUG_LOGS) {
     // This is done to avoid circular dependency issues
     import('./browser/page-logger')
         .then(({ enablePrintPageLogs }) => enablePrintPageLogs())
-        .catch((e) => console.error('Failed to enable page logs dynamically:', e))
+        .catch((e) =>
+            console.error('Failed to enable page logs dynamically:', e),
+        )
 }
 
 // ========================================
@@ -56,11 +58,14 @@ async function readFromStdin(): Promise<MeetingParams> {
             try {
                 const params = JSON.parse(data) as MeetingParams
 
-                // Detect the meeting provider
-                params.meetingProvider = detectMeetingProvider(
+                // Set meeting params first
+                GLOBAL.set(params)
+
+                // Detect and set the meeting provider
+                const meetingProvider = detectMeetingProvider(
                     params.meeting_url,
                 )
-                GLOBAL.set(params)
+                GLOBAL.setMeetingProvider(meetingProvider)
                 PathManager.getInstance().initializePaths()
                 resolve(params)
             } catch (error) {
@@ -140,10 +145,8 @@ async function handleFailedRecording(): Promise<void> {
         const logParams = { ...meetingParams }
 
         // Mask sensitive data for security
-        if (logParams.user_token) logParams.user_token = '***MASKED***'
-        if (logParams.bots_api_key) logParams.bots_api_key = '***MASKED***'
-        if (logParams.speech_to_text_api_key)
-            logParams.speech_to_text_api_key = '***MASKED***'
+        if (logParams.speech_to_text_api_parameters?.api_key)
+            logParams.speech_to_text_api_parameters.api_key = '***MASKED***'
         if (logParams.zoom_sdk_pwd) logParams.zoom_sdk_pwd = '***MASKED***'
 
         console.log(

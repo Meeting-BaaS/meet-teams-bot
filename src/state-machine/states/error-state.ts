@@ -1,6 +1,6 @@
 import { Events } from '../../events'
-import { GLOBAL } from '../../singleton'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+import { GLOBAL } from '../../singleton'
 
 import {
     MeetingEndReason,
@@ -37,7 +37,10 @@ export class ErrorState extends BaseState {
         // Capture DOM state on error if page is available (void to avoid blocking)
         if (this.context.playwrightPage) {
             const htmlSnapshot = HtmlSnapshotService.getInstance()
-            void htmlSnapshot.captureSnapshot(this.context.playwrightPage, 'error_state_dom_capture')
+            void htmlSnapshot.captureSnapshot(
+                this.context.playwrightPage,
+                'error_state_dom_capture',
+            )
         }
 
         if (!endReason) {
@@ -52,7 +55,7 @@ export class ErrorState extends BaseState {
             state: this.stateType,
             meetingUrl: GLOBAL.get().meeting_url,
             botName: GLOBAL.get().bot_name,
-            sessionId: GLOBAL.get().session_id,
+            sessionId: GLOBAL.get().bot_uuid, // Use bot_uuid as session identifier
             timestamp: Date.now(),
         }
 
@@ -141,7 +144,7 @@ export class ErrorState extends BaseState {
             // Other relevant context metrics
             attendeesCount: this.context.attendeesCount,
             firstUserJoined: this.context.firstUserJoined,
-            sessionId: GLOBAL.get().session_id,
+            sessionId: GLOBAL.get().bot_uuid, // Use bot_uuid as session identifier
         }
 
         // Log metrics

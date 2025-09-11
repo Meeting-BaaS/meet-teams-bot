@@ -9,7 +9,10 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 
-import { ScreenRecorderManager, AudioWarningEvent } from '../../recording/ScreenRecorder'
+import {
+    ScreenRecorderManager,
+    AudioWarningEvent,
+} from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { sleep } from '../../utils/sleep'
 
@@ -137,10 +140,7 @@ export class RecordingState extends BaseState {
                         : String(error)
             }
 
-            GLOBAL.setError(
-                MeetingEndReason.StreamingSetupFailed,
-                errorMessage,
-            )
+            GLOBAL.setError(MeetingEndReason.StreamingSetupFailed, errorMessage)
             this.isProcessing = false
         })
 

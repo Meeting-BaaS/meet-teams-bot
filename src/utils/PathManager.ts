@@ -12,7 +12,7 @@ export class PathManager {
 
     private constructor() {
         let global = GLOBAL.get()
-        this.environment = global.environ
+        this.environment = process.env.NODE_ENV || 'local' // Use NODE_ENV instead of global.environ
         this.isServerless = GLOBAL.isServerless()
         this.botUuid = global.bot_uuid
     }
