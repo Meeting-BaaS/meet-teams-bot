@@ -7,7 +7,7 @@ const EFS_MOUNT_POINT = process.env.EFS_MOUNT_POINT || '/mnt/efs'
 export class PathManager {
     private static instance: PathManager
     private environment: string
-    private botUuid: string
+    private botUuid: string | null
     private isServerless: boolean
 
     private constructor() {
@@ -43,10 +43,6 @@ export class PathManager {
                 throw error
             }
         }
-    }
-
-    public getIdentifier(): string {
-        return this.botUuid
     }
 
     public getBasePath(): string {
@@ -92,10 +88,9 @@ export class PathManager {
     }
 
     public getS3Paths(): { bucketName: string; s3Path: string } {
-        const identifier = this.getIdentifier()
         return {
             bucketName: process.env.AWS_S3_VIDEO_BUCKET || '',
-            s3Path: `${identifier}`,
+            s3Path: `${this.botUuid}`,
         }
     }
 }

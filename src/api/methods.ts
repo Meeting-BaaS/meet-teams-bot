@@ -23,7 +23,6 @@ export class Api {
         }
         axios.defaults.baseURL = GLOBAL.get().core_server_url
         axios.defaults.withCredentials = true
-        // Set Authorization header with secret for V2 API
         if (!GLOBAL.isServerless()) {
             axios.defaults.headers.common['Authorization'] = GLOBAL.get().secret
         }
