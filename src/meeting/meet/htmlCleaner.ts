@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test'
-import { RecordingMode } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+import { RecordingMode } from '../../types'
 
 export class MeetHtmlCleaner {
     private page: Page
@@ -16,7 +16,10 @@ export class MeetHtmlCleaner {
 
         // Capture DOM state before starting HTML cleaning
         const htmlSnapshot = HtmlSnapshotService.getInstance()
-        await htmlSnapshot.captureSnapshot(this.page, 'meet_html_cleaner_before_cleaning')
+        await htmlSnapshot.captureSnapshot(
+            this.page,
+            'meet_html_cleaner_before_cleaning',
+        )
 
         // Inject Meet provider logic into browser context
         await this.page.evaluate(async (recordingMode) => {
@@ -82,6 +85,9 @@ export class MeetHtmlCleaner {
                         ;(div as HTMLElement).style.opacity = '0'
                     })
                 } catch (e) {}
+
+                // Hide visitor indicator bar
+                hideVisitorIndicator()
 
                 // People panel cleanup
                 let root: any = null
@@ -248,6 +254,54 @@ export class MeetHtmlCleaner {
                         }
                     }
                 } catch (e) {}
+
+                // Hide visitor indicator bar
+                hideVisitorIndicator()
+            }
+
+            function hideVisitorIndicator(): void {
+                try {
+                    const visitorIcons = Array.from(
+                        document.querySelectorAll('i.google-material-icons'),
+                    ).filter(
+                        (el) => el.textContent?.trim() === 'domain_disabled',
+                    )
+                    visitorIcons.forEach((icon) => {
+                        let currentElement = icon.parentElement
+                        while (currentElement != null) {
+                            // Look for elements with aria-label containing "Visitor" or similar
+                            const ariaLabel =
+                                currentElement.getAttribute('aria-label')
+                            if (
+                                ariaLabel &&
+                                (ariaLabel.toLowerCase().includes('visitor') ||
+                                    ariaLabel
+                                        .toLowerCase()
+                                        .includes('indicator') ||
+                                    ariaLabel
+                                        .toLowerCase()
+                                        .includes('organisation'))
+                            ) {
+                                currentElement.style.opacity = '0'
+                                break
+                            }
+                            // Also check for tooltip content about visitors
+                            const tooltip =
+                                currentElement.querySelector('[role="tooltip"]')
+                            if (
+                                tooltip &&
+                                tooltip.textContent &&
+                                tooltip.textContent
+                                    .toLowerCase()
+                                    .includes('visitor')
+                            ) {
+                                currentElement.style.opacity = '0'
+                                break
+                            }
+                            currentElement = currentElement.parentElement
+                        }
+                    })
+                } catch (e) {}
             }
 
             function removeBlackBox(): void {
@@ -275,6 +329,17 @@ export class MeetHtmlCleaner {
                         el.style.position = 'fixed'
                         el.style.zIndex = '9000'
                         el.style.backgroundColor = 'black'
+
+                        // Also apply parent styling to the main element
+                        let element = el.parentElement
+                        let depth = 4
+                        while (depth >= 0 && element) {
+                            element.style.opacity = '1'
+                            element.style.border = 'transparent'
+                            element.style.clipPath = 'none'
+                            element = element.parentElement
+                            depth--
+                        }
                     } else {
                         let element = el
                         let depth = 4
