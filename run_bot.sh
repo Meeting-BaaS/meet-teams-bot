@@ -85,7 +85,7 @@ get_docker_image() {
 
 # Find available port
 find_available_port() {
-    local start_port=${1:-3000}
+    local start_port=${1:-8080}
     local port=$start_port
     while lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; do
         if [ "$port" -ge 65535 ]; then
@@ -188,9 +188,9 @@ run_with_config() {
     print_info "Output directory: $output_dir"
     
     # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
+    local docker_args="-p 8080:8080"
     if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
+        docker_args="-p 5900:5900 -p 8080:8080"
         print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
         print_info "💻 Connect with VNC viewer to: localhost:5900"
         print_info "📱 On Mac, you can use: open vnc://localhost:5900"
@@ -287,9 +287,9 @@ run_with_config_and_overrides() {
     print_info "Output directory: $output_dir"
     
     # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
+    local docker_args="-p 8080:8080"
     if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
+        docker_args="-p 5900:5900 -p 8080:8080"
         print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
         print_info "💻 Connect with VNC viewer to: localhost:5900"
         print_info "📱 On Mac, you can use: open vnc://localhost:5900"
@@ -391,9 +391,9 @@ run_with_json() {
     print_info "Output directory: $output_dir"
     
     # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
+    local docker_args="-p 8080:8080"
     if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
+        docker_args="-p 5900:5900 -p 8080:8080 -p 3000:3000"
         print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
         print_info "💻 Connect with VNC viewer to: localhost:5900"
         print_info "📱 On Mac, you can use: open vnc://localhost:5900"
