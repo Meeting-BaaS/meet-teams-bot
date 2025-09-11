@@ -2,7 +2,6 @@ import { S3Client } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import * as fs from 'fs'
 import * as path from 'path'
-import { spawn } from 'child_process'
 import { GLOBAL } from '../singleton'
 
 // Singleton instance
@@ -42,41 +41,10 @@ export class S3Uploader {
         }
     }
 
-    private getS3Args(s3Args?: string[]): string[] {
-        // Order of precedence for s3Args:
-        // 1. Provided s3Args argument (if non-empty)
-        // 2. process.env.S3_ARGS (if set)
-        // 3. Default environment-based args
-        let finalS3Args: string[] = []
-        if (s3Args && s3Args.length > 0) {
-            finalS3Args = s3Args
-        } else if (process.env.S3_ARGS) {
-            finalS3Args = process.env.S3_ARGS.split(' ')
-        } else {
-            // Build S3 args from environment variables
-            const s3ArgsFromEnv: string[] = []
-            if (process.env.AWS_ACCESS_KEY_ID) {
-                s3ArgsFromEnv.push('--profile', 'default')
-            }
-            if (process.env.AWS_ENDPOINT) {
-                s3ArgsFromEnv.push(
-                    '--endpoint-url',
-                    `https://${process.env.AWS_ENDPOINT}`,
-                )
-            }
-            if (process.env.AWS_REGION) {
-                s3ArgsFromEnv.push('--region', process.env.AWS_REGION)
-            }
-            finalS3Args = s3ArgsFromEnv
-        }
-        return finalS3Args
-    }
-
     public async uploadFile(
         filePath: string,
         bucketName: string,
         s3Path: string,
-        s3Args?: string[],
         metadata?: Record<string, string>,
     ): Promise<string> {
         if (GLOBAL.isServerless()) {
@@ -87,62 +55,31 @@ export class S3Uploader {
         try {
             await this.checkFileExists(filePath)
 
-            const s3FullPath = `s3://${bucketName}/${s3Path}`
+            console.log(
+                `🔍 S3 upload: ${filePath} -> s3://${bucketName}/${s3Path}`,
+            )
 
-            s3Args = this.getS3Args(s3Args)
-
-            // Create the full command array
-            const fullArgs = [...s3Args, 's3', 'cp', filePath, s3FullPath]
-
-            // Add metadata if provided
-            if (metadata && Object.keys(metadata).length > 0) {
-                const metadataEntries = Object.entries(metadata)
-                    .map(([key, value]) => `${key}=${value}`)
-                    .join(',')
-                fullArgs.push('--metadata', metadataEntries)
-            }
-
-            console.log('🔍 S3 upload command:', 'aws', fullArgs.join(' '))
-
-            return new Promise((resolve, reject) => {
-                const awsProcess = spawn('aws', fullArgs)
-                let output = ''
-                let errorOutput = ''
-
-                awsProcess.stdout.on('data', (data) => {
-                    output += data.toString()
-                })
-
-                awsProcess.stderr.on('data', (data) => {
-                    errorOutput += data.toString()
-                    console.error('S3 upload error:', data.toString().trim())
-                })
-
-                awsProcess.on('error', (error) => {
-                    console.error(
-                        'Failed to start AWS CLI process:',
-                        error.message,
-                    )
-                    reject(
-                        new Error(
-                            `AWS CLI process failed to start: ${error.message}`,
-                        ),
-                    )
-                })
-
-                awsProcess.on('close', (code) => {
-                    if (code === 0) {
-                        resolve(s3FullPath)
-                    } else {
-                        const errorMessage = `S3 upload failed (${code}): ${errorOutput || output}`
-                        console.error(errorMessage)
-                        reject(new Error(errorMessage))
-                    }
-                })
+            // Use Upload class for automatic multipart handling
+            const upload = new Upload({
+                client: this.s3Client,
+                params: {
+                    Bucket: bucketName,
+                    Key: s3Path,
+                    Body: fs.createReadStream(filePath),
+                    ...(metadata && { Metadata: metadata }), // Add metadata if provided
+                },
             })
 
-        } catch (error) {
-            console.error(`S3 upload error for ${filePath} bucket ${bucketName} s3Path ${s3Path}`, error)
+            await upload.done()
+
+            // Return public URL (assuming public access)
+            const endpoint = process.env.AWS_ENDPOINT || 's3.amazonaws.com'
+            const publicUrl = `https://${bucketName}.${endpoint}/${s3Path}`
+
+            console.log(`✅ S3 upload completed: ${publicUrl}`)
+            return publicUrl
+        } catch (error: any) {
+            console.error(`S3 upload error for ${filePath}:`, error)
             throw error
         }
     }
@@ -150,7 +87,7 @@ export class S3Uploader {
     public async uploadToDefaultBucket(
         filePath: string,
         s3Path: string,
-    ): Promise<void> {
+    ): Promise<string> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
             return
@@ -161,7 +98,6 @@ export class S3Uploader {
                 filePath,
                 GLOBAL.getS3LogsBucket(),
                 s3Path,
-                [],
             )
         } catch (error: any) {
             console.error('Failed to upload to default bucket:', error.message)
@@ -173,7 +109,7 @@ export class S3Uploader {
         localDir: string,
         bucketName: string,
         s3Path: string,
-    ): Promise<void> {
+    ): Promise<string> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
             return
@@ -181,63 +117,87 @@ export class S3Uploader {
 
         try {
             // Get list of files in local directory (flat structure, no recursion needed)
-            const items = await fs.promises.readdir(localDir, { withFileTypes: true })
+            const items = await fs.promises.readdir(localDir, {
+                withFileTypes: true,
+            })
             const files = items
-                .filter(item => item.isFile())
-                .map(item => path.join(localDir, item.name))
-            
+                .filter((item) => item.isFile())
+                .map((item) => path.join(localDir, item.name))
+
             if (files.length === 0) {
                 console.log('No files found in directory:', localDir)
-                return
+                return ''
             }
 
             console.log(`Starting bulk upload of ${files.length} files...`)
-            
-            const results: Array<{ success: boolean; file: string; error?: string }> = []
-            
+
+            const results: Array<{
+                success: boolean
+                file: string
+                error?: string
+            }> = []
+
             // Process files in batches
             for (let i = 0; i < files.length; i += MAX_CONCURRENT_UPLOADS) {
                 const batch = files.slice(i, i + MAX_CONCURRENT_UPLOADS)
                 const batchNumber = Math.floor(i / MAX_CONCURRENT_UPLOADS) + 1
-                const totalBatches = Math.ceil(files.length / MAX_CONCURRENT_UPLOADS)
-                
-                console.log(`Processing batch ${batchNumber}/${totalBatches} (${batch.length} files)...`)
-                
+                const totalBatches = Math.ceil(
+                    files.length / MAX_CONCURRENT_UPLOADS,
+                )
+
+                console.log(
+                    `Processing batch ${batchNumber}/${totalBatches} (${batch.length} files)...`,
+                )
+
                 // Upload batch concurrently using our existing uploadFile function
                 const batchPromises = batch.map(async (file) => {
                     const filename = path.basename(file)
                     const s3Key = `${s3Path}/${filename}`
-                    
+
                     try {
-                        await this.uploadFile(file, bucketName, s3Key, [], undefined) 
+                        await this.uploadFile(file, bucketName, s3Key)
                         return { success: true, file: filename }
                     } catch (error: any) {
                         // Error is already logged in uploadFile
-                        return { success: false, file: filename, error: error.message }
+                        return {
+                            success: false,
+                            file: filename,
+                            error: error.message,
+                        }
                     }
                 })
-                
+
                 // Wait for batch to complete before starting next batch
                 const batchResults = await Promise.all(batchPromises)
-                const batchSuccesses = batchResults.filter(r => r.success).length
+                const batchSuccesses = batchResults.filter(
+                    (r) => r.success,
+                ).length
                 const batchFailures = batchResults.length - batchSuccesses
-                
-                console.log(`Batch ${batchNumber} complete: ${batchSuccesses} successful, ${batchFailures} failed`)
-                
+
+                console.log(
+                    `Batch ${batchNumber} complete: ${batchSuccesses} successful, ${batchFailures} failed`,
+                )
+
                 // Collect results
                 results.push(...batchResults)
             }
-            
+
             // Count total successes and failures
-            const successful = results.filter(r => r.success).length
-            const failed = results.filter(r => !r.success).length
-            
-            console.log(`Total upload summary: ${successful} successful, ${failed} failed`)
+            const successful = results.filter((r) => r.success).length
+            const failed = results.filter((r) => !r.success).length
+
+            console.log(
+                `Total upload summary: ${successful} successful, ${failed} failed`,
+            )
 
             if (failed > 0) {
                 throw new Error(`Bulk upload completed with ${failed} failures`)
             }
-        } catch (error) {
+
+            // Return base URL
+            const endpoint = process.env.AWS_ENDPOINT || 's3.amazonaws.com'
+            return `https://${bucketName}.${endpoint}/${s3Path}`
+        } catch (error: any) {
             console.error('S3 sync error:', error)
             throw error
         }
@@ -247,15 +207,5 @@ export class S3Uploader {
 }
 
 // Export utility functions that use the singleton instance
-export const s3cp = (
-    local: string,
-    s3path: string,
-    s3Args?: string[],
-): Promise<void> => {
-    const uploader = S3Uploader.getInstance()
-    if (!uploader) {
-        console.log('Skipping S3 upload - serverless mode')
-        return Promise.resolve()
-    }
-    return uploader.uploadToDefaultBucket(local, s3path)
-}
+export const s3cp = (local: string, s3path: string): Promise<string> =>
+    S3Uploader.getInstance().uploadToDefaultBucket(local, s3path)

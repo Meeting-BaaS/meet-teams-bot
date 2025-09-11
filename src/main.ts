@@ -14,7 +14,11 @@ import { PathManager } from './utils/PathManager'
 import { getErrorMessageFromCode } from './state-machine/types'
 import { MeetingParams } from './types'
 
+import { config } from 'dotenv'
 import { exit } from 'process'
+
+// Load environment variables from .env file
+config()
 
 // ========================================
 // CONFIGURATION
