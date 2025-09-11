@@ -136,7 +136,7 @@ process_config() {
     bot_uuid=$(generate_uuid)
     print_info "${ICON_BOT} Generated bot session ID: ${bot_uuid:0:8}..."
     if command -v jq &> /dev/null; then
-        echo "$config_json" | jq --arg bot_uuid "$bot_uuid" '.bot_uuid = $bot_uuid'
+        echo "$config_json" | jq # --arg bot_uuid "$bot_uuid" '.bot_uuid = $bot_uuid'
     else
         print_warning "jq not found, falling back to sed for bot_uuid (may be fragile)"
         if echo "$config_json" | grep -q '"bot_uuid"[[:space:]]*:[[:space:]]*"[^\"]*"'; then
