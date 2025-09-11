@@ -31,6 +31,8 @@ export class PathManager {
             this.getAudioPath(),
             this.getLogsPath(),
             this.getLocalPath(),
+            this.getScreenshotsPath(),
+            this.getHtmlSnapshotsPath(),
         ]
 
         for (const p of paths) {

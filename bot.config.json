@@ -1,8 +1,8 @@
 {
-    "bot_uuid": "toto21",
+    "bot_uuid": "",
     "secret": "secret",
-    "meeting_url": "https://meet.google.com/vki-wjcd-dvn?authuser=0",
-    "bot_name": "Recording Bot",
+    "meeting_url": "https://meet.google.com/imr-wfnc-xcg",
+    "bot_name": "Robert the bot",
     "custom_branding_bot_path": "https://i.ibb.co/N9YtnDZ/ducobu.jpg",
     "speech_to_text_api_parameters": {
         "provider": "Default",

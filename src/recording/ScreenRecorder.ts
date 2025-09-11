@@ -112,13 +112,19 @@ export class ScreenRecorder extends EventEmitter {
     private generateOutputPaths(): void {
         try {
             if (GLOBAL.get().recording_mode === 'audio_only') {
-                this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.wav'
+                this.audioOutputPath = path.join(
+                    PathManager.getInstance().getOutputPath(),
+                    `${GLOBAL.get().bot_uuid}.wav`,
+                )
             } else {
-                this.outputPath =
-                    PathManager.getInstance().getOutputPath() + '.mp4'
-                this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.wav'
+                this.outputPath = path.join(
+                    PathManager.getInstance().getOutputPath(),
+                    `${GLOBAL.get().bot_uuid}.mp4`,
+                )
+                this.audioOutputPath = path.join(
+                    PathManager.getInstance().getOutputPath(),
+                    `${GLOBAL.get().bot_uuid}.wav`,
+                )
             }
         } catch (error) {
             console.error('Failed to generate output paths:', error)

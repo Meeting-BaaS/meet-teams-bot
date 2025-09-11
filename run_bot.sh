@@ -54,15 +54,22 @@ create_output_dir() {
     echo "$output_dir"
 }
 
-# Process JSON configuration to add UUID if missing
+# Process JSON configuration to add UUID if missing or empty
 process_config() {
     local config_json="$1"
     local bot_uuid=$(generate_uuid)
     print_info "🤖 Generated bot session ID: ${bot_uuid:0:8}..."
     
-    # Simple JSON processing - add bot_uuid if not present
-    if echo "$config_json" | grep -q '"bot_uuid"'; then
-        echo "$config_json"
+    # Check if bot_uuid exists and is not empty
+    if echo "$config_json" | grep -q '"bot_uuid"[[:space:]]*:[[:space:]]*"[^"]*"'; then
+        # Check if bot_uuid is empty ("" or just whitespace)
+        if echo "$config_json" | grep -q '"bot_uuid"[[:space:]]*:[[:space:]]*""'; then
+            # Replace empty bot_uuid with generated one
+            echo "$config_json" | sed 's/"bot_uuid"[[:space:]]*:[[:space:]]*""/"bot_uuid": "'$bot_uuid'"/g'
+        else
+            # bot_uuid exists and is not empty, keep original
+            echo "$config_json"
+        fi
     else
         # Add bot_uuid to JSON
         local clean_json=$(echo "$config_json" | tr -d '\n' | sed 's/[[:space:]]*$//')
@@ -109,7 +116,13 @@ run_bot() {
         -e HOST_GROUP_ID=$(id -g) \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/data" \
-        meet-teams-bot:latest
+        meet-teams-bot:latest &
+    
+    # Store the PID to handle Ctrl+C gracefully
+    local docker_pid=$!
+    
+    # Wait for the container to finish
+    wait $docker_pid
     
     if [ ${PIPESTATUS[0]} -eq 0 ]; then
         print_success "Bot session completed successfully"
