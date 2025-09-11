@@ -25,13 +25,7 @@ export const enablePrintPageLogs = () => {
     PRINT_PAGE_LOGS = true
 }
 
-/**
- * Disable printing page logs.
- * This hasn't been used yet but could be implemented if we need to turn off page logs for some reason
- */
-export const disablePrintPageLogs = () => {
-    PRINT_PAGE_LOGS = false
-}
+// disablePrintPageLogs was removed as it was never used
 
 export function listenPage(page: Page) {
     page.on('console', async (message) => {

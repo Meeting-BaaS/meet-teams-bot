@@ -5,9 +5,9 @@ import { TeamsProvider } from '../meeting/teams'
 import { SimpleDialogObserver } from '../services/dialog-observer/simple-dialog-observer'
 import { GLOBAL } from '../singleton'
 import { MeetingProviderInterface } from '../types'
+import { NORMAL_END_REASONS } from './constants'
 import { getStateInstance } from './states'
 import { MeetingContext } from './types'
-import { NORMAL_END_REASONS } from './constants'
 
 export class MeetingStateMachine {
     static instance: MeetingStateMachine | null = null
@@ -28,7 +28,7 @@ export class MeetingStateMachine {
     constructor() {
         this.currentState = MeetingStateType.Initialization
         this.provider =
-            GLOBAL.get().meetingProvider === 'Teams'
+            GLOBAL.getMeetingProvider() === 'Teams'
                 ? new TeamsProvider()
                 : new MeetProvider()
 
