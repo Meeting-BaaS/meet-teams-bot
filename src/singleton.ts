@@ -3,10 +3,11 @@ import {
     getErrorMessageFromCode,
     MeetingEndReason,
 } from './state-machine/types'
-import { MeetingParams, RecordingMode } from './types'
+import { MeetingParams, MeetingProvider, RecordingMode } from './types'
 
 class Global {
     private meetingParams: MeetingParams | null = null
+    private meetingProvider: MeetingProvider | null = null
     private endReason: MeetingEndReason | null = null
     private errorMessage: string | null = null
     public constructor() {}
@@ -86,7 +87,10 @@ class Global {
         if (this.meetingParams === null) {
             throw new Error('Meeting params are not set')
         }
-        return this.meetingParams.remote === null
+        return (
+            this.meetingParams.core_server_url === null ||
+            this.meetingParams.core_server_url === undefined
+        )
     }
 
     public setError(reason: MeetingEndReason, message?: string): void {
@@ -151,6 +155,48 @@ class Global {
         // Only clear the error message, keep the end reason
         // This allows normal termination reasons to be preserved
         this.errorMessage = null
+    }
+
+    public getS3VideoBucket(): string {
+        const bucket = process.env.AWS_S3_VIDEO_BUCKET
+        if (!bucket) {
+            throw new Error(
+                'AWS_S3_VIDEO_BUCKET environment variable is not set',
+            )
+        }
+        return bucket
+    }
+
+    public getS3AudioBucket(): string {
+        const bucket = process.env.AWS_S3_AUDIO_BUCKET
+        if (!bucket) {
+            throw new Error(
+                'AWS_S3_AUDIO_BUCKET environment variable is not set',
+            )
+        }
+        return bucket
+    }
+
+    public getS3LogsBucket(): string {
+        const bucket = process.env.AWS_S3_LOGS_BUCKET
+        if (!bucket) {
+            throw new Error(
+                'AWS_S3_LOGS_BUCKET environment variable is not set',
+            )
+        }
+        return bucket
+    }
+
+    public setMeetingProvider(provider: MeetingProvider): void {
+        this.meetingProvider = provider
+        console.log(`🎯 Meeting provider detected: ${provider}`)
+    }
+
+    public getMeetingProvider(): MeetingProvider {
+        if (this.meetingProvider === null) {
+            throw new Error('Meeting provider is not set')
+        }
+        return this.meetingProvider
     }
 }
 
