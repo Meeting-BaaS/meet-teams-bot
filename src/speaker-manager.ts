@@ -3,11 +3,11 @@ import * as fs from 'fs'
 import { MeetingStateMachine } from './state-machine/machine'
 import { Streaming } from './streaming'
 
+import { enablePrintPageLogs } from './browser/page-logger'
 import { ParticipantState } from './state-machine/types'
 import { SpeakerData } from './types'
 import { uploadTranscriptTask } from './uploadTranscripts'
 import { PathManager } from './utils/PathManager'
-import { enablePrintPageLogs } from './browser/page-logger'
 
 export class SpeakerManager {
     private static instance: SpeakerManager | null = null
@@ -89,11 +89,25 @@ export class SpeakerManager {
             enablePrintPageLogs()
         }
 
+        // Track no active speakers time - only set once when silence starts
+        let noSpeakerDetectedTime =
+            MeetingStateMachine.instance.getContext().noSpeakerDetectedTime
+        if (speakersCount === 0) {
+            // Only set the timer if it's not already set (first time silence detected)
+            if (!noSpeakerDetectedTime) {
+                noSpeakerDetectedTime = Date.now()
+            }
+            // Otherwise keep the existing value (don't reset the timer)
+        } else if (speakersCount > 0) {
+            noSpeakerDetectedTime = null
+        }
+        // If speakersCount is neither 0 nor > 0 (impossible), keep existing value
+
         const participantState: ParticipantState = {
             attendeesCount: speakers.length,
             firstUserJoined: speakers.length > 0,
             lastSpeakerTime: this.lastSpeakerTime,
-            noSpeakerDetectedTime: speakersCount === 0 ? Date.now() : null,
+            noSpeakerDetectedTime,
         }
 
         MeetingStateMachine.instance.updateParticipantState(participantState)
