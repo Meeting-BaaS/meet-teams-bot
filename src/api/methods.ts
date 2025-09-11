@@ -1,7 +1,6 @@
 import axios from 'axios'
 import * as rax from 'retry-axios'
 
-import { ScreenRecorderManager } from '../recording/ScreenRecorder'
 import {
     getErrorMessageFromCode,
     MeetingEndReason,
@@ -72,7 +71,10 @@ export class Api {
     }
 
     // Finalize bot structure into BDD and send webhook
-    public async endMeetingTrampoline(mediaDurationSec: number = 0) {
+    public async endMeetingTrampoline(
+        mediaDurationSec: number = 0,
+        s3UploadFailed: boolean = false,
+    ) {
         const successRequest: BotSuccessRequest = {
             webhook_url: GLOBAL.get().bots_webhook_url,
             speech_to_text: GLOBAL.get().speech_to_text_api_parameters,
@@ -82,6 +84,7 @@ export class Api {
             transcription_fail_count: undefined,
             diarization_fail_count: undefined,
             media_duration_sec: mediaDurationSec,
+            s3_upload_failed: s3UploadFailed,
         }
 
         const resp = await axios({
@@ -124,7 +127,8 @@ export class Api {
     ): Promise<void> {
         const code = errorCode || GLOBAL.getEndReason?.()
         const msg =
-            message || GLOBAL.getErrorMessage?.() ||
+            message ||
+            GLOBAL.getErrorMessage?.() ||
             (code
                 ? getErrorMessageFromCode(code as MeetingEndReason)
                 : 'Unknown error')
@@ -134,10 +138,25 @@ export class Api {
             return
         }
 
+        // Get media duration and S3 status from singleton
+        let mediaDurationSec: number | undefined
+        let s3UploadFailed: boolean | undefined
+
+        const duration = GLOBAL.getMediaDurationSec()
+        if (duration > 0) {
+            mediaDurationSec = duration
+        }
+
+        if (GLOBAL.getS3UploadFailed()) {
+            s3UploadFailed = true
+        }
+
         const failureRequest: BotFailedRequest = {
             webhook_url: GLOBAL.get().bots_webhook_url,
             message: msg,
             error_code: code,
+            ...(mediaDurationSec && { media_duration_sec: mediaDurationSec }),
+            ...(s3UploadFailed && { s3_upload_failed: s3UploadFailed }),
         }
 
         try {
@@ -164,10 +183,11 @@ export class Api {
         }
 
         try {
-            // Get media duration from ScreenRecorder if available
-            const mediaDurationSec =
-                ScreenRecorderManager.getInstance().getMediaDurationSec()
-            await this.endMeetingTrampoline(mediaDurationSec)
+            // Get media duration and S3 status from singleton
+            const mediaDurationSec = GLOBAL.getMediaDurationSec()
+            const s3UploadFailed = GLOBAL.getS3UploadFailed()
+
+            await this.endMeetingTrampoline(mediaDurationSec, s3UploadFailed)
             console.log('API call to endMeetingTrampoline succeeded')
         } catch (error) {
             console.warn(

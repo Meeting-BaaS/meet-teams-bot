@@ -90,7 +90,6 @@ export interface AudioWarningEvent {
 
 export class ScreenRecorder extends EventEmitter {
     private ffmpegProcess: ChildProcess | null = null
-    private mediaDurationSec: number = 0
     private outputPath: string = ''
     private audioOutputPath: string = ''
     private config: ScreenRecordingConfig
@@ -620,7 +619,7 @@ export class ScreenRecorder extends EventEmitter {
                         chunk_filename: filename,
                         file_size_bytes: stats.size.toString(),
                         bot_uuid: GLOBAL.get().bot_uuid,
-                        upload_date: new Date().toISOString()
+                        upload_date: new Date().toISOString(),
                     }
 
                     await S3Uploader.getInstance().uploadFile(
@@ -633,10 +632,12 @@ export class ScreenRecorder extends EventEmitter {
                     console.log(`✅ Chunk uploaded: ${filename}`)
                 } catch (error) {
                     console.error(`Failed to upload chunk ${filename}:`, error)
+                    GLOBAL.setS3UploadFailed(true)
                 }
             }
         } catch (error) {
             console.error('Failed to read chunks directory:', error)
+            GLOBAL.setS3UploadFailed(true)
         }
     }
 
@@ -661,7 +662,7 @@ export class ScreenRecorder extends EventEmitter {
                     media_type: 'audio',
                     format: 'wav',
                     bot_uuid: GLOBAL.get().bot_uuid,
-                    upload_date: new Date().toISOString()
+                    upload_date: new Date().toISOString(),
                 }
 
                 await S3Uploader.getInstance().uploadFile(
@@ -674,6 +675,7 @@ export class ScreenRecorder extends EventEmitter {
             }
         } catch (error) {
             console.error('Failed to upload audio file:', error)
+            GLOBAL.setS3UploadFailed(true)
             // Don't throw - continue with video upload
         }
 
@@ -684,18 +686,16 @@ export class ScreenRecorder extends EventEmitter {
                 )
 
                 // Calculate media duration before upload
-                this.mediaDurationSec = await this.getDuration(this.outputPath)
-                console.log(
-                    `📊 Media duration calculated: ${this.mediaDurationSec.toFixed(2)}s`,
-                )
+                const mediaDuration = await this.getDuration(this.outputPath)
+                GLOBAL.setMediaDurationSec(mediaDuration)
 
                 // Prepare S3 metadata with unified structure
                 const metadata = {
-                    media_duration_sec: this.mediaDurationSec.toString(),
+                    media_duration_sec: mediaDuration.toString(),
                     media_type: 'video',
                     format: 'mp4',
                     bot_uuid: GLOBAL.get().bot_uuid,
-                    upload_date: new Date().toISOString()
+                    upload_date: new Date().toISOString(),
                 }
 
                 await S3Uploader.getInstance().uploadFile(
@@ -708,6 +708,7 @@ export class ScreenRecorder extends EventEmitter {
             }
         } catch (error) {
             console.error('Failed to upload video file:', error)
+            GLOBAL.setS3UploadFailed(true)
             // Don't throw - mark as uploaded to allow process completion
         }
 
@@ -788,19 +789,24 @@ export class ScreenRecorder extends EventEmitter {
         }
     }
 
-    /**
-     * Get the calculated media duration in seconds
-     */
-    public getMediaDurationSec(): number {
-        return this.mediaDurationSec
-    }
-
     private async handleSuccessfulRecording(): Promise<void> {
         console.log('Native recording completed')
 
         try {
             // Sync and merge separate audio/video files
             await this.syncAndMergeFiles()
+
+            // Calculate media duration - already done in uploadToS3 for video mode
+            // For audio-only mode, calculate from audio file
+            if (
+                GLOBAL.get().recording_mode === 'audio_only' &&
+                fs.existsSync(this.audioOutputPath)
+            ) {
+                const audioDuration = await this.getDuration(
+                    this.audioOutputPath,
+                )
+                GLOBAL.setMediaDurationSec(audioDuration)
+            }
 
             // Auto-upload if not serverless and wait for completion
             if (!GLOBAL.isServerless()) {

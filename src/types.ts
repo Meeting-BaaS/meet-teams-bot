@@ -43,6 +43,8 @@ export interface BotFailedRequest {
     webhook_url?: string // send it everytime
     message: string // mandatory
     error_code: string // mandatory
+    media_duration_sec?: number // duration if calculable before failure
+    s3_upload_failed?: boolean // true if had content but S3 upload failed
 }
 
 export interface BotSuccessRequest {
@@ -52,7 +54,8 @@ export interface BotSuccessRequest {
     diarization_v2: boolean // false
     transcription_fail_count?: number // none
     diarization_fail_count?: number // none
-    media_duration_sec: number
+    media_duration_sec: number // video duration or total audio duration in audio-only mode
+    s3_upload_failed: boolean // true if any S3 upload failed
 }
 
 export interface MeetingProviderInterface {

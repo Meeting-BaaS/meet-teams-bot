@@ -10,6 +10,8 @@ class Global {
     private meetingProvider: MeetingProvider | null = null
     private endReason: MeetingEndReason | null = null
     private errorMessage: string | null = null
+    private s3UploadFailed: boolean = false
+    private mediaDurationSec: number = 0
     public constructor() {}
 
     /**
@@ -197,6 +199,24 @@ class Global {
             throw new Error('Meeting provider is not set')
         }
         return this.meetingProvider
+    }
+
+    public setS3UploadFailed(failed: boolean = true): void {
+        console.log(`🔴 S3 upload status: ${failed ? 'FAILED' : 'SUCCESS'}`)
+        this.s3UploadFailed = failed
+    }
+
+    public getS3UploadFailed(): boolean {
+        return this.s3UploadFailed
+    }
+
+    public setMediaDurationSec(duration: number): void {
+        console.log(`📊 Setting media duration: ${duration.toFixed(2)}s`)
+        this.mediaDurationSec = duration
+    }
+
+    public getMediaDurationSec(): number {
+        return this.mediaDurationSec
     }
 }
 
