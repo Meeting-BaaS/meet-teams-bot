@@ -1,10 +1,12 @@
 import axios from 'axios'
 import * as rax from 'retry-axios'
 
+import { ScreenRecorderManager } from '../recording/ScreenRecorder'
 import {
     getErrorMessageFromCode,
     MeetingEndReason,
 } from '../state-machine/types'
+import { BotFailedRequest, BotSuccessRequest } from '../types'
 import { ApiTypes } from './types'
 
 import { GLOBAL } from '../singleton'
@@ -19,11 +21,11 @@ export class Api {
             )
             return Api.instance
         }
-        axios.defaults.baseURL = GLOBAL.get().remote.api_server_baseurl
+        axios.defaults.baseURL = GLOBAL.get().core_server_url
         axios.defaults.withCredentials = true
-        if (!GLOBAL.isServerless() && GLOBAL.get().user_token) {
-            axios.defaults.headers.common['Authorization'] =
-                GLOBAL.get().user_token
+        // Set Authorization header with secret for V2 API
+        if (!GLOBAL.isServerless()) {
+            axios.defaults.headers.common['Authorization'] = GLOBAL.get().secret
         }
         axios.defaults.raxConfig = {
             instance: axios,
@@ -71,16 +73,25 @@ export class Api {
     }
 
     // Finalize bot structure into BDD and send webhook
-    public async endMeetingTrampoline() {
+    public async endMeetingTrampoline(mediaDurationSec: number = 0) {
+        const successRequest: BotSuccessRequest = {
+            webhook_url: GLOBAL.get().bots_webhook_url,
+            speech_to_text: GLOBAL.get().speech_to_text_api_parameters,
+            transcription_custom_parameters:
+                GLOBAL.get().transcription_custom_parameters,
+            diarization_v2: false,
+            transcription_fail_count: undefined,
+            diarization_fail_count: undefined,
+            media_duration_sec: mediaDurationSec,
+        }
+
         const resp = await axios({
             method: 'POST',
             url: '/bots/end_meeting_trampoline',
             params: {
                 bot_uuid: GLOBAL.get().bot_uuid,
             },
-            data: {
-                diarization_v2: false,
-            },
+            data: successRequest,
         })
         return resp.data
     }
@@ -122,16 +133,23 @@ export class Api {
                 ? getErrorMessageFromCode(code as MeetingEndReason)
                 : 'Unknown error')
 
+        if (!code) {
+            console.warn('No error code available for failure notification')
+            return
+        }
+
+        const failureRequest: BotFailedRequest = {
+            webhook_url: GLOBAL.get().bots_webhook_url,
+            message: msg,
+            error_code: code,
+        }
+
         try {
             await axios({
                 method: 'POST',
                 url: `/bots/start_record_failed`,
                 timeout: 10000,
-                data: {
-                    meeting_url: GLOBAL.get().meeting_url,
-                    message: msg,
-                    ...(code && { error_code: code }),
-                },
+                data: failureRequest,
                 params: { bot_uuid: GLOBAL.get().bot_uuid },
             })
             console.log('Successfully notified backend of recording failure')
@@ -151,7 +169,10 @@ export class Api {
         }
 
         try {
-            await this.endMeetingTrampoline()
+            // Get media duration from ScreenRecorder if available
+            const mediaDurationSec =
+                ScreenRecorderManager.getInstance().getMediaDurationSec()
+            await this.endMeetingTrampoline(mediaDurationSec)
             console.log('API call to endMeetingTrampoline succeeded')
         } catch (error) {
             console.warn(
