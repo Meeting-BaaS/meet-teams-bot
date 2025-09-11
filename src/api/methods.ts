@@ -86,7 +86,7 @@ export class Api {
 
         const resp = await axios({
             method: 'POST',
-            url: `/bots/${GLOBAL.get().bot_uuid}/meeting_success`,
+            url: `/${GLOBAL.get().bot_uuid}/meeting_success`,
             data: successRequest,
         })
         return resp.data
@@ -99,7 +99,7 @@ export class Api {
         return (
             await axios({
                 method: 'POST',
-                url: `/bots/${GLOBAL.get().bot_uuid}/diarization`,
+                url: `/${GLOBAL.get().bot_uuid}/diarization`,
                 data: transcript,
             })
         ).data
@@ -112,7 +112,7 @@ export class Api {
         return (
             await axios({
                 method: 'PATCH',
-                url: `/bots/${GLOBAL.get().bot_uuid}/diarization`,
+                url: `/${GLOBAL.get().bot_uuid}/diarization`,
                 data: transcript,
             })
         ).data
@@ -143,7 +143,7 @@ export class Api {
         try {
             await axios({
                 method: 'POST',
-                url: `/bots/${GLOBAL.get().bot_uuid}/meeting_failed`,
+                url: `/${GLOBAL.get().bot_uuid}/meeting_failed`,
                 timeout: 10000,
                 data: failureRequest,
             })
