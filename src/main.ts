@@ -208,7 +208,7 @@ async function handleFailedRecording(): Promise<void> {
     } finally {
         if (!GLOBAL.isServerless()) {
             try {
-                await uploadLogsToS3({})
+                await uploadLogsToS3()
             } catch (error) {
                 console.error('Failed to upload logs to S3:', error)
             }

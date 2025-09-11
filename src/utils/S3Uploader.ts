@@ -2,6 +2,7 @@ import { S3Client } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import * as fs from 'fs'
 import * as path from 'path'
+import { spawn } from 'child_process'
 import { GLOBAL } from '../singleton'
 
 // Singleton instance
@@ -33,28 +34,112 @@ export class S3Uploader {
         return instance
     }
 
+    private async checkFileExists(filePath: string): Promise<void> {
+        try {
+            await fs.promises.access(filePath, fs.constants.F_OK)
+        } catch (error) {
+            throw new Error(`File does not exist: ${filePath}`)
+        }
+    }
+
+    private getS3Args(s3Args?: string[]): string[] {
+        // Order of precedence for s3Args:
+        // 1. Provided s3Args argument (if non-empty)
+        // 2. process.env.S3_ARGS (if set)
+        // 3. Default environment-based args
+        let finalS3Args: string[] = []
+        if (s3Args && s3Args.length > 0) {
+            finalS3Args = s3Args
+        } else if (process.env.S3_ARGS) {
+            finalS3Args = process.env.S3_ARGS.split(' ')
+        } else {
+            // Build S3 args from environment variables
+            const s3ArgsFromEnv: string[] = []
+            if (process.env.AWS_ACCESS_KEY_ID) {
+                s3ArgsFromEnv.push('--profile', 'default')
+            }
+            if (process.env.AWS_ENDPOINT) {
+                s3ArgsFromEnv.push(
+                    '--endpoint-url',
+                    `https://${process.env.AWS_ENDPOINT}`,
+                )
+            }
+            if (process.env.AWS_REGION) {
+                s3ArgsFromEnv.push('--region', process.env.AWS_REGION)
+            }
+            finalS3Args = s3ArgsFromEnv
+        }
+        return finalS3Args
+    }
+
     public async uploadFile(
         filePath: string,
         bucketName: string,
-        s3Path: string
-    ): Promise<void> {
+        s3Path: string,
+        s3Args?: string[],
+        metadata?: Record<string, string>,
+    ): Promise<string> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
-            return
+            return Promise.resolve('')
         }
 
         try {
-            // Use Upload class for automatic multipart handling
-            const upload = new Upload({
-                client: this.s3Client,
-                params: {
-                    Bucket: bucketName,
-                    Key: s3Path,
-                    Body: fs.createReadStream(filePath),
-                },
-            })
+            await this.checkFileExists(filePath)
 
-            await upload.done()
+            const s3FullPath = `s3://${bucketName}/${s3Path}`
+
+            s3Args = this.getS3Args(s3Args)
+
+            // Create the full command array
+            const fullArgs = [...s3Args, 's3', 'cp', filePath, s3FullPath]
+
+            // Add metadata if provided
+            if (metadata && Object.keys(metadata).length > 0) {
+                const metadataEntries = Object.entries(metadata)
+                    .map(([key, value]) => `${key}=${value}`)
+                    .join(',')
+                fullArgs.push('--metadata', metadataEntries)
+            }
+
+            console.log('🔍 S3 upload command:', 'aws', fullArgs.join(' '))
+
+            return new Promise((resolve, reject) => {
+                const awsProcess = spawn('aws', fullArgs)
+                let output = ''
+                let errorOutput = ''
+
+                awsProcess.stdout.on('data', (data) => {
+                    output += data.toString()
+                })
+
+                awsProcess.stderr.on('data', (data) => {
+                    errorOutput += data.toString()
+                    console.error('S3 upload error:', data.toString().trim())
+                })
+
+                awsProcess.on('error', (error) => {
+                    console.error(
+                        'Failed to start AWS CLI process:',
+                        error.message,
+                    )
+                    reject(
+                        new Error(
+                            `AWS CLI process failed to start: ${error.message}`,
+                        ),
+                    )
+                })
+
+                awsProcess.on('close', (code) => {
+                    if (code === 0) {
+                        resolve(s3FullPath)
+                    } else {
+                        const errorMessage = `S3 upload failed (${code}): ${errorOutput || output}`
+                        console.error(errorMessage)
+                        reject(new Error(errorMessage))
+                    }
+                })
+            })
 
         } catch (error) {
             console.error(`S3 upload error for ${filePath} bucket ${bucketName} s3Path ${s3Path}`, error)
@@ -70,13 +155,18 @@ export class S3Uploader {
             console.log('Skipping S3 upload - serverless mode')
             return
         }
-        
-        const bucket = GLOBAL.get().remote?.aws_s3_log_bucket
-        if (!bucket) {
-            console.warn('Skipping S3 upload - aws_s3_log_bucket not configured')
-            return
+
+        try {
+            await this.uploadFile(
+                filePath,
+                GLOBAL.getS3LogsBucket(),
+                s3Path,
+                [],
+            )
+        } catch (error: any) {
+            console.error('Failed to upload to default bucket:', error.message)
+            throw error
         }
-        await this.uploadFile(filePath, bucket, s3Path)
     }
 
     public async uploadDirectory(
@@ -119,7 +209,7 @@ export class S3Uploader {
                     const s3Key = `${s3Path}/${filename}`
                     
                     try {
-                        await this.uploadFile(file, bucketName, s3Key) 
+                        await this.uploadFile(file, bucketName, s3Key, [], undefined) 
                         return { success: true, file: filename }
                     } catch (error: any) {
                         // Error is already logged in uploadFile
@@ -160,5 +250,12 @@ export class S3Uploader {
 export const s3cp = (
     local: string,
     s3path: string,
-): Promise<void> =>
-    S3Uploader.getInstance().uploadToDefaultBucket(local, s3path)
+    s3Args?: string[],
+): Promise<void> => {
+    const uploader = S3Uploader.getInstance()
+    if (!uploader) {
+        console.log('Skipping S3 upload - serverless mode')
+        return Promise.resolve()
+    }
+    return uploader.uploadToDefaultBucket(local, s3path)
+}

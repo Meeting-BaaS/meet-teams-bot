@@ -160,9 +160,7 @@ export function setupConsoleLogger() {
     console.log('Console logger setup complete')
 }
 
-export async function uploadLogsToS3(options: {
-    error?: Error
-}): Promise<void> {
+export async function uploadLogsToS3(): Promise<void> {
     try {
         const pathManager = PathManager.getInstance()
         const logPath = currentBotLogFile || pathManager.getIdentifier()
@@ -193,7 +191,7 @@ export async function uploadLogsToS3(options: {
         // Upload sound log file (internal log file)
         if (fs.existsSync(soundLogPath)) {
             logger.info(`Uploading sound logs to S3...`)
-            await s3cp(soundLogPath, s3SoundLogPath)
+            await s3cp(soundLogPath, s3SoundLogPath, [])
             logger.info(`Sound logs uploaded to S3`)
         } else {
             console.log('No sound log file found at path:', soundLogPath)
@@ -202,7 +200,7 @@ export async function uploadLogsToS3(options: {
         // Upload speaker separation log file
         if (fs.existsSync(speakerLogPath)) {
             logger.info(`Uploading speaker separation logs to S3...`)
-            await s3cp(speakerLogPath, s3SpeakerLogPath)
+            await s3cp(speakerLogPath, s3SpeakerLogPath, [])
             logger.info(`Speaker separation logs uploaded to S3`)
         } else {
             console.log(
@@ -223,7 +221,7 @@ export async function uploadLogsToS3(options: {
                 try {
                     await S3Uploader.getInstance()?.uploadDirectory(
                         screenshotsPath,
-                        GLOBAL.get().remote?.aws_s3_log_bucket!,
+                        GLOBAL.getS3LogsBucket(),
                         s3ScreenshotsPath,
                     )
                     logger.info('Screenshots uploaded to S3')
@@ -268,7 +266,7 @@ export async function uploadLogsToS3(options: {
                 try {
                     await S3Uploader.getInstance()?.uploadDirectory(
                         htmlSnapshotsPath,
-                        GLOBAL.get().remote?.aws_s3_log_bucket!,
+                        GLOBAL.getS3LogsBucket(),
                         s3HtmlSnapshotsPath,
                     )
                     logger.info('HTML snapshots uploaded to S3')
@@ -311,7 +309,7 @@ export function setupExitHandler() {
         logger.error('Uncaught Exception: ' + error)
         if (!GLOBAL.isServerless()) {
             try {
-                await uploadLogsToS3({ error })
+                await uploadLogsToS3()
             } catch (uploadError) {
                 logger.error(
                     'Failed to upload crash logs to S3: ' + uploadError,
@@ -326,12 +324,7 @@ export function setupExitHandler() {
         )
         if (!GLOBAL.isServerless()) {
             try {
-                await uploadLogsToS3({
-                    error:
-                        reason instanceof Error
-                            ? reason
-                            : new Error(String(reason)),
-                })
+                await uploadLogsToS3()
             } catch (uploadError) {
                 logger.error(
                     'Failed to upload crash logs to S3: ' + uploadError,

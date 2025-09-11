@@ -4,10 +4,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { Streaming } from '../streaming'
 
-import { Page } from 'playwright'
+import { Page } from '@playwright/test'
 import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
-
 
 import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { calculateVideoOffset } from '../utils/CalculVideoOffset'
@@ -91,6 +90,7 @@ export interface AudioWarningEvent {
 
 export class ScreenRecorder extends EventEmitter {
     private ffmpegProcess: ChildProcess | null = null
+    private mediaDurationSec: number = 0
     private outputPath: string = ''
     private audioOutputPath: string = ''
     private config: ScreenRecordingConfig
@@ -112,9 +112,7 @@ export class ScreenRecorder extends EventEmitter {
 
     private generateOutputPaths(): void {
         try {
-            if (
-                GLOBAL.get().recording_mode === 'audio_only'
-            ) {
+            if (GLOBAL.get().recording_mode === 'audio_only') {
                 this.audioOutputPath =
                     PathManager.getInstance().getOutputPath() + '.wav'
             } else {
@@ -170,8 +168,7 @@ export class ScreenRecorder extends EventEmitter {
             console.log('Native recording started successfully')
             this.emit('started', {
                 outputPath: this.outputPath,
-                isAudioOnly:
-                    GLOBAL.get().recording_mode === 'audio_only',
+                isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
             })
         } catch (error) {
             console.error('Failed to start native recording:', error)
@@ -281,9 +278,7 @@ export class ScreenRecorder extends EventEmitter {
             `${timestamp}_%4d.png`,
         )
 
-        if (
-            GLOBAL.get().recording_mode === 'audio_only'
-        ) {
+        if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only recording with screenshots
             const tempDir = PathManager.getInstance().getTempPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')
@@ -618,8 +613,10 @@ export class ScreenRecorder extends EventEmitter {
 
                     await S3Uploader.getInstance().uploadFile(
                         chunkPath,
-                        GLOBAL.get().aws_s3_temporary_audio_bucket,
+                        GLOBAL.getS3AudioBucket(),
                         s3Key,
+                        [],
+                        undefined, // no metadata for audio chunks
                     )
 
                     console.log(`✅ Chunk uploaded: ${filename}`)
@@ -642,12 +639,14 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.audioOutputPath)) {
                 console.log(
-                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.getS3VideoBucket()}`,
                 )
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
-                    GLOBAL.get().remote?.aws_s3_video_bucket!,
+                    GLOBAL.getS3VideoBucket(),
                     `${identifier}.wav`,
+                    [], // s3Args
+                    undefined, // no metadata for WAV
                 )
                 fs.unlinkSync(this.audioOutputPath)
             }
@@ -659,12 +658,26 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.outputPath)) {
                 console.log(
-                    `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                    `📤 Uploading MP4 to video bucket: ${GLOBAL.getS3VideoBucket()}`,
                 )
+
+                // Calculate media duration before upload
+                this.mediaDurationSec = await this.getDuration(this.outputPath)
+                console.log(
+                    `📊 Media duration calculated: ${this.mediaDurationSec.toFixed(2)}s`,
+                )
+
+                // Prepare S3 metadata with media duration
+                const metadata = {
+                    media_duration_sec: this.mediaDurationSec.toString(),
+                }
+
                 await S3Uploader.getInstance().uploadFile(
                     this.outputPath,
-                    GLOBAL.get().remote?.aws_s3_video_bucket!,
+                    GLOBAL.getS3VideoBucket(),
                     `${identifier}.mp4`,
+                    [], // s3Args
+                    metadata, // S3 metadata
                 )
                 fs.unlinkSync(this.outputPath)
             }
@@ -750,6 +763,13 @@ export class ScreenRecorder extends EventEmitter {
         }
     }
 
+    /**
+     * Get the calculated media duration in seconds
+     */
+    public getMediaDurationSec(): number {
+        return this.mediaDurationSec
+    }
+
     private async handleSuccessfulRecording(): Promise<void> {
         console.log('Native recording completed')
 
@@ -800,9 +820,7 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private async syncAndMergeFiles(): Promise<void> {
-        if (
-            GLOBAL.get().recording_mode === 'audio_only'
-        ) {
+        if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only mode: just copy raw audio to final output
             const tempDir = PathManager.getInstance().getTempPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')
@@ -1176,7 +1194,7 @@ file '${absoluteInputPath}'`
     }
 
     private async createAudioChunks(audioPath: string): Promise<void> {
-        if (!GLOBAL.get().speech_to_text_provider) return
+        if (!GLOBAL.get().speech_to_text_api_parameters?.provider) return
 
         const chunksDir = PathManager.getInstance().getAudioTmpPath()
         if (!fs.existsSync(chunksDir)) {
