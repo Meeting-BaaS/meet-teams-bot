@@ -471,17 +471,15 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
         "You've been removed",
         'we encountered a problem joining',
         "You can't join",
-        "You left the meeting" // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
+        'You left the meeting', // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
     ]
 
     // Google Meet itself has denied entry
-    const googleMeetDeniedTexts = [
-        "You can't join this video call"
-    ]
+    const googleMeetDeniedTexts = ["You can't join this video call"]
 
     // Google Meet has its own timeout which would deny entry into the meeting after ~10 minutes
     const timeoutTextsFromGoogle = [
-        "No one responded to your request to join the call"
+        'No one responded to your request to join the call',
     ]
 
     // Check for Google Meet denied texts first since the message overlaps with the user denied entry message
@@ -489,8 +487,13 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
         const element = page.locator(`text=${text}`)
         if ((await element.count()) > 0) {
             // Google Meet itself has denied entry
-            console.log('XXXXXXXXXXXXXXXXXX Google Meet itself has denied entry')
-            GLOBAL.setError(MeetingEndReason.BotNotAccepted, "Google Meet has denied entry")
+            console.log(
+                'XXXXXXXXXXXXXXXXXX Google Meet itself has denied entry',
+            )
+            GLOBAL.setError(
+                MeetingEndReason.BotNotAccepted,
+                'Google Meet has denied entry',
+            )
             return true
         }
     }
@@ -501,7 +504,10 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
         if ((await element.count()) > 0) {
             // Google Meet itself has timed out
             console.log('XXXXXXXXXXXXXXXXXX Google Meet itself has timed out')
-            GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart, "Google Meet has timed out while waiting for the bot to join the meeting")
+            GLOBAL.setError(
+                MeetingEndReason.TimeoutWaitingToStart,
+                'Google Meet has timed out while waiting for the bot to join the meeting',
+            )
             return true
         }
     }
