@@ -279,7 +279,7 @@ export class ScreenRecorder extends EventEmitter {
 
         if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only recording with screenshots
-            const tempDir = PathManager.getInstance().getTempPath()
+            const tempDir = PathManager.getInstance().getLocalPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')
 
             args.push(
@@ -346,7 +346,7 @@ export class ScreenRecorder extends EventEmitter {
             )
         } else {
             // Separate audio and video recording
-            const tempDir = PathManager.getInstance().getTempPath()
+            const tempDir = PathManager.getInstance().getLocalPath()
             const rawVideoPath = path.join(tempDir, 'raw.mp4')
             const rawAudioPath = path.join(tempDir, 'raw.wav')
 
@@ -651,7 +651,7 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.audioOutputPath)) {
                 console.log(
-                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.getS3VideoBucket()}`,
+                    `📤 Uploading WAV audio to deliverables bucket: ${GLOBAL.getS3DeliverablesBucket()}`,
                 )
                 // Calculate audio duration for WAV metadata
                 const audioDuration = await this.getDuration(
@@ -667,7 +667,7 @@ export class ScreenRecorder extends EventEmitter {
 
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
-                    GLOBAL.getS3VideoBucket(),
+                    GLOBAL.getS3DeliverablesBucket(),
                     `${identifier}.wav`,
                     audioMetadata,
                 )
@@ -682,7 +682,7 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.outputPath)) {
                 console.log(
-                    `📤 Uploading MP4 to video bucket: ${GLOBAL.getS3VideoBucket()}`,
+                    `📤 Uploading MP4 to deliverables bucket: ${GLOBAL.getS3DeliverablesBucket()}`,
                 )
 
                 // Calculate media duration before upload
@@ -700,7 +700,7 @@ export class ScreenRecorder extends EventEmitter {
 
                 await S3Uploader.getInstance().uploadFile(
                     this.outputPath,
-                    GLOBAL.getS3VideoBucket(),
+                    GLOBAL.getS3DeliverablesBucket(),
                     `${identifier}.mp4`,
                     metadata, // S3 metadata with media_duration_sec
                 )
@@ -853,7 +853,7 @@ export class ScreenRecorder extends EventEmitter {
     private async syncAndMergeFiles(): Promise<void> {
         if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only mode: just copy raw audio to final output
-            const tempDir = PathManager.getInstance().getTempPath()
+            const tempDir = PathManager.getInstance().getLocalPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')
 
             console.log('🔄 Processing audio-only recording...')
@@ -874,7 +874,7 @@ export class ScreenRecorder extends EventEmitter {
         }
 
         // Video mode: efficient sync and merge process for long recordings
-        const tempDir = PathManager.getInstance().getTempPath()
+        const tempDir = PathManager.getInstance().getLocalPath()
         const rawVideoPath = path.join(tempDir, 'raw.mp4')
         const rawAudioPath = path.join(tempDir, 'raw.wav')
 
@@ -1029,7 +1029,7 @@ export class ScreenRecorder extends EventEmitter {
         outputAudioPath: string,
         paddingSeconds: number,
     ): Promise<void> {
-        const tempDir = PathManager.getInstance().getTempPath()
+        const tempDir = PathManager.getInstance().getLocalPath()
         const silenceFile = path.join(tempDir, 'silence.wav')
         const concatListFile = path.join(tempDir, 'concat_list.txt')
 
@@ -1227,7 +1227,7 @@ file '${absoluteInputPath}'`
     private async createAudioChunks(audioPath: string): Promise<void> {
         if (!GLOBAL.get().speech_to_text_api_parameters?.provider) return
 
-        const chunksDir = PathManager.getInstance().getAudioTmpPath()
+        const chunksDir = PathManager.getInstance().getAudioPath()
         if (!fs.existsSync(chunksDir)) {
             fs.mkdirSync(chunksDir, { recursive: true })
         }

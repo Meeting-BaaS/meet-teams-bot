@@ -121,7 +121,10 @@ export class MeetingStateMachine {
                 this.context.firstUserJoined = true
             }
             this.context.lastSpeakerTime = state.lastSpeakerTime
-            this.context.noSpeakerDetectedTime = state.noSpeakerDetectedTime
+            // Only update noSpeakerDetectedTime if it's explicitly provided (not undefined)
+            if (state.noSpeakerDetectedTime !== undefined) {
+                this.context.noSpeakerDetectedTime = state.noSpeakerDetectedTime
+            }
         }
     }
 

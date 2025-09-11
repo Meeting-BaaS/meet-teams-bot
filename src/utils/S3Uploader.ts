@@ -90,15 +90,12 @@ export class S3Uploader {
     ): Promise<string> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
-            return
+            return ''
         }
 
         try {
-            await this.uploadFile(
-                filePath,
-                GLOBAL.getS3LogsBucket(),
-                s3Path,
-            )
+            await this.uploadFile(filePath, GLOBAL.getS3LogsBucket(), s3Path)
+            return s3Path
         } catch (error: any) {
             console.error('Failed to upload to default bucket:', error.message)
             throw error
@@ -112,7 +109,7 @@ export class S3Uploader {
     ): Promise<string> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
-            return
+            return ''
         }
 
         try {
@@ -202,8 +199,6 @@ export class S3Uploader {
             throw error
         }
     }
-
-
 }
 
 // Export utility functions that use the singleton instance

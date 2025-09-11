@@ -3,11 +3,11 @@ import * as fs from 'fs'
 import { MeetingStateMachine } from './state-machine/machine'
 import { Streaming } from './streaming'
 
+import { enablePrintPageLogs } from './browser/page-logger'
 import { ParticipantState } from './state-machine/types'
 import { SpeakerData } from './types'
 import { uploadTranscriptTask } from './uploadTranscripts'
 import { PathManager } from './utils/PathManager'
-import { enablePrintPageLogs } from './browser/page-logger'
 
 export class SpeakerManager {
     private static instance: SpeakerManager | null = null
@@ -82,6 +82,7 @@ export class SpeakerManager {
             return
         }
 
+        // Update last speaker time only when someone is actually speaking
         if (speakersCount > 0) {
             this.lastSpeakerTime = Date.now()
         } else if (speakers.length === 0) {
@@ -89,11 +90,18 @@ export class SpeakerManager {
             enablePrintPageLogs()
         }
 
+        // Fix: noSpeakerDetectedTime should be set when there are participants but no one is speaking
+        // It should only be reset to null when someone actually starts speaking
         const participantState: ParticipantState = {
             attendeesCount: speakers.length,
             firstUserJoined: speakers.length > 0,
             lastSpeakerTime: this.lastSpeakerTime,
-            noSpeakerDetectedTime: speakersCount === 0 ? Date.now() : null,
+            noSpeakerDetectedTime:
+                speakers.length > 0 && speakersCount === 0
+                    ? Date.now()
+                    : speakersCount > 0
+                      ? null
+                      : undefined, // Let the state machine handle the existing value
         }
 
         MeetingStateMachine.instance.updateParticipantState(participantState)

@@ -27,11 +27,10 @@ export class PathManager {
     public async initializePaths(): Promise<void> {
         const paths = [
             this.getBasePath(),
-            path.dirname(this.getOutputPath()),
-            this.getTempPath(),
-            this.getAudioTmpPath(),
-            this.getScreenshotsPath(),
-            this.getHtmlSnapshotsPath(),
+            this.getOutputPath(),
+            this.getAudioPath(),
+            this.getLogsPath(),
+            this.getLocalPath(),
         ]
 
         for (const p of paths) {
@@ -60,36 +59,40 @@ export class PathManager {
     }
 
     public getOutputPath(): string {
-        return path.join(this.getBasePath(), 'output')
+        return path.join(this.getBasePath(), 'deliverables')
     }
 
-    public getAudioTmpPath(): string {
-        return path.join(this.getBasePath(), 'audio_tmp')
+    public getAudioPath(): string {
+        return path.join(this.getBasePath(), 'audio')
+    }
+
+    public getLogsPath(): string {
+        return path.join(this.getBasePath(), 'logs')
     }
 
     public getSpeakerLogPath(): string {
-        return path.join(this.getBasePath(), 'speaker_separation.log')
+        return path.join(this.getLogsPath(), 'speaker_separation.log')
     }
 
     public getSoundLogPath(): string {
-        return path.join(this.getBasePath(), 'sound_levels.log')
+        return path.join(this.getLogsPath(), 'sound_levels.log')
     }
 
-    public getTempPath(): string {
-        return path.join(this.getBasePath(), 'temp')
+    public getLocalPath(): string {
+        return path.join(this.getBasePath(), 'local')
     }
 
     public getScreenshotsPath(): string {
-        return path.join(this.getBasePath(), 'screenshots')
+        return path.join(this.getLogsPath(), 'screenshots')
     }
 
     public getHtmlSnapshotsPath(): string {
-        return path.join(this.getBasePath(), 'html_snapshots')
+        return path.join(this.getLogsPath(), 'html_snapshots')
     }
 
     public getS3Paths(): { bucketName: string; s3Path: string } {
         return {
-            bucketName: process.env.AWS_S3_VIDEO_BUCKET || '',
+            bucketName: process.env.AWS_S3_DELIVERABLES_BUCKET || '',
             s3Path: `${this.botUuid}`,
         }
     }
