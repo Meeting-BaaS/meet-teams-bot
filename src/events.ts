@@ -7,14 +7,9 @@ export class Events {
 
     static init() {
         if (GLOBAL.get().bot_uuid == null) return
-        if (GLOBAL.get().bots_api_key == null) return
         if (GLOBAL.get().bots_webhook_url == null) return
 
-        Events.EVENTS = new Events(
-            GLOBAL.get().bot_uuid,
-            GLOBAL.get().bots_api_key,
-            GLOBAL.get().bots_webhook_url,
-        )
+        Events.EVENTS = new Events(GLOBAL.get().bot_uuid)
     }
 
     static async apiRequestStop() {
@@ -91,11 +86,7 @@ export class Events {
         })
     }
 
-    private constructor(
-        private botId: string,
-        private apiKey: string,
-        private webhookUrl: string,
-    ) {}
+    private constructor(private botId: string) {}
 
     /**
      * Send an event only once - prevents duplicate webhooks
@@ -122,11 +113,11 @@ export class Events {
         try {
             await axios({
                 method: 'POST',
-                url: this.webhookUrl,
+                url: GLOBAL.get().bots_webhook_url,
                 timeout: 5000,
                 headers: {
                     'User-Agent': 'meetingbaas/1.0',
-                    'x-meeting-baas-api-key': this.apiKey,
+                    // No API key in header for V2 - webhook authentication handled differently
                 },
                 data: {
                     event: 'bot.status_change',
@@ -144,7 +135,7 @@ export class Events {
                 'Event sent successfully:',
                 code,
                 this.botId,
-                this.webhookUrl,
+                GLOBAL.get().bots_webhook_url,
             )
         } catch (error) {
             if (error instanceof Error) {
@@ -152,7 +143,7 @@ export class Events {
                     'Unable to send event (continuing execution):',
                     code,
                     this.botId,
-                    this.webhookUrl,
+                    GLOBAL.get().bots_webhook_url,
                     error.message,
                 )
             }
