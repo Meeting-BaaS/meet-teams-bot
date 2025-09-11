@@ -158,7 +158,7 @@ run_with_config() {
     
     if [ ! -f "$config_file" ]; then
         print_error "Configuration file '$config_file' not found"
-        print_info "Please create a JSON configuration file. See params.json for example format."
+        print_info "Please create a JSON configuration file. See bot.config.json for example format."
         exit 1
     fi
     
@@ -455,318 +455,9 @@ clean_recordings() {
     fi
 }
 
-# Test recording system
-test_recording() {
-    local duration=${1:-30}  # Par défaut 30 secondes
-    local debug_mode=${DEBUG:-false}  # Debug mode avec VNC
-    
-    print_info "🧪 Testing screen recording system"
-    print_info "📅 Test duration: ${duration}s"
-    print_info "📄 Using normal run command with params.json"
-    if [ "$debug_mode" = "true" ]; then
-        print_info "🔍 DEBUG MODE: VNC will be available on port 5900"
-        print_info "💻 Connect with: open vnc://localhost:5900"
-    fi
-    
-    # Vérifier que Docker est disponible
-    check_docker
-    
-    # Vérifier que params.json existe
-    if [ ! -f "params.json" ]; then
-        print_error "params.json not found!"
-        print_info "Please create params.json with your meeting configuration"
-        return 1
-    fi
-    
-    # Construire l'image si nécessaire
-    if ! docker images | grep -q "$(get_docker_image | cut -d: -f1)"; then
-        print_info "Docker image not found, building..."
-        build_image
-    fi
-    
-    print_info "🚀 Starting normal bot run with screen recording..."
-    print_info "ℹ️ Will automatically stop after ${duration}s"
-    
-    # Créer un fichier temporaire pour les logs
-    local log_file="/tmp/test-run-$(date +%s).log"
-    
-    # Fonction pour timeout compatible macOS/Linux
-    run_with_timeout() {
-        local timeout_duration=$1
-        shift
-        
-        if command -v gtimeout &> /dev/null; then
-            # macOS avec coreutils installé
-            gtimeout "$timeout_duration" "$@"
-        elif command -v timeout &> /dev/null; then
-            # Linux
-            timeout "$timeout_duration" "$@"
-        else
-            # Fallback pour macOS sans coreutils
-            "$@" &
-            local pid=$!
-            (
-                sleep "$timeout_duration"
-                print_info "⏰ Test timeout reached (${timeout_duration}s), stopping..."
-                kill -TERM "$pid" 2>/dev/null
-                sleep 5
-                kill -KILL "$pid" 2>/dev/null
-            ) &
-            wait "$pid" 2>/dev/null
-        fi
-    }
-    
-    # Lancer la commande run normale avec timeout
-    local env_vars=""
-    if [ "$debug_mode" = "true" ]; then
-        env_vars="DEBUG=true"
-    fi
-    
-    if run_with_timeout $((duration + 10)) \
-        env $env_vars ./run_bot.sh run params.json > "$log_file" 2>&1; then
-        print_success "✅ Test completed successfully"
-    else
-        print_info "ℹ️ Test stopped after timeout (this is expected)"
-    fi
-    
-    # Analyser les logs
-    print_info "📊 Analyzing test results..."
-    
-    # Afficher les lignes clés des logs
-    print_info "🔍 Key system messages:"
-    grep -E "Virtual display|PulseAudio|audio devices|ScreenRecorder|Screen recording|Application|Bot execution|Generated files" "$log_file" | head -10 || true
-    
-    # Compter les succès
-    local success_count=0
-    local total_tests=5
-    
-    # Test 1: Virtual display
-    if grep -q "Virtual display started" "$log_file"; then
-        print_success "✅ Virtual display working"
-        ((success_count++))
-    else
-        print_warning "⚠️ Virtual display may have issues"
-    fi
-    
-    # Test 2: PulseAudio
-    if grep -q "PulseAudio started" "$log_file"; then
-        print_success "✅ PulseAudio working"
-        ((success_count++))
-    else
-        print_warning "⚠️ PulseAudio may have issues"
-    fi
-    
-    # Test 3: Virtual audio devices
-    if grep -q "Virtual audio devices created" "$log_file"; then
-        print_success "✅ Audio devices created"
-        ((success_count++))
-    else
-        print_warning "⚠️ Audio devices may have issues"
-    fi
-    
-    # Test 4: Application started
-    if grep -q "Starting application\|Running in serverless mode\|Running on http" "$log_file"; then
-        print_success "✅ Application started"
-        ((success_count++))
-    else
-        print_warning "⚠️ Application may not have started"
-    fi
-    
-    # Test 5: Configuration parsed
-    if ! grep -q "Failed to parse JSON from stdin" "$log_file"; then
-        print_success "✅ Configuration parsed successfully"
-        ((success_count++))
-    else
-        print_warning "⚠️ Configuration parsing failed"
-    fi
-    
-    # Vérifier les fichiers générés
-    local output_dir="./recordings"
-    if [ -d "$output_dir" ] && [ "$(find $output_dir -name "*.mp4" -o -name "*.wav" | wc -l)" -gt 0 ]; then
-        print_success "✅ Recording files were generated"
-        print_info "Generated files:"
-        find "$output_dir" -name "*.mp4" -o -name "*.wav" | head -5
-    else
-        print_info "ℹ️ No recording files (normal for short test)"
-    fi
-    
-    # Compter les erreurs critiques
-    local critical_errors=$(grep -i "error\|Error\|ERROR" "$log_file" | \
-        grep -v "Console logger\|redis url\|Failed to parse JSON\|info.*error\|redis.*undefined" | wc -l | tr -d ' ')
-    
-    if [ "$critical_errors" -eq 0 ]; then
-        print_success "✅ No critical errors detected"
-    else
-        print_warning "⚠️ $critical_errors critical error(s) found:"
-        grep -i "error\|Error\|ERROR" "$log_file" | \
-            grep -v "Console logger\|redis url\|Failed to parse JSON\|info.*error\|redis.*undefined" | head -3 || true
-    fi
-    
-    # Résumé final
-    local success_rate=$((success_count * 100 / total_tests))
-    print_success "🎯 Test completed for screen recording"
-    print_info "Duration: ${duration}s"
-    print_info "Success rate: $success_count/$total_tests tests passed ($success_rate%)"
-    print_info "Critical errors: $critical_errors"
-    print_info "Full log available at: $log_file"
-    
-    if [ "$success_rate" -ge 80 ] && [ "$critical_errors" -eq 0 ]; then
-        print_success "🎉 Test passed! Screen recording system is working correctly"
-        return 0
-    elif [ "$success_rate" -ge 60 ]; then
-        print_warning "⚠️ Test passed with warnings. System mostly working."
-        return 0
-    else
-        print_error "❌ Test failed. Multiple issues detected."
-        print_info "Check the full log for details: $log_file"
-        return 1
-    fi
-}
 
-# Test API request stop functionality
-test_api_request() {
-    print_info "🧪 Testing API request stop functionality"
-    print_info "🛑 Will send API stop request after 2 minutes"
-    
-    # Check if Docker is available
-    check_docker
-    
-    # Check if bot.config.json exists
-    if [ ! -f "bot.config.json" ]; then
-        print_error "bot.config.json not found!"
-        print_info "Please create bot.config.json with your meeting configuration"
-        return 1
-    fi
-    
-    # Build image if necessary
-    if ! docker images | grep -q "$(get_docker_image | cut -d: -f1)"; then
-        print_info "Docker image not found, building..."
-        build_image
-    fi
-    
-    local output_dir=$(create_output_dir)
-    local config_json=$(cat "bot.config.json")
-    local processed_config=$(process_config "$config_json")
-    
-    # Extract bot_uuid for API call
-    local bot_uuid
-    if command -v jq &> /dev/null; then
-        bot_uuid=$(echo "$processed_config" | jq -r '.bot_uuid // empty')
-    fi
-    
-    if [ -z "$bot_uuid" ]; then
-        print_error "Could not extract bot_uuid from configuration"
-        return 1
-    fi
-    
-    print_info "🤖 Bot UUID: ${bot_uuid:0:8}..."
-    print_info "🚀 Starting bot..."
-    
-    # Start the bot and capture logs
-    local log_file="/tmp/api-test-$(date +%s).log"
-    echo "$processed_config" | docker run -i \
-        -p 8080:8080 \
-        -e RECORDING=true \
-        -v "$(pwd)/$output_dir:/app/data" \
-        "$(get_docker_image)" 2>&1 | tee "$log_file" &
-    
-    local docker_pid=$!
-    
-    # Wait 2 minutes before sending API stop request
-    print_info "⏰ Waiting 2 minutes before sending API stop request..."
-    sleep 120
-    
-    # Send API stop request
-    print_info "🛑 Sending API stop request..."
-    local api_response
-    api_response=$(docker exec "$(docker ps -q --filter ancestor=$(get_docker_image))" curl -s -X POST http://localhost:8080/stop_record \
-        -H "Content-Type: application/json" \
-        -d "{\"bot_id\": \"$bot_uuid\"}")
-    
-    print_info "📡 API Response: $api_response"
-    
-    # Wait for cleanup to complete (up to 5 minutes)
-    print_info "⏳ Waiting for cleanup to complete (up to 5 minutes)..."
-    local cleanup_timeout=300
-    local cleanup_start=$(date +%s)
-    
-    while [ $(($(date +%s) - cleanup_start)) -lt $cleanup_timeout ]; do
-        if ! kill -0 $docker_pid 2>/dev/null; then
-            print_success "✅ Bot stopped successfully"
-            break
-        fi
-        sleep 5
-    done
-    
-    # Check if process is still running
-    if kill -0 $docker_pid 2>/dev/null; then
-        print_warning "⚠️ Bot still running after 5 minutes - merge/trim might still be in progress"
-        print_info "📊 Checking logs for merge progress..."
-        
-        # Show recent logs
-        print_info "🔍 Recent logs:"
-        tail -20 "$log_file" | while IFS= read -r line; do
-            if [[ $line == *"ScreenRecorder"* ]] || [[ $line == *"merge"* ]] || [[ $line == *"trim"* ]] || [[ $line == *"cleanup"* ]]; then
-                echo "  $line"
-            fi
-        done
-        
-        # Force stop after showing logs
-        print_info "🧹 Force stopping bot..."
-        kill -9 $docker_pid 2>/dev/null
-    else
-        print_success "✅ Bot stopped within expected time"
-    fi
-    
-    # Analyze results
-    print_info "📊 Analyzing test results..."
-    
-    # Check for merge/trim logs
-    if grep -q "Efficient sync and merge completed successfully" "$log_file"; then
-        print_success "✅ ScreenRecorder merge/trim completed successfully"
-    else
-        print_warning "⚠️ No merge/trim completion log found"
-    fi
-    
-    # Check for cleanup logs
-    if grep -q "Cleanup completed successfully" "$log_file"; then
-        print_success "✅ Cleanup completed successfully"
-    else
-        print_warning "⚠️ No cleanup completion log found"
-    fi
-    
-    # Check for API request handling
-    if grep -q "end meeting from api server" "$log_file"; then
-        print_success "✅ API request received and handled"
-    else
-        print_warning "⚠️ No API request handling log found"
-    fi
-    
-    # Check for generated files
-    local bot_files_dir="$output_dir/$bot_uuid"
-    if [ -d "$bot_files_dir" ] && [ "$(find "$bot_files_dir" -name "*.mp4" -o -name "*.wav" | wc -l)" -gt 0 ]; then
-        print_success "✅ Recording files were generated"
-    elif [ -d "$output_dir" ] && [ "$(find "$output_dir" -name "*.mp4" -o -name "*.wav" | wc -l)" -gt 0 ]; then
-        print_success "✅ Recording files were generated"
-    else
-        print_info "ℹ️ No recording files (normal for short test)"
-    fi
-    
-    print_success "🎯 API request test completed"
-    
-    # Show useful paths for the user
-    if [ -n "$bot_uuid" ]; then
-        echo -e "\n${GREEN} ✅ done, check out your recording and metadata for bot UUID in $bot_uuid${NC}"
-        echo
-        echo "./recordings/$bot_uuid/output.mp4"
-        echo "./recordings/$bot_uuid/"  # folder for metadata and all files
-    fi
-    
-    print_info "Full log available at: $log_file"
-    
-    # Cleanup
-    rm -f "$log_file"
-}
+
+
 
 # Show help
 show_help() {
@@ -777,8 +468,6 @@ show_help() {
     echo "  $0 run <config_file> [url]   - Run bot with configuration file (optional meeting URL override)"
     echo "  $0 debug <config_file> [url] - Run bot in DEBUG mode (speakers logs + VNC enabled)"
     echo "  $0 run-json '<json>'         - Run bot with JSON configuration"
-    echo "  $0 test [duration]           - Test screen recording system (duration in seconds)"
-    echo "  $0 test-api-request              - Test API request stop functionality (2 minutes)"
     echo "  $0 clean                     - Clean recordings directory"
     echo "  $0 help                      - Show this help message"
     echo
@@ -789,20 +478,18 @@ show_help() {
     echo
     echo "Examples:"
     echo "  $0 build"
-    echo "  $0 run params.json"
-    echo "  $0 debug params.json                            # Debug mode: speakers logs + VNC"
-    echo "  $0 run params.json 'https://meet.google.com/new-meeting-url'"
-    echo "  $0 debug params.json 'https://meet.google.com/new-url'  # Debug with URL override"
-    echo "  RECORDING=false $0 run params.json  # Run without video recording"
-    echo "  RECORDING=false $0 debug params.json  # Debug without video recording"
-    echo "  DEBUG=true $0 run params.json       # Run with VNC debug access only"
-    echo "  DEBUG_LOGS=true $0 run params.json  # Run with speakers debug logs only"
+    echo "  $0 run bot.config.json"
+    echo "  $0 debug bot.config.json                            # Debug mode: speakers logs + VNC"
+    echo "  $0 run bot.config.json 'https://meet.google.com/new-meeting-url'"
+    echo "  $0 debug bot.config.json 'https://meet.google.com/new-url'  # Debug with URL override"
+    echo "  RECORDING=false $0 run bot.config.json  # Run without video recording"
+    echo "  RECORDING=false $0 debug bot.config.json  # Debug without video recording"
+    echo "  DEBUG=true $0 run bot.config.json       # Run with VNC debug access only"
+    echo "  DEBUG_LOGS=true $0 run bot.config.json  # Run with speakers debug logs only"
     echo "  $0 run-json '{\"meeting_url\":\"https://meet.google.com/abc-def-ghi\", \"bot_name\":\"RecordingBot\"}'"
     echo "  RECORDING=false $0 run-json '{...}'  # Run JSON config without recording"
     echo "  DEBUG=true $0 run-json '{...}'      # Run JSON config with VNC debug"
-    echo "  $0 test 60  # Test screen recording for 60 seconds"
-    echo "  DEBUG=true $0 test 60              # Test with VNC debug access"
-    echo "  $0 test-api-request     # Test API request stop after 2 minutes"
+
     echo "  $0 clean"
     echo
     echo "Recording Modes:"
@@ -815,7 +502,7 @@ show_help() {
     echo "  • DEBUG mode: One command to enable speakers debug logs + VNC access"
     echo "  • Debug logs: Show detailed speakers detection (DEBUG_LOGS=true)"
     echo "  • VNC access: View bot screen remotely (DEBUG=true) - localhost:5900"
-    echo "  • Test recording system with different modes"
+
     echo "  • Saves recordings to ./recordings directory (when recording enabled)"
     echo "  • Lists generated files after completion"
     echo
@@ -870,12 +557,7 @@ main() {
             check_docker
             run_with_json "$2"
             ;;
-        "test")
-            test_recording "${2:-30}"
-            ;;
-        "test-api-request")
-            test_api_request
-            ;;
+
         "clean")
             clean_recordings
             ;;
