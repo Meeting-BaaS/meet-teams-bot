@@ -9,7 +9,10 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 
-import { ScreenRecorderManager, AudioWarningEvent } from '../../recording/ScreenRecorder'
+import {
+    AudioWarningEvent,
+    ScreenRecorderManager,
+} from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { sleep } from '../../utils/sleep'
 
@@ -137,10 +140,7 @@ export class RecordingState extends BaseState {
                         : String(error)
             }
 
-            GLOBAL.setError(
-                MeetingEndReason.StreamingSetupFailed,
-                errorMessage,
-            )
+            GLOBAL.setError(MeetingEndReason.StreamingSetupFailed, errorMessage)
             this.isProcessing = false
         })
 
@@ -370,7 +370,7 @@ export class RecordingState extends BaseState {
             )
         } else {
             // Log progress periodically
-            if (silenceDuration % 30000 < this.CHECK_INTERVAL) {
+            if (silenceDuration % 30 === 0) {
                 // Log every 30 seconds
                 console.log(
                     `[checkNoSpeaker] No speaker detected for ${silenceDuration}s / ${MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000}s`,
