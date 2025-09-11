@@ -619,6 +619,8 @@ export class ScreenRecorder extends EventEmitter {
                         format: 'wav',
                         chunk_filename: filename,
                         file_size_bytes: stats.size.toString(),
+                        bot_uuid: GLOBAL.get().bot_uuid,
+                        upload_date: new Date().toISOString()
                     }
 
                     await S3Uploader.getInstance().uploadFile(
@@ -658,6 +660,8 @@ export class ScreenRecorder extends EventEmitter {
                     media_duration_sec: audioDuration.toString(),
                     media_type: 'audio',
                     format: 'wav',
+                    bot_uuid: GLOBAL.get().bot_uuid,
+                    upload_date: new Date().toISOString()
                 }
 
                 await S3Uploader.getInstance().uploadFile(
@@ -685,13 +689,13 @@ export class ScreenRecorder extends EventEmitter {
                     `📊 Media duration calculated: ${this.mediaDurationSec.toFixed(2)}s`,
                 )
 
-                // Prepare S3 metadata with comprehensive information
+                // Prepare S3 metadata with unified structure
                 const metadata = {
                     media_duration_sec: this.mediaDurationSec.toString(),
                     media_type: 'video',
                     format: 'mp4',
-                    recording_mode: GLOBAL.get().recording_mode,
                     bot_uuid: GLOBAL.get().bot_uuid,
+                    upload_date: new Date().toISOString()
                 }
 
                 await S3Uploader.getInstance().uploadFile(
