@@ -55,7 +55,7 @@ export interface BotSuccessRequest {
     transcription_fail_count?: number // none
     diarization_fail_count?: number // none
     media_duration_sec: number // video duration or total audio duration in audio-only mode
-    s3_upload_failed: boolean // true if any S3 upload failed
+    uploads_complete: boolean // true if all uploads succeeded, false if any failed
 }
 
 export interface MeetingProviderInterface {

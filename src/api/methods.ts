@@ -73,7 +73,7 @@ export class Api {
     // Finalize bot structure into BDD and send webhook
     public async endMeetingTrampoline(
         mediaDurationSec: number = 0,
-        s3UploadFailed: boolean = false,
+        uploadsComplete: boolean = true,
     ) {
         const successRequest: BotSuccessRequest = {
             webhook_url: GLOBAL.get().bots_webhook_url,
@@ -84,7 +84,7 @@ export class Api {
             transcription_fail_count: undefined,
             diarization_fail_count: undefined,
             media_duration_sec: mediaDurationSec,
-            s3_upload_failed: s3UploadFailed,
+            uploads_complete: uploadsComplete,
         }
 
         const resp = await axios({
@@ -185,9 +185,9 @@ export class Api {
         try {
             // Get media duration and S3 status from singleton
             const mediaDurationSec = GLOBAL.getMediaDurationSec()
-            const s3UploadFailed = GLOBAL.getS3UploadFailed()
+            const uploadsComplete = !GLOBAL.getS3UploadFailed() // Invert logic
 
-            await this.endMeetingTrampoline(mediaDurationSec, s3UploadFailed)
+            await this.endMeetingTrampoline(mediaDurationSec, uploadsComplete)
             console.log('API call to endMeetingTrampoline succeeded')
         } catch (error) {
             console.warn(
