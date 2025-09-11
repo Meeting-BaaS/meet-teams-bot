@@ -1,4 +1,4 @@
-import { MeetingEndReason } from "./types";
+import { MeetingEndReason } from './types'
 
 export const MEETING_CONSTANTS = {
     // Durées
@@ -11,6 +11,7 @@ export const MEETING_CONSTANTS = {
     RECORDING_TIMEOUT: 3600 * 4 * 1000, // 4 heures
     INITIAL_WAIT_TIME: 1000 * 60 * 7, // 7 minutes
     SILENCE_TIMEOUT: 1000 * 60 * 15, // 15 minutes
+    EMPTY_MEETING_CONFIRMATION_MS: 45_000, // 45 seconds before confirming no attendees
     CLEANUP_TIMEOUT: 1000 * 60 * 60, // 1 heure
     RESUMING_TIMEOUT: 1000 * 60 * 60, // 1 heure
 
