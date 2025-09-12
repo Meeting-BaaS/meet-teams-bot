@@ -3,9 +3,13 @@ import { BrowserContext, Page } from '@playwright/test'
 type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod'
 
 // Support both PascalCase and snake_case for recording_mode
-export type RecordingMode = 'speaker_view' | 'gallery_view' | 'audio_only' | 'SpeakerView' | 'GalleryView' | 'AudioOnly'
-
-
+export type RecordingMode =
+    | 'speaker_view'
+    | 'gallery_view'
+    | 'audio_only'
+    | 'SpeakerView'
+    | 'GalleryView'
+    | 'AudioOnly'
 
 export interface MeetingProviderInterface {
     openMeetingPage(

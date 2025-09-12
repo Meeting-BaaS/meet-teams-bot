@@ -37,7 +37,10 @@ export class ErrorState extends BaseState {
         // Capture DOM state on error if page is available (void to avoid blocking)
         if (this.context.playwrightPage) {
             const htmlSnapshot = HtmlSnapshotService.getInstance()
-            void htmlSnapshot.captureSnapshot(this.context.playwrightPage, 'error_state_dom_capture')
+            void htmlSnapshot.captureSnapshot(
+                this.context.playwrightPage,
+                'error_state_dom_capture',
+            )
         }
 
         if (!endReason) {

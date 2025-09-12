@@ -35,7 +35,9 @@ if (DEBUG_LOGS) {
     // This is done to avoid circular dependency issues
     import('./browser/page-logger')
         .then(({ enablePrintPageLogs }) => enablePrintPageLogs())
-        .catch((e) => console.error('Failed to enable page logs dynamically:', e))
+        .catch((e) =>
+            console.error('Failed to enable page logs dynamically:', e),
+        )
 }
 
 // ========================================

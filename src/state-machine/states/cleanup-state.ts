@@ -61,7 +61,10 @@ export class CleanupState extends BaseState {
             if (this.context.playwrightPage) {
                 console.info('🧹 Step 3/7: Capturing final DOM state')
                 const htmlSnapshot = HtmlSnapshotService.getInstance()
-                await htmlSnapshot.captureSnapshot(this.context.playwrightPage, 'cleanup_final_dom_state')
+                await htmlSnapshot.captureSnapshot(
+                    this.context.playwrightPage,
+                    'cleanup_final_dom_state',
+                )
             }
 
             // 🚀 PARALLEL CLEANUP: Independent steps that can run simultaneously

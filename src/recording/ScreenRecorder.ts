@@ -8,7 +8,6 @@ import { Page } from 'playwright'
 import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
 
-
 import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { calculateVideoOffset } from '../utils/CalculVideoOffset'
 import { PathManager } from '../utils/PathManager'
@@ -112,9 +111,7 @@ export class ScreenRecorder extends EventEmitter {
 
     private generateOutputPaths(): void {
         try {
-            if (
-                GLOBAL.get().recording_mode === 'audio_only'
-            ) {
+            if (GLOBAL.get().recording_mode === 'audio_only') {
                 this.audioOutputPath =
                     PathManager.getInstance().getOutputPath() + '.wav'
             } else {
@@ -170,8 +167,7 @@ export class ScreenRecorder extends EventEmitter {
             console.log('Native recording started successfully')
             this.emit('started', {
                 outputPath: this.outputPath,
-                isAudioOnly:
-                    GLOBAL.get().recording_mode === 'audio_only',
+                isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
             })
         } catch (error) {
             console.error('Failed to start native recording:', error)
@@ -281,9 +277,7 @@ export class ScreenRecorder extends EventEmitter {
             `${timestamp}_%4d.png`,
         )
 
-        if (
-            GLOBAL.get().recording_mode === 'audio_only'
-        ) {
+        if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only recording with screenshots
             const tempDir = PathManager.getInstance().getTempPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')
@@ -800,9 +794,7 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private async syncAndMergeFiles(): Promise<void> {
-        if (
-            GLOBAL.get().recording_mode === 'audio_only'
-        ) {
+        if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only mode: just copy raw audio to final output
             const tempDir = PathManager.getInstance().getTempPath()
             const rawAudioPath = path.join(tempDir, 'raw.wav')

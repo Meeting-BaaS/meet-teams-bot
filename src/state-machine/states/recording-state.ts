@@ -366,7 +366,9 @@ export class RecordingState extends BaseState {
         }
 
         // Check if the silence period has exceeded the timeout
-        const silenceDurationSeconds = Math.floor((now - noSpeakerDetectedTime) / 1000)
+        const silenceDurationSeconds = Math.floor(
+            (now - noSpeakerDetectedTime) / 1000,
+        )
         const shouldEnd =
             noSpeakerDetectedTime + MEETING_CONSTANTS.SILENCE_TIMEOUT < now
 
