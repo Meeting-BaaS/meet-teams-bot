@@ -178,7 +178,7 @@ export class VideoContext extends MediaContext {
     }
 
     public default() {
-        VideoContext.instance.play(`../branding.mp4`, true)
+        VideoContext.instance.play(`branding.mp4`, true)
     }
 
     public play(pathname: string, loop: boolean) {

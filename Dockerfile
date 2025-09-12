@@ -36,6 +36,9 @@ RUN npx playwright install chromium && \
 COPY . .
 RUN npm run build
 
+# Make branding scripts executable
+RUN chmod +x generate_branding.sh generate_custom_branding.sh
+
 # Environment configuration
 ENV NODE_OPTIONS="--max-old-space-size=2048"
 ENV SERVERLESS=true

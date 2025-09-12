@@ -1,6 +1,6 @@
 import { spawn } from 'child_process'
 
-import { SoundContext, VideoContext } from './media_context'
+import { VideoContext } from './media_context'
 
 export type BrandingHandle = {
     wait: Promise<void>
@@ -14,14 +14,15 @@ export function generateBranding(
     try {
         const command = (() => {
             if (custom_branding_path == null) {
-                return spawn('../generate_branding.sh', [botname], {
+                return spawn('./generate_branding.sh', [botname], {
                     env: { ...process.env },
+                    cwd: process.cwd(),
                 })
             } else {
                 return spawn(
-                    '../generate_custom_branding.sh',
+                    './generate_custom_branding.sh',
                     [custom_branding_path],
-                    { env: { ...process.env } },
+                    { env: { ...process.env }, cwd: process.cwd() },
                 )
             }
         })()
