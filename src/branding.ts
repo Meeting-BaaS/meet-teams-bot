@@ -1,4 +1,6 @@
 import { spawn } from 'child_process'
+import * as fs from 'fs'
+import * as path from 'path'
 
 import { VideoContext } from './media_context'
 
@@ -12,20 +14,35 @@ export function generateBranding(
     custom_branding_path?: string,
 ): BrandingHandle {
     try {
+        const currentDir = process.cwd()
+        console.log('Current working directory:', currentDir)
+
         const command = (() => {
             if (custom_branding_path == null) {
-                return spawn('./generate_branding.sh', [botname], {
+                const scriptPath = path.join(currentDir, 'generate_branding.sh')
+                console.log('Default branding script path:', scriptPath)
+                console.log('Script exists:', fs.existsSync(scriptPath))
+
+                return spawn(scriptPath, [botname], {
                     env: { ...process.env },
-                    cwd: process.cwd(),
+                    cwd: currentDir,
                 })
             } else {
-                return spawn(
-                    './generate_custom_branding.sh',
-                    [custom_branding_path],
-                    { env: { ...process.env }, cwd: process.cwd() },
+                const scriptPath = path.join(
+                    currentDir,
+                    'generate_custom_branding.sh',
                 )
+                console.log('Custom branding script path:', scriptPath)
+                console.log('Script exists:', fs.existsSync(scriptPath))
+                console.log('Custom branding path:', custom_branding_path)
+
+                return spawn(scriptPath, [custom_branding_path], {
+                    env: { ...process.env },
+                    cwd: currentDir,
+                })
             }
         })()
+
         command.stderr.addListener('data', (data) => {
             console.log(data.toString())
         })
