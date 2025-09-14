@@ -636,11 +636,11 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.audioOutputPath)) {
                 console.log(
-                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket || process.env.AWS_S3_VIDEO_BUCKET}`,
                 )
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
-                    GLOBAL.get().remote?.aws_s3_video_bucket!,
+                    (GLOBAL.get().remote?.aws_s3_video_bucket || process.env.AWS_S3_VIDEO_BUCKET)!,
                     `${identifier}.wav`,
                 )
                 fs.unlinkSync(this.audioOutputPath)
@@ -653,11 +653,11 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.outputPath)) {
                 console.log(
-                    `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                    `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket || process.env.AWS_S3_VIDEO_BUCKET}`,
                 )
                 await S3Uploader.getInstance().uploadFile(
                     this.outputPath,
-                    GLOBAL.get().remote?.aws_s3_video_bucket!,
+                    (GLOBAL.get().remote?.aws_s3_video_bucket || process.env.AWS_S3_VIDEO_BUCKET)!,
                     `${identifier}.mp4`,
                 )
                 fs.unlinkSync(this.outputPath)

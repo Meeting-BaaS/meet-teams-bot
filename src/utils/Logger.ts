@@ -223,7 +223,7 @@ export async function uploadLogsToS3(options: {
                 try {
                     await S3Uploader.getInstance()?.uploadDirectory(
                         screenshotsPath,
-                        GLOBAL.get().remote?.aws_s3_log_bucket!,
+                        (GLOBAL.get().remote?.aws_s3_log_bucket || process.env.AWS_S3_LOGS_BUCKET)!,
                         s3ScreenshotsPath,
                     )
                     logger.info('Screenshots uploaded to S3')
@@ -268,7 +268,7 @@ export async function uploadLogsToS3(options: {
                 try {
                     await S3Uploader.getInstance()?.uploadDirectory(
                         htmlSnapshotsPath,
-                        GLOBAL.get().remote?.aws_s3_log_bucket!,
+                        (GLOBAL.get().remote?.aws_s3_log_bucket || process.env.AWS_S3_LOGS_BUCKET)!,
                         s3HtmlSnapshotsPath,
                     )
                     logger.info('HTML snapshots uploaded to S3')

@@ -18,7 +18,14 @@ export class S3Uploader {
         // - Credentials from environment variables, IAM roles, AWS config files, etc.
         // - Endpoints from AWS_ENDPOINT_URL, AWS_ENDPOINT_URL_S3, etc.
         // - Regions from AWS_REGION, AWS_DEFAULT_REGION, etc.
-        this.s3Client = new S3Client()
+        this.s3Client = new S3Client({
+            region: process.env.AWS_REGION_S3,
+            endpoint: process.env.AWS_ENDPOINT_URL_S3,
+            credentials: {
+                accessKeyId: process.env.AWS_ACCESS_KEY_ID_S3,
+                secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY_S3,
+            },
+        })
     }
 
     public static getInstance(): S3Uploader {
@@ -73,7 +80,7 @@ export class S3Uploader {
             return
         }
 
-        const bucket = GLOBAL.get().remote?.aws_s3_log_bucket
+        const bucket = GLOBAL.get().remote?.aws_s3_log_bucket || process.env.AWS_S3_LOGS_BUCKET
         if (!bucket) {
             console.warn(
                 'Skipping S3 upload - aws_s3_log_bucket not configured',

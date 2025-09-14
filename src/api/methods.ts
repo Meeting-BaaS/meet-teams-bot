@@ -19,7 +19,7 @@ export class Api {
             )
             return Api.instance
         }
-        axios.defaults.baseURL = GLOBAL.get().remote.api_server_baseurl
+        axios.defaults.baseURL = GLOBAL.get().remote.api_server_baseurl || process.env.API_SERVER_URL
         axios.defaults.withCredentials = true
         if (!GLOBAL.isServerless() && GLOBAL.get().user_token) {
             axios.defaults.headers.common['Authorization'] =

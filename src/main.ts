@@ -114,7 +114,9 @@ async function readFromEcsMetadata(): Promise<MeetingParams> {
             user_id: parseInt(process.env.USER_ID || '0'),
             session_id: process.env.SESSION_ID || '',
             email: process.env.EMAIL || '',
-            meetingProvider: (process.env.MEETING_PROVIDER as any) || 'Meet',
+            meetingProvider: detectMeetingProvider(
+                    process.env.MEETING_URL || '',
+                ),
             event: process.env.EVENT_ID ? { id: parseInt(process.env.EVENT_ID) } : undefined,
             agenda: process.env.AGENDA ? JSON.parse(process.env.AGENDA) : undefined,
             custom_branding_bot_path: process.env.CUSTOM_BRANDING_BOT_PATH,
