@@ -45,7 +45,7 @@ if (DEBUG_LOGS) {
 // ========================================
 
 /**
- * Read and parse meeting parameters from stdin
+ * Read and parse meeting parameters from stdin (legacy mode)
  */
 async function readFromStdin(): Promise<MeetingParams> {
     return new Promise((resolve) => {
@@ -72,6 +72,110 @@ async function readFromStdin(): Promise<MeetingParams> {
             }
         })
     })
+}
+
+/**
+ * Read meeting parameters from ECS metadata (Fargate mode)
+ */
+async function readFromEcsMetadata(): Promise<MeetingParams> {
+    try {
+        // Get ECS task metadata
+        const metadataUri = process.env.ECS_CONTAINER_METADATA_URI_V4
+        if (!metadataUri) {
+            throw new Error('ECS_CONTAINER_METADATA_URI_V4 not found in environment')
+        }
+
+        console.log('📡 Reading parameters from ECS metadata...')
+        
+        // Get task metadata
+        const taskResponse = await fetch(`${metadataUri}/task`)
+         if (!taskResponse.ok) {
+            throw new Error(`Failed to fetch task metadata: ${taskResponse.status} ${taskResponse.statusText}`)
+        }
+        const taskMetadata = await taskResponse.json()
+        
+        // Get container metadata
+        const containerResponse = await fetch(`${metadataUri}`)
+        if (!containerResponse.ok) {
+            throw new Error(`Failed to fetch container metadata: ${containerResponse.status} ${containerResponse.statusText}`)
+        }
+        const containerMetadata = await containerResponse.json()
+        
+        console.log('📋 ECS Task ARN:', taskMetadata.TaskARN)
+        console.log('📋 ECS Container Name:', containerMetadata.Name)
+        
+        // Look for parameters in environment variables (passed via task definition)
+        const meetingParams: MeetingParams = {
+            id: process.env.MEETING_ID || '',
+            use_my_vocabulary: process.env.USE_MY_VOCABULARY === 'true',
+            meeting_url: process.env.MEETING_URL || '',
+            user_token: process.env.USER_TOKEN || '',
+            bot_name: process.env.BOT_NAME || '',
+            user_id: parseInt(process.env.USER_ID || '0'),
+            session_id: process.env.SESSION_ID || '',
+            email: process.env.EMAIL || '',
+            meetingProvider: (process.env.MEETING_PROVIDER as any) || 'Meet',
+            event: process.env.EVENT_ID ? { id: parseInt(process.env.EVENT_ID) } : undefined,
+            agenda: process.env.AGENDA ? JSON.parse(process.env.AGENDA) : undefined,
+            custom_branding_bot_path: process.env.CUSTOM_BRANDING_BOT_PATH,
+            vocabulary: process.env.VOCABULARY ? JSON.parse(process.env.VOCABULARY) : [],
+            force_lang: process.env.FORCE_LANG === 'true',
+            translation_lang: process.env.TRANSLATION_LANG,
+            speech_to_text_provider: (process.env.SPEECH_TO_TEXT_PROVIDER as any) || 'Default',
+            speech_to_text_api_key: process.env.SPEECH_TO_TEXT_API_KEY,
+            streaming_input: process.env.STREAMING_INPUT,
+            streaming_output: process.env.STREAMING_OUTPUT,
+            streaming_audio_frequency: process.env.STREAMING_AUDIO_FREQUENCY ? parseInt(process.env.STREAMING_AUDIO_FREQUENCY) : undefined,
+            bot_uuid: process.env.BOT_UUID || '',
+            enter_message: process.env.ENTER_MESSAGE,
+            bots_api_key: process.env.BOTS_API_KEY || '',
+            bots_webhook_url: process.env.BOTS_WEBHOOK_URL,
+            recording_mode: (process.env.RECORDING_MODE as any) || 'speaker_view',
+            local_recording_server_location: process.env.LOCAL_RECORDING_SERVER_LOCATION || '',
+            automatic_leave: {
+                waiting_room_timeout: parseInt(process.env.WAITING_ROOM_TIMEOUT || '300'),
+                noone_joined_timeout: parseInt(process.env.NOONE_JOINED_TIMEOUT || '300'),
+            },
+            mp4_s3_path: process.env.MP4_S3_PATH || '',
+            environ: process.env.ENVIRON || 'preprod',
+            aws_s3_temporary_audio_bucket: process.env.AWS_S3_TEMPORARY_AUDIO_BUCKET || '',
+            remote: process.env.REMOTE_CONFIG ? JSON.parse(process.env.REMOTE_CONFIG) : null,
+            extra: process.env.EXTRA ? JSON.parse(process.env.EXTRA) : undefined,
+            zoom_sdk_id: process.env.ZOOM_SDK_ID,
+            zoom_sdk_pwd: process.env.ZOOM_SDK_PWD,
+        }
+
+        // Detect the meeting provider
+        meetingParams.meetingProvider = detectMeetingProvider(meetingParams.meeting_url)
+        
+        // Validate required parameters
+        if (!meetingParams.meeting_url || !meetingParams.bot_uuid || !meetingParams.session_id) {
+            throw new Error('Missing required parameters: meeting_url, bot_uuid, or session_id')
+        }
+
+        GLOBAL.set(meetingParams)
+        PathManager.getInstance().initializePaths()
+        
+        console.log('✅ Successfully loaded parameters from ECS metadata')
+        return meetingParams
+    } catch (error) {
+        console.error('❌ Failed to read parameters from ECS metadata:', error)
+        throw error
+    }
+}
+
+/**
+ * Determine parameter source and read accordingly
+ */
+async function readMeetingParams(): Promise<MeetingParams> {
+    // Check if we're running in Fargate (ECS metadata available)
+    if (process.env.ECS_CONTAINER_METADATA_URI_V4) {
+        console.log('🚀 Running in Fargate mode - reading from ECS metadata')
+        return await readFromEcsMetadata()
+    } else {
+        console.log('�� Running in legacy mode - reading from stdin')
+        return await readFromStdin()
+    }
 }
 
 /**
@@ -135,7 +239,7 @@ async function handleFailedRecording(): Promise<void> {
  * - PascalCase => Classes
  */
 ;(async () => {
-    const meetingParams = await readFromStdin()
+    const meetingParams = await readMeetingParams()
 
     try {
         // Log all meeting parameters (masking sensitive data)
