@@ -21,8 +21,7 @@ export async function openBrowser(
         const finalBrandingPath = await getBrandingPath(brandingVideoPath)
 
         // Determine if we're dealing with Teams (more strict on fake devices)
-        const isTeams =
-            GLOBAL.get().meeting_url?.includes('teams.microsoft.com') || false
+        const isTeams = GLOBAL.get().meetingProvider === 'Teams'
 
         // Build Chrome arguments dynamically
         const chromeArgs = [
@@ -48,7 +47,7 @@ export async function openBrowser(
 
             // Virtual camera configuration (order matters for fake video capture)
             // Note: Teams is more strict and doesn't work well with fake devices
-            ...(isTeams
+            ...(isTeams || !finalBrandingPath
                 ? []
                 : [
                       '--use-fake-device-for-media-stream', // Use fake devices for testing

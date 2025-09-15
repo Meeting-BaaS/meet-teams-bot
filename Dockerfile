@@ -19,10 +19,6 @@ RUN apt-get update && apt-get install -y \
     curl unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install AWS CLI v2
-RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
-    && unzip awscliv2.zip && ./aws/install && rm -rf awscliv2.zip aws
-
 # Application setup
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -37,7 +33,8 @@ COPY . .
 RUN npm run build
 
 # Make branding scripts executable
-RUN chmod +x generate_branding.sh generate_custom_branding.sh
+COPY generate_custom_branding.sh ./
+RUN chmod +x generate_custom_branding.sh
 
 # Environment configuration
 ENV NODE_OPTIONS="--max-old-space-size=2048"

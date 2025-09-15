@@ -58,7 +58,6 @@ export class InitializationState extends BaseState {
 
     private async setupBrandingGeneration(): Promise<string> {
         this.context.brandingProcess = generateBranding(
-            GLOBAL.get().bot_name,
             GLOBAL.get().custom_branding_bot_path,
         )
         await this.context.brandingProcess.wait

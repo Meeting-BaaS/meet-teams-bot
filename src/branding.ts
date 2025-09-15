@@ -10,37 +10,29 @@ export type BrandingHandle = {
 }
 
 export function generateBranding(
-    botname: string,
     custom_branding_path?: string,
-): BrandingHandle {
+): BrandingHandle | null {
     try {
+        if (!custom_branding_path) {
+            return null
+        }
+
         const currentDir = process.cwd()
         console.log('Current working directory:', currentDir)
 
         const command = (() => {
-            if (custom_branding_path == null) {
-                const scriptPath = path.join(currentDir, 'generate_branding.sh')
-                console.log('Default branding script path:', scriptPath)
-                console.log('Script exists:', fs.existsSync(scriptPath))
+            const scriptPath = path.join(
+                currentDir,
+                'generate_custom_branding.sh',
+            )
+            console.log('Custom branding script path:', scriptPath)
+            console.log('Script exists:', fs.existsSync(scriptPath))
+            console.log('Custom branding path:', custom_branding_path)
 
-                return spawn(scriptPath, [botname], {
-                    env: { ...process.env },
-                    cwd: currentDir,
-                })
-            } else {
-                const scriptPath = path.join(
-                    currentDir,
-                    'generate_custom_branding.sh',
-                )
-                console.log('Custom branding script path:', scriptPath)
-                console.log('Script exists:', fs.existsSync(scriptPath))
-                console.log('Custom branding path:', custom_branding_path)
-
-                return spawn(scriptPath, [custom_branding_path], {
-                    env: { ...process.env },
-                    cwd: currentDir,
-                })
-            }
+            return spawn(scriptPath, [custom_branding_path], {
+                env: { ...process.env },
+                cwd: currentDir,
+            })
         })()
 
         command.stderr.addListener('data', (data) => {
