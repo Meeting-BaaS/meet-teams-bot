@@ -80,29 +80,29 @@ async function readFromStdin(): Promise<MeetingParams> {
 async function readFromEcsMetadata(): Promise<MeetingParams> {
     try {
         // Get ECS task metadata
-        const metadataUri = process.env.ECS_CONTAINER_METADATA_URI_V4
-        if (!metadataUri) {
-            throw new Error('ECS_CONTAINER_METADATA_URI_V4 not found in environment')
-        }
+        // const metadataUri = process.env.ECS_CONTAINER_METADATA_URI_V4
+        // if (!metadataUri) {
+        //     throw new Error('ECS_CONTAINER_METADATA_URI_V4 not found in environment')
+        // }
 
-        console.log('📡 Reading parameters from ECS metadata...')
+        // console.log('📡 Reading parameters from ECS metadata...')
         
-        // Get task metadata
-        const taskResponse = await fetch(`${metadataUri}/task`)
-         if (!taskResponse.ok) {
-            throw new Error(`Failed to fetch task metadata: ${taskResponse.status} ${taskResponse.statusText}`)
-        }
-        const taskMetadata = await taskResponse.json()
+        // // Get task metadata
+        // const taskResponse = await fetch(`${metadataUri}/task`)
+        //  if (!taskResponse.ok) {
+        //     throw new Error(`Failed to fetch task metadata: ${taskResponse.status} ${taskResponse.statusText}`)
+        // }
+        // const taskMetadata = await taskResponse.json()
         
-        // Get container metadata
-        const containerResponse = await fetch(`${metadataUri}`)
-        if (!containerResponse.ok) {
-            throw new Error(`Failed to fetch container metadata: ${containerResponse.status} ${containerResponse.statusText}`)
-        }
-        const containerMetadata = await containerResponse.json()
+        // // Get container metadata
+        // const containerResponse = await fetch(`${metadataUri}`)
+        // if (!containerResponse.ok) {
+        //     throw new Error(`Failed to fetch container metadata: ${containerResponse.status} ${containerResponse.statusText}`)
+        // }
+        // const containerMetadata = await containerResponse.json()
         
-        console.log('📋 ECS Task ARN:', taskMetadata.TaskARN)
-        console.log('📋 ECS Container Name:', containerMetadata.Name)
+        // console.log('📋 ECS Task ARN:', taskMetadata.TaskARN)
+        // console.log('📋 ECS Container Name:', containerMetadata.Name)
         
         // Look for parameters in environment variables (passed via task definition)
         const meetingParams: MeetingParams = {
@@ -141,7 +141,11 @@ async function readFromEcsMetadata(): Promise<MeetingParams> {
             mp4_s3_path: process.env.MP4_S3_PATH || '',
             environ: process.env.ENVIRON || 'preprod',
             aws_s3_temporary_audio_bucket: process.env.AWS_S3_TEMPORARY_AUDIO_BUCKET || '',
-            remote: process.env.REMOTE_CONFIG ? JSON.parse(process.env.REMOTE_CONFIG) : null,
+            remote: {
+                api_server_baseurl: process.env.API_SERVER_URL || '',
+                aws_s3_video_bucket: process.env.AWS_S3_VIDEO_BUCKET || '',
+                aws_s3_log_bucket: process.env.AWS_S3_LOG_BUCKET || '',
+            },
             extra: process.env.EXTRA ? JSON.parse(process.env.EXTRA) : undefined,
             zoom_sdk_id: process.env.ZOOM_SDK_ID,
             zoom_sdk_pwd: process.env.ZOOM_SDK_PWD,
