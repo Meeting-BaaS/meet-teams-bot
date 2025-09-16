@@ -263,7 +263,6 @@ export class ScreenRecorder extends EventEmitter {
         )
     }
 
-
     private buildNativeFFmpegArgs(): string[] {
         const args: string[] = []
 
@@ -508,7 +507,9 @@ export class ScreenRecorder extends EventEmitter {
                     outputLower.includes(
                         'error retrieving a packet from demuxer',
                     ) ||
-                    outputLower.includes('generic error in an external library') ||
+                    outputLower.includes(
+                        'generic error in an external library',
+                    ) ||
                     outputLower.includes('connection lost') ||
                     outputLower.includes('broken pipe')
                 ) {
