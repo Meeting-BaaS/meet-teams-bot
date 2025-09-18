@@ -90,6 +90,7 @@ export type MeetingParams = {
     extra?: any
     zoom_sdk_id?: string
     zoom_sdk_pwd?: string
+    secret?: string // While not in use anymore, it is still present in the message
 }
 
 export type StopRecordParams = {

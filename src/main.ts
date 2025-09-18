@@ -147,6 +147,7 @@ async function handleFailedRecording(): Promise<void> {
         if (logParams.speech_to_text_api_key)
             logParams.speech_to_text_api_key = '***MASKED***'
         if (logParams.zoom_sdk_pwd) logParams.zoom_sdk_pwd = '***MASKED***'
+        if (logParams.secret) logParams.secret = '***MASKED***'
 
         console.log(
             'Received meeting parameters:',

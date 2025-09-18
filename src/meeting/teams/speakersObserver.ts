@@ -274,7 +274,8 @@ export class TeamsSpeakersObserver {
                     console.log(
                         `[TEAMS-DEBUG] Found ${speakers.length} visible speakers:`,
                         speakers.map(
-                            (s) => `${s.name} (speaking: ${s.isSpeaking})`,
+                            (s, index) =>
+                                `Speaker ${index + 1} (speaking: ${s.isSpeaking})`,
                         ),
                     )
 

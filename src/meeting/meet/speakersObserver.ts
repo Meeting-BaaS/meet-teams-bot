@@ -453,7 +453,8 @@ export class MeetSpeakersObserver {
                         console.log(
                             `[MEET-DEBUG] Found ${speakers.length} participants:`,
                             speakers.map(
-                                (s) => `${s.name} (speaking: ${s.isSpeaking})`,
+                                (s, index) =>
+                                    `Speaker ${index + 1} (speaking: ${s.isSpeaking})`,
                             ),
                         )
 
