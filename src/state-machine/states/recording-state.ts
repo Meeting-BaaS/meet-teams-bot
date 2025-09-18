@@ -36,6 +36,11 @@ export class RecordingState extends BaseState {
             this.context.startTime = startTime // Assign to context so getStartTime() works
             ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
 
+            // Initialize noSpeakerDetectedTime if not already set (for meetings with no participants)
+            if (!this.context.noSpeakerDetectedTime) {
+                this.context.noSpeakerDetectedTime = startTime
+            }
+
             // Uncomment this to test the recording synchronization
             // await sleep(10000)
             // await generateSyncSignal(this.context.playwrightPage)
@@ -306,8 +311,9 @@ export class RecordingState extends BaseState {
         }
 
         // Check if we should consider ending due to no attendees
+        const nooneJoinedTimeoutMs = GLOBAL.get().automatic_leave.noone_joined_timeout * 1000
         const noAttendeesTimeout =
-            startTime + MEETING_CONSTANTS.INITIAL_WAIT_TIME < now
+            startTime + nooneJoinedTimeoutMs < now
         const shouldConsiderEnding = noAttendeesTimeout || firstUserJoined
 
         // If we shouldn't consider ending, reset timer and exit
@@ -320,7 +326,7 @@ export class RecordingState extends BaseState {
         if (this.noAttendeesConfirmationStartTime === 0) {
             this.noAttendeesConfirmationStartTime = now
             console.log(
-                '[checkNoAttendees] Starting empty meeting confirmation timer',
+                `[checkNoAttendees] Starting empty meeting confirmation timer (timeout: ${GLOBAL.get().automatic_leave.noone_joined_timeout}s)`,
             )
             return false
         }
@@ -343,9 +349,9 @@ export class RecordingState extends BaseState {
 
         if (hasEnoughConfirmation) {
             console.log(
-                `[checkNoAttendees] Empty meeting confirmation reached (${Math.floor(noAttendeesDuration / 1000)}s), checking for sound activity`,
+                `[checkNoAttendees] Empty meeting confirmation reached (${Math.floor(noAttendeesDuration / 1000)}s), ending meeting due to no attendees`,
             )
-            // Check if there's sound activity before ending due to no attendees
+            // End meeting due to no attendees - don't wait for sound activity
             return this.checkNoSpeaker(now)
         }
 
@@ -358,10 +364,10 @@ export class RecordingState extends BaseState {
      * @returns true if the meeting should end due to absence of sound
      */
     private checkNoSpeaker(now: number): boolean {
-        const noSpeakerDetectedTime = this.context.noSpeakerDetectedTime || 0
+        const noSpeakerDetectedTime = this.context.noSpeakerDetectedTime
 
         // If no silence period has been detected, no need to end
-        if (noSpeakerDetectedTime <= 0) {
+        if (!noSpeakerDetectedTime || noSpeakerDetectedTime <= 0) {
             return false
         }
 

@@ -287,7 +287,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '2048', // Increased from 1024 for better buffering
+                '16384',
                 '-i',
                 VIRTUAL_SPEAKER_MONITOR,
 
@@ -363,7 +363,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '2048', // Increased from 1024 for better buffering
+                '16384',
                 '-i',
                 VIRTUAL_SPEAKER_MONITOR,
 
@@ -488,10 +488,12 @@ export class ScreenRecorder extends EventEmitter {
 
         // Enhanced error monitoring for PulseAudio issues
         let errorCount = 0
-        const maxErrors = 10 // Increased from 5 to be less aggressive
-        const errorWindowMs = 60000 // Increased to 60 seconds for better tolerance
+        const maxErrors = 15 // Higher threshold since we increased buffer sizes
+        const errorWindowMs = 60000 // 60 seconds window
         let lastErrorTime = 0
-        const errorCooldownMs = 5000 // 5 second cooldown between error handling
+        const errorCooldownMs = 10000 // 10 second cooldown - less aggressive
+        let consecutiveErrors = 0
+        const maxConsecutiveErrors = 10 // Much less aggressive
 
         this.ffmpegProcess.stderr?.on('data', (data) => {
             const output = data.toString()
@@ -505,22 +507,27 @@ export class ScreenRecorder extends EventEmitter {
                     outputLower.includes(
                         'error retrieving a packet from demuxer',
                     ) ||
-                    outputLower.includes('generic error in an external library')
+                    outputLower.includes(
+                        'generic error in an external library',
+                    ) ||
+                    outputLower.includes('connection lost') ||
+                    outputLower.includes('broken pipe')
                 ) {
                     const now = Date.now()
                     errorCount++
+                    consecutiveErrors++
                     console.warn(
-                        `⚠️ PulseAudio error detected (${errorCount}/${maxErrors})`,
+                        `⚠️ PulseAudio error detected (${errorCount}/${maxErrors}, consecutive: ${consecutiveErrors}/${maxConsecutiveErrors})`,
                     )
 
-                    // Only handle errors if enough time has passed since last handling
+                    // Only emit warning if enough errors accumulate
                     if (
                         errorCount >= maxErrors &&
                         now - lastErrorTime > errorCooldownMs
                     ) {
                         lastErrorTime = now
                         console.warn(
-                            '⚠️ Multiple PulseAudio errors detected, continuing recording...',
+                            '⚠️ Multiple PulseAudio errors detected, but continuing recording with larger buffers...',
                         )
 
                         // Emit a warning event for monitoring purposes
@@ -528,14 +535,18 @@ export class ScreenRecorder extends EventEmitter {
                             type: 'pulseAudioWarning',
                             errorCount,
                             message:
-                                'PulseAudio input stream experiencing issues - continuing recording',
+                                'PulseAudio input stream experiencing issues - monitoring with increased buffers',
                             timestamp: Date.now(),
                         }
                         this.emit('audioWarning', audioWarning)
-
-                        // Don't reset error count immediately - let it accumulate
                     }
+                } else {
+                    // Reset consecutive error count on non-PulseAudio errors
+                    consecutiveErrors = Math.max(0, consecutiveErrors - 1)
                 }
+            } else {
+                // Reset consecutive error count on successful output
+                consecutiveErrors = Math.max(0, consecutiveErrors - 1)
             }
         })
 
@@ -547,6 +558,7 @@ export class ScreenRecorder extends EventEmitter {
                 )
                 errorCount = 0
                 lastErrorTime = 0
+                consecutiveErrors = 0
             }
         }, errorWindowMs)
     }
@@ -772,7 +784,7 @@ export class ScreenRecorder extends EventEmitter {
                     if (
                         GLOBAL.hasError() &&
                         GLOBAL.getEndReason() ===
-                            MeetingEndReason.BotNotAccepted
+                        MeetingEndReason.BotNotAccepted
                     ) {
                         console.log(
                             'Preserving existing BotNotAccepted error instead of creating BotRemovedTooEarly',
@@ -868,7 +880,7 @@ export class ScreenRecorder extends EventEmitter {
             (this.meetingStartTime -
                 this.recordingStartTime -
                 FLASH_SCREEN_SLEEP_TIME) /
-                1000
+            1000
 
         console.log(`📊 Debug values:`)
         console.log(
