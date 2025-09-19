@@ -510,9 +510,9 @@ export class MeetSpeakersObserver {
                             )
 
                             // Simple speaker status logs
-                            currentSpeakersList.forEach((speaker) => {
+                            currentSpeakersList.forEach((speaker, index) => {
                                 console.log(
-                                    `[MEET-DEBUG-SPEAKER] ${speaker.name} : ${speaker.isSpeaking}`,
+                                    `[MEET-DEBUG-SPEAKER] Speaker ${index + 1} : ${speaker.isSpeaking}`,
                                 )
                             })
 
