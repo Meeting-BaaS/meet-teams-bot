@@ -59,7 +59,7 @@ export class SpeakerManager {
         const maskedSpeakers = speakers.map((speaker, index) => {
             return {
                 ...speaker,
-                name: 'Speaker ' + index + 1,
+                name: `Speaker ${index + 1}`,
             }
         })
         console.table(maskedSpeakers)
