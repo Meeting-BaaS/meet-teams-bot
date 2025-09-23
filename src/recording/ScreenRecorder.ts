@@ -520,9 +520,24 @@ export class ScreenRecorder extends EventEmitter {
                     const now = Date.now()
                     errorCount++
                     consecutiveErrors++
-                    console.warn(
-                        `⚠️ PulseAudio error detected (${errorCount}/${maxErrors}, consecutive: ${consecutiveErrors}/${maxConsecutiveErrors})`,
+
+                    // Enhanced error logging with context
+                    const memoryUsage = process.memoryUsage()
+                    const memoryMB = Math.round(memoryUsage.rss / 1024 / 1024)
+                    const uptime = Math.round(
+                        (Date.now() - this.recordingStartTime) / 1000,
                     )
+
+                    console.warn(
+                        `⚠️ PulseAudio demuxing error detected (${errorCount}/${maxErrors}, consecutive: ${consecutiveErrors}/${maxConsecutiveErrors})`,
+                    )
+                    console.warn(
+                        `   📊 Context: Memory=${memoryMB}MB, Uptime=${uptime}s, Process=${this.ffmpegProcess?.pid}`,
+                    )
+                    console.warn(`   🔍 Error details: ${output.trim()}`)
+
+                    // Log system resource status
+                    this.logSystemResources()
 
                     // Only emit warning if enough errors accumulate
                     if (
@@ -771,6 +786,37 @@ export class ScreenRecorder extends EventEmitter {
         console.log(
             `💾 Memory usage ${context}: RSS=${Math.round(usage.rss / 1024 / 1024)}MB, Heap=${Math.round(usage.heapUsed / 1024 / 1024)}MB`,
         )
+    }
+
+    private logSystemResources(): void {
+        try {
+            // Log FFmpeg process count
+            const { execSync } = require('child_process')
+            const ffmpegCount = execSync('pgrep -c ffmpeg || echo 0', {
+                encoding: 'utf8',
+            }).trim()
+            const pulseCount = execSync('pgrep -c pulseaudio || echo 0', {
+                encoding: 'utf8',
+            }).trim()
+
+            console.warn(
+                `   🔍 System status: FFmpeg processes=${ffmpegCount}, PulseAudio processes=${pulseCount}`,
+            )
+
+            // Log file descriptor count if available
+            try {
+                const fdCount = execSync(`lsof -p ${process.pid} | wc -l`, {
+                    encoding: 'utf8',
+                }).trim()
+                console.warn(`   📁 File descriptors: ${fdCount}`)
+            } catch (e) {
+                // Ignore if lsof not available
+            }
+        } catch (error) {
+            console.warn(
+                `   ⚠️ Could not gather system resource info: ${error}`,
+            )
+        }
     }
 
     public isCurrentlyRecording(): boolean {
