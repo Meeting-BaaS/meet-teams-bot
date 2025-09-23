@@ -1,16 +1,13 @@
 import { execSync } from 'child_process'
 import express from 'express'
 import { unlinkSync } from 'fs'
-import { writeFile } from 'fs/promises'
 import * as path from 'path'
 
 import { SoundContext, VideoContext } from './media_context'
+import { GLOBAL } from './singleton'
 import { MeetingStateMachine } from './state-machine/machine'
 import { MeetingEndReason } from './state-machine/types'
 import { StopRecordParams } from './types'
-import { GLOBAL } from './singleton'
-
-import axios from 'axios'
 
 const HOST = '0.0.0.0'
 const PORT = 8080
@@ -163,62 +160,59 @@ export async function server() {
             })
             return
         }
-        await axios
-            .get(params.url, { responseType: 'arraybuffer' })
-            .then((file) => {
-                const filename = path.basename(params.url)
+        const filename = path.basename(params.url)
 
-                writeFile(filename, file.data)
-                console.log('Ressource downloaded @', filename)
+        try {
+            // Use curl with --compressed flag to handle gzip automatically
+            const curlCommand = `curl --connect-timeout 10 --max-time 10 --compressed -o "${filename}" "${params.url}"`
+            execSync(curlCommand)
+            console.log('Ressource downloaded @', filename)
 
-                // In case of image, create a video from it with FFMPEG and delete tmp files
-                if (
-                    extension === FileExtension.Jpg ||
-                    extension === FileExtension.Png
-                ) {
-                    try {
-                        const command = `ffmpeg -y -i ${filename} -vf scale=${VideoContext.WIDTH}:${VideoContext.HEIGHT} -y resized_${filename}`
-                        const output = execSync(command)
-                        console.log(output.toString())
-                    } catch (e) {
-                        console.error(
-                            `Unexpected error when scaling image : ${e}`,
-                        )
-                        result.status(400).json({
-                            error: 'Cannot scale image',
-                        })
-                        return
-                    }
-                    try {
-                        const command = `ffmpeg -y -loop 1 -i resized_${filename} -c:v libx264 -preset ultrafast -tune stillimage -r 30 -t 1 -pix_fmt yuv420p ${filename}.mp4`
-                        const output = execSync(command)
-                        console.log(output.toString())
-                    } catch (e) {
-                        console.error(
-                            `Unexpected error when generating video : ${e}`,
-                        )
-                        result.status(400).json({
-                            error: 'Cannot generate video',
-                        })
-                        return
-                    }
-                    try {
-                        unlinkSync(`${filename}`)
-                        unlinkSync(`resized_${filename}`)
-                    } catch (e) {
-                        console.error(`Cannot unlink files : ${e}`)
-                    }
+            // In case of image, create a video from it with FFMPEG and delete tmp files
+            if (
+                extension === FileExtension.Jpg ||
+                extension === FileExtension.Png
+            ) {
+                try {
+                    const command = `ffmpeg -y -i ${filename} -vf scale=${VideoContext.WIDTH}:${VideoContext.HEIGHT} -y resized_${filename}`
+                    const output = execSync(command)
+                    console.log(output.toString())
+                } catch (e) {
+                    console.error(`Unexpected error when scaling image : ${e}`)
+                    result.status(400).json({
+                        error: 'Cannot scale image',
+                    })
+                    return
                 }
-                result.status(200).json({
-                    ok: 'New ressource uploaded',
-                })
+                try {
+                    const command = `ffmpeg -y -loop 1 -i resized_${filename} -c:v libx264 -preset ultrafast -tune stillimage -r 30 -t 1 -pix_fmt yuv420p ${filename}.mp4`
+                    const output = execSync(command)
+                    console.log(output.toString())
+                } catch (e) {
+                    console.error(
+                        `Unexpected error when generating video : ${e}`,
+                    )
+                    result.status(400).json({
+                        error: 'Cannot generate video',
+                    })
+                    return
+                }
+                try {
+                    unlinkSync(`${filename}`)
+                    unlinkSync(`resized_${filename}`)
+                } catch (e) {
+                    console.error(`Cannot unlink files : ${e}`)
+                }
+            }
+            result.status(200).json({
+                ok: 'New ressource uploaded',
             })
-            .catch((e) => {
-                console.log(e)
-                result.status(400).json({
-                    error: e,
-                })
+        } catch (e) {
+            console.log(e)
+            result.status(400).json({
+                error: e,
             })
+        }
     })
 
     // Play a given ressource into microphone, camera or both
