@@ -780,6 +780,10 @@ export class ScreenRecorder extends EventEmitter {
         return this.isRecording
     }
 
+    public getRecordingStartTime(): number {
+        return this.recordingStartTime
+    }
+
     public getStatus(): {
         isRecording: boolean
         gracePeriodActive: boolean
@@ -1428,5 +1432,9 @@ export class ScreenRecorderManager {
             ScreenRecorderManager.instance = new ScreenRecorder()
         }
         return ScreenRecorderManager.instance
+    }
+
+    public static getRecordingStartTime(): number {
+        return ScreenRecorderManager.getInstance().getRecordingStartTime()
     }
 }

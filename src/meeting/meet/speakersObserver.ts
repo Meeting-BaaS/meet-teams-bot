@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test'
-import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+import { RecordingMode, SpeakerData } from '../../types'
 
 export class MeetSpeakersObserver {
     private page: Page
@@ -441,7 +441,7 @@ export class MeetSpeakersObserver {
                         }
 
                         // Build the final participant list
-                        const speakers = Array.from(
+                        const speakers: SpeakerData[] = Array.from(
                             uniqueParticipants.values(),
                         ).map((participant) => ({
                             name: participant.name,

@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test'
-import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+import { RecordingMode, SpeakerData } from '../../types'
 
 export class TeamsSpeakersObserver {
     private page: Page

@@ -1,8 +1,10 @@
 import * as fs from 'fs'
 
+import { ScreenRecorderManager } from './recording/ScreenRecorder'
 import { MeetingStateMachine } from './state-machine/machine'
 import { Streaming } from './streaming'
 
+import { ApiTypes } from './api/types'
 import { enablePrintPageLogs } from './browser/page-logger'
 import { ParticipantState } from './state-machine/types'
 import { SpeakerData } from './types'
@@ -30,9 +32,12 @@ export class SpeakerManager {
 
     public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
         try {
-            // Send the speaker state to the streaming service only if RECORDING is enabled
-            if (Streaming.instance) {
-                Streaming.instance.send_speaker_state(speakers)
+            // Create simplified output format for streaming service
+            const speakerOutputs = this.createSpeakerOutputs(speakers)
+
+            // Send the speaker transcripts to the streaming service only if RECORDING is enabled
+            if (Streaming.instance && speakerOutputs.length > 0) {
+                Streaming.instance.send_speaker_state(speakerOutputs)
             }
 
             await this.logSpeakers(speakers)
@@ -51,6 +56,41 @@ export class SpeakerManager {
                 error,
             )
             throw error
+        }
+    }
+
+    private createSpeakerOutputs(
+        speakers: SpeakerData[],
+    ): ApiTypes.PostableTranscript[] {
+        const recordingStartTime =
+            ScreenRecorderManager.getInstance().getRecordingStartTime()
+        const currentTime = Date.now()
+
+        // Only include speakers who are currently speaking
+        return speakers
+            .filter((speaker) => speaker.isSpeaking)
+            .map((speaker) => this.createSpeakerOutput(speaker, currentTime))
+    }
+
+    private createSpeakerOutput(
+        speaker: SpeakerData,
+        currentTime?: number,
+    ): ApiTypes.PostableTranscript {
+        const recordingStartTime =
+            ScreenRecorderManager.getInstance().getRecordingStartTime()
+        const time = currentTime || Date.now()
+
+        const relativeStartTime =
+            recordingStartTime > 0
+                ? (speaker.timestamp - recordingStartTime) / 1000
+                : 0
+        const relativeEndTime =
+            recordingStartTime > 0 ? (time - recordingStartTime) / 1000 : 0
+
+        return {
+            speaker: speaker.name,
+            start_time: relativeStartTime,
+            end_time: relativeEndTime,
         }
     }
 
@@ -139,14 +179,16 @@ export class SpeakerManager {
 
         if (activeSpeaker.name !== this.currentSpeaker?.name) {
             // Changement de speaker
-            await uploadTranscriptTask(activeSpeaker, false)
+            const speakerOutput = this.createSpeakerOutput(activeSpeaker)
+            await uploadTranscriptTask(speakerOutput)
         } else if (this.currentSpeaker.isSpeaking === false) {
             // The speaker has started speaking again after a pause
             if (
                 activeSpeaker.timestamp >=
                 this.currentSpeaker.timestamp + this.PAUSE_BETWEEN_SENTENCES
             ) {
-                await uploadTranscriptTask(activeSpeaker, false)
+                const speakerOutput = this.createSpeakerOutput(activeSpeaker)
+                await uploadTranscriptTask(speakerOutput)
             }
         }
         this.currentSpeaker = activeSpeaker
@@ -171,13 +213,18 @@ export class SpeakerManager {
                     this.currentSpeaker!.timestamp +
                         this.PAUSE_BETWEEN_SENTENCES
                 ) {
-                    await uploadTranscriptTask(activeSpeaker, false)
+                    const speakerOutput =
+                        this.createSpeakerOutput(activeSpeaker)
+                    await uploadTranscriptTask(speakerOutput)
                 }
             }
             this.currentSpeaker = activeSpeaker
         } else {
             const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
-            await uploadTranscriptTask(activeSpeaker, false)
+            if (activeSpeaker) {
+                const speakerOutput = this.createSpeakerOutput(activeSpeaker)
+                await uploadTranscriptTask(speakerOutput)
+            }
             this.currentSpeaker = activeSpeaker
         }
     }

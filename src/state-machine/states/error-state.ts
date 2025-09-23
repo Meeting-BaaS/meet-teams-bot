@@ -144,7 +144,6 @@ export class ErrorState extends BaseState {
             // Other relevant context metrics
             attendeesCount: this.context.attendeesCount,
             firstUserJoined: this.context.firstUserJoined,
-            sessionId: GLOBAL.get().bot_uuid, // Use bot_uuid as session identifier
         }
 
         // Log metrics

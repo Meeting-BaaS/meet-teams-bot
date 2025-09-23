@@ -1,10 +1,9 @@
 import * as fs from 'fs'
-import { IncomingMessage } from 'http'
 import { Readable } from 'stream'
-import { RawData, Server, WebSocket } from 'ws'
+import { RawData, WebSocket } from 'ws'
 
+import { ApiTypes } from './api/types'
 import { SoundContext } from './media_context'
-import { SpeakerData } from './types'
 import { PathManager } from './utils/PathManager'
 
 const DEFAULT_SAMPLE_RATE: number = 24_000
@@ -297,7 +296,7 @@ export class Streaming {
         }
     }
 
-    public send_speaker_state(speakers: SpeakerData[]): void {
+    public send_speaker_state(speakers: ApiTypes.PostableTranscript[]): void {
         if (!this.isInitialized || !this.outputUrl) {
             return
         }

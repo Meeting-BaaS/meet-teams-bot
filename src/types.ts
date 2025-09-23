@@ -115,4 +115,5 @@ export type SpeakerData = {
     timestamp: number
     isSpeaking: boolean
 }
+
 export type MeetingProvider = 'Meet' | 'Teams' | 'Zoom'

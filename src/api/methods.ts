@@ -98,27 +98,12 @@ export class Api {
     // Post transcript to server
     public async postTranscript(
         transcript: ApiTypes.PostableTranscript,
-    ): Promise<ApiTypes.QueryableTranscript> {
-        return (
-            await axios({
-                method: 'POST',
-                url: `/${GLOBAL.get().bot_uuid}/diarization`,
-                data: transcript,
-            })
-        ).data
-    }
-
-    // Patch existing transcript
-    public async patchTranscript(
-        transcript: ApiTypes.ChangeableTranscript,
-    ): Promise<ApiTypes.QueryableTranscript> {
-        return (
-            await axios({
-                method: 'PATCH',
-                url: `/${GLOBAL.get().bot_uuid}/diarization`,
-                data: transcript,
-            })
-        ).data
+    ): Promise<void> {
+        await axios({
+            method: 'POST',
+            url: `/bots/transcripts/${GLOBAL.get().bot_uuid}/diarization`,
+            data: transcript,
+        })
     }
 
     public async notifyRecordingFailure(
