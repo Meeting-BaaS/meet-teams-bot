@@ -90,7 +90,7 @@ export interface AudioWarningEvent {
 
 export class ScreenRecorder extends EventEmitter {
     private ffmpegProcess: ChildProcess | null = null
-    private cleanupTimeoutId: NodeJS.Timeout | null = null
+    private errorMonitorIntervalId: NodeJS.Timeout | null = null
     private forceKillTimeoutId: NodeJS.Timeout | null = null
     private outputPath: string = ''
     private audioOutputPath: string = ''
@@ -570,7 +570,7 @@ export class ScreenRecorder extends EventEmitter {
         })
 
         // Reset error count periodically but less frequently
-        setInterval(() => {
+        this.errorMonitorIntervalId = setInterval(() => {
             if (errorCount > 0) {
                 console.log(
                     `🔄 Resetting PulseAudio error count (was ${errorCount})`,
@@ -761,18 +761,29 @@ export class ScreenRecorder extends EventEmitter {
         // Log memory usage before cleanup
         this.logMemoryUsage('Before cleanup')
 
-        // Clear timeouts to prevent memory leaks
-        if (this.cleanupTimeoutId) {
-            clearTimeout(this.cleanupTimeoutId)
-            this.cleanupTimeoutId = null
+        // Clear error monitor interval to prevent memory leaks
+        if (this.errorMonitorIntervalId) {
+            clearInterval(this.errorMonitorIntervalId)
+            this.errorMonitorIntervalId = null
         }
+
+        // Clear force kill timeout to prevent memory leaks
         if (this.forceKillTimeoutId) {
             clearTimeout(this.forceKillTimeoutId)
             this.forceKillTimeoutId = null
         }
 
-        // Remove all event listeners to prevent memory leaks
+        // Remove all event listeners from stdout/stderr and process to prevent memory leaks
         if (this.ffmpegProcess) {
+            // Remove listeners from stdout if it exists
+            if (this.ffmpegProcess.stdout) {
+                this.ffmpegProcess.stdout.removeAllListeners()
+            }
+            // Remove listeners from stderr if it exists
+            if (this.ffmpegProcess.stderr) {
+                this.ffmpegProcess.stderr.removeAllListeners()
+            }
+            // Remove all listeners from the process itself
             this.ffmpegProcess.removeAllListeners()
             this.ffmpegProcess = null
         }
