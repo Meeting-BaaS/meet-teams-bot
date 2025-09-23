@@ -90,6 +90,8 @@ export interface AudioWarningEvent {
 
 export class ScreenRecorder extends EventEmitter {
     private ffmpegProcess: ChildProcess | null = null
+    private cleanupTimeoutId: NodeJS.Timeout | null = null
+    private forceKillTimeoutId: NodeJS.Timeout | null = null
     private outputPath: string = ''
     private audioOutputPath: string = ''
     private config: ScreenRecordingConfig
@@ -154,6 +156,7 @@ export class ScreenRecorder extends EventEmitter {
             this.isRecording = true
             this.recordingStartTime = Date.now()
             this.gracePeriodActive = false
+            this.logMemoryUsage('Starting recording')
             this.setupProcessMonitoring()
             this.setupStreamingAudio()
 
@@ -483,6 +486,7 @@ export class ScreenRecorder extends EventEmitter {
             }
 
             this.isRecording = false
+            this.cleanupProcess()
             this.emit('stopped')
         })
 
@@ -710,7 +714,7 @@ export class ScreenRecorder extends EventEmitter {
             // Wait for the 'stopped' event instead of 'exit' to ensure upload is complete
             this.once('stopped', () => {
                 this.gracePeriodActive = false
-                this.ffmpegProcess = null
+                this.cleanupProcess()
                 resolve()
             })
 
@@ -720,7 +724,7 @@ export class ScreenRecorder extends EventEmitter {
                     error instanceof Error ? error.message : error,
                 )
                 this.gracePeriodActive = false
-                this.ffmpegProcess = null
+                this.cleanupProcess()
                 reject(error)
             })
 
@@ -728,13 +732,45 @@ export class ScreenRecorder extends EventEmitter {
             this.ffmpegProcess!.kill('SIGINT')
 
             // Fallback force kill after timeout
-            setTimeout(() => {
+            this.forceKillTimeoutId = setTimeout(() => {
                 if (this.ffmpegProcess && !this.ffmpegProcess.killed) {
                     console.warn('⚠️ Force killing FFmpeg process')
                     this.ffmpegProcess.kill('SIGKILL')
                 }
+                this.forceKillTimeoutId = null
             }, 8000)
         })
+    }
+
+    private cleanupProcess(): void {
+        // Log memory usage before cleanup
+        this.logMemoryUsage('Before cleanup')
+
+        // Clear timeouts to prevent memory leaks
+        if (this.cleanupTimeoutId) {
+            clearTimeout(this.cleanupTimeoutId)
+            this.cleanupTimeoutId = null
+        }
+        if (this.forceKillTimeoutId) {
+            clearTimeout(this.forceKillTimeoutId)
+            this.forceKillTimeoutId = null
+        }
+
+        // Remove all event listeners to prevent memory leaks
+        if (this.ffmpegProcess) {
+            this.ffmpegProcess.removeAllListeners()
+            this.ffmpegProcess = null
+        }
+
+        // Log memory usage after cleanup
+        this.logMemoryUsage('After cleanup')
+    }
+
+    private logMemoryUsage(context: string): void {
+        const usage = process.memoryUsage()
+        console.log(
+            `💾 Memory usage ${context}: RSS=${Math.round(usage.rss / 1024 / 1024)}MB, Heap=${Math.round(usage.heapUsed / 1024 / 1024)}MB`,
+        )
     }
 
     public isCurrentlyRecording(): boolean {
@@ -784,7 +820,7 @@ export class ScreenRecorder extends EventEmitter {
                     if (
                         GLOBAL.hasError() &&
                         GLOBAL.getEndReason() ===
-                        MeetingEndReason.BotNotAccepted
+                            MeetingEndReason.BotNotAccepted
                     ) {
                         console.log(
                             'Preserving existing BotNotAccepted error instead of creating BotRemovedTooEarly',
@@ -880,7 +916,7 @@ export class ScreenRecorder extends EventEmitter {
             (this.meetingStartTime -
                 this.recordingStartTime -
                 FLASH_SCREEN_SLEEP_TIME) /
-            1000
+                1000
 
         console.log(`📊 Debug values:`)
         console.log(
