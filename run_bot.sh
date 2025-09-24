@@ -77,6 +77,23 @@ process_config() {
     fi
 }
 
+# Cleanup function for Docker containers
+cleanup_docker() {
+    if [ -n "${CONTAINER_ID:-}" ]; then
+        print_info "🧹 Cleaning up Docker container: ${CONTAINER_ID:0:12}..."
+        docker stop "$CONTAINER_ID" >/dev/null 2>&1 || true
+        docker rm "$CONTAINER_ID" >/dev/null 2>&1 || true
+        unset CONTAINER_ID
+    fi
+}
+
+# Signal handler for graceful shutdown
+handle_signal() {
+    print_warning "🛑 Received interrupt signal, shutting down gracefully..."
+    cleanup_docker
+    exit 130
+}
+
 # Run bot with configuration
 run_bot() {
     local config_file=$1
@@ -87,6 +104,9 @@ run_bot() {
         print_error "Configuration file '$config_file' not found"
         exit 1
     fi
+    
+    # Set up signal handlers
+    trap handle_signal SIGINT SIGTERM
     
     local output_dir=$(create_output_dir)
     local config_json=$(cat "$config_file")
@@ -109,8 +129,14 @@ run_bot() {
         print_info "🐛 DEBUG logs enabled"
     fi
     
-    # Run the bot
-    echo "$processed_config" | docker run --add-host=host.docker.internal:host-gateway -i \
+    # Generate unique container name
+    local container_name="meet-teams-bot-$(date +%s)-$$"
+    
+    # Run the bot with explicit container name and auto-remove
+    echo "$processed_config" | docker run --name "$container_name" \
+        --add-host=host.docker.internal:host-gateway \
+        --rm \
+        -i \
         $docker_args \
         -e HOST_USER_ID=$(id -u) \
         -e HOST_GROUP_ID=$(id -g) \
@@ -118,21 +144,45 @@ run_bot() {
         -v "$(pwd)/$output_dir:/app/data" \
         meet-teams-bot:latest &
     
-    # Store the PID to handle Ctrl+C gracefully
+    # Store container name for cleanup
+    CONTAINER_ID="$container_name"
     local docker_pid=$!
     
-    # Wait for the container to finish
-    wait $docker_pid
+    # Wait for the container to finish with timeout
+    local timeout_duration=${TIMEOUT:-3600}  # Default 1 hour timeout
+    local start_time=$(date +%s)
     
-    if [ ${PIPESTATUS[0]} -eq 0 ]; then
+    while kill -0 $docker_pid 2>/dev/null; do
+        local current_time=$(date +%s)
+        local elapsed=$((current_time - start_time))
+        
+        if [ $elapsed -gt $timeout_duration ]; then
+            print_warning "⏰ Timeout reached (${timeout_duration}s), stopping container..."
+            cleanup_docker
+            kill $docker_pid 2>/dev/null || true
+            print_error "Bot session timed out"
+            exit 1
+        fi
+        
+        sleep 1
+    done
+    
+    # Wait for the process to complete
+    wait $docker_pid
+    local exit_code=$?
+    
+    # Clean up container (should be automatic with --rm, but just in case)
+    cleanup_docker
+    
+    if [ $exit_code -eq 0 ]; then
         print_success "Bot session completed successfully"
         if [ -d "$output_dir" ] && [ "$(ls -A $output_dir)" ]; then
             print_success "Generated recordings:"
             find "$output_dir" -type f \( -name "*.mp4" -o -name "*.wav" \) -exec ls -lh {} \;
         fi
     else
-        print_error "Bot session failed"
-        exit 1
+        print_error "Bot session failed with exit code: $exit_code"
+        exit $exit_code
     fi
 }
 
@@ -148,12 +198,14 @@ show_help() {
     echo "Environment Variables:"
     echo "  DEBUG=true|false           - Enable/disable debug mode with VNC (default: false)"
     echo "  DEBUG_LOGS=true|false      - Enable/disable speakers debug logs (default: false)"
+    echo "  TIMEOUT=seconds            - Set timeout for bot session (default: 3600)"
     echo
     echo "Examples:"
     echo "  $0 build"
     echo "  $0 run bot.config.json"
     echo "  DEBUG=true $0 run bot.config.json       # Run with VNC debug access"
     echo "  DEBUG_LOGS=true $0 run bot.config.json  # Run with speakers debug logs"
+    echo "  TIMEOUT=1800 $0 run bot.config.json     # Run with 30min timeout"
     echo
     echo "For configuration format, see bot.config.json"
 }

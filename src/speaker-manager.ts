@@ -2,7 +2,6 @@ import * as fs from 'fs'
 
 import { ScreenRecorderManager } from './recording/ScreenRecorder'
 import { MeetingStateMachine } from './state-machine/machine'
-import { Streaming } from './streaming'
 
 import { ApiTypes } from './api/types'
 import { enablePrintPageLogs } from './browser/page-logger'
@@ -13,9 +12,8 @@ import { PathManager } from './utils/PathManager'
 
 export class SpeakerManager {
     private static instance: SpeakerManager | null = null
-    private currentSpeaker: SpeakerData | null = null
-    private readonly PAUSE_BETWEEN_SENTENCES = 1000 // 1 second
     private lastSpeakerTime: number | null = null
+    private speakerStartTimes: Map<string, number> = new Map()
 
     private constructor() {}
 
@@ -32,14 +30,6 @@ export class SpeakerManager {
 
     public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
         try {
-            // Create simplified output format for streaming service
-            const speakerOutputs = this.createSpeakerOutputs(speakers)
-
-            // Send the speaker transcripts to the streaming service only if RECORDING is enabled
-            if (Streaming.instance && speakerOutputs.length > 0) {
-                Streaming.instance.send_speaker_state(speakerOutputs)
-            }
-
             await this.logSpeakers(speakers)
 
             // Count the active speakers
@@ -59,36 +49,24 @@ export class SpeakerManager {
         }
     }
 
-    private createSpeakerOutputs(
-        speakers: SpeakerData[],
-    ): ApiTypes.PostableTranscript[] {
-        const recordingStartTime =
-            ScreenRecorderManager.getInstance().getRecordingStartTime()
-        const currentTime = Date.now()
 
-        // Only include speakers who are currently speaking
-        return speakers
-            .filter((speaker) => speaker.isSpeaking)
-            .map((speaker) => this.createSpeakerOutput(speaker, currentTime))
-    }
-
-    private createSpeakerOutput(
-        speaker: SpeakerData,
-        currentTime?: number,
+    private createCompleteTranscript(
+        speakerName: string,
+        startTime: number,
+        endTime: number,
     ): ApiTypes.PostableTranscript {
         const recordingStartTime =
             ScreenRecorderManager.getInstance().getRecordingStartTime()
-        const time = currentTime || Date.now()
 
         const relativeStartTime =
             recordingStartTime > 0
-                ? (speaker.timestamp - recordingStartTime) / 1000
+                ? (startTime - recordingStartTime) / 1000
                 : 0
         const relativeEndTime =
-            recordingStartTime > 0 ? (time - recordingStartTime) / 1000 : 0
+            recordingStartTime > 0 ? (endTime - recordingStartTime) / 1000 : 0
 
         return {
-            speaker: speaker.name,
+            speaker: speakerName,
             start_time: relativeStartTime,
             end_time: relativeEndTime,
         }
@@ -165,67 +143,58 @@ export class SpeakerManager {
     }
 
     private async handleNoSpeakers(speakers: SpeakerData[]): Promise<void> {
-        if (this.currentSpeaker) {
-            this.currentSpeaker.isSpeaking = false
-            if (speakers.length > 0) {
-                this.currentSpeaker.timestamp = speakers[0].timestamp
-            }
+        // Check if any speakers stopped speaking and send their transcripts
+        for (const [speakerName, startTime] of this.speakerStartTimes.entries()) {
+            const endTime = speakers.length > 0 ? speakers[0].timestamp : Date.now()
+            const transcript = this.createCompleteTranscript(speakerName, startTime, endTime)
+            await uploadTranscriptTask(transcript)
         }
+        
+        // Clear all start times since no one is speaking
+        this.speakerStartTimes.clear()
     }
 
     private async handleSingleSpeaker(speakers: SpeakerData[]): Promise<void> {
         const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
         if (!activeSpeaker) return
 
-        if (activeSpeaker.name !== this.currentSpeaker?.name) {
-            // Changement de speaker
-            const speakerOutput = this.createSpeakerOutput(activeSpeaker)
-            await uploadTranscriptTask(speakerOutput)
-        } else if (this.currentSpeaker.isSpeaking === false) {
-            // The speaker has started speaking again after a pause
-            if (
-                activeSpeaker.timestamp >=
-                this.currentSpeaker.timestamp + this.PAUSE_BETWEEN_SENTENCES
-            ) {
-                const speakerOutput = this.createSpeakerOutput(activeSpeaker)
-                await uploadTranscriptTask(speakerOutput)
+        // Check if any other speakers stopped speaking
+        for (const [speakerName, startTime] of this.speakerStartTimes.entries()) {
+            if (speakerName !== activeSpeaker.name) {
+                const transcript = this.createCompleteTranscript(speakerName, startTime, activeSpeaker.timestamp)
+                await uploadTranscriptTask(transcript)
+                this.speakerStartTimes.delete(speakerName)
             }
         }
-        this.currentSpeaker = activeSpeaker
+
+        // Track when this speaker started speaking
+        if (!this.speakerStartTimes.has(activeSpeaker.name)) {
+            this.speakerStartTimes.set(activeSpeaker.name, activeSpeaker.timestamp)
+        }
     }
 
     private async handleMultipleSpeakers(
         speakers: SpeakerData[],
     ): Promise<void> {
-        const hasSpeakingCurrentSpeaker = speakers.some(
-            (speaker) =>
-                speaker.name === this.currentSpeaker?.name &&
-                speaker.isSpeaking === true,
-        )
-
-        if (hasSpeakingCurrentSpeaker) {
-            const activeSpeaker = speakers.find(
-                (speaker) => speaker.name === this.currentSpeaker!.name,
-            )
-            if (this.currentSpeaker!.isSpeaking === false) {
-                if (
-                    activeSpeaker.timestamp >=
-                    this.currentSpeaker!.timestamp +
-                        this.PAUSE_BETWEEN_SENTENCES
-                ) {
-                    const speakerOutput =
-                        this.createSpeakerOutput(activeSpeaker)
-                    await uploadTranscriptTask(speakerOutput)
-                }
+        const currentlySpeaking = speakers.filter(s => s.isSpeaking)
+        const currentlySpeakingNames = new Set(currentlySpeaking.map(s => s.name))
+        
+        // Find speakers who stopped speaking
+        for (const [speakerName, startTime] of this.speakerStartTimes.entries()) {
+            if (!currentlySpeakingNames.has(speakerName)) {
+                // This speaker stopped speaking, send their transcript
+                const endTime = currentlySpeaking.length > 0 ? currentlySpeaking[0].timestamp : Date.now()
+                const transcript = this.createCompleteTranscript(speakerName, startTime, endTime)
+                await uploadTranscriptTask(transcript)
+                this.speakerStartTimes.delete(speakerName)
             }
-            this.currentSpeaker = activeSpeaker
-        } else {
-            const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
-            if (activeSpeaker) {
-                const speakerOutput = this.createSpeakerOutput(activeSpeaker)
-                await uploadTranscriptTask(speakerOutput)
+        }
+        
+        // Track new speakers who started speaking
+        for (const speaker of currentlySpeaking) {
+            if (!this.speakerStartTimes.has(speaker.name)) {
+                this.speakerStartTimes.set(speaker.name, speaker.timestamp)
             }
-            this.currentSpeaker = activeSpeaker
         }
     }
 }
