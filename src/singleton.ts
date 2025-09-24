@@ -134,10 +134,10 @@ class Global {
     }
 
     public getS3VideoBucket(): string {
-        const bucket = process.env.AWS_S3_VIDEO_BUCKET
+        const bucket = process.env.AWS_S3_DELIVERABLES_BUCKET
         if (!bucket) {
             throw new Error(
-                'AWS_S3_VIDEO_BUCKET environment variable is not set',
+                'AWS_S3_DELIVERABLES_BUCKET environment variable is not set',
             )
         }
         return bucket

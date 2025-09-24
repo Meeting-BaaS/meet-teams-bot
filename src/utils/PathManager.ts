@@ -89,7 +89,7 @@ export class PathManager {
 
     public getS3Paths(): { bucketName: string; s3Path: string } {
         return {
-            bucketName: process.env.AWS_S3_VIDEO_BUCKET || '',
+            bucketName: process.env.AWS_S3_DELIVERABLES_BUCKET || '',
             s3Path: `${this.botUuid}`,
         }
     }
