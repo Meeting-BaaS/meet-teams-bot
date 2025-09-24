@@ -1,4 +1,61 @@
-node_modules
-node_modules/**/**
-buid
-buid/**/**
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Build outputs
+build/
+output/
+recordings/
+
+# Development files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test files
+test/
+*.test.js
+*.test.ts
+jest.config.js
+jest.setup.ts
+
+# Documentation
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+SECURITY.md
+LICENSE
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Scripts
+run_bot.sh
+test-*.sh
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif

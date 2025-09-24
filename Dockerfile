@@ -34,15 +34,22 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
 
 # Application setup
 WORKDIR /app
+
+# Copy package files first (for better Docker layer caching)
 COPY package.json package-lock.json ./
+
+# Install dependencies (this layer is cached unless package.json changes)
 RUN npm ci
 
 # Install Playwright's Chromium + create symlink for browser.ts compatibility
 RUN npx playwright install chromium && \
     find /root/.cache/ms-playwright -name chrome -type f -executable | head -1 | xargs -I {} ln -sf {} /usr/bin/google-chrome
 
-# Build application
-COPY . .
+# Copy source code (this layer changes most often)
+COPY src/ ./src/
+COPY tsconfig.json tsconfig.release.json tsfmt.json ./
+
+# Build application (this layer changes when source changes)
 RUN npm run build
 
 # Environment configuration
