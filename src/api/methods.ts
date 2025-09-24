@@ -101,7 +101,7 @@ export class Api {
     ): Promise<void> {
         await axios({
             method: 'POST',
-            url: `/bots/transcripts/${GLOBAL.get().bot_uuid}/diarization`,
+            url: `/${GLOBAL.get().bot_uuid}/diarization`,
             data: transcript,
         })
     }
