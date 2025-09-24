@@ -1,7 +1,10 @@
-import { execSync } from 'child_process'
+import { execFile, execSync } from 'child_process'
 import express from 'express'
 import { unlinkSync } from 'fs'
 import * as path from 'path'
+import { promisify } from 'util'
+
+const execFileAsync = promisify(execFile)
 
 import { SoundContext, VideoContext } from './media_context'
 import { GLOBAL } from './singleton'
@@ -163,9 +166,19 @@ export async function server() {
         const filename = path.basename(params.url)
 
         try {
-            // Use curl with --compressed flag to handle gzip automatically
-            const curlCommand = `curl --connect-timeout 10 --max-time 10 --compressed -o "${filename}" "${params.url}"`
-            execSync(curlCommand)
+            // Use curl with non-blocking execFile to avoid shell injection and event-loop blocking
+            await execFileAsync('curl', [
+                '--connect-timeout',
+                '10',
+                '--max-time',
+                '10',
+                '--compressed',
+                '-fS',
+                '-L',
+                '-o',
+                filename,
+                params.url,
+            ])
             console.log('Ressource downloaded @', filename)
 
             // In case of image, create a video from it with FFMPEG and delete tmp files
