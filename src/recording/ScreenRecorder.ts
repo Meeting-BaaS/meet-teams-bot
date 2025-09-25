@@ -1069,7 +1069,10 @@ export class ScreenRecorder extends EventEmitter {
         const concatContent = `file '${absoluteSilencePath}'
 file '${absoluteInputPath}'`
 
-        fs.writeFileSync(concatListFile, concatContent, 'utf8')
+        fs.writeFileSync(concatListFile, concatContent, {
+            encoding: 'utf8',
+            mode: 0o666,
+        })
         console.log(`📝 Created concat list:`)
         console.log(`   - ${absoluteSilencePath}`)
         console.log(`   - ${absoluteInputPath}`)
@@ -1239,7 +1242,7 @@ file '${absoluteInputPath}'`
 
         const chunksDir = PathManager.getInstance().getAudioPath()
         if (!fs.existsSync(chunksDir)) {
-            fs.mkdirSync(chunksDir, { recursive: true })
+            fs.mkdirSync(chunksDir, { recursive: true, mode: 0o777 })
         }
 
         // Get audio duration

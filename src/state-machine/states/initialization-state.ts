@@ -141,7 +141,7 @@ export class InitializationState extends BaseState {
                     'logs',
                     GLOBAL.get().bot_uuid,
                 )
-                fs.mkdirSync(baseDir, { recursive: true })
+                fs.mkdirSync(baseDir, { recursive: true, mode: 0o777 })
                 console.info('Created fallback log directory:', baseDir)
             } catch (fsError) {
                 console.error(

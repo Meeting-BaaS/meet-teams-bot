@@ -105,10 +105,10 @@ export class HtmlSnapshotService {
         )
 
         // Ensure directory exists
-        await fs.mkdir(path.dirname(filePath), { recursive: true })
+        await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o777 })
 
         // Save HTML file
-        await fs.writeFile(filePath, html, 'utf-8')
+        await fs.writeFile(filePath, html, { encoding: 'utf-8', mode: 0o666 })
 
         console.log(`[HtmlSnapshot] Captured snapshot: ${filename}`)
 

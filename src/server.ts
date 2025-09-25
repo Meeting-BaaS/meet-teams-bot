@@ -5,10 +5,10 @@ import { writeFile } from 'fs/promises'
 import * as path from 'path'
 
 import { SoundContext, VideoContext } from './media_context'
+import { GLOBAL } from './singleton'
 import { MeetingStateMachine } from './state-machine/machine'
 import { MeetingEndReason } from './state-machine/types'
 import { StopRecordParams } from './types'
-import { GLOBAL } from './singleton'
 
 import axios from 'axios'
 
@@ -168,7 +168,7 @@ export async function server() {
             .then((file) => {
                 const filename = path.basename(params.url)
 
-                writeFile(filename, file.data)
+                writeFile(filename, file.data, { mode: 0o666 })
                 console.log('Ressource downloaded @', filename)
 
                 // In case of image, create a video from it with FFMPEG and delete tmp files

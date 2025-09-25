@@ -37,7 +37,7 @@ export class PathManager {
 
         for (const p of paths) {
             try {
-                await fs.mkdir(p, { recursive: true })
+                await fs.mkdir(p, { recursive: true, mode: 0o777 })
                 console.log(`Created directory: ${p}`)
             } catch (error) {
                 console.error(`Failed to create directory ${p}:`, error)
@@ -48,7 +48,11 @@ export class PathManager {
 
     public getBasePath(): string {
         if (this.isServerless) {
-            return path.join('./data', this.botUuid)
+            // In Docker container, use /app/data (mounted volume)
+            // In local development, use ./data
+            const dataPath =
+                process.env.NODE_ENV === 'production' ? '/app/data' : './data'
+            return path.join(dataPath, this.botUuid)
         }
         switch (this.environment) {
             case 'prod':
