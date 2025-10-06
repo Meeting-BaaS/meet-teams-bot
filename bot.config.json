@@ -29,5 +29,6 @@
     "environ": "local",
     "aws_s3_temporary_audio_bucket": "local-audio-bucket",
     "remote": null,
+    "start_time": 0,
     "secret": "your-secret-key"
 }
