@@ -72,6 +72,10 @@ export class Api {
 
     // Finalize bot structure into BDD and send webhook
     public async endMeetingTrampoline() {
+        const startTime =
+            GLOBAL.get().start_time || Math.floor(Date.now() / 1000)
+        const exitTime = GLOBAL.get().exit_time || Math.floor(Date.now() / 1000)
+
         const resp = await axios({
             method: 'POST',
             url: '/bots/end_meeting_trampoline',
@@ -80,6 +84,8 @@ export class Api {
             },
             data: {
                 diarization_v2: false,
+                bot_joined_at: startTime,
+                bot_exited_at: exitTime,
             },
         })
         return resp.data

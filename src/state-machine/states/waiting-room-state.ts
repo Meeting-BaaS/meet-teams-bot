@@ -143,7 +143,10 @@ export class WaitingRoomState extends BaseState {
         }
 
         // Handle timing control for precise meeting join times
-        await handleTimingControl(GLOBAL.get().start_time)
+        const startTime = await handleTimingControl(GLOBAL.get().start_time)
+
+        // Store the actual start time for later use - It is sent to the backend at the end of the meeting
+        GLOBAL.setStartTime(startTime)
 
         const timeoutMs =
             GLOBAL.get().automatic_leave.waiting_room_timeout * 1000

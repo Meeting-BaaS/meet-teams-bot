@@ -89,6 +89,20 @@ class Global {
         return this.meetingParams.remote === null
     }
 
+    public setStartTime(startTime: number): void {
+        if (this.meetingParams === null) {
+            throw new Error('Meeting params are not set')
+        }
+        this.meetingParams.start_time = startTime
+    }
+
+    public setExitTime(exitTime: number): void {
+        if (this.meetingParams === null) {
+            throw new Error('Meeting params are not set')
+        }
+        this.meetingParams.exit_time = exitTime
+    }
+
     public setError(reason: MeetingEndReason, message?: string): void {
         // ApiRequest is a special case where we don't want to override an existing error
         if (

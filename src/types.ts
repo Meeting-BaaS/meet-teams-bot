@@ -91,6 +91,7 @@ export type MeetingParams = {
     zoom_sdk_id?: string
     zoom_sdk_pwd?: string
     start_time?: number
+    exit_time?: number
 }
 
 export type StopRecordParams = {
