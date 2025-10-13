@@ -115,12 +115,12 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (GLOBAL.get().recording_mode === 'audio_only') {
                 this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.wav'
+                    PathManager.getInstance().getOutputPath() + '.flac'
             } else {
                 this.outputPath =
                     PathManager.getInstance().getOutputPath() + '.mp4'
                 this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.wav'
+                    PathManager.getInstance().getOutputPath() + '.flac'
             }
         } catch (error) {
             console.error('Failed to generate output paths:', error)
@@ -283,7 +283,7 @@ export class ScreenRecorder extends EventEmitter {
         if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only recording with screenshots
             const tempDir = PathManager.getInstance().getTempPath()
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            const rawAudioPath = path.join(tempDir, 'raw.flac')
 
             args.push(
                 // === AUDIO INPUT ===
@@ -308,7 +308,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-map',
                 '0:a:0',
                 '-acodec',
-                'pcm_s16le',
+                'flac',
                 '-ac',
                 '1',
                 '-ar',
@@ -316,7 +316,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-avoid_negative_ts',
                 'make_zero',
                 '-f',
-                'wav',
+                'flac',
                 '-y',
                 rawAudioPath,
 
@@ -353,7 +353,7 @@ export class ScreenRecorder extends EventEmitter {
             // Separate audio and video recording
             const tempDir = PathManager.getInstance().getTempPath()
             const rawVideoPath = path.join(tempDir, 'raw.mp4')
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            const rawAudioPath = path.join(tempDir, 'raw.flac')
 
             args.push(
                 // === VIDEO INPUT ===
@@ -413,7 +413,7 @@ export class ScreenRecorder extends EventEmitter {
                 '1:a:0',
                 '-vn',
                 '-acodec',
-                'pcm_s16le',
+                'flac',
                 '-ac',
                 '1',
                 '-ar',
@@ -421,7 +421,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-avoid_negative_ts',
                 'make_zero',
                 '-f',
-                'wav',
+                'flac',
                 '-y',
                 rawAudioPath,
 
@@ -626,7 +626,7 @@ export class ScreenRecorder extends EventEmitter {
             const files = fs.readdirSync(chunksDir)
             const chunkFiles = files.filter(
                 (file) =>
-                    file.startsWith(`${botUuid}-`) && file.endsWith('.wav'),
+                    file.startsWith(`${botUuid}-`) && file.endsWith('.flac'),
             )
 
             console.log(`📤 Uploading ${chunkFiles.length} audio chunks...`)
@@ -677,12 +677,12 @@ export class ScreenRecorder extends EventEmitter {
         try {
             if (fs.existsSync(this.audioOutputPath)) {
                 console.log(
-                    `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                    `📤 Uploading FLAC audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
-                    `${identifier}.wav`,
+                    `${identifier}.flac`,
                 )
                 fs.unlinkSync(this.audioOutputPath)
             }
@@ -917,7 +917,7 @@ export class ScreenRecorder extends EventEmitter {
         if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only mode: just copy raw audio to final output
             const tempDir = PathManager.getInstance().getTempPath()
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            const rawAudioPath = path.join(tempDir, 'raw.flac')
 
             console.log('🔄 Processing audio-only recording...')
 
@@ -939,7 +939,7 @@ export class ScreenRecorder extends EventEmitter {
         // Video mode: efficient sync and merge process for long recordings
         const tempDir = PathManager.getInstance().getTempPath()
         const rawVideoPath = path.join(tempDir, 'raw.mp4')
-        const rawAudioPath = path.join(tempDir, 'raw.wav')
+        const rawAudioPath = path.join(tempDir, 'raw.flac')
 
         console.log(
             '🔄 Starting efficient sync and merge for long recording...',
@@ -1011,7 +1011,7 @@ export class ScreenRecorder extends EventEmitter {
         console.log(`🔇 Audio padding needed: ${audioPadding.toFixed(3)}s`)
 
         // 5. Prepare audio with padding or trimming if needed
-        const processedAudioPath = path.join(tempDir, 'processed.wav')
+        const processedAudioPath = path.join(tempDir, 'processed.flac')
         if (audioPadding > 0) {
             console.log(
                 `🔇 Adding ${audioPadding.toFixed(3)}s silence to audio start (video ahead)...`,
@@ -1093,7 +1093,7 @@ export class ScreenRecorder extends EventEmitter {
         paddingSeconds: number,
     ): Promise<void> {
         const tempDir = PathManager.getInstance().getTempPath()
-        const silenceFile = path.join(tempDir, 'silence.wav')
+        const silenceFile = path.join(tempDir, 'silence.flac')
         const concatListFile = path.join(tempDir, 'concat_list.txt')
 
         // Create silence file with exact same format as input
@@ -1278,7 +1278,7 @@ file '${absoluteInputPath}'`
         ]
 
         console.log(
-            '🎵 Extracting audio from video (converting to WAV PCM 16kHz mono)',
+            '🎵 Extracting audio from video (converting to FLAC 16kHz mono)',
         )
 
         // Estimate file size for timeout calculation
@@ -1301,7 +1301,7 @@ file '${absoluteInputPath}'`
 
         // Calculate chunk duration (max 1 hour = 3600 seconds)
         const chunkDuration = Math.min(duration, TRANSCRIPTION_CHUNK_DURATION)
-        const chunkPattern = path.join(chunksDir, `${botUuid}-%d.wav`)
+        const chunkPattern = path.join(chunksDir, `${botUuid}-%d.flac`)
 
         const args = [
             '-i',
@@ -1317,7 +1317,7 @@ file '${absoluteInputPath}'`
             '-segment_time',
             chunkDuration.toString(),
             '-segment_format',
-            'wav',
+            'flac',
             '-y',
             chunkPattern,
         ]

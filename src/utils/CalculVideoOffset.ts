@@ -26,7 +26,7 @@ interface SyncOffset {
 
 /**
  * Calculate synchronization offset between audio and video files
- * @param audioPath - Path to audio file (.wav)
+ * @param audioPath - Path to audio file (.flac)
  * @param videoPath - Path to video file (.webm, .mp4, etc.)
  * @returns Promise<SyncOffset> - Synchronization information
  */
@@ -323,7 +323,7 @@ async function detectVideoFlash(videoPath: string): Promise<number> {
  */
 async function testWithSampleFiles(): Promise<SyncOffset> {
     const audioPath =
-        '/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output.wav'
+        '/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output.flac'
     const videoPath =
         '/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output.mp4'
 

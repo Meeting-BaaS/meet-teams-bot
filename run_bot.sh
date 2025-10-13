@@ -398,7 +398,7 @@ run_with_config() {
         if [ -d "$output_dir" ] && [ "$(ls -A $output_dir)" ]; then
             echo
             print_success "Generated recordings:"
-            find "$output_dir" -type f \( -name "*.mp4" -o -name "*.wav" \) -print0 | while IFS= read -r -d '' file; do
+            find "$output_dir" -type f \( -name "*.mp4" -o -name "*.flac" \) -print0 | while IFS= read -r -d '' file; do
                 size=$(du -h "$file" | cut -f1)
                 filename=$(basename "$file")
                 echo -e "  ${GREEN}${ICON_FILE} $filename${NC} (${size})"
@@ -513,7 +513,7 @@ run_with_config_and_overrides() {
         if [ -d "$output_dir" ] && [ "$(ls -A $output_dir)" ]; then
             echo
             print_success "Generated recordings:"
-            find "$output_dir" -type f \( -name "*.mp4" -o -name "*.wav" \) -print0 | while IFS= read -r -d '' file; do
+            find "$output_dir" -type f \( -name "*.mp4" -o -name "*.flac" \) -print0 | while IFS= read -r -d '' file; do
                 size=$(du -h "$file" | cut -f1)
                 filename=$(basename "$file")
                 echo -e "  ${GREEN}${ICON_FILE} $filename${NC} (${size})"
@@ -616,7 +616,7 @@ run_with_json() {
     # List generated files
     if [ -d "$output_dir" ] && [ "$(ls -A $output_dir)" ]; then
         print_success "Generated files:"
-        find "$output_dir" -type f -name "*.mp4" -o -name "*.wav" | while read -r file; do
+        find "$output_dir" -type f -name "*.mp4" -o -name "*.flac" | while read -r file; do
             size=$(du -h "$file" | cut -f1)
             echo -e "  ${GREEN}📁 $file${NC} (${size})"
         done
@@ -768,10 +768,10 @@ test_recording() {
     
     # Vérifier les fichiers générés
     local output_dir="./recordings"
-    if [ -d "$output_dir" ] && [ "$(find $output_dir -name "*.mp4" -o -name "*.wav" | wc -l)" -gt 0 ]; then
+    if [ -d "$output_dir" ] && [ "$(find $output_dir -name "*.mp4" -o -name "*.flac" | wc -l)" -gt 0 ]; then
         print_success "✅ Recording files were generated"
         print_info "Generated files:"
-        find "$output_dir" -name "*.mp4" -o -name "*.wav" | head -5
+        find "$output_dir" -name "*.mp4" -o -name "*.flac" | head -5
     else
         print_info "ℹ️ No recording files (normal for short test)"
     fi
@@ -946,9 +946,9 @@ test_api_request() {
     
     # Check for generated files
     local bot_files_dir="$output_dir/$bot_uuid"
-    if [ -d "$bot_files_dir" ] && [ "$(find "$bot_files_dir" -name "*.mp4" -o -name "*.wav" | wc -l)" -gt 0 ]; then
+    if [ -d "$bot_files_dir" ] && [ "$(find "$bot_files_dir" -name "*.mp4" -o -name "*.flac" | wc -l)" -gt 0 ]; then
         print_success "✅ Recording files were generated"
-    elif [ -d "$output_dir" ] && [ "$(find "$output_dir" -name "*.mp4" -o -name "*.wav" | wc -l)" -gt 0 ]; then
+    elif [ -d "$output_dir" ] && [ "$(find "$output_dir" -name "*.mp4" -o -name "*.flac" | wc -l)" -gt 0 ]; then
         print_success "✅ Recording files were generated"
     else
         print_info "ℹ️ No recording files (normal for short test)"

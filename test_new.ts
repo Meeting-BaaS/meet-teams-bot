@@ -1,7 +1,7 @@
 import { calculateVideoOffset } from './src/utils/CalculVideoOffset';
 
 async function testNewFiles() {
-    const audioPath = '/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output_1.wav';
+    const audioPath = '/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output_1.flac';
     const videoPath = '/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output_1.mp4';
     
     console.log('🧪 Testing NEW files...');
