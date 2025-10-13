@@ -34,8 +34,13 @@ export class RecordingState extends BaseState {
 
             // Set a global timeout for the recording state
             const startTime = Date.now()
-            this.context.startTime = startTime // Assign to context so getStartTime() works
-            ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
+            // Note: startTime is already set in in-call state to prevent race conditions
+            // Only set it here if it wasn't set earlier (fallback)
+            if (!this.context.startTime) {
+                this.context.startTime = startTime
+                ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
+                console.log('Fallback: Meeting start time set in recording state')
+            }
 
             // Initialize noSpeakerDetectedTime if not already set (for meetings with no participants)
             if (!this.context.noSpeakerDetectedTime) {
