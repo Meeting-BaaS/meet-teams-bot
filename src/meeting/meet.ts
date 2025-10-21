@@ -318,6 +318,12 @@ async function findShowEveryOne(
 
     while (!showEveryOneFound) {
         try {
+            // Check if there's already a global error (bot removed, etc.)
+            if (GLOBAL.getEndReason()) {
+                console.log('Global error detected, stopping findShowEveryOne')
+                return
+            }
+
             // Check if we are actually in the meeting
             inMeetingConfirmed = await isInMeeting(page)
             if (inMeetingConfirmed) {
@@ -662,6 +668,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting, stopping layout change',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed during layout change')
             return false
         }
 
@@ -693,6 +700,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting after clicking More options',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed after clicking More options')
             return false
         }
 
@@ -722,6 +730,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting after clicking Change layout',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed after clicking Change layout')
             return false
         }
 
@@ -748,6 +757,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting after clicking Spotlight',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed after clicking Spotlight')
             return false
         }
 
