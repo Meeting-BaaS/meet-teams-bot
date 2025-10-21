@@ -1,6 +1,7 @@
 import { SoundContext, VideoContext } from '../../media_context'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+import { GLOBAL } from '../../singleton'
 
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
@@ -95,8 +96,12 @@ export class CleanupState extends BaseState {
 
             console.info('🧹 Parallel cleanup completed')
 
-            console.info('🧹 Step 7/7: Cleaning up browser resources')
-            // 7. Clean up browser resources (must be sequential after others)
+            // 7. Production EFS cleanup (remove temporary files, screenshots, logs)
+            console.info('🧹 Step 7/8: Production EFS cleanup')
+            await this.cleanupProductionFiles()
+
+            console.info('🧹 Step 8/8: Cleaning up browser resources')
+            // 8. Clean up browser resources (must be sequential after others)
             await this.cleanupBrowserResources()
 
             console.info('🧹 All cleanup steps completed')
@@ -246,6 +251,84 @@ export class CleanupState extends BaseState {
             console.warn(
                 `Global dialog observer not available in state ${this.constructor.name}`,
             )
+        }
+    }
+
+    private async cleanupProductionFiles(): Promise<void> {
+        try {
+            const global = GLOBAL.get()
+            
+            // Only cleanup in production environment
+            if (global.environ !== 'prod') {
+                console.info('🧹 Skipping production cleanup - not in production environment')
+                return
+            }
+
+            console.info('🧹 Starting production EFS cleanup...')
+            
+            if (this.context.pathManager) {
+                const pathManager = this.context.pathManager
+                
+                // Clean up temporary files (keep raw video/audio for debugging)
+                const tempPath = pathManager.getTempPath()
+                await this.cleanupDirectory(tempPath, 'temporary files')
+                
+                // Clean up screenshots
+                const screenshotsPath = pathManager.getScreenshotsPath()
+                await this.cleanupDirectory(screenshotsPath, 'screenshots')
+                
+                // Clean up HTML snapshots
+                const htmlSnapshotsPath = pathManager.getHtmlSnapshotsPath()
+                await this.cleanupDirectory(htmlSnapshotsPath, 'HTML snapshots')
+                
+                // Clean up audio temporary files
+                const audioTmpPath = pathManager.getAudioTmpPath()
+                await this.cleanupDirectory(audioTmpPath, 'audio temporary files')
+                
+                console.info('🧹 Production EFS cleanup completed successfully')
+            } else {
+                console.warn('🧹 PathManager not available, skipping production cleanup')
+            }
+        } catch (error) {
+            console.error('🧹 Production cleanup failed:', error)
+            // Don't throw - cleanup failures shouldn't stop the process
+        }
+    }
+
+    private async cleanupDirectory(dirPath: string, description: string): Promise<void> {
+        try {
+            const fs = require('fs')
+            const path = require('path')
+            
+            if (fs.existsSync(dirPath)) {
+                const files = fs.readdirSync(dirPath)
+                if (files.length > 0) {
+                    console.info(`🧹 Cleaning up ${files.length} ${description} from ${dirPath}`)
+                    
+                    for (const file of files) {
+                        const filePath = path.join(dirPath, file)
+                        try {
+                            if (fs.statSync(filePath).isDirectory()) {
+                                // Remove directory recursively
+                                fs.rmSync(filePath, { recursive: true, force: true })
+                            } else {
+                                // Remove file
+                                fs.unlinkSync(filePath)
+                            }
+                        } catch (fileError) {
+                            console.warn(`🧹 Failed to remove ${filePath}:`, fileError)
+                        }
+                    }
+                    
+                    console.info(`🧹 Successfully cleaned up ${description}`)
+                } else {
+                    console.info(`🧹 No ${description} to clean up`)
+                }
+            } else {
+                console.info(`🧹 ${description} directory does not exist: ${dirPath}`)
+            }
+        } catch (error) {
+            console.error(`🧹 Failed to cleanup ${description}:`, error)
         }
     }
 }
