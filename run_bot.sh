@@ -97,6 +97,143 @@ find_available_port() {
     echo "$port"
 }
 
+# Find available port pair for bot instances (main port + VNC port)
+find_available_port_pair() {
+    local base_main_port=${1:-3000}
+    local base_vnc_port=${2:-5900}
+    
+    # Find available main port starting from base
+    local main_port=$(find_available_port $base_main_port)
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    # Find available VNC port, but ensure it's not the same as main port
+    local vnc_port=$base_vnc_port
+    while lsof -Pi :$vnc_port -sTCP:LISTEN -t >/dev/null 2>&1 || [ "$vnc_port" -eq "$main_port" ]; do
+        if [ "$vnc_port" -ge 65535 ]; then
+            print_error "No free VNC port found below 65535"
+            return 1
+        fi
+        vnc_port=$((vnc_port + 1))
+    done
+    
+    echo "$main_port $vnc_port"
+}
+
+# Create port lock file to reserve a port (atomic operation)
+create_port_lock() {
+    local port=$1
+    local lock_dir="/tmp/baas_port_locks"
+    local lock_file="$lock_dir/port_$port.lock"
+    local temp_file="$lock_dir/port_$port.lock.tmp.$$"
+    
+    mkdir -p "$lock_dir"
+    
+    # Use atomic operation: write to temp file first, then move
+    if echo "$$:$(date):$(basename $0)" > "$temp_file" 2>/dev/null; then
+        # Try to create lock atomically using link/mv (atomic on most filesystems)
+        if (set -C; echo "$$:$(date):$(basename $0)" > "$lock_file") 2>/dev/null; then
+            rm -f "$temp_file"
+            return 0  # Successfully created lock
+        else
+            rm -f "$temp_file"
+            return 1  # Lock already exists
+        fi
+    else
+        return 1  # Failed to create temp file
+    fi
+}
+
+# Check if port is locked by another process
+is_port_locked() {
+    local port=$1
+    local lock_dir="/tmp/baas_port_locks"
+    local lock_file="$lock_dir/port_$port.lock"
+    
+    if [ -f "$lock_file" ]; then
+        # Check if the process that created the lock is still running
+        local lock_pid=$(head -n 1 "$lock_file" | cut -d: -f1)
+        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+            return 0  # Port is locked and process is still running
+        else
+            # Lock file exists but process is dead, remove stale lock
+            rm -f "$lock_file"
+            return 1  # Port is not locked
+        fi
+    fi
+    return 1  # Port is not locked
+}
+
+# Release port lock
+release_port_lock() {
+    local port=$1
+    local lock_dir="/tmp/baas_port_locks"
+    local lock_file="$lock_dir/port_$port.lock"
+    
+    rm -f "$lock_file"
+}
+
+# Get next available bot instance ports with locking
+get_next_bot_ports() {
+    local base_main_port=3000
+    local base_vnc_port=5900
+    local main_port=$base_main_port
+    local vnc_port=$base_vnc_port
+    
+    # Find available main port
+    while true; do
+        if [ "$main_port" -ge 65535 ]; then
+            print_error "No free main port found below 65535"
+            return 1
+        fi
+        
+        # Check if port is in use by the system or locked by our script
+        if ! lsof -Pi :$main_port -sTCP:LISTEN -t >/dev/null 2>&1 && ! is_port_locked $main_port; then
+            # Try to create lock
+            if create_port_lock $main_port; then
+                break
+            fi
+        fi
+        main_port=$((main_port + 1))
+    done
+    
+    # Find available VNC port
+    while true; do
+        if [ "$vnc_port" -ge 65535 ]; then
+            release_port_lock $main_port  # Release main port lock
+            print_error "No free VNC port found below 65535"
+            return 1
+        fi
+        
+        # Check if port is in use by the system, locked by our script, or same as main port
+        if [ "$vnc_port" -ne "$main_port" ] && 
+           ! lsof -Pi :$vnc_port -sTCP:LISTEN -t >/dev/null 2>&1 && 
+           ! is_port_locked $vnc_port; then
+            # Try to create lock
+            if create_port_lock $vnc_port; then
+                break
+            fi
+        fi
+        vnc_port=$((vnc_port + 1))
+    done
+    
+    echo "$main_port $vnc_port"
+}
+
+# Clean up port locks on script exit
+cleanup_port_locks() {
+    if [ -n "$ALLOCATED_MAIN_PORT" ]; then
+        release_port_lock "$ALLOCATED_MAIN_PORT"
+    fi
+    if [ -n "$ALLOCATED_VNC_PORT" ]; then
+        release_port_lock "$ALLOCATED_VNC_PORT"
+    fi
+}
+
+# Set trap to cleanup on exit
+trap cleanup_port_locks EXIT INT TERM
+
 # Mask sensitive information in JSON
 mask_sensitive_json() {
     local json=$1
@@ -187,14 +324,31 @@ run_with_config() {
     fi
     print_info "Output directory: $output_dir"
     
-    # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
-    if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
-        print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
-        print_info "💻 Connect with VNC viewer to: localhost:5900"
-        print_info "📱 On Mac, you can use: open vnc://localhost:5900"
+    # Get available ports for this bot instance
+    local port_info
+    port_info=$(get_next_bot_ports)
+    if [ $? -ne 0 ]; then
+        print_error "Failed to allocate ports for bot instance"
+        exit 1
     fi
+    
+    local main_port=$(echo $port_info | cut -d' ' -f1)
+    local vnc_port=$(echo $port_info | cut -d' ' -f2)
+    
+    # Store allocated ports globally for cleanup
+    export ALLOCATED_MAIN_PORT="$main_port"
+    export ALLOCATED_VNC_PORT="$vnc_port"
+    
+    # Debug mode avec VNC
+    local docker_args="-p $main_port:3000"
+    if [ "$debug_mode" = "true" ]; then
+        docker_args="-p $vnc_port:5900 -p $main_port:3000"
+        print_info "🔍 DEBUG MODE: VNC enabled on port $vnc_port"
+        print_info "💻 Connect with VNC viewer to: localhost:$vnc_port"
+        print_info "📱 On Mac, you can use: open vnc://localhost:$vnc_port"
+    fi
+    
+    print_info "📡 Bot will be accessible on port $main_port"
     
     # Debug: Show what we're sending to Docker (first 200 chars)
     local preview=$(echo "$processed_config" | head -c 200)
@@ -281,18 +435,34 @@ run_with_config_and_overrides() {
     local debug_mode=${DEBUG:-false}
     local debug_logs=${DEBUG_LOGS:-false}
     
+    # Get available ports for this bot instance
+    local port_info
+    port_info=$(get_next_bot_ports)
+    if [ $? -ne 0 ]; then
+        print_error "Failed to allocate ports for bot instance"
+        exit 1
+    fi
+    
+    local main_port=$(echo $port_info | cut -d' ' -f1)
+    local vnc_port=$(echo $port_info | cut -d' ' -f2)
+    
+    # Store allocated ports globally for cleanup
+    export ALLOCATED_MAIN_PORT="$main_port"
+    export ALLOCATED_VNC_PORT="$vnc_port"
+    
     print_info "Running Meet Teams Bot with configuration: $config_file"
     print_info "Recording enabled: $recording_mode"
     print_info "Recording mode: screen (direct capture)"
     print_info "Output directory: $output_dir"
+    print_info "📡 Bot will be accessible on port $main_port"
     
     # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
+    local docker_args="-p $main_port:3000"
     if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
-        print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
-        print_info "💻 Connect with VNC viewer to: localhost:5900"
-        print_info "📱 On Mac, you can use: open vnc://localhost:5900"
+        docker_args="-p $vnc_port:5900 -p $main_port:3000"
+        print_info "🔍 DEBUG MODE: VNC enabled on port $vnc_port"
+        print_info "💻 Connect with VNC viewer to: localhost:$vnc_port"
+        print_info "📱 On Mac, you can use: open vnc://localhost:$vnc_port"
     fi
     
     # Debug: Show what we're sending to Docker (first 200 chars)
@@ -385,18 +555,34 @@ run_with_json() {
     local output_dir=$(create_output_dir)
     local processed_config=$(process_config "$json_input")
     
+    # Get available ports for this bot instance
+    local port_info
+    port_info=$(get_next_bot_ports)
+    if [ $? -ne 0 ]; then
+        print_error "Failed to allocate ports for bot instance"
+        exit 1
+    fi
+    
+    local main_port=$(echo $port_info | cut -d' ' -f1)
+    local vnc_port=$(echo $port_info | cut -d' ' -f2)
+    
+    # Store allocated ports globally for cleanup
+    export ALLOCATED_MAIN_PORT="$main_port"
+    export ALLOCATED_VNC_PORT="$vnc_port"
+    
     print_info "Running Meet Teams Bot with provided JSON configuration"
     print_info "Recording enabled: $recording_mode"
     print_info "Recording mode: screen (direct capture)"
     print_info "Output directory: $output_dir"
+    print_info "📡 Bot will be accessible on port $main_port"
     
     # Debug mode avec VNC
-    local docker_args="-p 3000:3000"
+    local docker_args="-p $main_port:3000"
     if [ "$debug_mode" = "true" ]; then
-        docker_args="-p 5900:5900 -p 3000:3000"
-        print_info "🔍 DEBUG MODE: VNC enabled on port 5900"
-        print_info "💻 Connect with VNC viewer to: localhost:5900"
-        print_info "📱 On Mac, you can use: open vnc://localhost:5900"
+        docker_args="-p $vnc_port:5900 -p $main_port:3000"
+        print_info "🔍 DEBUG MODE: VNC enabled on port $vnc_port"
+        print_info "💻 Connect with VNC viewer to: localhost:$vnc_port"
+        print_info "📱 On Mac, you can use: open vnc://localhost:$vnc_port"
     fi
     
     # Debug: Show what we're sending to Docker (first 200 chars)
@@ -659,13 +845,29 @@ test_api_request() {
         return 1
     fi
     
+    # Get available ports for this bot instance
+    local port_info
+    port_info=$(get_next_bot_ports)
+    if [ $? -ne 0 ]; then
+        print_error "Failed to allocate ports for bot instance"
+        return 1
+    fi
+    
+    local main_port=$(echo $port_info | cut -d' ' -f1)
+    local vnc_port=$(echo $port_info | cut -d' ' -f2)
+    
+    # Store allocated ports globally for cleanup
+    export ALLOCATED_MAIN_PORT="$main_port"
+    export ALLOCATED_VNC_PORT="$vnc_port"
+    
     print_info "🤖 Bot UUID: ${bot_uuid:0:8}..."
     print_info "🚀 Starting bot..."
+    print_info "📡 Bot API will be accessible on port $main_port"
     
     # Start the bot and capture logs
     local log_file="/tmp/api-test-$(date +%s).log"
     echo "$processed_config" | docker run -i \
-        -p 8080:8080 \
+        -p $main_port:8080 \
         -e RECORDING=true \
         -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)" 2>&1 | tee "$log_file" &
@@ -679,7 +881,7 @@ test_api_request() {
     # Send API stop request
     print_info "🛑 Sending API stop request..."
     local api_response
-    api_response=$(docker exec "$(docker ps -q --filter ancestor=$(get_docker_image))" curl -s -X POST http://localhost:8080/stop_record \
+    api_response=$(curl -s -X POST http://localhost:$main_port/stop_record \
         -H "Content-Type: application/json" \
         -d "{\"bot_id\": \"$bot_uuid\"}")
     

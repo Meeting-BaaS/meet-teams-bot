@@ -165,7 +165,7 @@ export class TeamsSpeakersObserver {
                                 // old teams - EXACT SAME AS EXTENSION
                                 const name = getParticipantName(element)
                                 console.log(
-                                    `[TEAMS-DEBUG] Old teams - found name: "${name}"`,
+                                    `[TEAMS-DEBUG] Old teams - found name of length: "${name.length}"`,
                                 )
                                 if (name !== '') {
                                     if (
@@ -200,7 +200,7 @@ export class TeamsSpeakersObserver {
                                         .getAttribute('aria-label')
                                         ?.split(',')[0] || ''
                                 console.log(
-                                    `[TEAMS-DEBUG] Live platform - found name: "${name}"`,
+                                    `[TEAMS-DEBUG] Live platform - found name of length: "${name.length}"`,
                                 )
                                 if (name) {
                                     // Only process if we have a name
@@ -230,7 +230,7 @@ export class TeamsSpeakersObserver {
                                 // new teams
                                 const name = element.getAttribute('data-tid')
                                 console.log(
-                                    `[TEAMS-DEBUG] New teams - found name: "${name}"`,
+                                    `[TEAMS-DEBUG] New teams - found name of length: "${name.length}"`,
                                 )
                                 if (name) {
                                     const micPath = element.querySelector(
@@ -274,7 +274,8 @@ export class TeamsSpeakersObserver {
                     console.log(
                         `[TEAMS-DEBUG] Found ${speakers.length} visible speakers:`,
                         speakers.map(
-                            (s) => `${s.name} (speaking: ${s.isSpeaking})`,
+                            (s, index) =>
+                                `Speaker ${index + 1} (speaking: ${s.isSpeaking})`,
                         ),
                     )
 
@@ -467,9 +468,9 @@ export class TeamsSpeakersObserver {
                             )
 
                             // Simple speaker status logs
-                            currentSpeakersList.forEach((speaker) => {
+                            currentSpeakersList.forEach((speaker, index) => {
                                 console.log(
-                                    `[TEAMS-DEBUG-SPEAKER] ${speaker.name} : ${speaker.isSpeaking}`,
+                                    `[TEAMS-DEBUG-SPEAKER] Speaker ${index + 1} : ${speaker.isSpeaking}`,
                                 )
                             })
 

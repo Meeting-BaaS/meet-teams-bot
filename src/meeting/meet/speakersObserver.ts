@@ -453,7 +453,8 @@ export class MeetSpeakersObserver {
                         console.log(
                             `[MEET-DEBUG] Found ${speakers.length} participants:`,
                             speakers.map(
-                                (s) => `${s.name} (speaking: ${s.isSpeaking})`,
+                                (s, index) =>
+                                    `Speaker ${index + 1} (speaking: ${s.isSpeaking})`,
                             ),
                         )
 
@@ -509,9 +510,9 @@ export class MeetSpeakersObserver {
                             )
 
                             // Simple speaker status logs
-                            currentSpeakersList.forEach((speaker) => {
+                            currentSpeakersList.forEach((speaker, index) => {
                                 console.log(
-                                    `[MEET-DEBUG-SPEAKER] ${speaker.name} : ${speaker.isSpeaking}`,
+                                    `[MEET-DEBUG-SPEAKER] Speaker ${index + 1} : ${speaker.isSpeaking}`,
                                 )
                             })
 

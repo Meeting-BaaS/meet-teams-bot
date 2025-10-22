@@ -55,8 +55,14 @@ export class SpeakerManager {
     }
 
     private async logSpeakers(speakers: SpeakerData[]): Promise<void> {
-        console.table(speakers)
         const input = JSON.stringify(speakers)
+        const maskedSpeakers = speakers.map((speaker, index) => {
+            return {
+                ...speaker,
+                name: `Speaker ${index + 1}`,
+            }
+        })
+        console.table(maskedSpeakers)
         await fs.promises
             .appendFile(
                 PathManager.getInstance().getSpeakerLogPath(),

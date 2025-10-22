@@ -1,6 +1,7 @@
 import { SoundContext, VideoContext } from '../../media_context'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+import { GLOBAL } from '../../singleton'
 
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
@@ -95,8 +96,12 @@ export class CleanupState extends BaseState {
 
             console.info('🧹 Parallel cleanup completed')
 
-            console.info('🧹 Step 7/7: Cleaning up browser resources')
-            // 7. Clean up browser resources (must be sequential after others)
+            // 7. Production EFS cleanup (remove temporary files, screenshots, logs)
+            console.info('🧹 Step 7/8: Production EFS cleanup')
+            await this.cleanupProductionFiles()
+
+            console.info('🧹 Step 8/8: Cleaning up browser resources')
+            // 8. Clean up browser resources (must be sequential after others)
             await this.cleanupBrowserResources()
 
             console.info('🧹 All cleanup steps completed')

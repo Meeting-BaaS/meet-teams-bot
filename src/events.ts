@@ -147,8 +147,7 @@ export class Events {
             console.log(
                 'Event sent successfully:',
                 code,
-                this.botId,
-                this.webhookUrl,
+                this.botId
             )
         } catch (error) {
             if (error instanceof Error) {
@@ -156,7 +155,6 @@ export class Events {
                     'Unable to send event (continuing execution):',
                     code,
                     this.botId,
-                    this.webhookUrl,
                     error.message,
                 )
             }
