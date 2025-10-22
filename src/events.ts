@@ -120,6 +120,9 @@ export class Events {
         additionalData: Record<string, any> = {},
     ): Promise<void> {
         try {
+            // Get event UUID from global state if available
+            const eventUuid = GLOBAL.get().event?.uuid
+
             await axios({
                 method: 'POST',
                 url: this.webhookUrl,
@@ -132,6 +135,7 @@ export class Events {
                     event: 'bot.status_change',
                     data: {
                         bot_id: this.botId,
+                        event_uuid: eventUuid || null,
                         status: {
                             code,
                             created_at: new Date().toISOString(),

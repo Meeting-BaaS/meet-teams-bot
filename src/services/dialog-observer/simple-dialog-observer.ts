@@ -163,6 +163,12 @@ export class SimpleDialogObserver {
                         'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
                     buttonTexts: ['Join now'],
                 },
+                {
+                    name: 'transcribe_notification',
+                    selector:
+                      'div[role="dialog"]:has-text("This video call is being transcribed"):has(button)',
+                    buttonTexts: ['Join now'],
+                },
                 // Generic dismiss modals (fallback)
                 {
                     name: 'generic_dismiss',

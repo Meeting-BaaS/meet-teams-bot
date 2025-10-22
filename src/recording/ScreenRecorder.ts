@@ -706,6 +706,11 @@ export class ScreenRecorder extends EventEmitter {
             return
         }
 
+        // Capture exit time right when recording stops (before grace period and processing)
+        const exitTime = Math.floor(Date.now() / 1000)
+        console.log(`Bot exit time captured as ${exitTime}`)
+        GLOBAL.setExitTime(exitTime)
+
         console.log('🛑 Stop recording requested - starting grace period...')
         this.gracePeriodActive = true
 

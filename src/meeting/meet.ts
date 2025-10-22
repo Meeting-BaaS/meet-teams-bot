@@ -318,6 +318,12 @@ async function findShowEveryOne(
 
     while (!showEveryOneFound) {
         try {
+            // Check if there's already a global error (bot removed, etc.)
+            if (GLOBAL.getEndReason()) {
+                console.log('Global error detected, stopping findShowEveryOne')
+                return
+            }
+
             // Check if we are actually in the meeting
             inMeetingConfirmed = await isInMeeting(page)
             if (inMeetingConfirmed) {
@@ -472,6 +478,7 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
         'we encountered a problem joining',
         "You can't join",
         'You left the meeting', // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
+        'Your sign-in credentials might have changed',
     ]
 
     // Google Meet itself has denied entry
@@ -661,6 +668,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting, stopping layout change',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed during layout change')
             return false
         }
 
@@ -692,6 +700,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting after clicking More options',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed after clicking More options')
             return false
         }
 
@@ -721,6 +730,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting after clicking Change layout',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed after clicking Change layout')
             return false
         }
 
@@ -747,6 +757,7 @@ async function changeLayout(
             console.log(
                 'Bot is no longer in the meeting after clicking Spotlight',
             )
+            GLOBAL.setError(MeetingEndReason.BotRemoved, 'Bot removed after clicking Spotlight')
             return false
         }
 

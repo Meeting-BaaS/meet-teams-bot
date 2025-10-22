@@ -1,6 +1,7 @@
 import { Events } from '../../events'
 import { HtmlCleaner } from '../../meeting/htmlCleaner'
 import { SpeakersObserver } from '../../meeting/speakersObserver'
+import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
 import { MEETING_CONSTANTS } from '../constants'
@@ -69,6 +70,13 @@ export class InCallState extends BaseState {
             console.log(
                 'Setting up browser components with integrated HTML cleanup...',
             )
+
+            // fix: Set meeting start time BEFORE starting speakers observation
+            // This prevents race condition where speakers are detected before startTime is set
+            const startTime = Date.now()
+            this.context.startTime = startTime
+            ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
+            console.log(`Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`)
 
             // Start HTML cleanup first to clean the interface
             await this.startHtmlCleaning()

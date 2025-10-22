@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from 'child_process'
+import * as fs from 'fs'
 import internal from 'stream'
 
 // sudo apt install linux-modules-extra-`uname -r`
@@ -178,25 +179,45 @@ export class VideoContext extends MediaContext {
     }
 
     public default() {
-        VideoContext.instance.play(`../branding.mp4`, true)
+        VideoContext.instance.play(`../branding.yuv`, true)
     }
 
     public play(pathname: string, loop: boolean) {
-        // ffmpeg -stream_loop -1 -re -i La_bataille_de_Farador.mp4 -f v4l2 -vcodec rawvideo -s 640x360 /dev/video10
+        // Check if file exists before attempting to play
+        if (!fs.existsSync(pathname)) {
+            console.log(`Video file not found: ${pathname}`)
+            return
+        }
+
+        // ffmpeg -stream_loop -1 -re -f rawvideo -pix_fmt yuv420p -s 640x360 -r 30 -i branding.yuv -f v4l2 -vcodec rawvideo -s 640x360 /dev/video10
         let args: string[] = []
         if (loop) {
             args.push(`-stream_loop`, `-1`)
         }
         args.push(
             `-re`,
+            `-f`,
+            `rawvideo`,
+            `-pix_fmt`,
+            `yuv420p`,
+            `-s`,
+            `${VideoContext.WIDTH}x${VideoContext.HEIGHT}`,
+            `-r`,
+            `30`,
             `-i`,
             pathname,
             `-f`,
             `v4l2`,
             `-vcodec`,
             `rawvideo`,
-            `-s`,
-            `${VideoContext.WIDTH}x${VideoContext.HEIGHT}`,
+            `-colorspace`,
+            `bt709`,
+            `-color_primaries`,
+            `bt709`,
+            `-color_trc`,
+            `bt709`,
+            `-color_range`,
+            `tv`,
             CAMERA_DEVICE,
         )
         super.execute(args, this.default)

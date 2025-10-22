@@ -3,6 +3,7 @@ import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
 import { GLOBAL } from '../../singleton'
 import { Streaming } from '../../streaming'
+import { handleTimingControl } from '../../utils/timing-control'
 
 import {
     MeetingEndReason,
@@ -140,6 +141,12 @@ export class WaitingRoomState extends BaseState {
         if (!this.context.playwrightPage) {
             throw new Error('Meeting page not initialized')
         }
+
+        // Handle timing control for precise meeting join times
+        const startTime = await handleTimingControl(GLOBAL.get().start_time)
+
+        // Store the actual start time for later use - It is sent to the backend at the end of the meeting
+        GLOBAL.setStartTime(startTime)
 
         const timeoutMs =
             GLOBAL.get().automatic_leave.waiting_room_timeout * 1000
