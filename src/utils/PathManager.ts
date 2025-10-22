@@ -50,17 +50,7 @@ export class PathManager {
     }
 
     public getBasePath(): string {
-        if (this.isServerless) {
-            return path.join('./data', this.botUuid)
-        }
-        switch (this.environment) {
-            case 'prod':
-                return path.join(EFS_MOUNT_POINT, 'prod', this.botUuid)
-            case 'preprod':
-                return path.join(EFS_MOUNT_POINT, 'preprod', this.botUuid)
-            default:
-                return path.join('./data', this.botUuid)
-        }
+        return path.join('./recordings', this.botUuid)
     }
 
     public getOutputPath(): string {
