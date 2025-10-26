@@ -25,8 +25,8 @@ const SCREENSHOT_WIDTH = 480 // reduced for smaller file size
 const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (16:9 ratio)
 
 // Environment variables for display and virtual speaker monitor
-const DISPLAY = process.env.DISPLAY || ":99"
-const VIRTUAL_SPEAKER_MONITOR = process.env.VIRTUAL_SPEAKER_MONITOR || "virtual_speaker.monitor"
+const DISPLAY = envVars.DISPLAY
+const VIRTUAL_SPEAKER_MONITOR = envVars.VIRTUAL_SPEAKER_MONITOR
 
 // Dynamic timeout configuration
 const FFMPEG_TIMEOUTS = {
