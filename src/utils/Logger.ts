@@ -1,344 +1,290 @@
-import fs from 'fs'
-import path from 'path'
-import winston from 'winston'
-import { GLOBAL } from '../singleton'
-import { PathManager } from './PathManager'
-import { s3cp, S3Uploader } from './S3Uploader'
+import fs from "node:fs"
+import path from "node:path"
+import winston from "winston"
+import { envVars } from "../config/env-vars"
+import { GLOBAL } from "../singleton"
+import { PathManager } from "./PathManager"
+import { S3Uploader, s3cp } from "./S3Uploader"
 
 // Reference to current bot log file
-let currentBotLogFile: string | null = null
+const currentBotLogFile: string | null = null
 
 // Store current caller info globally
-let currentCaller = 'unknown:0'
+let currentCaller = "unknown:0"
 
-let format = winston.format.combine(
-    winston.format.colorize({
-        all: true,
-        colors: {
-            info: 'cyan',
-            warn: 'yellow',
-            error: 'red',
-            debug: 'blue',
-        },
-    }),
-    winston.format.timestamp({
-        format: () => new Date().toISOString(),
-    }),
-    winston.format.printf(({ timestamp, level, message }) => {
-        return `${timestamp}  ${level} ${currentCaller}: ${message}`
-    }),
+const format = winston.format.combine(
+  winston.format.colorize({
+    all: true,
+    colors: {
+      info: "cyan",
+      warn: "yellow",
+      error: "red",
+      debug: "blue"
+    }
+  }),
+  winston.format.timestamp({
+    format: () => new Date().toISOString()
+  }),
+  winston.format.printf(({ timestamp, level, message }) => {
+    return `${timestamp}  ${level} ${currentCaller}: ${message}`
+  })
 )
 
-function formatTable(data: any): string {
-    if (!Array.isArray(data) && typeof data !== 'object') {
-        return String(data)
+function formatTable(data: unknown): string {
+  if (!Array.isArray(data) && typeof data !== "object") {
+    return String(data)
+  }
+
+  const array = Array.isArray(data) ? data : [data]
+  if (array.length === 0) return ""
+
+  const headers = new Set<string>()
+  for (const item of array) {
+    for (const key of Object.keys(item)) {
+      headers.add(key)
     }
+  }
+  const cols = Array.from(headers)
 
-    const array = Array.isArray(data) ? data : [data]
-    if (array.length === 0) return ''
+  const lines = [
+    cols,
+    cols.map(() => "-".repeat(15)),
+    ...array.map((item) => cols.map((col) => String(item[col] ?? "").substring(0, 15)))
+  ]
 
-    const headers = new Set<string>()
-    array.forEach((item) =>
-        Object.keys(item).forEach((key) => headers.add(key)),
-    )
-    const cols = Array.from(headers)
+  const colWidths = cols.map((_, i) => Math.max(...lines.map((line) => line[i].length)))
 
-    const lines = [
-        cols,
-        cols.map(() => '-'.repeat(15)),
-        ...array.map((item) =>
-            cols.map((col) => String(item[col] ?? '').substring(0, 15)),
-        ),
-    ]
-
-    const colWidths = cols.map((_, i) =>
-        Math.max(...lines.map((line) => line[i].length)),
-    )
-
-    return (
-        '\n' +
-        lines
-            .map(
-                (line) =>
-                    '│ ' +
-                    line.map((val, i) => val.padEnd(colWidths[i])).join(' │ ') +
-                    ' │',
-            )
-            .join('\n')
-    )
+  return (
+    "\n" +
+    lines
+      .map((line) => `│ ${line.map((val, i) => val.padEnd(colWidths[i])).join(" │ ")} │`)
+      .join("\n")
+  )
 }
 
-function formatArgs(msg: string, args: any[]) {
-    return (
-        msg +
-        ' ' +
-        args
-            .map((arg) => {
-                if (arg === null) return 'null'
-                if (arg === undefined) return 'undefined'
-                if (typeof arg === 'object') {
-                    try {
-                        return JSON.stringify(arg, null, 2)
-                    } catch (e) {
-                        return String(arg)
-                    }
-                }
-                return String(arg)
-            })
-            .join(' ')
-    )
+function formatArgs(msg: string, args: unknown[]) {
+  return (
+    msg +
+    " " +
+    args
+      .map((arg) => {
+        if (arg === null) return "null"
+        if (arg === undefined) return "undefined"
+        if (typeof arg === "object") {
+          try {
+            return JSON.stringify(arg, null, 2)
+          } catch (_e) {
+            return String(arg)
+          }
+        }
+        return String(arg)
+      })
+      .join(" ")
+  )
 }
 
 // Function to capture caller info at the console override level
 function getCaller(): string {
-    const stack = new Error().stack
-    if (!stack) return 'unknown:0'
+  const stack = new Error().stack
+  if (!stack) return "unknown:0"
 
-    const lines = stack.split('\n')
-    // Look for the first non-internal frame (skip Error, getCaller, and console override)
-    for (let i = 3; i < lines.length; i++) {
-        const line = lines[i]
-        if (
-            line &&
-            !line.includes('node_modules') &&
-            !line.includes('Logger.ts')
-        ) {
-            const match =
-                line.match(/at.*\((.+):(\d+):\d+\)/) ||
-                line.match(/at (.+):(\d+):\d+/)
-            if (match) {
-                const fullPath = match[1]
-                const filename =
-                    fullPath.split('/').pop()?.split('.')[0] || 'unknown'
-                const lineNumber = match[2]
-                return `${filename}:${lineNumber}`
-            }
-        }
+  const lines = stack.split("\n")
+  // Look for the first non-internal frame (skip Error, getCaller, and console override)
+  for (let i = 3; i < lines.length; i++) {
+    const line = lines[i]
+    if (line && !line.includes("node_modules") && !line.includes("Logger.ts")) {
+      const match = line.match(/at.*\((.+):(\d+):\d+\)/) || line.match(/at (.+):(\d+):\d+/)
+      if (match) {
+        const fullPath = match[1]
+        const filename = fullPath.split("/").pop()?.split(".")[0] || "unknown"
+        const lineNumber = match[2]
+        return `${filename}:${lineNumber}`
+      }
     }
-    return 'unknown:0'
+  }
+  return "unknown:0"
 }
 
 // Global winston logger
-let logger = winston.createLogger({
-    level: 'debug',
-    format: format,
-    transports: [
-        new winston.transports.Console({
-            format: format,
-        }),
-    ],
+const logger = winston.createLogger({
+  level: "debug",
+  format: format,
+  transports: [
+    new winston.transports.Console({
+      format: format
+    })
+  ]
 })
 
 export function setupConsoleLogger() {
-    console.log('Setting up console logger')
+  console.log("Setting up console logger")
 
-    console.log = (msg: string, ...args: any[]) => {
-        currentCaller = getCaller()
-        logger.info(formatArgs(msg, args))
-    }
-    console.info = (msg: string, ...args: any[]) => {
-        currentCaller = getCaller()
-        logger.info(formatArgs(msg, args))
-    }
-    console.warn = (msg: string, ...args: any[]) => {
-        currentCaller = getCaller()
-        logger.warn(formatArgs(msg, args))
-    }
-    console.error = (msg: string, ...args: any[]) => {
-        currentCaller = getCaller()
-        logger.error(formatArgs(msg, args))
-    }
-    console.debug = (msg: string, ...args: any[]) => {
-        currentCaller = getCaller()
-        logger.debug(formatArgs(msg, args))
-    }
-    console.table = (data: any) => {
-        currentCaller = getCaller()
-        logger.info(formatTable(data))
-    }
+  console.log = (msg: string, ...args: unknown[]) => {
+    currentCaller = getCaller()
+    logger.info(formatArgs(msg, args))
+  }
+  console.info = (msg: string, ...args: unknown[]) => {
+    currentCaller = getCaller()
+    logger.info(formatArgs(msg, args))
+  }
+  console.warn = (msg: string, ...args: unknown[]) => {
+    currentCaller = getCaller()
+    logger.warn(formatArgs(msg, args))
+  }
+  console.error = (msg: string, ...args: unknown[]) => {
+    currentCaller = getCaller()
+    logger.error(formatArgs(msg, args))
+  }
+  console.debug = (msg: string, ...args: unknown[]) => {
+    currentCaller = getCaller()
+    logger.debug(formatArgs(msg, args))
+  }
+  console.table = (data: unknown) => {
+    currentCaller = getCaller()
+    logger.info(formatTable(data))
+  }
 
-    console.log('Console logger setup complete')
+  console.log("Console logger setup complete")
 }
 
-export async function uploadLogsToS3(options: {
-    error?: Error
-}): Promise<void> {
-    try {
-        const pathManager = PathManager.getInstance()
-        const logPath = currentBotLogFile || pathManager.getIdentifier()
+export async function uploadLogsToS3(): Promise<void> {
+  try {
+    const pathManager = PathManager.getInstance()
+    const logPath = currentBotLogFile || pathManager.getIdentifier()
 
-        // Sound log file
-        const soundLogPath = pathManager.getSoundLogPath()
-        const s3SoundLogPath = `${logPath}/sound.log`
+    // Sound log file
+    const soundLogPath = pathManager.getSoundLogPath()
+    const s3SoundLogPath = `${logPath}/sound.log`
 
-        // Speaker separation log file
-        const speakerLogPath = pathManager.getSpeakerLogPath()
-        const s3SpeakerLogPath = `${logPath}/speaker_separation.log`
+    // Speaker separation log file
+    const speakerLogPath = pathManager.getSpeakerLogPath()
+    const s3SpeakerLogPath = `${logPath}/speaker_separation.log`
 
-        // Screenshots directory
-        const screenshotsPath = pathManager.getScreenshotsPath()
-        const s3ScreenshotsPath = `${logPath}/screenshots`
+    // Screenshots directory
+    const screenshotsPath = pathManager.getScreenshotsPath()
+    const s3ScreenshotsPath = `${logPath}/screenshots`
 
-        // HTML snapshots directory
-        const htmlSnapshotsPath = pathManager.getHtmlSnapshotsPath()
-        const s3HtmlSnapshotsPath = `${logPath}/html_snapshots`
+    // HTML snapshots directory
+    const htmlSnapshotsPath = pathManager.getHtmlSnapshotsPath()
+    const s3HtmlSnapshotsPath = `${logPath}/html_snapshots`
 
-        console.log('Looking for internal log files at:', {
-            soundLogPath,
-            speakerLogPath,
-            screenshotsPath,
-            htmlSnapshotsPath,
-        })
+    console.log("Looking for internal log files at:", {
+      soundLogPath,
+      speakerLogPath,
+      screenshotsPath,
+      htmlSnapshotsPath
+    })
 
-        // Upload sound log file (internal log file)
-        if (fs.existsSync(soundLogPath)) {
-            logger.info(`Uploading sound logs to S3...`)
-            await s3cp(soundLogPath, s3SoundLogPath)
-            logger.info(`Sound logs uploaded to S3`)
-        } else {
-            console.log('No sound log file found at path:', soundLogPath)
-        }
-
-        // Upload speaker separation log file
-        if (fs.existsSync(speakerLogPath)) {
-            logger.info(`Uploading speaker separation logs to S3...`)
-            await s3cp(speakerLogPath, s3SpeakerLogPath)
-            logger.info(`Speaker separation logs uploaded to S3`)
-        } else {
-            console.log(
-                'No speaker separation log file found at path:',
-                speakerLogPath,
-            )
-        }
-
-        // Upload screenshots directory
-        if (fs.existsSync(screenshotsPath)) {
-            const screenshotFiles = fs.readdirSync(screenshotsPath)
-            if (screenshotFiles.length > 0) {
-                logger.info(
-                    `Uploading ${screenshotFiles.length} screenshots to S3...`,
-                )
-
-                // Use directory sync for better performance
-                try {
-                    await S3Uploader.getInstance()?.uploadDirectory(
-                        screenshotsPath,
-                        GLOBAL.get().remote?.aws_s3_log_bucket!,
-                        s3ScreenshotsPath,
-                    )
-                    logger.info('Screenshots uploaded to S3')
-                } catch (error) {
-                    logger.error(
-                        'Directory sync failed, falling back to individual uploads:',
-                        error,
-                    )
-                    // Fallback to individual uploads
-                    for (const filename of screenshotFiles) {
-                        const screenshotPath = path.join(
-                            screenshotsPath,
-                            filename,
-                        )
-                        const s3ScreenshotPath = `${s3ScreenshotsPath}/${filename}`
-                        await s3cp(screenshotPath, s3ScreenshotPath)
-                    }
-                    logger.info('Screenshots uploaded to S3 (fallback)')
-                }
-            } else {
-                console.log(
-                    'Screenshots directory exists but is empty:',
-                    screenshotsPath,
-                )
-            }
-        } else {
-            console.log(
-                'No screenshots directory found at path:',
-                screenshotsPath,
-            )
-        }
-
-        // Upload HTML snapshots directory
-        if (fs.existsSync(htmlSnapshotsPath)) {
-            const htmlSnapshotFiles = fs.readdirSync(htmlSnapshotsPath)
-            if (htmlSnapshotFiles.length > 0) {
-                logger.info(
-                    `Uploading ${htmlSnapshotFiles.length} HTML snapshots to S3...`,
-                )
-
-                // Use directory sync for better performance
-                try {
-                    await S3Uploader.getInstance()?.uploadDirectory(
-                        htmlSnapshotsPath,
-                        GLOBAL.get().remote?.aws_s3_log_bucket!,
-                        s3HtmlSnapshotsPath,
-                    )
-                    logger.info('HTML snapshots uploaded to S3')
-                } catch (error) {
-                    logger.error(
-                        'HTML snapshots directory sync failed, falling back to individual uploads:',
-                        error,
-                    )
-                    // Fallback to individual uploads
-                    for (const filename of htmlSnapshotFiles) {
-                        const htmlSnapshotPath = path.join(
-                            htmlSnapshotsPath,
-                            filename,
-                        )
-                        const s3HtmlSnapshotPath = `${s3HtmlSnapshotsPath}/${filename}`
-                        await s3cp(htmlSnapshotPath, s3HtmlSnapshotPath)
-                    }
-                    logger.info('HTML snapshots uploaded to S3 (fallback)')
-                }
-            } else {
-                console.log(
-                    'HTML snapshots directory exists but is empty:',
-                    htmlSnapshotsPath,
-                )
-            }
-        } else {
-            console.log(
-                'No HTML snapshots directory found at path:',
-                htmlSnapshotsPath,
-            )
-        }
-    } catch (error) {
-        logger.error(`Failed to upload logs to S3:`, error)
-        throw error
+    // Upload sound log file (internal log file)
+    if (fs.existsSync(soundLogPath)) {
+      logger.info("Uploading sound logs to S3...")
+      await s3cp(soundLogPath, s3SoundLogPath)
+      logger.info("Sound logs uploaded to S3")
+    } else {
+      console.log("No sound log file found at path:", soundLogPath)
     }
+
+    // Upload speaker separation log file
+    if (fs.existsSync(speakerLogPath)) {
+      logger.info("Uploading speaker separation logs to S3...")
+      await s3cp(speakerLogPath, s3SpeakerLogPath)
+      logger.info("Speaker separation logs uploaded to S3")
+    } else {
+      console.log("No speaker separation log file found at path:", speakerLogPath)
+    }
+
+    // Upload screenshots directory
+    if (fs.existsSync(screenshotsPath)) {
+      const screenshotFiles = fs.readdirSync(screenshotsPath)
+      if (screenshotFiles.length > 0) {
+        logger.info(`Uploading ${screenshotFiles.length} screenshots to S3...`)
+
+        // Use directory sync for better performance
+        try {
+          await S3Uploader.getInstance()?.uploadDirectory(
+            screenshotsPath,
+            envVars.AWS_S3_LOGS_BUCKET,
+            s3ScreenshotsPath
+          )
+          logger.info("Screenshots uploaded to S3")
+        } catch (error) {
+          logger.error("Directory sync failed, falling back to individual uploads:", error)
+          // Fallback to individual uploads
+          for (const filename of screenshotFiles) {
+            const screenshotPath = path.join(screenshotsPath, filename)
+            const s3ScreenshotPath = `${s3ScreenshotsPath}/${filename}`
+            await s3cp(screenshotPath, s3ScreenshotPath)
+          }
+          logger.info("Screenshots uploaded to S3 (fallback)")
+        }
+      } else {
+        console.log("Screenshots directory exists but is empty:", screenshotsPath)
+      }
+    } else {
+      console.log("No screenshots directory found at path:", screenshotsPath)
+    }
+
+    // Upload HTML snapshots directory
+    if (fs.existsSync(htmlSnapshotsPath)) {
+      const htmlSnapshotFiles = fs.readdirSync(htmlSnapshotsPath)
+      if (htmlSnapshotFiles.length > 0) {
+        logger.info(`Uploading ${htmlSnapshotFiles.length} HTML snapshots to S3...`)
+
+        // Use directory sync for better performance
+        try {
+          await S3Uploader.getInstance()?.uploadDirectory(
+            htmlSnapshotsPath,
+            envVars.AWS_S3_LOGS_BUCKET,
+            s3HtmlSnapshotsPath
+          )
+          logger.info("HTML snapshots uploaded to S3")
+        } catch (error) {
+          logger.error(
+            "HTML snapshots directory sync failed, falling back to individual uploads:",
+            error
+          )
+          // Fallback to individual uploads
+          for (const filename of htmlSnapshotFiles) {
+            const htmlSnapshotPath = path.join(htmlSnapshotsPath, filename)
+            const s3HtmlSnapshotPath = `${s3HtmlSnapshotsPath}/${filename}`
+            await s3cp(htmlSnapshotPath, s3HtmlSnapshotPath)
+          }
+          logger.info("HTML snapshots uploaded to S3 (fallback)")
+        }
+      } else {
+        console.log("HTML snapshots directory exists but is empty:", htmlSnapshotsPath)
+      }
+    } else {
+      console.log("No HTML snapshots directory found at path:", htmlSnapshotsPath)
+    }
+  } catch (error) {
+    logger.error("Failed to upload logs to S3:", error)
+    throw error
+  }
 }
 
 export function setupExitHandler() {
-    process.on('uncaughtException', async (error) => {
-        logger.error('Uncaught Exception: ' + error)
-        if (!GLOBAL.isServerless()) {
-            try {
-                await uploadLogsToS3({ error })
-            } catch (uploadError) {
-                logger.error(
-                    'Failed to upload crash logs to S3: ' + uploadError,
-                )
-            }
-        }
-    })
+  process.on("uncaughtException", async (error) => {
+    logger.error(`Uncaught Exception: ${error}`)
+    if (!GLOBAL.isServerless()) {
+      try {
+        await uploadLogsToS3()
+      } catch (uploadError) {
+        logger.error(`Failed to upload crash logs to S3: ${uploadError}`)
+      }
+    }
+  })
 
-    process.on('unhandledRejection', async (reason, promise) => {
-        logger.error(
-            'Unhandled Rejection at: ' + promise + ' reason: ' + reason,
-        )
-        if (!GLOBAL.isServerless()) {
-            try {
-                await uploadLogsToS3({
-                    error:
-                        reason instanceof Error
-                            ? reason
-                            : new Error(String(reason)),
-                })
-            } catch (uploadError) {
-                logger.error(
-                    'Failed to upload crash logs to S3: ' + uploadError,
-                )
-            }
-        }
-        // Force exit to avoid hanging processes
-        process.exit(1)
-    })
+  process.on("unhandledRejection", async (reason, promise) => {
+    logger.error(`Unhandled Rejection at: ${promise} reason: ${reason}`)
+    if (!GLOBAL.isServerless()) {
+      try {
+        await uploadLogsToS3()
+      } catch (uploadError) {
+        logger.error(`Failed to upload crash logs to S3: ${uploadError}`)
+      }
+    }
+    // Force exit to avoid hanging processes
+    process.exit(1)
+  })
 }

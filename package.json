@@ -12,7 +12,7 @@
         "playwright"
     ],
     "engines": {
-        "node": ">= 18.0.0 <=20"
+        "node": ">= 18.0.0 <=24.0.0"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.873.0",
@@ -20,6 +20,8 @@
         "@playwright/test": "^1.53.0",
         "async": "^3.2.6",
         "axios": "0.21.1",
+        "dotenv": "^17.2.3",
+        "envalid": "^8.1.0",
         "express": "4.17.1",
         "retry-axios": "^2.5.0",
         "tslib": "^2.8.1",
@@ -27,27 +29,32 @@
         "ws": "8.18.0"
     },
     "devDependencies": {
+        "@biomejs/biome": "^2.3.0",
         "@types/async": "^3.2.24",
         "@types/express": "^4.17.11",
         "@types/jest": "^29.5.14",
-        "@types/node": "~14.14.45",
+        "@types/node": "^22.16.0",
         "@types/ws": "8.5.12",
         "depcheck": "^1.4.7",
-        "prettier": "3.3.3",
         "rimraf": "~3.0.2",
         "ts-jest": "^29.2.5",
         "ts-node-dev": "^2.0.0",
         "ts-unused-exports": "^11.0.1",
+        "tsx": "^4.20.6",
         "typescript": "^5.4",
         "unimported": "^1.31.0"
     },
     "scripts": {
+        "dev": "tsx watch src/main.ts",
         "start": "node build/src/main.js",
         "clean": "rimraf coverage build tmp",
         "build": "echo '{\"buildDate\": \"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'\"}' > src/buildInfo.json && ./node_modules/typescript/bin/tsc --skipLibCheck -p tsconfig.release.json",
         "watch": "./node_modules/typescript/bin/tsc --skipLibCheck -w -p tsconfig.release.json",
         "watch-dev": "PROFILE=DEV ts-node-dev --respawn --transpile-only src/main.ts -p tsconfig.release.json",
-        "format": "prettier --log-level warn --write \"src/**/*.{jsx,js,ts}\"",
+        "lint": "biome lint .",
+        "format": "biome format --write .",
+        "format:check": "biome format .",
+        "check": "biome check --write .",
         "test": "jest",
         "test:watch": "jest --watch",
         "test:coverage": "jest --coverage",

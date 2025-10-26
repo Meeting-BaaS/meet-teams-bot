@@ -6,15 +6,14 @@ import express from "express"
 
 const execFileAsync = promisify(execFile)
 
-import { envVars } from "./config/env-vars"
+import { MeetingStateMachine } from "../state-machine/machine"
 import { SoundContext, VideoContext } from "./media_context"
 import { GLOBAL } from "./singleton"
-import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason } from "./state-machine/types"
 import type { StopRecordParams } from "./types"
 
-const HOST = envVars.HOST
-const PORT = envVars.PORT
+const HOST = "0.0.0.0"
+const PORT = 8080
 
 async function getAllowedOrigins(): Promise<string[]> {
   return [envVars.API_SERVER_BASEURL]
@@ -86,7 +85,7 @@ export async function server() {
     return stop_record(res, MeetingEndReason.ApiRequest)
   })
 
-  async function stop_record(res: express.Response, reason: MeetingEndReason) {
+  async function stop_record(res: any, reason: MeetingEndReason) {
     try {
       const meetingHandle = MeetingStateMachine.instance
 
@@ -99,13 +98,13 @@ export async function server() {
       // Appeler la méthode d'arrêt
       await meetingHandle.stopMeeting(reason)
 
-      return res.status(200).json({
+      res.json({
         success: true,
         message: "Meeting stopped successfully"
       })
     } catch (error) {
       console.error("Failed to stop meeting:", error)
-      return res.status(500).json({
+      res.status(500).json({
         error: "Failed to stop meeting",
         details: (error as Error).message
       })

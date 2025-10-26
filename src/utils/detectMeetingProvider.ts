@@ -1,11 +1,11 @@
-import { MeetingProvider } from '../types'
+import type { MeetingProvider } from "../types"
 
 export function detectMeetingProvider(url: string): MeetingProvider {
-    if (url.includes('https://teams')) {
-        return 'Teams'
-    } else if (url.includes('https://meet')) {
-        return 'Meet'
-    } else {
-        throw new Error('Unsupported meeting provider')
-    }
+  if (url.includes("https://teams")) {
+    return "Teams"
+  }
+  if (url.includes("https://meet")) {
+    return "Meet"
+  }
+  throw new Error("Unsupported meeting provider")
 }

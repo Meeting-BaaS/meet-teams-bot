@@ -1,12 +1,12 @@
 import * as asyncLib from "async"
-import { Api } from "./api/methods"
-import type { ApiTypes } from "./api/types"
-import { GLOBAL } from "./singleton"
-import { MeetingStateMachine } from "./state-machine/machine"
-import type { SpeakerData } from "./types"
+import { Api } from "../api/methods"
+import type { ApiTypes } from "../api/types"
+import { GLOBAL } from "../singleton"
+import { MeetingStateMachine } from "../state-machine/machine"
+import type { SpeakerData } from "../types"
 
-var LAST_TRANSCRIPT: ApiTypes.QueryableTranscript | null = null
-var TRANSCRIBER_STOPPED = false
+var LAST_TRANSRIPT: ApiTypes.QueryableTranscript | null = null
+var TRANSCIBER_STOPED = false
 var TRANSCRIPT_QUEUE = newTranscriptQueue()
 
 function newTranscriptQueue() {
@@ -42,7 +42,7 @@ export async function uploadTranscriptTask(speaker: SpeakerData, end: boolean): 
 }
 
 async function upload(speaker: SpeakerData, end: boolean) {
-  if (TRANSCRIBER_STOPPED) {
+  if (TRANSCIBER_STOPED) {
     console.info("Transcriber is stoped")
     return
   }
@@ -54,10 +54,10 @@ async function upload(speaker: SpeakerData, end: boolean) {
 
   try {
     const api = Api.instance
-    if (LAST_TRANSCRIPT) {
+    if (LAST_TRANSRIPT) {
       try {
         await api.patchTranscript({
-          id: LAST_TRANSCRIPT.id,
+          id: LAST_TRANSRIPT.id,
           end_time: (speaker.timestamp - meetingStartTime) / 1000
         } as ApiTypes.ChangeableTranscript)
       } catch (e) {
@@ -68,7 +68,7 @@ async function upload(speaker: SpeakerData, end: boolean) {
 
     if (end === true) {
       // Just patch the last transcript if in end
-      TRANSCRIBER_STOPPED = true
+      TRANSCIBER_STOPED = true
       return
     }
     try {
@@ -77,7 +77,7 @@ async function upload(speaker: SpeakerData, end: boolean) {
         return
       }
 
-      LAST_TRANSCRIPT = await api.postTranscript({
+      LAST_TRANSRIPT = await api.postTranscript({
         speaker: speaker.name,
         start_time: (speaker.timestamp - meetingStartTime) / 1000
       } as ApiTypes.PostableTranscript)
