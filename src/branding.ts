@@ -7,15 +7,10 @@ export type BrandingHandle = {
   kill: () => void
 }
 
-export function generateBranding(botname: string, custom_branding_path?: string): BrandingHandle {
+export function generateBranding(botImage: string): BrandingHandle {
   try {
     const command = (() => {
-      if (custom_branding_path == null) {
-        return spawn("../generate_branding.sh", [botname], {
-          env: { ...process.env }
-        })
-      }
-      return spawn("../generate_custom_branding.sh", [custom_branding_path], {
+      return spawn("../generate_custom_branding.sh", [botImage], {
         env: { ...process.env }
       })
     })()

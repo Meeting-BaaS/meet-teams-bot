@@ -220,7 +220,7 @@ export class TeamsProvider implements MeetingProviderInterface {
           })
         ]).catch((e) => console.warn("Camera setup failed:", e instanceof Error ? e.message : e))
 
-        const streaming_input = GLOBAL.get().streaming_input
+        const streaming_input = GLOBAL.get().streamingInput
         if (streaming_input) {
           await Promise.race([activateMicrophone(page), sleep(2000)])
         } else {
@@ -235,7 +235,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
 
     try {
-      await typeBotName(page, GLOBAL.get().bot_name, 20)
+      await typeBotName(page, GLOBAL.get().botName, 20)
       await clickWithInnerText(page, "button", "Join now", 20)
     } catch (e) {
       console.error('Error during bot name typing or second "Join now" click:', e)
@@ -307,7 +307,7 @@ export class TeamsProvider implements MeetingProviderInterface {
       await htmlSnapshot.captureSnapshot(page, "teams_configure_view_start")
 
       if (await clickWithInnerText(page, "button", "View", 10, false)) {
-        if (GLOBAL.get().recording_mode !== "gallery_view") {
+        if (GLOBAL.get().recordingMode !== "galleryView") {
           await clickWithInnerText(page, "button", "View", 10)
           await clickWithInnerText(page, "div", "Speaker", 20)
         }

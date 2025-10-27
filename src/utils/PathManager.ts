@@ -5,17 +5,18 @@ import { GLOBAL } from "../singleton"
 
 const EFS_MOUNT_POINT = envVars.EFS_MOUNT_POINT
 
+// Get the monorepo root directory
+// When serverless: we're in a different directory structure, so use relative paths
+// When not serverless: we're in the monorepo, so calculate the root
+const ROOT = envVars.SERVERLESS ? path.resolve(__dirname) : path.resolve(__dirname, "../../../..")
+
 export class PathManager {
   private static instance: PathManager
-  private environment: string
   private botUuid: string
-  private isServerless: boolean
 
   private constructor() {
     const global = GLOBAL.get()
-    this.environment = envVars.ENVIRON
-    this.isServerless = envVars.SERVERLESS
-    this.botUuid = global.bot_uuid
+    this.botUuid = global.botUuid
   }
 
   public static getInstance(): PathManager {
@@ -50,18 +51,23 @@ export class PathManager {
     return this.botUuid
   }
 
+  // Write to /tmp during runtime
   public getBasePath(): string {
-    if (this.isServerless) {
-      return path.join("./data", this.botUuid)
-    }
-    switch (this.environment) {
+    switch (envVars.ENVIRON) {
       case "prod":
-        return path.join(EFS_MOUNT_POINT, "prod", this.botUuid)
+        return path.join("/tmp", this.botUuid)
       case "preprod":
-        return path.join(EFS_MOUNT_POINT, "preprod", this.botUuid)
+        return path.join("/tmp", this.botUuid)
+      case "local":
+        return path.join(ROOT, "artifacts", this.botUuid)
       default:
-        return path.join("./data", this.botUuid)
+        throw new Error(`Invalid environment: ${envVars.ENVIRON}`)
     }
+  }
+
+  // Write to EFS if upload to S3 fails
+  public getEfsPath(): string {
+    return path.join(EFS_MOUNT_POINT, envVars.ENVIRON, "s3_upload_fails", this.botUuid)
   }
 
   public getOutputPath(): string {

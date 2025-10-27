@@ -25,9 +25,11 @@ export class WaitingRoomState extends BaseState {
         meetingId,
         password,
         0,
-        GLOBAL.get().bot_name,
-        GLOBAL.get().enter_message
+        GLOBAL.get().botName,
+        GLOBAL.get().entryMessage
       )
+
+      GLOBAL.setTransformedMeetingUrl(meetingLink)
 
       // Start the dialog observer before opening the page
       this.startDialogObserver()
@@ -42,10 +44,10 @@ export class WaitingRoomState extends BaseState {
       }
 
       this.context.streamingService = new Streaming(
-        GLOBAL.get().streaming_input,
-        GLOBAL.get().streaming_output,
-        GLOBAL.get().streaming_audio_frequency,
-        GLOBAL.get().bot_uuid
+        GLOBAL.get().streamingInput,
+        GLOBAL.get().streamingOutput,
+        GLOBAL.get().streamingAudioFrequency,
+        GLOBAL.get().botUuid
       )
 
       ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
@@ -88,7 +90,7 @@ export class WaitingRoomState extends BaseState {
     }
 
     try {
-      return await this.context.provider.parseMeetingUrl(GLOBAL.get().meeting_url)
+      return await this.context.provider.parseMeetingUrl(GLOBAL.get().meetingUrl)
     } catch (error) {
       console.error("Failed to parse meeting URL:", error)
       GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
@@ -106,7 +108,7 @@ export class WaitingRoomState extends BaseState {
       this.context.playwrightPage = await this.context.provider.openMeetingPage(
         this.context.browserContext,
         meetingLink,
-        GLOBAL.get().streaming_input
+        GLOBAL.get().streamingInput
       )
       console.info("Meeting page opened successfully")
     } catch (error) {
@@ -126,12 +128,12 @@ export class WaitingRoomState extends BaseState {
     }
 
     // Handle timing control for precise meeting join times
-    const startTime = await handleTimingControl(GLOBAL.get().start_time)
+    const startTime = await handleTimingControl(GLOBAL.get().startTime)
 
     // Store the actual start time for later use - It is sent to the backend at the end of the meeting
     GLOBAL.setStartTime(startTime)
 
-    const timeoutMs = GLOBAL.get().automatic_leave.waiting_room_timeout * 1000
+    const timeoutMs = GLOBAL.get().waitingRoomTimeout * 1000
     console.info(`Setting waiting room timeout to ${timeoutMs}ms`)
 
     let joinSuccessful = false // Flag indicating we joined the meeting

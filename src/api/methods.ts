@@ -3,7 +3,6 @@ import * as rax from "retry-axios"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { getErrorMessageFromCode, type MeetingEndReason } from "../state-machine/types"
-import type { ApiTypes } from "./types"
 
 export class Api {
   public static instance: Api | null = null // Singleton class
@@ -15,7 +14,7 @@ export class Api {
     }
     axios.defaults.baseURL = envVars.API_SERVER_BASEURL
     axios.defaults.withCredentials = true
-    axios.defaults.headers.common["x-api-key"] = envVars.API_SECRET
+    axios.defaults.headers.common["x-api-key"] = envVars.BOT_PROCESS_API_SECRET
     axios.defaults.raxConfig = {
       instance: axios,
       retry: 2, // Number of retry attempts
@@ -51,14 +50,14 @@ export class Api {
 
   // Finalize bot structure into BDD and send webhook
   public async endMeetingTrampoline() {
-    const startTime = GLOBAL.get().start_time || Math.floor(Date.now() / 1000)
-    const exitTime = GLOBAL.get().exit_time || Math.floor(Date.now() / 1000)
+    const startTime = GLOBAL.get().startTime || Math.floor(Date.now() / 1000)
+    const exitTime = GLOBAL.get().exitTime || Math.floor(Date.now() / 1000)
 
     const resp = await axios({
       method: "POST",
-      url: "/bots/end_meeting_trampoline",
+      url: "/bot-process/end_meeting_trampoline",
       params: {
-        bot_uuid: GLOBAL.get().bot_uuid
+        botUuid: GLOBAL.get().botUuid
       },
       data: {
         diarization_v2: false,
@@ -67,32 +66,6 @@ export class Api {
       }
     })
     return resp.data
-  }
-
-  // Post transcript to server
-  public async postTranscript(
-    transcript: ApiTypes.PostableTranscript
-  ): Promise<ApiTypes.QueryableTranscript> {
-    return (
-      await axios({
-        method: "POST",
-        url: `/bots/transcripts/${GLOBAL.get().bot_uuid}/diarization`,
-        data: transcript
-      })
-    ).data
-  }
-
-  // Patch existing transcript
-  public async patchTranscript(
-    transcript: ApiTypes.ChangeableTranscript
-  ): Promise<ApiTypes.QueryableTranscript> {
-    return (
-      await axios({
-        method: "PATCH",
-        url: `/bots/transcripts/${GLOBAL.get().bot_uuid}/diarization`,
-        data: transcript
-      })
-    ).data
   }
 
   public async notifyRecordingFailure(message?: string, errorCode?: string): Promise<void> {
@@ -108,11 +81,11 @@ export class Api {
         url: "/bots/start_record_failed",
         timeout: 10000,
         data: {
-          meeting_url: GLOBAL.get().meeting_url,
+          meeting_url: GLOBAL.get().meetingUrl,
           message: msg,
           ...(code && { error_code: code })
         },
-        params: { bot_uuid: GLOBAL.get().bot_uuid }
+        params: { bot_uuid: GLOBAL.get().botUuid }
       })
       console.log("Successfully notified backend of recording failure")
     } catch (error) {

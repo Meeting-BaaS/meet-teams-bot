@@ -30,9 +30,9 @@ export class SimpleDialogObserver {
 
   setupGlobalDialogObserver() {
     // Only start observer for Google Meet
-    if (GLOBAL.get().meetingProvider !== "Meet") {
+    if (GLOBAL.get().meetingPlatform !== "meet") {
       console.info(
-        `[SimpleDialogObserver] Observer not started: provider is not Google Meet (${GLOBAL.get().meetingProvider})`
+        `[SimpleDialogObserver] Observer not started: provider is not Google Meet (${GLOBAL.get().meetingPlatform})`
       )
       return
     }

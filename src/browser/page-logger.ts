@@ -1,9 +1,9 @@
 import type { Page } from "@playwright/test"
-import { DEBUG_LOGS } from "../main"
+import { envVars } from "../config/env-vars"
 
 // Controlled via enablePrintPageLogs()/disablePrintPageLogs()
 // Enabled when DEBUG_LOGS is true OR when debugging specific scenarios (e.g., no speakers detected)
-let PRINT_PAGE_LOGS = false
+let PRINT_PAGE_LOGS = envVars.LOG_LEVEL === "debug"
 
 const formatValue = (value: unknown): string => {
   if (value === null) return "null"
@@ -43,7 +43,7 @@ export function listenPage(page: Page) {
       const isDebugLog = text.includes("DEBUG")
 
       // Print page logs only if PRINT_PAGE_LOGS is true or if DEBUG_LOGS is true and the log contains DEBUG
-      if (!PRINT_PAGE_LOGS && (!DEBUG_LOGS || !isDebugLog)) {
+      if (!PRINT_PAGE_LOGS && (!(envVars.LOG_LEVEL === "debug") || !isDebugLog)) {
         return // Skip all logs unless --debug is enabled and log contains DEBUG
       }
 

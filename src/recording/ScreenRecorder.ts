@@ -102,11 +102,11 @@ export class ScreenRecorder extends EventEmitter {
 
   private generateOutputPaths(): void {
     try {
-      if (GLOBAL.get().recording_mode === "audio_only") {
-        this.audioOutputPath = PathManager.getInstance().getOutputPath() + ".wav"
+      if (GLOBAL.get().recordingMode === "audioOnly") {
+        this.audioOutputPath = `${PathManager.getInstance().getOutputPath()}.wav`
       } else {
-        this.outputPath = PathManager.getInstance().getOutputPath() + ".mp4"
-        this.audioOutputPath = PathManager.getInstance().getOutputPath() + ".wav"
+        this.outputPath = `${PathManager.getInstance().getOutputPath()}.mp4`
+        this.audioOutputPath = `${PathManager.getInstance().getOutputPath()}.wav`
       }
     } catch (error) {
       console.error("Failed to generate output paths:", error)
@@ -156,7 +156,7 @@ export class ScreenRecorder extends EventEmitter {
       console.log("Native recording started successfully")
       this.emit("started", {
         outputPath: this.outputPath,
-        isAudioOnly: GLOBAL.get().recording_mode === "audio_only"
+        isAudioOnly: GLOBAL.get().recordingMode === "audioOnly"
       })
     } catch (error) {
       console.error("Failed to start native recording:", error)
@@ -247,7 +247,7 @@ export class ScreenRecorder extends EventEmitter {
     const timestamp = Date.now()
     const screenshotPattern = path.join(screenshotsPath, `${timestamp}_%4d.png`)
 
-    if (GLOBAL.get().recording_mode === "audio_only") {
+    if (GLOBAL.get().recordingMode === "audioOnly") {
       // Audio-only recording with screenshots
       const tempDir = PathManager.getInstance().getTempPath()
       const rawAudioPath = path.join(tempDir, "raw.wav")
@@ -585,7 +585,7 @@ export class ScreenRecorder extends EventEmitter {
 
           await S3Uploader.getInstance().uploadFile(
             chunkPath,
-            GLOBAL.get().aws_s3_temporary_audio_bucket,
+            envVars.AWS_S3_AUDIO_CHUNKS_BUCKET,
             s3Key
           )
 
@@ -608,9 +608,7 @@ export class ScreenRecorder extends EventEmitter {
 
     try {
       if (fs.existsSync(this.audioOutputPath)) {
-        console.log(
-          `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`
-        )
+        console.log(`📤 Uploading WAV audio to video bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
         await S3Uploader.getInstance().uploadFile(
           this.audioOutputPath,
           envVars.AWS_S3_ARTIFACTS_BUCKET,
@@ -625,7 +623,7 @@ export class ScreenRecorder extends EventEmitter {
 
     try {
       if (fs.existsSync(this.outputPath)) {
-        console.log(`📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`)
+        console.log(`📤 Uploading MP4 to video bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
         await S3Uploader.getInstance().uploadFile(
           this.outputPath,
           envVars.AWS_S3_ARTIFACTS_BUCKET,
@@ -636,6 +634,24 @@ export class ScreenRecorder extends EventEmitter {
     } catch (error) {
       console.error("Failed to upload video file:", error)
       // Don't throw - mark as uploaded to allow process completion
+    }
+
+    // Upload diarization file
+    try {
+      const diarizationPath = `${PathManager.getInstance().getTempPath()}/diarization.txt`
+      if (fs.existsSync(diarizationPath)) {
+        console.log(`Uploading diarization file to S3: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
+        await S3Uploader.getInstance().uploadFile(
+          diarizationPath,
+          envVars.AWS_S3_ARTIFACTS_BUCKET,
+          `${identifier}/diarization.jsonl`
+        )
+        fs.unlinkSync(diarizationPath)
+        console.log("Diarization file uploaded successfully")
+      }
+    } catch (error) {
+      console.error("Failed to upload diarization file:", error)
+      // Don't throw - continue with completion
     }
 
     this.filesUploaded = true
@@ -825,7 +841,7 @@ export class ScreenRecorder extends EventEmitter {
   }
 
   private async syncAndMergeFiles(): Promise<void> {
-    if (GLOBAL.get().recording_mode === "audio_only") {
+    if (GLOBAL.get().recordingMode === "audioOnly") {
       // Audio-only mode: just copy raw audio to final output
       const tempDir = PathManager.getInstance().getTempPath()
       const rawAudioPath = path.join(tempDir, "raw.wav")
@@ -1141,7 +1157,7 @@ file '${absoluteInputPath}'`
   }
 
   private async createAudioChunks(audioPath: string): Promise<void> {
-    if (!GLOBAL.get().speech_to_text_provider) return
+    if (!GLOBAL.get().speechToTextProvider) return
 
     const chunksDir = PathManager.getInstance().getAudioTmpPath()
     if (!fs.existsSync(chunksDir)) {
@@ -1150,7 +1166,7 @@ file '${absoluteInputPath}'`
 
     // Get audio duration
     const duration = await this.getDuration(audioPath)
-    const botUuid = GLOBAL.get().bot_uuid
+    const botUuid = GLOBAL.get().botUuid
 
     // Calculate chunk duration (max 1 hour = 3600 seconds)
     const chunkDuration = Math.min(duration, TRANSCRIPTION_CHUNK_DURATION)

@@ -11,7 +11,7 @@ export class InitializationState extends BaseState {
   async execute(): StateExecuteResult {
     try {
       // Validate parameters
-      if (!GLOBAL.get().meeting_url) {
+      if (!GLOBAL.get().meetingUrl) {
         GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
         throw new Error("Invalid meeting URL")
       }
@@ -20,8 +20,8 @@ export class InitializationState extends BaseState {
       await this.setupPathManager()
 
       // Setup branding if needed - non-bloquant
-      if (GLOBAL.get().custom_branding_bot_path) {
-        this.setupBranding().catch((error) => {
+      if (GLOBAL.get().botImage) {
+        this.setupBranding(GLOBAL.get().botImage).catch((error) => {
           console.warn("Branding setup failed, continuing anyway:", error)
         })
       }
@@ -45,11 +45,8 @@ export class InitializationState extends BaseState {
     }
   }
 
-  private async setupBranding(): Promise<void> {
-    this.context.brandingProcess = generateBranding(
-      GLOBAL.get().bot_name,
-      GLOBAL.get().custom_branding_bot_path
-    )
+  private async setupBranding(botImage: string): Promise<void> {
+    this.context.brandingProcess = generateBranding(botImage)
     await this.context.brandingProcess.wait
     playBranding()
   }
@@ -115,7 +112,7 @@ export class InitializationState extends BaseState {
       try {
         const fs = require("fs")
         const path = require("path")
-        const baseDir = path.join(process.cwd(), "logs", GLOBAL.get().bot_uuid)
+        const baseDir = path.join(process.cwd(), "logs", GLOBAL.get().botUuid)
         fs.mkdirSync(baseDir, { recursive: true })
         console.info("Created fallback log directory:", baseDir)
       } catch (fsError) {

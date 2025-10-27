@@ -61,8 +61,8 @@ export class ResumingState extends BaseState {
 
         await this.context.speakersObserver.startObserving(
           this.context.playwrightPage,
-          GLOBAL.get().recording_mode,
-          GLOBAL.get().bot_name,
+          GLOBAL.get().recordingMode,
+          GLOBAL.get().botName,
           onSpeakersChange
         )
         console.log("Speakers observation resumed")

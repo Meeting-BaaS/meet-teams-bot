@@ -46,9 +46,8 @@ export class ErrorState extends BaseState {
       message: errorMessage || "Unknown error",
       reason: endReason,
       state: this.stateType,
-      meetingUrl: GLOBAL.get().meeting_url,
-      botName: GLOBAL.get().bot_name,
-      sessionId: GLOBAL.get().session_id,
+      meetingUrl: GLOBAL.get().meetingUrl,
+      botName: GLOBAL.get().botName,
       timestamp: Date.now()
     }
 
@@ -128,8 +127,7 @@ export class ErrorState extends BaseState {
       state: this.stateType,
       // Other relevant context metrics
       attendeesCount: this.context.attendeesCount,
-      firstUserJoined: this.context.firstUserJoined,
-      sessionId: GLOBAL.get().session_id
+      firstUserJoined: this.context.firstUserJoined
     }
 
     // Log metrics

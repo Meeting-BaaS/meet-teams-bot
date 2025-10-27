@@ -1,39 +1,22 @@
 import { exit } from "node:process"
+import { ZodError } from "zod"
 import { Api } from "./api/methods"
 import { Events } from "./events"
 import { server } from "./server"
 import { GLOBAL } from "./singleton"
+import { SpeakerManager } from "./speaker-manager"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { getErrorMessageFromCode } from "./state-machine/types"
 import type { MeetingParams } from "./types"
-import { detectMeetingProvider } from "./utils/detectMeetingProvider"
 import { setupConsoleLogger, setupExitHandler, uploadLogsToS3 } from "./utils/Logger"
+import { BotMessageSchema } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
-
-// ========================================
-// CONFIGURATION
-// ========================================
 
 // Setup console logger first to ensure proper formatting
 setupConsoleLogger()
 
 // Setup crash handlers to upload logs in case of unexpected exit
 setupExitHandler()
-
-// Configuration to enable/disable DEBUG logs
-export const DEBUG_LOGS = process.argv.includes("--debug") || process.env.DEBUG_LOGS === "true"
-if (DEBUG_LOGS) {
-  console.log("🐛 DEBUG mode activated - speakers debug logs will be shown")
-  // Dynamically import page-logger to enable page logs only when DEBUG_LOGS is true
-  // This is done to avoid circular dependency issues
-  import("./browser/page-logger")
-    .then(({ enablePrintPageLogs }) => enablePrintPageLogs())
-    .catch((e) => console.error("Failed to enable page logs dynamically:", e))
-}
-
-// ========================================
-// UTILITY FUNCTIONS
-// ========================================
 
 /**
  * Read and parse meeting parameters from stdin
@@ -47,16 +30,19 @@ async function readFromStdin(): Promise<MeetingParams> {
 
     process.stdin.on("end", () => {
       try {
-        const params = JSON.parse(data) as MeetingParams
+        const params = JSON.parse(data)
+        const parsedParams = BotMessageSchema.parse(params)
 
-        // Detect the meeting provider
-        params.meetingProvider = detectMeetingProvider(params.meeting_url)
-        GLOBAL.set(params)
+        GLOBAL.set(parsedParams)
         PathManager.getInstance().initializePaths()
-        resolve(params)
+        resolve(parsedParams)
       } catch (error) {
+        if (error instanceof ZodError) {
+          console.error("Failed to validate JSON from stdin:", error.issues)
+          process.exit(1)
+        }
+
         console.error("Failed to parse JSON from stdin:", error)
-        console.error("Raw data was:", JSON.stringify(data))
         process.exit(1)
       }
     })
@@ -73,6 +59,15 @@ async function handleSuccessfulRecording(): Promise<void> {
   console.log(
     `Recording ended normally with reason: ${MeetingStateMachine.instance.getEndReason()}`
   )
+
+  // Finalize diarization tracking (writes final segment to file)
+  try {
+    await SpeakerManager.finalize()
+    console.log("Diarization tracking finalized")
+  } catch (error) {
+    console.error("Failed to finalize diarization:", error)
+    // Continue despite error
+  }
 
   // Handle API endpoint call with built-in retry logic
   if (!GLOBAL.isServerless()) {
@@ -124,26 +119,17 @@ async function handleFailedRecording(): Promise<void> {
   const meetingParams = await readFromStdin()
 
   try {
-    // Log all meeting parameters (masking sensitive data)
-    const logParams = { ...meetingParams }
-
-    // Mask sensitive data for security
-    if (logParams.user_token) logParams.user_token = "***MASKED***"
-    if (logParams.bots_api_key) logParams.bots_api_key = "***MASKED***"
-    if (logParams.speech_to_text_api_key) logParams.speech_to_text_api_key = "***MASKED***"
-    if (logParams.zoom_sdk_pwd) logParams.zoom_sdk_pwd = "***MASKED***"
-
-    console.log("Received meeting parameters:", JSON.stringify(logParams, null, 2))
-
-    console.log("About to redirect logs to bot:", meetingParams.bot_uuid)
-    console.log("Logs redirected successfully")
+    console.log("Starting recording for bot uuid:", meetingParams.botUuid)
 
     // Start the server
-    await server().catch((e) => {
-      console.error(`Failed to start server: ${e}`)
-      throw e
-    })
-    console.log("Server started successfully")
+    await server()
+      .then(() => {
+        console.log("Server started successfully")
+      })
+      .catch((e) => {
+        console.error(`Failed to start server: ${e}`)
+        throw e
+      })
 
     // Initialize components
     MeetingStateMachine.init()

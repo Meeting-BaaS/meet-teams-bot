@@ -21,14 +21,14 @@ export class MeetingStateMachine {
   static init() {
     if (MeetingStateMachine.instance == null) {
       MeetingStateMachine.instance = new MeetingStateMachine()
-      console.log("*** INIT MeetingStateMachine.instance", GLOBAL.get().meeting_url)
+      console.log("*** INIT MeetingStateMachine.instance ***")
     }
   }
 
   constructor() {
     this.currentState = MeetingStateType.Initialization
     this.provider =
-      GLOBAL.get().meetingProvider === "Teams" ? new TeamsProvider() : new MeetProvider()
+      GLOBAL.get().meetingPlatform === "teams" ? new TeamsProvider() : new MeetProvider()
 
     this.context = {
       provider: this.provider,

@@ -1,3 +1,4 @@
+import { envVars } from "./config/env-vars"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
 import type { MeetingParams, RecordingMode } from "./types"
@@ -19,23 +20,17 @@ class Global {
    * @param mode - The recording mode value (can be either PascalCase or snake_case)
    * @returns The normalized recording mode in snake_case format
    */
-  private normalizeRecordingMode(
-    mode: RecordingMode
-  ): "speaker_view" | "gallery_view" | "audio_only" {
+  private normalizeRecordingMode(mode: RecordingMode): "speakerView" | "galleryView" | "audioOnly" {
     switch (mode) {
-      case "speaker_view":
-      case "SpeakerView":
-        return "speaker_view"
-      case "gallery_view":
-      case "GalleryView":
-        return "speaker_view" // gallery_view maps to speaker_view as requested
-      case "audio_only":
-      case "AudioOnly":
-        return "audio_only"
+      case "galleryView": // gallery_view maps to speaker_view as requested
+      case "speakerView":
+        return "speakerView"
+      case "audioOnly":
+        return "audioOnly"
       default:
         // Default to speaker_view if unknown
         console.warn(`Unknown recording mode: ${mode}, defaulting to speaker_view`)
-        return "speaker_view"
+        return "speakerView"
     }
   }
 
@@ -45,21 +40,21 @@ class Global {
     }
 
     // Validate critical parameters before setting them
-    if (!meetingParams.meeting_url || meetingParams.meeting_url.trim() === "") {
+    if (!meetingParams.meetingUrl || meetingParams.meetingUrl.trim() === "") {
       throw new Error("Missing required parameter: meeting_url")
     }
-    if (!meetingParams.bot_uuid || meetingParams.bot_uuid.trim() === "") {
+    if (!meetingParams.botUuid || meetingParams.botUuid.trim() === "") {
       throw new Error("Missing required parameter: bot_uuid")
     }
 
     // Normalize the recording mode before setting
     const normalizedParams = {
       ...meetingParams,
-      recording_mode: this.normalizeRecordingMode(meetingParams.recording_mode)
+      recordingMode: this.normalizeRecordingMode(meetingParams.recordingMode)
     }
 
     this.meetingParams = normalizedParams
-    console.log(`🤖 Bot ${meetingParams.bot_uuid} initialized with validated parameters`)
+    console.log(`🤖 Bot ${meetingParams.botUuid} initialized with validated parameters`)
   }
 
   public get(): MeetingParams {
@@ -73,21 +68,28 @@ class Global {
     if (this.meetingParams === null) {
       throw new Error("Meeting params are not set")
     }
-    return this.meetingParams.remote === null
+    return envVars.SERVERLESS
   }
 
   public setStartTime(startTime: number): void {
     if (this.meetingParams === null) {
       throw new Error("Meeting params are not set")
     }
-    this.meetingParams.start_time = startTime
+    this.meetingParams.startTime = startTime
   }
 
   public setExitTime(exitTime: number): void {
     if (this.meetingParams === null) {
       throw new Error("Meeting params are not set")
     }
-    this.meetingParams.exit_time = exitTime
+    this.meetingParams.exitTime = exitTime
+  }
+
+  public setTransformedMeetingUrl(transformedMeetingUrl: string): void {
+    if (this.meetingParams === null) {
+      throw new Error("Meeting params are not set")
+    }
+    this.meetingParams.transformedMeetingUrl = transformedMeetingUrl
   }
 
   public setError(reason: MeetingEndReason, message?: string): void {

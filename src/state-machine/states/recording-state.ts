@@ -282,7 +282,7 @@ export class RecordingState extends BaseState {
     }
 
     // Check if we should consider ending due to no attendees
-    const nooneJoinedTimeoutMs = GLOBAL.get().automatic_leave.noone_joined_timeout * 1000
+    const nooneJoinedTimeoutMs = GLOBAL.get().noOneJoinedTimeout * 1000
     const noAttendeesTimeout: boolean = startTime + nooneJoinedTimeoutMs < now
     const shouldConsiderEnding = noAttendeesTimeout || firstUserJoined
 
@@ -296,7 +296,7 @@ export class RecordingState extends BaseState {
     if (this.noAttendeesConfirmationStartTime === 0) {
       this.noAttendeesConfirmationStartTime = now
       console.log(
-        `[checkNoAttendees] Starting empty meeting confirmation timer (timeout: ${GLOBAL.get().automatic_leave.noone_joined_timeout}s)`
+        `[checkNoAttendees] Starting empty meeting confirmation timer (timeout: ${GLOBAL.get().noOneJoinedTimeout}s)`
       )
       return false
     }

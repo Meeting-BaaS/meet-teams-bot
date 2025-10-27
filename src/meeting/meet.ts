@@ -69,7 +69,7 @@ export class MeetProvider implements MeetingProviderInterface {
       )
 
       for (let attempt = 1; attempt <= 5; attempt++) {
-        if (await typeBotName(page, GLOBAL.get().bot_name)) {
+        if (await typeBotName(page, GLOBAL.get().botName)) {
           console.log("Bot name typed at attempt", attempt)
           break
         }
@@ -78,7 +78,7 @@ export class MeetProvider implements MeetingProviderInterface {
       }
 
       // Control microphone based on streaming_input
-      if (GLOBAL.get().streaming_input) {
+      if (GLOBAL.get().streamingInput) {
         await activateMicrophone(page)
       } else {
         await deactivateMicrophone(page)
@@ -179,15 +179,15 @@ export class MeetProvider implements MeetingProviderInterface {
       // Capture DOM state after successfully joining meeting
       await htmlSnapshot.captureSnapshot(page, "meet_join_meeting_success")
 
-      if (GLOBAL.get().enter_message) {
+      if (GLOBAL.get().entryMessage) {
         console.log("Sending entry message...")
-        await sendEntryMessage(page, GLOBAL.get().enter_message)
+        await sendEntryMessage(page, GLOBAL.get().entryMessage)
         await sleep(100)
       }
 
       await clickOutsideModal(page)
       const maxAttempts = 3
-      if (GLOBAL.get().recording_mode !== "audio_only") {
+      if (GLOBAL.get().recordingMode !== "audioOnly") {
         // Capture DOM state before layout change attempts
         await htmlSnapshot.captureSnapshot(page, "meet_layout_change_before_attempts")
 
@@ -202,7 +202,7 @@ export class MeetProvider implements MeetingProviderInterface {
         }
       }
 
-      if (GLOBAL.get().recording_mode !== "gallery_view") {
+      if (GLOBAL.get().recordingMode !== "galleryView") {
         // Capture DOM state before opening people panel
         await htmlSnapshot.captureSnapshot(page, "meet_people_panel_before_open")
 

@@ -1,5 +1,6 @@
 import { type BrowserContext, chromium } from "@playwright/test"
 import { envVars } from "../config/env-vars"
+import { GLOBAL } from "../singleton"
 
 export async function openBrowser(): Promise<{ browser: BrowserContext }> {
   const width = 1280 // 640
@@ -11,6 +12,16 @@ export async function openBrowser(): Promise<{ browser: BrowserContext }> {
     // Get Chrome path from environment variable or use default
     const chromePath = envVars.CHROME_PATH
     console.log(`🔍 Using Chrome path: ${chromePath}`)
+
+    const browserPermissions = []
+    const globalParams = GLOBAL.get()
+
+    if (globalParams.streamingInput) {
+      browserPermissions.push("microphone")
+    }
+    if (globalParams.botImage) {
+      browserPermissions.push("camera")
+    }
 
     const context = await chromium.launchPersistentContext("", {
       headless: false,
@@ -65,7 +76,7 @@ export async function openBrowser(): Promise<{ browser: BrowserContext }> {
         "--log-level=1",
         "--vmodule=*audio*=3" // Enable audio debug logging
       ],
-      permissions: ["microphone", "camera"],
+      permissions: browserPermissions,
       ignoreHTTPSErrors: true,
       acceptDownloads: true,
       bypassCSP: true,

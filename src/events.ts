@@ -1,4 +1,5 @@
 import axios from "axios"
+import { envVars } from "./config/env-vars"
 import { GLOBAL } from "./singleton"
 
 export class Events {
@@ -6,15 +7,9 @@ export class Events {
   private sentEvents: Set<string> = new Set()
 
   static init() {
-    if (GLOBAL.get().bot_uuid == null) return
-    if (GLOBAL.get().bots_api_key == null) return
-    if (GLOBAL.get().bots_webhook_url == null) return
+    if (GLOBAL.get().botUuid == null || GLOBAL.get().botId == null) return
 
-    Events.EVENTS = new Events(
-      GLOBAL.get().bot_uuid,
-      GLOBAL.get().bots_api_key,
-      GLOBAL.get().bots_webhook_url
-    )
+    Events.EVENTS = new Events(GLOBAL.get().botUuid, GLOBAL.get().botId)
   }
 
   static async apiRequestStop() {
@@ -92,9 +87,8 @@ export class Events {
   }
 
   private constructor(
-    private botId: string,
-    private apiKey: string,
-    private webhookUrl: string
+    private botUuid: string,
+    private botId: number
   ) {}
 
   /**
@@ -116,29 +110,24 @@ export class Events {
   }
 
   private async send(code: string, additionalData: Record<string, unknown> = {}): Promise<void> {
+    if (envVars.SERVERLESS) {
+      console.log(`Serverless mode, skipping event delivery for ${code}`)
+      return
+    }
     try {
-      // Get event UUID from global state if available
-      const eventUuid = GLOBAL.get().event?.uuid
-
       await axios({
         method: "POST",
-        url: this.webhookUrl,
+        url: `${envVars.API_SERVER_BASEURL}/bot-process/send-event`,
         timeout: 5000,
         headers: {
-          "User-Agent": "meetingbaas/1.0",
-          "x-meeting-baas-api-key": this.apiKey
+          "User-Agent": "meet-teams-bot/1.0",
+          "x-api-key": envVars.BOT_PROCESS_API_SECRET
         },
         data: {
-          event: "bot.status_change",
-          data: {
-            bot_id: this.botId,
-            event_uuid: eventUuid || null,
-            status: {
-              code,
-              created_at: new Date().toISOString(),
-              ...additionalData
-            }
-          }
+          bot_id: this.botId,
+          bot_uuid: this.botUuid,
+          event_code: code,
+          event_data: additionalData
         }
       })
       console.log("Event sent successfully:", code, this.botId)

@@ -13,11 +13,11 @@ export class HtmlCleaner {
 
     // Create the appropriate cleaner based on meeting provider
     switch (this.meetingProvider) {
-      case "Meet":
+      case "meet":
         this.cleaner = new MeetHtmlCleaner(page, recordingMode)
         break
 
-      case "Teams":
+      case "teams":
         this.cleaner = new TeamsHtmlCleaner(page, recordingMode)
         break
 

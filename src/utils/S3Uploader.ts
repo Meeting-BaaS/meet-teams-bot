@@ -2,6 +2,7 @@ import { S3Client } from "@aws-sdk/client-s3"
 import { Upload } from "@aws-sdk/lib-storage"
 import * as fs from "fs"
 import * as path from "path"
+import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 
 // Singleton instance
@@ -63,7 +64,7 @@ export class S3Uploader {
       return
     }
 
-    const bucket = GLOBAL.get().remote?.aws_s3_log_bucket
+    const bucket = envVars.AWS_S3_LOGS_BUCKET
     if (!bucket) {
       console.warn("Skipping S3 upload - aws_s3_log_bucket not configured")
       return

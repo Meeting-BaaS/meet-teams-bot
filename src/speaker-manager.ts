@@ -1,10 +1,10 @@
 import * as fs from "node:fs"
 import { enablePrintPageLogs } from "./browser/page-logger"
+import { DiarizationTracker } from "./diarization-tracker"
 import { MeetingStateMachine } from "./state-machine/machine"
 import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
 import type { SpeakerData } from "./types"
-import { uploadTranscriptTask } from "./uploadTranscripts"
 import { PathManager } from "./utils/PathManager"
 
 export class SpeakerManager {
@@ -12,6 +12,7 @@ export class SpeakerManager {
   private currentSpeaker: SpeakerData | null = null
   private readonly PAUSE_BETWEEN_SENTENCES = 1000 // 1 second
   private lastSpeakerTime: number | null = null
+  private diarizationTracker: DiarizationTracker | null = null
 
   private constructor() {}
 
@@ -23,7 +24,23 @@ export class SpeakerManager {
   }
 
   public static start(): void {
-    SpeakerManager.getInstance()
+    const instance = SpeakerManager.getInstance()
+    // Initialize diarization tracker (file-based, no API calls)
+    instance.diarizationTracker = DiarizationTracker.getInstance()
+  }
+
+  /**
+   * Finalize diarization tracking when meeting ends.
+   */
+  public static async finalize(): Promise<void> {
+    const instance = SpeakerManager.getInstance()
+    if (instance.diarizationTracker) {
+      const lastTimestamp = Date.now()
+      const meetingStartTime = MeetingStateMachine.instance.getStartTime()
+      if (meetingStartTime) {
+        instance.diarizationTracker.end(lastTimestamp, meetingStartTime)
+      }
+    }
   }
 
   public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
@@ -134,19 +151,25 @@ export class SpeakerManager {
     const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
     if (!activeSpeaker) return
 
+    const meetingStartTime = MeetingStateMachine.instance.getStartTime()
+    if (!meetingStartTime) return
+
     if (activeSpeaker.name !== this.currentSpeaker?.name) {
-      // Changement de speaker
-      await uploadTranscriptTask(activeSpeaker, false)
+      // Speaker changed - update diarization tracker (writes to file)
+      this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
     } else if (this.currentSpeaker.isSpeaking === false) {
       // The speaker has started speaking again after a pause
       if (activeSpeaker.timestamp >= this.currentSpeaker.timestamp + this.PAUSE_BETWEEN_SENTENCES) {
-        await uploadTranscriptTask(activeSpeaker, false)
+        this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
       }
     }
     this.currentSpeaker = activeSpeaker
   }
 
   private async handleMultipleSpeakers(speakers: SpeakerData[]): Promise<void> {
+    const meetingStartTime = MeetingStateMachine.instance.getStartTime()
+    if (!meetingStartTime) return
+
     const hasSpeakingCurrentSpeaker = speakers.some(
       (speaker) => speaker.name === this.currentSpeaker?.name && speaker.isSpeaking === true
     )
@@ -158,13 +181,13 @@ export class SpeakerManager {
           activeSpeaker.timestamp >=
           this.currentSpeaker!.timestamp + this.PAUSE_BETWEEN_SENTENCES
         ) {
-          await uploadTranscriptTask(activeSpeaker, false)
+          this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
         }
       }
       this.currentSpeaker = activeSpeaker
     } else {
       const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
-      await uploadTranscriptTask(activeSpeaker, false)
+      this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
       this.currentSpeaker = activeSpeaker
     }
   }

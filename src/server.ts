@@ -1,14 +1,5 @@
-import { execFile, execSync } from "node:child_process"
-import { unlinkSync } from "node:fs"
-import * as path from "node:path"
-import { promisify } from "node:util"
 import express from "express"
-
-const execFileAsync = promisify(execFile)
-
 import { envVars } from "./config/env-vars"
-import { SoundContext, VideoContext } from "./media_context"
-import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason } from "./state-machine/types"
 import type { StopRecordParams } from "./types"
@@ -38,11 +29,6 @@ export async function server() {
     res.header("Access-Control-Allow-Methods", "OPTIONS, GET, PUT, POST, DELETE")
     res.header("Access-Control-Allow-Headers", "Authorization2, Content-Type")
 
-    // trim meeting url
-    if ((req.body as { meeting_url: string })?.meeting_url != null) {
-      req.body.meeting_url = req.body.meeting_url.trim()
-    }
-
     next()
   })
 
@@ -61,27 +47,6 @@ export async function server() {
   app.post("/stop_record", async (req, res) => {
     const data: StopRecordParams = req.body
     console.log("end meeting from api server :", data)
-
-    // Validate meeting URL with the one stored in Singleton
-    try {
-      const globalParams = GLOBAL.get()
-      if (data.meeting_url !== globalParams.meeting_url) {
-        console.log("Meeting URL mismatch:", {
-          requested: data.meeting_url,
-          stored: globalParams.meeting_url
-        })
-        return res.status(400).json({
-          error: "Meeting URL mismatch",
-          details: "The provided meeting URL does not match the active meeting"
-        })
-      }
-    } catch (_error) {
-      console.log("No active meeting found in Singleton")
-      return res.status(404).json({
-        error: "No active meeting found",
-        details: "No meeting parameters are currently set"
-      })
-    }
 
     return stop_record(res, MeetingEndReason.ApiRequest)
   })
@@ -124,130 +89,6 @@ export async function server() {
           error: "None build has been done"
         })
       })
-  })
-
-  type Upload = {
-    url: string
-  }
-
-  enum FileExtension {
-    Jpg = ".jpg",
-    Png = ".png",
-    Mp4 = ".mp4",
-    Mp3 = ".mp3"
-  }
-
-  // Upload ressources into the server
-  app.post("/upload", async (request, result) => {
-    const params: Upload = request.body
-    console.log(params)
-
-    const extension = path.extname(params.url)
-    if (!Object.values(FileExtension).includes(extension as FileExtension)) {
-      result.status(400).json({
-        error: "This extension is not compatible"
-      })
-      return
-    }
-    const filename = path.basename(params.url)
-
-    try {
-      // Use curl with non-blocking execFile to avoid shell injection and event-loop blocking
-      await execFileAsync("curl", [
-        "--connect-timeout",
-        "10",
-        "--max-time",
-        "10",
-        "--compressed",
-        "-fS",
-        "-L",
-        "-o",
-        filename,
-        params.url
-      ])
-      console.log("Ressource downloaded @", filename)
-
-      // In case of image, create a video from it with FFMPEG and delete tmp files
-      if (extension === FileExtension.Jpg || extension === FileExtension.Png) {
-        try {
-          const command = `ffmpeg -y -i ${filename} -vf scale=${VideoContext.WIDTH}:${VideoContext.HEIGHT} -y resized_${filename}`
-          const output = execSync(command)
-          console.log(output.toString())
-        } catch (e) {
-          console.error(`Unexpected error when scaling image : ${e}`)
-          result.status(400).json({
-            error: "Cannot scale image"
-          })
-          return
-        }
-        try {
-          const command = `ffmpeg -y -loop 1 -i resized_${filename} -c:v libx264 -preset ultrafast -tune stillimage -r 30 -t 1 -pix_fmt yuv420p ${filename}.mp4`
-          const output = execSync(command)
-          console.log(output.toString())
-        } catch (e) {
-          console.error(`Unexpected error when generating video : ${e}`)
-          result.status(400).json({
-            error: "Cannot generate video"
-          })
-          return
-        }
-        try {
-          unlinkSync(`${filename}`)
-          unlinkSync(`resized_${filename}`)
-        } catch (e) {
-          console.error(`Cannot unlink files : ${e}`)
-        }
-      }
-      result.status(200).json({
-        ok: "New ressource uploaded"
-      })
-    } catch (e) {
-      console.log(e)
-      result.status(400).json({
-        error: e
-      })
-    }
-  })
-
-  // Play a given ressource into microphone, camera or both
-  app.post("/play", async (request, result) => {
-    const params: Upload = request.body
-    console.log(params)
-
-    const extension = path.extname(params.url)
-    if (!Object.values(FileExtension).includes(extension as FileExtension)) {
-      result.status(400).json({
-        error: "This extension is not compatible"
-      })
-      return
-    }
-    const filename = path.basename(params.url)
-    switch (extension as FileExtension) {
-      case FileExtension.Png:
-      case FileExtension.Jpg:
-        await VideoContext.instance.stop()
-        VideoContext.instance.play(`${filename}.mp4`, true)
-        break
-      case FileExtension.Mp3:
-        await SoundContext.instance.stop()
-        SoundContext.instance.play(`${filename}`, false)
-        break
-      case FileExtension.Mp4:
-        await VideoContext.instance.stop()
-        await SoundContext.instance.stop()
-        VideoContext.instance.play(`${filename}`, false)
-        SoundContext.instance.play(`${filename}`, false)
-        break
-      default:
-        console.error("Unexpected Extension :", extension)
-        result.status(400).json({
-          error: "Unexpected Extension"
-        })
-        return
-    }
-    result.status(200).json({
-      ok: "Ressource on playing..."
-    })
   })
 
   try {

@@ -25,7 +25,7 @@ export const envVars = cleanEnv(process.env, {
     default: "info"
   }),
   API_SERVER_BASEURL: str({ default: "http://localhost:3001" }),
-  API_SECRET: requiredStr(),
+  BOT_PROCESS_API_SECRET: requiredStr(),
   SERVERLESS: bool({ default: false }),
   CHROME_PATH: str({ default: "/usr/bin/google-chrome" }),
   AWS_S3_LOGS_BUCKET: str({ default: "meeting-baas-logs" }),

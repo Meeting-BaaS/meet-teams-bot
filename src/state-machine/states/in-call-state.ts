@@ -79,9 +79,9 @@ export class InCallState extends BaseState {
       console.error("Error in setupBrowserComponents:", error)
       console.error("Context state:", {
         hasPlaywrightPage: !!this.context.playwrightPage,
-        recordingMode: GLOBAL.get().recording_mode,
-        meetingProvider: GLOBAL.get().meetingProvider,
-        botName: GLOBAL.get().bot_name
+        recordingMode: GLOBAL.get().recordingMode,
+        meetingProvider: GLOBAL.get().meetingPlatform,
+        botName: GLOBAL.get().botName
       })
       throw new Error(`Browser component setup failed: ${error as Error}`)
     }
@@ -100,7 +100,7 @@ export class InCallState extends BaseState {
   }
 
   private async startSpeakersObservation(): Promise<void> {
-    console.log(`Starting speakers observation for ${GLOBAL.get().meetingProvider}`)
+    console.log(`Starting speakers observation for ${GLOBAL.get().meetingPlatform}`)
 
     // Start SpeakerManager
     SpeakerManager.start()
@@ -111,7 +111,7 @@ export class InCallState extends BaseState {
     }
 
     // Create and start integrated speakers observer
-    const speakersObserver = new SpeakersObserver(GLOBAL.get().meetingProvider)
+    const speakersObserver = new SpeakersObserver(GLOBAL.get().meetingPlatform)
 
     // Callback to handle speakers changes
     const onSpeakersChange = async (speakers: SpeakerData[]) => {
@@ -125,8 +125,8 @@ export class InCallState extends BaseState {
     try {
       await speakersObserver.startObserving(
         this.context.playwrightPage,
-        GLOBAL.get().recording_mode,
-        GLOBAL.get().bot_name,
+        GLOBAL.get().recordingMode,
+        GLOBAL.get().botName,
         onSpeakersChange
       )
 
@@ -146,14 +146,14 @@ export class InCallState extends BaseState {
       return
     }
 
-    console.log(`Starting HTML cleanup for ${GLOBAL.get().meetingProvider}`)
+    console.log(`Starting HTML cleanup for ${GLOBAL.get().meetingPlatform}`)
 
     try {
       // EXACT SAME LOGIC AS EXTENSION: Use centralized HtmlCleaner
       const htmlCleaner = new HtmlCleaner(
         this.context.playwrightPage,
-        GLOBAL.get().meetingProvider,
-        GLOBAL.get().recording_mode
+        GLOBAL.get().meetingPlatform,
+        GLOBAL.get().recordingMode
       )
 
       await htmlCleaner.start()
