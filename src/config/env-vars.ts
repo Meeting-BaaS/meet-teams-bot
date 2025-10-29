@@ -3,14 +3,6 @@ import { bool, cleanEnv, makeValidator, port, str } from "envalid"
 
 dotenv.config()
 
-const requiredStr = makeValidator<string>((v: string) => {
-  const input = v.trim()
-  if (!input) {
-    throw new Error("Required string is empty")
-  }
-  return input
-})
-
 export const envVars = cleanEnv(process.env, {
   PORT: port({ default: 8080 }),
   HOST: str({ default: "0.0.0.0" }),
@@ -25,7 +17,6 @@ export const envVars = cleanEnv(process.env, {
     default: "info"
   }),
   API_SERVER_BASEURL: str({ default: "http://localhost:3001" }),
-  BOT_PROCESS_API_SECRET: requiredStr(),
   SERVERLESS: bool({ default: false }),
   CHROME_PATH: str({ default: "/usr/bin/google-chrome" }),
   AWS_S3_LOGS_BUCKET: str({ default: "meeting-baas-logs" }),
