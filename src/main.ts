@@ -69,13 +69,13 @@ async function handleSuccessfulRecording(): Promise<void> {
     // Continue despite error
   }
 
+  // Send success webhook - Waits for completion to ensure status history order is correct
+  await Events.recordingSucceeded()
+
   // Handle API endpoint call with built-in retry logic
   if (!GLOBAL.isServerless()) {
     await Api.instance.handleEndMeetingWithRetry()
   }
-
-  // Send success webhook
-  await Events.recordingSucceeded()
 }
 
 /**
@@ -92,6 +92,8 @@ async function handleFailedRecording(): Promise<void> {
   const errorMessage =
     (GLOBAL.hasError() && GLOBAL.getErrorMessage()) ||
     (endReason ? getErrorMessageFromCode(endReason) : "Recording did not complete successfully")
+
+  // Send failure webhook - Waits for completion to ensure status history order is correct
   await Events.recordingFailed(errorMessage)
 
   console.log("📤 Sending error to backend")

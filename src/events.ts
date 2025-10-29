@@ -76,14 +76,12 @@ export class Events {
 
   // Final webhook events (replacing sendWebhookOnce)
   static async recordingSucceeded() {
-    return Events.EVENTS?.sendOnce("recording_succeeded")
+    return Events.EVENTS?.sendOnce("recording_succeeded", {}, true)
   }
 
   static async recordingFailed(errorMessage: string) {
     console.log(`📤 Events.recordingFailed called with: ${errorMessage}`)
-    return Events.EVENTS?.sendOnce("recording_failed", {
-      error_message: errorMessage
-    })
+    return Events.EVENTS?.sendOnce("recording_failed", { error_message: errorMessage }, true)
   }
 
   private constructor(
@@ -97,7 +95,8 @@ export class Events {
    */
   private async sendOnce(
     code: string,
-    additionalData: Record<string, unknown> = {}
+    additionalData: Record<string, unknown> = {},
+    waitForCompletion = false
   ): Promise<void> {
     if (this.sentEvents.has(code)) {
       console.log(`Event ${code} already sent, skipping...`)
@@ -105,8 +104,13 @@ export class Events {
     }
 
     this.sentEvents.add(code)
-    // Send webhook in parallel - don't wait for completion
-    this.send(code, additionalData)
+    if (waitForCompletion) {
+      // Send webhook and wait for completion
+      await this.send(code, additionalData)
+    } else {
+      // Send webhook in parallel - don't wait for completion
+      this.send(code, additionalData)
+    }
   }
 
   private async send(code: string, additionalData: Record<string, unknown> = {}): Promise<void> {
