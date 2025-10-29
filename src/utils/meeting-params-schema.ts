@@ -23,6 +23,5 @@ export const BotMessageSchema = object({
   exitTime: number().int().positive().default(0),
   waitingRoomTimeout: number().int().positive().default(600),
   noOneJoinedTimeout: number().int().positive().default(600),
-  eventUuid: uuid().optional(),
-  speechToTextProvider: zodEnum(["gladia", "assembly"]).default("gladia")
+  speechToTextProvider: zodEnum(["gladia", "assembly", "none"]).default("gladia")
 })

@@ -117,12 +117,8 @@ export class Events {
     try {
       await axios({
         method: "POST",
-        url: `${envVars.API_SERVER_BASEURL}/bot-process/send-event`,
-        timeout: 5000,
-        headers: {
-          "User-Agent": "meet-teams-bot/1.0",
-          "x-api-key": envVars.BOT_PROCESS_API_SECRET
-        },
+        url: `${envVars.API_SERVER_BASEURL}/bot-process/update-status`,
+        timeout: 30000,
         data: {
           bot_id: this.botId,
           bot_uuid: this.botUuid,

@@ -1,5 +1,4 @@
-import axios, { type AxiosError, type AxiosRequestConfig } from "axios"
-import * as rax from "retry-axios"
+import axios from "axios"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { getErrorMessageFromCode, type MeetingEndReason } from "../state-machine/types"
@@ -13,39 +12,8 @@ export class Api {
       return
     }
     axios.defaults.baseURL = envVars.API_SERVER_BASEURL
-    axios.defaults.withCredentials = true
-    axios.defaults.headers.common["x-api-key"] = envVars.BOT_PROCESS_API_SECRET
-    axios.defaults.raxConfig = {
-      instance: axios,
-      retry: 2, // Number of retry attempts
-      backoffType: "exponential",
-      noResponseRetries: 2, // Number of retries for no responses
-      retryDelay: 1000, // Delay between each retry in milliseconds
-      httpMethodsToRetry: ["GET", "HEAD", "OPTIONS", "DELETE", "PUT", "POST"],
-      statusCodesToRetry: [
-        [100, 199],
-        [400, 499],
-        [500, 599]
-      ],
-      onRetryAttempt: this.onRetryAttempt
-    }
-    rax.attach()
+    axios.defaults.timeout = 30000 // 30 seconds
     Api.instance = this
-  }
-
-  private onRetryAttempt(err: AxiosError) {
-    const cfg = rax.getConfig(err)
-    const response = err.response?.data ?? err
-    const request = err.request as AxiosRequestConfig
-
-    console.log("Attempt of a new trial #", cfg?.currentRetryAttempt, {
-      url: request.url,
-      method: request.method,
-      params: request.params,
-      headers: request.headers,
-      data: request.data,
-      response: response
-    })
   }
 
   // Finalize bot structure into BDD and send webhook
@@ -55,9 +23,9 @@ export class Api {
 
     const resp = await axios({
       method: "POST",
-      url: "/bot-process/end_meeting_trampoline",
+      url: "/bot-process/end-meeting-trampoline",
       params: {
-        botUuid: GLOBAL.get().botUuid
+        botId: GLOBAL.get().botId
       },
       data: {
         diarization_v2: false,
@@ -78,14 +46,14 @@ export class Api {
     try {
       await axios({
         method: "POST",
-        url: "/bots/start_record_failed",
+        url: "/bot-process/start-record-failed",
         timeout: 10000,
         data: {
           meeting_url: GLOBAL.get().meetingUrl,
           message: msg,
           ...(code && { error_code: code })
         },
-        params: { bot_uuid: GLOBAL.get().botUuid }
+        params: { botId: GLOBAL.get().botId }
       })
       console.log("Successfully notified backend of recording failure")
     } catch (error) {
