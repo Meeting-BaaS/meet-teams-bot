@@ -92,6 +92,7 @@ export type MeetingParams = {
     extra?: any
     zoom_sdk_id?: string
     zoom_sdk_pwd?: string
+    secret?: string
     start_time?: number
     exit_time?: number
 }
