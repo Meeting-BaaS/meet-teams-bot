@@ -20,7 +20,9 @@ export class S3Uploader {
         // - Credentials from environment variables, IAM roles, AWS config files, etc.
         // - Endpoints from AWS_ENDPOINT_URL, AWS_ENDPOINT_URL_S3, etc.
         // - Regions from AWS_REGION, AWS_DEFAULT_REGION, etc.
-        this.s3Client = new S3Client()
+        this.s3Client = new S3Client({
+            maxAttempts: 15,
+        })
     }
 
     public static getInstance(): S3Uploader {
@@ -46,7 +48,6 @@ export class S3Uploader {
         }
 
         try {
-            // Use Upload class for automatic multipart handling
             const upload = new Upload({
                 client: this.s3Client,
                 params: {
@@ -60,8 +61,6 @@ export class S3Uploader {
             console.log(`✅ S3 upload successful: ${s3Path}`)
         } catch (error) {
             console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
-            
-            // Fallback to EFS with the same structure
             await this.copyToEFS(filePath, s3Path)
         }
     }
