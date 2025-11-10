@@ -1,12 +1,16 @@
 import { envVars } from "./config/env-vars"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
-import type { MeetingParams, RecordingMode } from "./types"
+import type { ArtifactKey, MeetingParams, Participant, RecordingMode } from "./types"
 
 class Global {
   private meetingParams: MeetingParams | null = null
   private endReason: MeetingEndReason | null = null
   private errorMessage: string | null = null
+  private artifactKeys: ArtifactKey[] = []
+  private audioChunks: ArtifactKey[] = []
+  private participants: Participant[] = []
+  private speakers: Participant[] = []
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -152,6 +156,52 @@ class Global {
     // Only clear the error message, keep the end reason
     // This allows normal termination reasons to be preserved
     this.errorMessage = null
+  }
+
+  public addArtifactKey(artifactKey: ArtifactKey): void {
+    this.artifactKeys.push(artifactKey)
+  }
+
+  public getArtifactKeys(): ArtifactKey[] {
+    return this.artifactKeys
+  }
+
+  public addAudioChunk(audioChunk: ArtifactKey): void {
+    this.audioChunks.push(audioChunk)
+  }
+
+  public getAudioChunks(): ArtifactKey[] {
+    return this.audioChunks
+  }
+
+  public addParticipant(participant: Participant): void {
+    this.participants.push(participant)
+  }
+
+  public addParticipantIfNotExists(participant: Participant): void {
+    // TODO: Use id instead of name
+    if (!this.participants.some((p) => p.name === participant.name)) {
+      this.participants.push(participant)
+    }
+  }
+
+  public getParticipants(): Participant[] {
+    return this.participants
+  }
+
+  public addSpeaker(speaker: Participant): void {
+    this.speakers.push(speaker)
+  }
+
+  public addSpeakerIfNotExists(speaker: Participant): void {
+    // TODO: Use id instead of name
+    if (!this.speakers.some((s) => s.name === speaker.name)) {
+      this.speakers.push(speaker)
+    }
+  }
+
+  public getSpeakers(): Participant[] {
+    return this.speakers
   }
 }
 

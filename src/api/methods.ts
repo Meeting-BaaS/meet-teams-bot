@@ -20,6 +20,10 @@ export class Api {
   public async endMeetingTrampoline() {
     const startTime = GLOBAL.get().start_time || Math.floor(Date.now() / 1000)
     const exitTime = GLOBAL.get().exit_time || Math.floor(Date.now() / 1000)
+    const participants = GLOBAL.getParticipants()
+    const speakers = GLOBAL.getSpeakers()
+    const audioChunks = GLOBAL.getAudioChunks()
+    const artifacts = GLOBAL.getArtifactKeys()
 
     const resp = await axios({
       method: "POST",
@@ -30,7 +34,11 @@ export class Api {
       data: {
         diarization_v2: false,
         bot_joined_at: startTime,
-        bot_exited_at: exitTime
+        bot_exited_at: exitTime,
+        participants,
+        speakers,
+        audioChunks,
+        artifacts
       }
     })
     return resp.data

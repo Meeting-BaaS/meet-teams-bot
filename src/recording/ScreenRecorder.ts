@@ -566,6 +566,16 @@ export class ScreenRecorder extends EventEmitter {
 
         if (!fs.existsSync(chunkPath)) {
           console.warn(`Chunk file not found: ${chunkPath}`)
+          GLOBAL.addAudioChunk({
+            s3Key: null,
+            filePath: chunkPath,
+            extension: "flac",
+            uploaded: false,
+            uploadedAt: null,
+            type: "audio",
+            errorCode: "FILE_NOT_FOUND",
+            errorMessage: `Chunk file not found: ${chunkPath}`
+          })
           continue
         }
 
@@ -573,6 +583,16 @@ export class ScreenRecorder extends EventEmitter {
           const stats = fs.statSync(chunkPath)
           if (stats.size === 0) {
             console.warn(`Chunk file is empty: ${filename}`)
+            GLOBAL.addAudioChunk({
+              s3Key: null,
+              filePath: chunkPath,
+              extension: "flac",
+              uploaded: false,
+              uploadedAt: null,
+              type: "audio",
+              errorCode: "FILE_TOO_SMALL",
+              errorMessage: `Chunk file is empty: ${chunkPath}. Size: ${stats.size} bytes`
+            })
             continue
           }
 
@@ -584,10 +604,30 @@ export class ScreenRecorder extends EventEmitter {
             envVars.AWS_S3_AUDIO_CHUNKS_BUCKET,
             s3Key
           )
+          GLOBAL.addAudioChunk({
+            s3Key,
+            filePath: chunkPath,
+            extension: "flac",
+            uploaded: true,
+            uploadedAt: new Date().toISOString(),
+            type: "audio",
+            errorCode: null,
+            errorMessage: null
+          })
 
           console.log(`✅ Chunk uploaded: ${filename}`)
         } catch (error) {
           console.error(`Failed to upload chunk ${filename}:`, error)
+          GLOBAL.addAudioChunk({
+            s3Key: null,
+            filePath: chunkPath,
+            extension: "flac",
+            uploaded: false,
+            uploadedAt: null,
+            type: "audio",
+            errorCode: "UPLOAD_FAILED",
+            errorMessage: error instanceof Error ? error.message : JSON.stringify(error)
+          })
         }
       }
     } catch (error) {
@@ -607,48 +647,160 @@ export class ScreenRecorder extends EventEmitter {
         console.log(
           `📤 Uploading FLAC audio to artifacts bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`
         )
+        const s3Key = `${identifier}/output.flac`
         await S3Uploader.getInstance().uploadFile(
           this.audioOutputPath,
           envVars.AWS_S3_ARTIFACTS_BUCKET,
-          `${identifier}/output.flac`
+          s3Key
         )
+        GLOBAL.addArtifactKey({
+          s3Key,
+          filePath: this.audioOutputPath,
+          extension: "flac",
+          uploaded: true,
+          uploadedAt: new Date().toISOString(),
+          type: "audio",
+          errorCode: null,
+          errorMessage: null
+        })
         fs.unlinkSync(this.audioOutputPath)
+      } else {
+        GLOBAL.addArtifactKey({
+          s3Key: null,
+          filePath: this.audioOutputPath,
+          extension: "flac",
+          uploaded: false,
+          uploadedAt: null,
+          type: "audio",
+          errorCode: "FILE_NOT_FOUND",
+          errorMessage: `Audio file not found: ${this.audioOutputPath}`
+        })
       }
     } catch (error) {
       console.error("Failed to upload audio file:", error)
+      GLOBAL.addArtifactKey({
+        s3Key: null,
+        filePath: this.audioOutputPath,
+        extension: "flac",
+        uploaded: false,
+        uploadedAt: null,
+        type: "audio",
+        errorCode: "UPLOAD_FAILED",
+        errorMessage: error instanceof Error ? error.message : JSON.stringify(error)
+      })
       // Don't throw - continue with video upload
     }
 
     try {
       if (fs.existsSync(this.outputPath)) {
         console.log(`📤 Uploading MP4 to artifacts bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
+        const s3Key = `${identifier}/output.mp4`
         await S3Uploader.getInstance().uploadFile(
           this.outputPath,
           envVars.AWS_S3_ARTIFACTS_BUCKET,
-          `${identifier}/output.mp4`
+          s3Key
         )
         fs.unlinkSync(this.outputPath)
+        GLOBAL.addArtifactKey({
+          s3Key,
+          filePath: this.outputPath,
+          extension: "mp4",
+          uploaded: true,
+          uploadedAt: new Date().toISOString(),
+          type: "video",
+          errorCode: null,
+          errorMessage: null
+        })
+      } else {
+        const recordingMode = GLOBAL.get().recording_mode
+        GLOBAL.addArtifactKey({
+          s3Key: null,
+          filePath: this.outputPath,
+          extension: "mp4",
+          uploaded: false,
+          uploadedAt: null,
+          type: "video",
+          errorCode: recordingMode === "audio_only" ? "NOT_SUPPORTED" : "FILE_NOT_FOUND",
+          errorMessage: `Video file not found. Recording mode: ${recordingMode}. Output path: ${this.outputPath}`
+        })
       }
     } catch (error) {
       console.error("Failed to upload video file:", error)
+      GLOBAL.addArtifactKey({
+        s3Key: null,
+        filePath: this.outputPath,
+        extension: "mp4",
+        uploaded: false,
+        uploadedAt: null,
+        type: "video",
+        errorCode: "UPLOAD_FAILED",
+        errorMessage: error instanceof Error ? error.message : JSON.stringify(error)
+      })
       // Don't throw - mark as uploaded to allow process completion
     }
 
     // Upload diarization file
+    const diarizationPath = `${PathManager.getInstance().getTempPath()}/diarization.jsonl`
     try {
-      const diarizationPath = `${PathManager.getInstance().getTempPath()}/diarization.jsonl`
       if (fs.existsSync(diarizationPath)) {
-        console.log(`Uploading diarization file to S3: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
-        await S3Uploader.getInstance().uploadFile(
-          diarizationPath,
-          envVars.AWS_S3_ARTIFACTS_BUCKET,
-          `${identifier}/diarization.jsonl`
-        )
-        fs.unlinkSync(diarizationPath)
-        console.log("Diarization file uploaded successfully")
+        const stats = fs.statSync(diarizationPath)
+        if (stats.size === 0) {
+          console.warn(`Diarization file is empty: ${diarizationPath}`)
+          GLOBAL.addArtifactKey({
+            s3Key: null,
+            filePath: diarizationPath,
+            extension: "jsonl",
+            uploaded: false,
+            uploadedAt: null,
+            type: "diarization",
+            errorCode: "FILE_TOO_SMALL",
+            errorMessage: `Diarization file is empty: ${diarizationPath}. Size: ${stats.size} bytes`
+          })
+        } else {
+          console.log(`Uploading diarization file to S3: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
+          const s3Key = `${identifier}/diarization.jsonl`
+          await S3Uploader.getInstance().uploadFile(
+            diarizationPath,
+            envVars.AWS_S3_ARTIFACTS_BUCKET,
+            s3Key
+          )
+          fs.unlinkSync(diarizationPath)
+          console.log("Diarization file uploaded successfully")
+          GLOBAL.addArtifactKey({
+            s3Key,
+            filePath: diarizationPath,
+            extension: "jsonl",
+            uploaded: true,
+            uploadedAt: new Date().toISOString(),
+            type: "diarization",
+            errorCode: null,
+            errorMessage: null
+          })
+        }
+      } else {
+        GLOBAL.addArtifactKey({
+          s3Key: null,
+          filePath: diarizationPath,
+          extension: "jsonl",
+          uploaded: false,
+          uploadedAt: null,
+          type: "diarization",
+          errorCode: "FILE_NOT_FOUND",
+          errorMessage: `Diarization file not found: ${diarizationPath}`
+        })
       }
     } catch (error) {
       console.error("Failed to upload diarization file:", error)
+      GLOBAL.addArtifactKey({
+        s3Key: null,
+        filePath: diarizationPath,
+        extension: "jsonl",
+        uploaded: false,
+        uploadedAt: null,
+        type: "diarization",
+        errorCode: "UPLOAD_FAILED",
+        errorMessage: error instanceof Error ? error.message : JSON.stringify(error)
+      })
       // Don't throw - continue with completion
     }
 

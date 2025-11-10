@@ -42,3 +42,27 @@ export type SpeakerData = {
   isSpeaking: boolean
 }
 export type MeetingProvider = output<typeof MeetingPlatformSchema>
+
+export type Participant = {
+  name: string
+  id: number | null
+}
+
+export type ArtifactType = "audio" | "video" | "screenshots" | "diarization"
+export type ArtifactErrorCode =
+  | "FILE_NOT_FOUND"
+  | "UPLOAD_FAILED"
+  | "FILE_TOO_SMALL"
+  | "UNKNOWN_ERROR"
+  | "NOT_SUPPORTED"
+
+export type ArtifactKey = {
+  s3Key: string | null
+  filePath: string
+  extension: string
+  uploaded: boolean
+  uploadedAt: string | null
+  type: ArtifactType
+  errorCode: ArtifactErrorCode | null
+  errorMessage: string | null
+}

@@ -206,19 +206,42 @@ export async function uploadLogsToS3(): Promise<void> {
             envVars.AWS_S3_ARTIFACTS_BUCKET, // Screenshots are considered artifacts, storing them in the artifacts bucket
             s3ScreenshotsPath
           )
+          GLOBAL.addArtifactKey({
+            s3Key: s3ScreenshotsPath,
+            filePath: screenshotsPath,
+            extension: "directory",
+            uploaded: true,
+            uploadedAt: new Date().toISOString(),
+            type: "screenshots",
+            errorCode: null,
+            errorMessage: null
+          })
           logger.info("Screenshots uploaded to S3")
         } catch (error) {
-          logger.error("Directory sync failed, falling back to individual uploads:", error)
-          // Fallback to individual uploads
-          for (const filename of screenshotFiles) {
-            const screenshotPath = path.join(screenshotsPath, filename)
-            const s3ScreenshotPath = `${s3ScreenshotsPath}/${filename}`
-            await s3cp(screenshotPath, s3ScreenshotPath)
-          }
-          logger.info("Screenshots uploaded to S3 (fallback)")
+          logger.error("Directory sync failed:", error)
+          GLOBAL.addArtifactKey({
+            s3Key: null,
+            filePath: screenshotsPath,
+            extension: "directory",
+            uploaded: false,
+            uploadedAt: null,
+            type: "screenshots",
+            errorCode: "UPLOAD_FAILED",
+            errorMessage: error instanceof Error ? error.message : JSON.stringify(error)
+          })
         }
       } else {
         console.log("Screenshots directory exists but is empty:", screenshotsPath)
+        GLOBAL.addArtifactKey({
+          s3Key: null,
+          filePath: screenshotsPath,
+          extension: "directory",
+          uploaded: false,
+          uploadedAt: null,
+          type: "screenshots",
+          errorCode: "FILE_NOT_FOUND",
+          errorMessage: `Screenshots directory not found: ${screenshotsPath}`
+        })
       }
     } else {
       console.log("No screenshots directory found at path:", screenshotsPath)

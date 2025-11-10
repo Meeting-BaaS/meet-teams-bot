@@ -1,10 +1,11 @@
 import * as fs from "node:fs"
 import { enablePrintPageLogs } from "./browser/page-logger"
 import { DiarizationTracker } from "./diarization-tracker"
+import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
-import type { SpeakerData } from "./types"
+import type { Participant, SpeakerData } from "./types"
 import { PathManager } from "./utils/PathManager"
 
 export class SpeakerManager {
@@ -45,6 +46,9 @@ export class SpeakerManager {
 
   public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
     try {
+      // Update singleton with participants and speakers
+      this.updateSingletonParticipants(speakers)
+
       // Send the speaker state to the streaming service only if RECORDING is enabled
       if (Streaming.instance) {
         Streaming.instance.send_speaker_state(speakers)
@@ -63,6 +67,29 @@ export class SpeakerManager {
     } catch (error) {
       console.error("[SpeakerManager] ❌ Error handling speaker update:", error)
       throw error
+    }
+  }
+
+  /**
+   * Update singleton with participants and speakers information.
+   * - All participants (whether speaking or not) are added via addParticipantIfNotExists
+   * - Participants who are currently speaking (isSpeaking === true) are also added via addSpeakerIfNotExists
+   */
+  private updateSingletonParticipants(speakers: SpeakerData[]): void {
+    for (const speaker of speakers) {
+      // Convert SpeakerData to Participant format
+      const participant: Participant = {
+        name: speaker.name,
+        id: speaker.id || null
+      }
+
+      // Add all participants (whether speaking or not)
+      GLOBAL.addParticipantIfNotExists(participant)
+
+      // Add speakers who are currently speaking
+      if (speaker.isSpeaking === true) {
+        GLOBAL.addSpeakerIfNotExists(participant)
+      }
     }
   }
 
