@@ -8,7 +8,9 @@ const EFS_MOUNT_POINT = envVars.EFS_MOUNT_POINT
 // Get the monorepo root directory
 // When serverless: we're in a different directory structure, so use relative paths
 // When not serverless: we're in the monorepo, so calculate the root
-const ROOT = envVars.SERVERLESS ? path.resolve(__dirname) : path.resolve(__dirname, "../../../..")
+const ROOT = envVars.SERVERLESS
+  ? path.resolve(__dirname)
+  : path.resolve(__dirname, "../../../../..")
 
 export class PathManager {
   private static instance: PathManager

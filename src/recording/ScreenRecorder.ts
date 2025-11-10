@@ -636,7 +636,7 @@ export class ScreenRecorder extends EventEmitter {
 
     // Upload diarization file
     try {
-      const diarizationPath = `${PathManager.getInstance().getTempPath()}/diarization.txt`
+      const diarizationPath = `${PathManager.getInstance().getTempPath()}/diarization.jsonl`
       if (fs.existsSync(diarizationPath)) {
         console.log(`Uploading diarization file to S3: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
         await S3Uploader.getInstance().uploadFile(

@@ -203,7 +203,7 @@ export async function uploadLogsToS3(): Promise<void> {
         try {
           await S3Uploader.getInstance()?.uploadDirectory(
             screenshotsPath,
-            envVars.AWS_S3_LOGS_BUCKET,
+            envVars.AWS_S3_ARTIFACTS_BUCKET, // Screenshots are considered artifacts, storing them in the artifacts bucket
             s3ScreenshotsPath
           )
           logger.info("Screenshots uploaded to S3")

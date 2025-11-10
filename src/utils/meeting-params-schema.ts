@@ -12,6 +12,7 @@ export const BotMessageSchema = object({
   bot_id: number().int().positive(),
   bot_uuid: uuid(),
   bot_name: string(),
+  data_retention_days: number().int().positive(),
   bot_image: url().nullable(),
   meeting_url: url(),
   transformed_meeting_url: url().nullable(),

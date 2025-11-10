@@ -91,6 +91,8 @@ export class MeetProvider implements MeetingProviderInterface {
       // Alternating between span and button selectors for 5 iterations total
       for (let attempt = 1; attempt <= joinButtonMaxAttempts; attempt++) {
         console.log(`Join button search attempt ${attempt}/${joinButtonMaxAttempts}`)
+        // Press Escape to close any modal that might be open
+        await page.keyboard.press("Escape")
 
         // First try with span selector (odd attempts)
         if (!askToJoinClicked && attempt % 2 === 1) {

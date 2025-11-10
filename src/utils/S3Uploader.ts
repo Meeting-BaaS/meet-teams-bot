@@ -39,6 +39,7 @@ export class S3Uploader {
       console.log("Skipping S3 upload - serverless mode")
       return
     }
+    const dataRetentionDays = GLOBAL.get().data_retention_days
 
     try {
       // Use Upload class for automatic multipart handling
@@ -47,7 +48,8 @@ export class S3Uploader {
         params: {
           Bucket: bucketName,
           Key: s3Path,
-          Body: fs.createReadStream(filePath)
+          Body: fs.createReadStream(filePath),
+          Tagging: `data_retention_days=${dataRetentionDays}`
         }
       })
 
