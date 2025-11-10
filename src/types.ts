@@ -1,6 +1,10 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import type { output } from "zod"
-import type { BotMessageSchema, RecordingModeSchema } from "./utils/meeting-params-schema"
+import type {
+  BotMessageSchema,
+  MeetingPlatformSchema,
+  RecordingModeSchema
+} from "./utils/meeting-params-schema"
 
 // Support both PascalCase and snake_case for recording_mode
 export type RecordingMode = output<typeof RecordingModeSchema>
@@ -37,4 +41,4 @@ export type SpeakerData = {
   timestamp: number
   isSpeaking: boolean
 }
-export type MeetingProvider = "meet" | "teams" | "zoom"
+export type MeetingProvider = output<typeof MeetingPlatformSchema>

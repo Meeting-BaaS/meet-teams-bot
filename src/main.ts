@@ -121,7 +121,7 @@ async function handleFailedRecording(): Promise<void> {
   const meetingParams = await readFromStdin()
 
   try {
-    console.log("Starting recording for bot uuid:", meetingParams.botUuid)
+    console.log("Starting recording for bot uuid:", meetingParams.bot_uuid)
 
     // Start the server
     await server()

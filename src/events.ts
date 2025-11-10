@@ -7,9 +7,9 @@ export class Events {
   private sentEvents: Set<string> = new Set()
 
   static init() {
-    if (GLOBAL.get().botUuid == null || GLOBAL.get().botId == null) return
+    if (GLOBAL.get().bot_uuid == null || GLOBAL.get().bot_id == null) return
 
-    Events.EVENTS = new Events(GLOBAL.get().botUuid, GLOBAL.get().botId)
+    Events.EVENTS = new Events(GLOBAL.get().bot_uuid, GLOBAL.get().bot_id)
   }
 
   static async apiRequestStop() {

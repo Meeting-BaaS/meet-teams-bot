@@ -1,5 +1,5 @@
 import dotenv from "dotenv"
-import { bool, cleanEnv, makeValidator, port, str } from "envalid"
+import { bool, cleanEnv, port, str } from "envalid"
 
 dotenv.config()
 

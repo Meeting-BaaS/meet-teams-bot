@@ -16,7 +16,7 @@ export class PathManager {
 
   private constructor() {
     const global = GLOBAL.get()
-    this.botUuid = global.botUuid
+    this.botUuid = global.bot_uuid
   }
 
   public static getInstance(): PathManager {

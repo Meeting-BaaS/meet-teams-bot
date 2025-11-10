@@ -46,8 +46,8 @@ export class ErrorState extends BaseState {
       message: errorMessage || "Unknown error",
       reason: endReason,
       state: this.stateType,
-      meetingUrl: GLOBAL.get().meetingUrl,
-      botName: GLOBAL.get().botName,
+      meetingUrl: GLOBAL.get().meeting_url,
+      botName: GLOBAL.get().bot_name,
       timestamp: Date.now()
     }
 

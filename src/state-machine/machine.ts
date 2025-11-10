@@ -28,7 +28,7 @@ export class MeetingStateMachine {
   constructor() {
     this.currentState = MeetingStateType.Initialization
     this.provider =
-      GLOBAL.get().meetingPlatform === "teams" ? new TeamsProvider() : new MeetProvider()
+      GLOBAL.get().meeting_platform === "teams" ? new TeamsProvider() : new MeetProvider()
 
     this.context = {
       provider: this.provider,

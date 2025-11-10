@@ -18,14 +18,14 @@ export class Api {
 
   // Finalize bot structure into BDD and send webhook
   public async endMeetingTrampoline() {
-    const startTime = GLOBAL.get().startTime || Math.floor(Date.now() / 1000)
-    const exitTime = GLOBAL.get().exitTime || Math.floor(Date.now() / 1000)
+    const startTime = GLOBAL.get().start_time || Math.floor(Date.now() / 1000)
+    const exitTime = GLOBAL.get().exit_time || Math.floor(Date.now() / 1000)
 
     const resp = await axios({
       method: "POST",
       url: "/bot-process/end-meeting-trampoline",
       params: {
-        botId: GLOBAL.get().botId
+        botId: GLOBAL.get().bot_id
       },
       data: {
         diarization_v2: false,
@@ -49,11 +49,11 @@ export class Api {
         url: "/bot-process/start-record-failed",
         timeout: 10000,
         data: {
-          meeting_url: GLOBAL.get().meetingUrl,
+          meeting_url: GLOBAL.get().meeting_url,
           message: msg,
           ...(code && { error_code: code })
         },
-        params: { botId: GLOBAL.get().botId }
+        params: { botId: GLOBAL.get().bot_id }
       })
       console.log("Successfully notified backend of recording failure")
     } catch (error) {

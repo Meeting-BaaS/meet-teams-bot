@@ -14,7 +14,7 @@ import { S3Uploader } from "../utils/S3Uploader"
 import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
 
-const TRANSCRIPTION_CHUNK_DURATION = 3600
+const TRANSCRIPTION_CHUNK_DURATION = 7200 // 2 hours for each transcription. Gladia supports audio files up to 135 mins
 const GRACE_PERIOD_SECONDS = 3
 const STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
@@ -102,11 +102,11 @@ export class ScreenRecorder extends EventEmitter {
 
   private generateOutputPaths(): void {
     try {
-      if (GLOBAL.get().recordingMode === "audioOnly") {
-        this.audioOutputPath = `${PathManager.getInstance().getOutputPath()}.wav`
+      if (GLOBAL.get().recording_mode === "audio_only") {
+        this.audioOutputPath = `${PathManager.getInstance().getOutputPath()}.flac`
       } else {
         this.outputPath = `${PathManager.getInstance().getOutputPath()}.mp4`
-        this.audioOutputPath = `${PathManager.getInstance().getOutputPath()}.wav`
+        this.audioOutputPath = `${PathManager.getInstance().getOutputPath()}.flac`
       }
     } catch (error) {
       console.error("Failed to generate output paths:", error)
@@ -156,7 +156,7 @@ export class ScreenRecorder extends EventEmitter {
       console.log("Native recording started successfully")
       this.emit("started", {
         outputPath: this.outputPath,
-        isAudioOnly: GLOBAL.get().recordingMode === "audioOnly"
+        isAudioOnly: GLOBAL.get().recording_mode === "audio_only"
       })
     } catch (error) {
       console.error("Failed to start native recording:", error)
@@ -247,10 +247,10 @@ export class ScreenRecorder extends EventEmitter {
     const timestamp = Date.now()
     const screenshotPattern = path.join(screenshotsPath, `${timestamp}_%4d.png`)
 
-    if (GLOBAL.get().recordingMode === "audioOnly") {
+    if (GLOBAL.get().recording_mode === "audio_only") {
       // Audio-only recording with screenshots
       const tempDir = PathManager.getInstance().getTempPath()
-      const rawAudioPath = path.join(tempDir, "raw.wav")
+      const rawAudioPath = path.join(tempDir, "raw.flac")
 
       args.push(
         // === AUDIO INPUT ===
@@ -274,16 +274,14 @@ export class ScreenRecorder extends EventEmitter {
         // === OUTPUT 1: RAW AUDIO ===
         "-map",
         "0:a:0",
-        "-acodec",
-        "pcm_s16le",
+        "-sample_fmt",
+        "s16",
         "-ac",
         "1",
         "-ar",
         AUDIO_SAMPLE_RATE.toString(),
         "-avoid_negative_ts",
         "make_zero",
-        "-f",
-        "wav",
         "-y",
         rawAudioPath,
 
@@ -316,7 +314,7 @@ export class ScreenRecorder extends EventEmitter {
       // Separate audio and video recording
       const tempDir = PathManager.getInstance().getTempPath()
       const rawVideoPath = path.join(tempDir, "raw.mp4")
-      const rawAudioPath = path.join(tempDir, "raw.wav")
+      const rawAudioPath = path.join(tempDir, "raw.flac")
 
       args.push(
         // === VIDEO INPUT ===
@@ -373,16 +371,14 @@ export class ScreenRecorder extends EventEmitter {
         "-map",
         "1:a:0",
         "-vn",
-        "-acodec",
-        "pcm_s16le",
+        "-sample_fmt",
+        "s16",
         "-ac",
         "1",
         "-ar",
         AUDIO_SAMPLE_RATE.toString(),
         "-avoid_negative_ts",
         "make_zero",
-        "-f",
-        "wav",
         "-y",
         rawAudioPath,
 
@@ -560,7 +556,7 @@ export class ScreenRecorder extends EventEmitter {
     try {
       const files = fs.readdirSync(chunksDir)
       const chunkFiles = files.filter(
-        (file) => file.startsWith(`${botUuid}-`) && file.endsWith(".wav")
+        (file) => file.startsWith(`${botUuid}-`) && file.endsWith(".flac")
       )
 
       console.log(`📤 Uploading ${chunkFiles.length} audio chunks...`)
@@ -608,11 +604,13 @@ export class ScreenRecorder extends EventEmitter {
 
     try {
       if (fs.existsSync(this.audioOutputPath)) {
-        console.log(`📤 Uploading WAV audio to video bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
+        console.log(
+          `📤 Uploading FLAC audio to artifacts bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`
+        )
         await S3Uploader.getInstance().uploadFile(
           this.audioOutputPath,
           envVars.AWS_S3_ARTIFACTS_BUCKET,
-          `${identifier}.wav`
+          `${identifier}/output.flac`
         )
         fs.unlinkSync(this.audioOutputPath)
       }
@@ -623,11 +621,11 @@ export class ScreenRecorder extends EventEmitter {
 
     try {
       if (fs.existsSync(this.outputPath)) {
-        console.log(`📤 Uploading MP4 to video bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
+        console.log(`📤 Uploading MP4 to artifacts bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
         await S3Uploader.getInstance().uploadFile(
           this.outputPath,
           envVars.AWS_S3_ARTIFACTS_BUCKET,
-          `${identifier}.mp4`
+          `${identifier}/output.mp4`
         )
         fs.unlinkSync(this.outputPath)
       }
@@ -841,10 +839,10 @@ export class ScreenRecorder extends EventEmitter {
   }
 
   private async syncAndMergeFiles(): Promise<void> {
-    if (GLOBAL.get().recordingMode === "audioOnly") {
+    if (GLOBAL.get().recording_mode === "audio_only") {
       // Audio-only mode: just copy raw audio to final output
       const tempDir = PathManager.getInstance().getTempPath()
-      const rawAudioPath = path.join(tempDir, "raw.wav")
+      const rawAudioPath = path.join(tempDir, "raw.flac")
 
       console.log("🔄 Processing audio-only recording...")
 
@@ -866,7 +864,7 @@ export class ScreenRecorder extends EventEmitter {
     // Video mode: efficient sync and merge process for long recordings
     const tempDir = PathManager.getInstance().getTempPath()
     const rawVideoPath = path.join(tempDir, "raw.mp4")
-    const rawAudioPath = path.join(tempDir, "raw.wav")
+    const rawAudioPath = path.join(tempDir, "raw.flac")
 
     console.log("🔄 Starting efficient sync and merge for long recording...")
 
@@ -919,7 +917,7 @@ export class ScreenRecorder extends EventEmitter {
     console.log(`🔇 Audio padding needed: ${audioPadding.toFixed(3)}s`)
 
     // 5. Prepare audio with padding or trimming if needed
-    const processedAudioPath = path.join(tempDir, "processed.wav")
+    const processedAudioPath = path.join(tempDir, "processed.flac")
     if (audioPadding > 0) {
       console.log(`🔇 Adding ${audioPadding.toFixed(3)}s silence to audio start (video ahead)...`)
       await this.addSilencePadding(rawAudioPath, processedAudioPath, audioPadding)
@@ -969,7 +967,7 @@ export class ScreenRecorder extends EventEmitter {
     paddingSeconds: number
   ): Promise<void> {
     const tempDir = PathManager.getInstance().getTempPath()
-    const silenceFile = path.join(tempDir, "silence.wav")
+    const silenceFile = path.join(tempDir, "silence.flac")
     const concatListFile = path.join(tempDir, "concat_list.txt")
 
     // Create silence file with exact same format as input
@@ -978,8 +976,8 @@ export class ScreenRecorder extends EventEmitter {
       "lavfi",
       "-i",
       `anullsrc=channel_layout=mono:sample_rate=${AUDIO_SAMPLE_RATE}:duration=${paddingSeconds}`,
-      "-c:a",
-      "pcm_s16le",
+      "-sample_fmt",
+      "s16",
       "-ar",
       AUDIO_SAMPLE_RATE.toString(),
       "-ac",
@@ -1011,8 +1009,8 @@ file '${absoluteInputPath}'`
       "0",
       "-i",
       concatListFile,
-      "-c:a",
-      "pcm_s16le", // Re-encode instead of copy to ensure clean timestamps
+      "-sample_fmt",
+      "s16", // Re-encode instead of copy to ensure clean timestamps
       "-ar",
       AUDIO_SAMPLE_RATE.toString(),
       "-ac",
@@ -1043,8 +1041,8 @@ file '${absoluteInputPath}'`
       inputAudioPath,
       "-ss",
       trimSeconds.toString(),
-      "-c:a",
-      "pcm_s16le", // Re-encode instead of copy to ensure clean timestamps
+      "-sample_fmt",
+      "s16", // Re-encode instead of copy to ensure clean timestamps
       "-ar",
       AUDIO_SAMPLE_RATE.toString(),
       "-ac",
@@ -1138,8 +1136,8 @@ file '${absoluteInputPath}'`
       "-i",
       videoPath,
       "-vn",
-      "-c:a",
-      "pcm_s16le",
+      "-sample_fmt",
+      "s16",
       "-ar",
       AUDIO_SAMPLE_RATE.toString(),
       "-ac",
@@ -1148,7 +1146,7 @@ file '${absoluteInputPath}'`
       audioPath
     ]
 
-    console.log("🎵 Extracting audio from video (converting to WAV PCM 16kHz mono)")
+    console.log("🎵 Extracting audio from video (converting to FLAC 16kHz mono)")
 
     // Estimate file size for timeout calculation
     const estimatedSizeMB = this.estimateFileSizeMB(videoPath)
@@ -1157,7 +1155,7 @@ file '${absoluteInputPath}'`
   }
 
   private async createAudioChunks(audioPath: string): Promise<void> {
-    if (!GLOBAL.get().speechToTextProvider) return
+    if (!GLOBAL.get().speech_to_text_provider) return
 
     const chunksDir = PathManager.getInstance().getAudioTmpPath()
     if (!fs.existsSync(chunksDir)) {
@@ -1166,17 +1164,17 @@ file '${absoluteInputPath}'`
 
     // Get audio duration
     const duration = await this.getDuration(audioPath)
-    const botUuid = GLOBAL.get().botUuid
+    const botUuid = GLOBAL.get().bot_uuid
 
     // Calculate chunk duration (max 1 hour = 3600 seconds)
     const chunkDuration = Math.min(duration, TRANSCRIPTION_CHUNK_DURATION)
-    const chunkPattern = path.join(chunksDir, `${botUuid}-%d.wav`)
+    const chunkPattern = path.join(chunksDir, `${botUuid}-%d.flac`)
 
     const args = [
       "-i",
       audioPath,
-      "-acodec",
-      "pcm_s16le",
+      "-sample_fmt",
+      "s16",
       "-ac",
       "1",
       "-ar",
@@ -1186,7 +1184,7 @@ file '${absoluteInputPath}'`
       "-segment_time",
       chunkDuration.toString(),
       "-segment_format",
-      "wav",
+      "flac",
       "-y",
       chunkPattern
     ]

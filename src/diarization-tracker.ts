@@ -20,10 +20,8 @@ export class DiarizationTracker {
   private currentSegment: { speaker: string; startTime: number } | null = null
   private filePath: string
   private isEnded = false
-  private botUuid: string
 
-  private constructor(tempDir: string, botUuid: string) {
-    this.botUuid = botUuid
+  private constructor(tempDir: string) {
     this.filePath = join(tempDir, "diarization.jsonl")
     // Open file stream for append-only writing (efficient for continuous logs)
     this.fileStream = createWriteStream(this.filePath, { flags: "a" })
@@ -33,8 +31,7 @@ export class DiarizationTracker {
     if (!DiarizationTracker.instance) {
       const pathManager = PathManager.getInstance()
       const tempDir = pathManager.getTempPath()
-      const botUuid = GLOBAL.get().botUuid
-      DiarizationTracker.instance = new DiarizationTracker(tempDir, botUuid)
+      DiarizationTracker.instance = new DiarizationTracker(tempDir)
     }
     return DiarizationTracker.instance
   }

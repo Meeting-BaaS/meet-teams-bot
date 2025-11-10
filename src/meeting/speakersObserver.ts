@@ -29,11 +29,11 @@ export class SpeakersObserver {
 
     // Create the appropriate observer based on meeting provider - SIMPLE ROUTING
     switch (this.meetingProvider) {
-      case "Meet":
+      case "meet":
         this.observer = new MeetSpeakersObserver(page, recordingMode, botName, onSpeakersChange)
         break
 
-      case "Teams":
+      case "teams":
         this.observer = new TeamsSpeakersObserver(page, recordingMode, botName, onSpeakersChange)
         break
 

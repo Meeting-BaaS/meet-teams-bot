@@ -1,7 +1,6 @@
 import { SoundContext, VideoContext } from "../../media_context"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
-import { GLOBAL } from "../../singleton"
 
 import { MEETING_CONSTANTS } from "../constants"
 import { MeetingStateType, type StateExecuteResult } from "../types"
