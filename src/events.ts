@@ -9,7 +9,7 @@ export class Events {
   static init() {
     if (GLOBAL.get().bot_uuid == null || GLOBAL.get().bot_id == null) return
 
-    Events.EVENTS = new Events(GLOBAL.get().bot_uuid, GLOBAL.get().bot_id)
+    Events.EVENTS = new Events(GLOBAL.get().bot_uuid, GLOBAL.get().bot_id, GLOBAL.get().extra)
   }
 
   static async apiRequestStop() {
@@ -86,7 +86,8 @@ export class Events {
 
   private constructor(
     private botUuid: string,
-    private botId: number
+    private botId: number,
+    private extra: Record<string, unknown> | null
   ) {}
 
   /**
@@ -127,7 +128,8 @@ export class Events {
           bot_id: this.botId,
           bot_uuid: this.botUuid,
           event_code: code,
-          event_data: additionalData
+          event_data: additionalData,
+          extra: this.extra
         }
       })
       console.log("Event sent successfully:", code, this.botId)

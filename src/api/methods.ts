@@ -20,6 +20,7 @@ export class Api {
   public async endMeetingTrampoline() {
     const startTime = GLOBAL.get().start_time || Math.floor(Date.now() / 1000)
     const exitTime = GLOBAL.get().exit_time || Math.floor(Date.now() / 1000)
+    const extra = (GLOBAL.get().extra as Record<string, unknown> | null) ?? null
     const participants = GLOBAL.getParticipants()
     const speakers = GLOBAL.getSpeakers()
     const audioChunks = GLOBAL.getAudioChunks()
@@ -38,7 +39,8 @@ export class Api {
         participants,
         speakers,
         audioChunks,
-        artifacts
+        artifacts,
+        extra
       }
     })
     return resp.data
@@ -50,6 +52,7 @@ export class Api {
       message ||
       GLOBAL.getErrorMessage?.() ||
       (code ? getErrorMessageFromCode(code as MeetingEndReason) : "Unknown error")
+    const extra = (GLOBAL.get().extra as Record<string, unknown> | null) ?? null
 
     try {
       await axios({
@@ -59,7 +62,8 @@ export class Api {
         data: {
           meeting_url: GLOBAL.get().meeting_url,
           message: msg,
-          ...(code && { error_code: code })
+          ...(code && { error_code: code }),
+          extra: extra
         },
         params: { botId: GLOBAL.get().bot_id }
       })

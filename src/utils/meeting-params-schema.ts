@@ -1,4 +1,13 @@
-import { number, object, string, url, uuid, enum as zodEnum } from "zod"
+import {
+  number,
+  object,
+  record,
+  string,
+  url,
+  uuid,
+  enum as zodEnum,
+  unknown as zodUnknown
+} from "zod"
 
 export const RecordingModeSchema = zodEnum(["speaker_view", "audio_only", "gallery_view"])
 export const SpeechToTextProviderSchema = zodEnum(["gladia", "assembly", "none"])
@@ -12,6 +21,7 @@ export const BotMessageSchema = object({
   bot_id: number().int().positive(),
   bot_uuid: uuid(),
   bot_name: string(),
+  extra: record(string(), zodUnknown()).nullable().default(null),
   data_retention_days: number().int().positive(),
   bot_image: url().nullable(),
   meeting_url: url(),
