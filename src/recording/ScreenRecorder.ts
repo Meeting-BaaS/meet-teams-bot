@@ -14,7 +14,7 @@ import { S3Uploader } from "../utils/S3Uploader"
 import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
 
-const TRANSCRIPTION_CHUNK_DURATION = 7200 // 2 hours for each transcription. Gladia supports audio files up to 135 mins
+const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
 const STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
@@ -1315,7 +1315,8 @@ file '${absoluteInputPath}'`
     }
 
     // Get audio duration
-    const duration = await this.getDuration(audioPath)
+    const actualDuration = await this.getDuration(audioPath)
+    const duration = actualDuration + 1 // Add 1 second margin to avoid math precision issues
     const botUuid = GLOBAL.get().bot_uuid
 
     // Calculate chunk duration (max 1 hour = 3600 seconds)
@@ -1342,7 +1343,7 @@ file '${absoluteInputPath}'`
     ]
 
     console.log(
-      `🎵 Creating audio chunks (${chunkDuration}s each) from ${duration.toFixed(1)}s audio`
+      `🎵 Creating audio chunks (${chunkDuration.toFixed(1)}s each) from ${actualDuration.toFixed(1)}s audio`
     )
     try {
       // Estimate file size for timeout calculation
