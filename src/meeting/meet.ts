@@ -104,10 +104,14 @@ export class MeetProvider implements MeetingProviderInterface {
             // Initial attempt to click join button
             const initialClick = await clickJoinCtaIfPresent(page)
             if (initialClick) {
-                console.log('Successfully clicked join button on initial attempt')
+                console.log(
+                    'Successfully clicked join button on initial attempt',
+                )
                 lastJoinClickAt = Date.now()
             } else {
-                console.log('Join button not found on initial attempt, will retry in loop')
+                console.log(
+                    'Join button not found on initial attempt, will retry in loop',
+                )
             }
 
             // Wait to be in the meeting with regular cancelCheck verification
@@ -624,7 +628,9 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
 
                 if (isVisible && isEnabled) {
                     await locator.click({ timeout: 2000 })
-                    console.log(`Successfully clicked join button using selector: ${selector}`)
+                    console.log(
+                        `Successfully clicked join button using selector: ${selector}`,
+                    )
                     return true
                 }
             } catch (e) {
