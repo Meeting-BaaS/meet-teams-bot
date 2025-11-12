@@ -96,90 +96,18 @@ export class MeetProvider implements MeetingProviderInterface {
                 await deactivateMicrophone(page)
             }
 
-            // Try multiple approaches to find the join button
-            let askToJoinClicked = false
-            const joinButtonMaxAttempts = 5
+            // Try to click join button - will retry continuously while waiting
+            let lastJoinClickAt = 0
+            const joinRetryCooldownMs = 2000
+            let joinRetryCount = 0
 
-            // Alternating between span and button selectors for 5 iterations total
-            for (let attempt = 1; attempt <= joinButtonMaxAttempts; attempt++) {
-                console.log(
-                    `Join button search attempt ${attempt}/${joinButtonMaxAttempts}`,
-                )
-                // Press Escape to close any modal that might be open
-                await page.keyboard.press('Escape')
-
-                // First try with span selector (odd attempts)
-                if (!askToJoinClicked && attempt % 2 === 1) {
-                    askToJoinClicked = await clickWithInnerText(
-                        page,
-                        'span',
-                        ['Ask to join', 'Join now'],
-                        1, // Only try once per iteration
-                    )
-                    if (askToJoinClicked) {
-                        console.log(
-                            `Found join button in span element on attempt ${attempt}`,
-                        )
-                        break
-                    }
-                }
-
-                // Then try with button selector (even attempts or after span failed)
-                if (!askToJoinClicked) {
-                    askToJoinClicked = await clickWithInnerText(
-                        page,
-                        'button',
-                        [
-                            'Ask to join',
-                            'Join now',
-                            'Join meeting',
-                            'Join',
-                            'Enter meeting',
-                        ],
-                        1, // Only try once per iteration
-                    )
-                    if (askToJoinClicked) {
-                        console.log(
-                            `Found join button in button element on attempt ${attempt}`,
-                        )
-                        break
-                    }
-                }
-
-                // Short pause between attempts
-                if (!askToJoinClicked && attempt < joinButtonMaxAttempts) {
-                    await page.waitForTimeout(100)
-                }
-            }
-
-            if (!askToJoinClicked) {
-                console.log(
-                    'All attempts with alternating selectors failed, trying by aria-label',
-                )
-
-                // Try by aria-label which might be more stable
-                try {
-                    const joinButtons = page.locator(
-                        'button[aria-label*="Join"], button[aria-label*="join now"]',
-                    )
-                    const count = await joinButtons.count()
-                    console.log(
-                        `Found ${count} buttons with Join in aria-label`,
-                    )
-
-                    if (count > 0) {
-                        await joinButtons.first().click()
-                        console.log('Clicked join button by aria-label')
-                        askToJoinClicked = true
-                    }
-                } catch (e) {
-                    console.error('Error trying to click by aria-label:', e)
-                }
-            }
-
-            if (!askToJoinClicked) {
-                GLOBAL.setError(MeetingEndReason.CannotJoinMeeting)
-                throw new Error('Cannot join meeting')
+            // Initial attempt to click join button
+            const initialClick = await clickJoinCtaIfPresent(page)
+            if (initialClick) {
+                console.log('Successfully clicked join button on initial attempt')
+                lastJoinClickAt = Date.now()
+            } else {
+                console.log('Join button not found on initial attempt, will retry in loop')
             }
 
             // Wait to be in the meeting with regular cancelCheck verification
@@ -188,6 +116,18 @@ export class MeetProvider implements MeetingProviderInterface {
                 if (cancelCheck()) {
                     GLOBAL.setError(MeetingEndReason.ApiRequest)
                     throw new Error('API request to stop recording')
+                }
+
+                // Retry clicking join button if it's visible (every 2 seconds)
+                if (Date.now() - lastJoinClickAt >= joinRetryCooldownMs) {
+                    const retried = await clickJoinCtaIfPresent(page)
+                    if (retried) {
+                        lastJoinClickAt = Date.now()
+                        joinRetryCount += 1
+                        console.log(
+                            `Clicked join button (attempt #${joinRetryCount})`,
+                        )
+                    }
                 }
 
                 if (await isInMeeting(page)) {
@@ -643,6 +583,58 @@ async function clickWithInnerText(
         }),
     )
 
+    return false
+}
+
+async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
+    // Try multiple selector strategies to find join button
+    const joinSelectors = [
+        // Text-based selectors
+        'button:has-text("Ask to join")',
+        'span:has-text("Ask to join")',
+        'button:has-text("Join now")',
+        'span:has-text("Join now")',
+        'button:has-text("Join meeting")',
+        'span:has-text("Join meeting")',
+        'button:has-text("Join")',
+        'span:has-text("Join")',
+        'button:has-text("Enter meeting")',
+        'span:has-text("Enter meeting")',
+        // Aria-label based selectors (more stable)
+        'button[aria-label*="Join"]',
+        'button[aria-label*="join now"]',
+        'button[aria-label*="Ask to join"]',
+    ]
+
+    try {
+        // Press Escape first to close any modal that might be blocking
+        await page.keyboard.press('Escape')
+        await page.waitForTimeout(100)
+
+        for (const selector of joinSelectors) {
+            try {
+                const locator = page.locator(selector).first()
+                const count = await locator.count()
+                if (count === 0) {
+                    continue
+                }
+
+                const isVisible = await locator.isVisible().catch(() => false)
+                const isEnabled = await locator.isEnabled().catch(() => false)
+
+                if (isVisible && isEnabled) {
+                    await locator.click({ timeout: 2000 })
+                    console.log(`Successfully clicked join button using selector: ${selector}`)
+                    return true
+                }
+            } catch (e) {
+                // Continue to next selector if this one fails
+                continue
+            }
+        }
+    } catch (error) {
+        console.error('Failed to click join CTA:', error)
+    }
     return false
 }
 
