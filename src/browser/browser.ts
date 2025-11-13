@@ -3,8 +3,11 @@ import { BrowserContext, chromium } from '@playwright/test'
 export async function openBrowser(
     slowMo: boolean = false,
 ): Promise<{ browser: BrowserContext }> {
-    const width = 1280 // 640
-    const height = 720 // 480
+    // Resolution configuration from environment variable
+    // Defaults to 720p if RESOLUTION is not set or invalid
+    const resolution = process.env.RESOLUTION || '720'
+    const { width, height } =
+        resolution === '1080' ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
 
     try {
         console.log('Launching persistent context with exact extension args...')
