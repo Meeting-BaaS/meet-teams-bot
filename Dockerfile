@@ -52,8 +52,19 @@ export DISPLAY=:99\n\
 export PULSE_RUNTIME_PATH=/tmp/pulse\n\
 export XDG_RUNTIME_DIR=/tmp/pulse\n\
 mkdir -p $PULSE_RUNTIME_PATH\n\
+\n# Determine resolution from RESOLUTION env var (default: 720p)\n\
+RESOLUTION=${RESOLUTION:-720}\n\
+if [ "$RESOLUTION" = "1080" ]; then\n\
+    X11_WIDTH=1920\n\
+    X11_HEIGHT=1240\n\
+    echo "📐 Using 1080p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
+else\n\
+    X11_WIDTH=1280\n\
+    X11_HEIGHT=880\n\
+    echo "📐 Using 720p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
+fi\n\
 \n# Start virtual display with enhanced cursor hiding\n\
-Xvfb :99 -screen 0 1280x880x24 -ac +extension GLX +render -noreset -nocursor -nolisten tcp &\n\
+Xvfb :99 -screen 0 ${X11_WIDTH}x${X11_HEIGHT}x24 -ac +extension GLX +render -noreset -nocursor -nolisten tcp &\n\
 XVFB_PID=$!\n\
 \n# Hide cursor completely at X11 level\n\
 sleep 2\n\
