@@ -43,9 +43,48 @@ export class TeamsProvider implements MeetingProviderInterface {
 
         try {
             await page.goto(link, {
-                waitUntil: 'domcontentloaded',
-                timeout: 15000, // Reduced from 30s
+                waitUntil: 'load', 
+                timeout: 15000,
             })
+
+            // Check for page freeze after goto
+            let pageFrozen = false
+            try {
+                await Promise.race([
+                    page.evaluate(() => document.readyState),
+                    new Promise((_, reject) =>
+                        setTimeout(
+                            () => reject(new Error('Page freeze timeout after goto')),
+                            10000, // 10 seconds timeout to detect freeze
+                        ),
+                    ),
+                ])
+            } catch (e) {
+                pageFrozen = true
+                console.warn(
+                    `⚠️ Page appears to be frozen after goto (attempt ${attempts + 1}/3)`,
+                )
+            }
+
+            // Retry if frozen and we haven't exceeded max attempts
+            if (pageFrozen && attempts < 3) {
+                await page.close()
+                console.log(
+                    `🔄 Page freeze detected, retrying... (${attempts + 1}/3)`,
+                )
+                await sleep(1000) // Wait before retry
+                return await this.openMeetingPage(
+                    browserContext,
+                    link,
+                    streaming_input,
+                    attempts + 1,
+                )
+            } else if (pageFrozen && attempts >= 3) {
+                console.warn(
+                    '⚠️ Page freeze persists after 3 retries, continuing anyway...',
+                )
+                // Continue - page might recover later
+            }
 
             // Quick check for buttons with reduced timeout
             await Promise.race([
@@ -402,6 +441,22 @@ export class TeamsProvider implements MeetingProviderInterface {
     async findEndMeeting(page: Page): Promise<boolean> {
         // Check if we're on a Microsoft login page
         if (await isOnMicrosoftLoginPage(page)) {
+            return true
+        }
+
+        // Check for page freeze
+        try {
+            await Promise.race([
+                page.evaluate(() => document.readyState),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () => reject(new Error('Page freeze timeout')),
+                        20000, // 20 seconds timeout like Meet
+                    ),
+                ),
+            ])
+        } catch (e) {
+            console.log('Page appears to be frozen for 20 seconds - meeting likely ended')
             return true
         }
 

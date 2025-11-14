@@ -27,6 +27,7 @@ export class MeetProvider implements MeetingProviderInterface {
         browserContext: BrowserContext,
         link: string,
         streaming_input: string | undefined,
+        attempts: number = 0,
     ): Promise<Page> {
         try {
             console.log('Creating new page in existing context...')
@@ -45,6 +46,45 @@ export class MeetProvider implements MeetingProviderInterface {
                 timeout: 30000,
             })
             console.log('Navigation completed')
+
+            // Check for page freeze after goto (same as Teams)
+            let pageFrozen = false
+            try {
+                await Promise.race([
+                    page.evaluate(() => document.readyState),
+                    new Promise((_, reject) =>
+                        setTimeout(
+                            () => reject(new Error('Page freeze timeout after goto')),
+                            10000, // 10 seconds timeout to detect freeze
+                        ),
+                    ),
+                ])
+            } catch (e) {
+                pageFrozen = true
+                console.warn(
+                    `⚠️ Page appears to be frozen after goto (attempt ${attempts + 1}/3)`,
+                )
+            }
+
+            // Retry if frozen and we haven't exceeded max attempts
+            if (pageFrozen && attempts < 3) {
+                await page.close()
+                console.log(
+                    `🔄 Page freeze detected, retrying... (${attempts + 1}/3)`,
+                )
+                await sleep(1000) // Wait before retry
+                return await this.openMeetingPage(
+                    browserContext,
+                    link,
+                    streaming_input,
+                    attempts + 1,
+                )
+            } else if (pageFrozen && attempts >= 3) {
+                console.warn(
+                    '⚠️ Page freeze persists after 3 retries, continuing anyway...',
+                )
+                // Continue - page might recover later
+            }
 
             return page
         } catch (error) {
