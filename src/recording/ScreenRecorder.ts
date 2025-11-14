@@ -290,7 +290,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '16384',
+                '4096', // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
                 '-i',
                 VIRTUAL_SPEAKER_MONITOR,
 
@@ -341,6 +341,10 @@ export class ScreenRecorder extends EventEmitter {
                 '1',
                 '-ar',
                 STREAMING_SAMPLE_RATE.toString(),
+                '-fflags',
+                'nobuffer',
+                '-flags',
+                'low_delay',
                 '-f',
                 'f32le',
                 'pipe:1',
@@ -366,7 +370,9 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '16384',
+                '4096', // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
+                '-fflags',
+                'nobuffer',
                 '-i',
                 VIRTUAL_SPEAKER_MONITOR,
 
@@ -440,6 +446,10 @@ export class ScreenRecorder extends EventEmitter {
                 '1',
                 '-ar',
                 STREAMING_SAMPLE_RATE.toString(),
+                '-fflags',
+                'nobuffer',
+                '-flags',
+                'low_delay',
                 '-f',
                 'f32le',
                 'pipe:1',
@@ -492,7 +502,7 @@ export class ScreenRecorder extends EventEmitter {
 
         // Enhanced error monitoring for PulseAudio issues
         let errorCount = 0
-        const maxErrors = 15 // Higher threshold since we increased buffer sizes
+        const maxErrors = 15 // Threshold for PulseAudio errors (buffer reduced to 4096 for latency)
         const errorWindowMs = 60000 // 60 seconds window
         let lastErrorTime = 0
         const errorCooldownMs = 10000 // 10 second cooldown - less aggressive
