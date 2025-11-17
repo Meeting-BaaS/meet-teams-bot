@@ -141,6 +141,7 @@ export class Events {
                             created_at: new Date().toISOString(),
                             ...additionalData,
                         },
+                        extra: GLOBAL.get().extra || null,
                     },
                 },
             })
