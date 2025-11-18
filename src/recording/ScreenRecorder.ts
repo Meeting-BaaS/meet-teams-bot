@@ -110,6 +110,7 @@ export class ScreenRecorder extends EventEmitter {
     private ffmpegProcess: ChildProcess | null = null
     private errorMonitorIntervalId: NodeJS.Timeout | null = null
     private forceKillTimeoutId: NodeJS.Timeout | null = null
+    private fileSizeMonitorIntervalId: NodeJS.Timeout | null = null
     private outputPath: string = ''
     private audioOutputPath: string = ''
     private config: ScreenRecordingConfig
@@ -118,6 +119,7 @@ export class ScreenRecorder extends EventEmitter {
     private recordingStartTime: number = 0
     private meetingStartTime: number = 0
     private gracePeriodActive: boolean = false
+    private rawAudioPath: string = ''
 
     constructor(config: Partial<ScreenRecordingConfig> = {}) {
         super()
@@ -177,6 +179,7 @@ export class ScreenRecorder extends EventEmitter {
             this.logMemoryUsage('Starting recording')
             this.setupProcessMonitoring()
             this.setupStreamingAudio()
+            this.setupFileSizeMonitoring()
 
             await sleep(FLASH_SCREEN_SLEEP_TIME)
             await generateSyncSignal(page, {
@@ -302,7 +305,7 @@ export class ScreenRecorder extends EventEmitter {
         if (GLOBAL.get().recording_mode === 'audio_only') {
             // Audio-only recording with screenshots
             const tempDir = PathManager.getInstance().getTempPath()
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            this.rawAudioPath = path.join(tempDir, 'raw.wav')
 
             args.push(
                 // === AUDIO INPUT ===
@@ -337,7 +340,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'wav',
                 '-y',
-                rawAudioPath,
+                this.rawAudioPath,
 
                 // === OUTPUT 2: SCREENSHOTS (every 5 seconds) - fixed resolution ===
                 '-map',
@@ -372,7 +375,7 @@ export class ScreenRecorder extends EventEmitter {
             // Separate audio and video recording
             const tempDir = PathManager.getInstance().getTempPath()
             const rawVideoPath = path.join(tempDir, 'raw.mp4')
-            const rawAudioPath = path.join(tempDir, 'raw.wav')
+            this.rawAudioPath = path.join(tempDir, 'raw.wav')
 
             args.push(
                 // === VIDEO INPUT ===
@@ -442,7 +445,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'wav',
                 '-y',
-                rawAudioPath,
+                this.rawAudioPath,
 
                 // === OUTPUT 3: SCREENSHOTS (every 5 seconds) - fixed resolution ===
                 '-map',
@@ -534,8 +537,63 @@ export class ScreenRecorder extends EventEmitter {
             if (outputLower.includes('error')) {
                 console.error('FFmpeg stderr:', output.trim())
 
-                // Check for specific PulseAudio errors that indicate audio input failure
+                // Check for file write/I/O errors that indicate disk/filesystem issues
                 if (
+                    outputLower.includes('error writing output file') ||
+                    outputLower.includes('i/o error') ||
+                    outputLower.includes('no space left on device') ||
+                    outputLower.includes('disk full') ||
+                    outputLower.includes('filesystem full') ||
+                    outputLower.includes('cannot write') ||
+                    outputLower.includes('write error') ||
+                    outputLower.includes('broken pipe') ||
+                    outputLower.includes('connection reset') ||
+                    outputLower.includes('connection refused')
+                ) {
+                    const now = Date.now()
+                    const recordingDurationSeconds = this.recordingStartTime > 0
+                        ? (now - this.recordingStartTime) / 1000
+                        : 0
+                    
+                    // Log file size at time of error for diagnostics
+                    let currentFileSize = 'unknown'
+                    try {
+                        if (this.rawAudioPath && fs.existsSync(this.rawAudioPath)) {
+                            const stats = fs.statSync(this.rawAudioPath)
+                            currentFileSize = `${(stats.size / (1024 * 1024)).toFixed(2)} MB (${stats.size} bytes)`
+                        }
+                    } catch (e) {
+                        // Ignore file stat errors
+                    }
+                    
+                    console.error(
+                        `❌ CRITICAL: FFmpeg file write error detected!`,
+                    )
+                    console.error(
+                        `   📊 Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
+                    )
+                    console.error(
+                        `   📁 Raw audio file size: ${currentFileSize}`,
+                    )
+                    console.error(
+                        `   🔍 Error details: ${output.trim()}`,
+                    )
+                    
+                    // Log system resources for diagnostics
+                    this.logSystemResources()
+                    
+                    // Emit a critical error event
+                    ;(this as EventEmitter).emit('error', {
+                        type: 'fileWriteError',
+                        message: 'FFmpeg file write error detected',
+                        error: output.trim(),
+                        recordingDuration: recordingDurationSeconds,
+                        currentFileSize,
+                        timestamp: now,
+                    })
+                }
+                // Check for specific PulseAudio errors that indicate audio input failure
+                else if (
                     outputLower.includes('error during demuxing') ||
                     outputLower.includes(
                         'error retrieving a packet from demuxer',
@@ -635,6 +693,66 @@ export class ScreenRecorder extends EventEmitter {
         }
     }
 
+    private setupFileSizeMonitoring(): void {
+        if (!this.rawAudioPath) return
+
+        let lastFileSize = 0
+        let lastCheckTime = Date.now()
+        let consecutiveNoGrowthCount = 0
+        const FILE_SIZE_CHECK_INTERVAL = 30000 // 30 seconds
+        const MAX_CONSECUTIVE_NO_GROWTH = 3 // Warn after 3 consecutive checks with no growth (90 seconds)
+
+        this.fileSizeMonitorIntervalId = setInterval(() => {
+            try {
+                if (!fs.existsSync(this.rawAudioPath)) {
+                    // File doesn't exist yet, skip this check
+                    return
+                }
+
+                const stats = fs.statSync(this.rawAudioPath)
+                const currentSize = stats.size
+                const currentTime = Date.now()
+                const recordingDurationSeconds = (currentTime - this.recordingStartTime) / 1000
+                const sizeMB = (currentSize / (1024 * 1024)).toFixed(2)
+                
+                // Check if file size has grown since last check
+                const hasGrown = currentSize > lastFileSize
+                const timeSinceLastCheck = (currentTime - lastCheckTime) / 1000
+                
+                if (hasGrown) {
+                    consecutiveNoGrowthCount = 0
+                    const growthBytes = currentSize - lastFileSize
+                    const growthMB = (growthBytes / (1024 * 1024)).toFixed(2)
+                    const growthRate = growthBytes / timeSinceLastCheck // bytes per second
+                    const growthRateMBps = (growthRate / (1024 * 1024)).toFixed(2)
+                    
+                    console.log(
+                        `📊 Raw audio file size: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s | Growth: +${growthMB} MB in ${timeSinceLastCheck.toFixed(1)}s (${growthRateMBps} MB/s)`,
+                    )
+                } else {
+                    consecutiveNoGrowthCount++
+                    if (consecutiveNoGrowthCount >= MAX_CONSECUTIVE_NO_GROWTH) {
+                        console.warn(
+                            `⚠️ WARNING: Raw audio file has not grown for ${consecutiveNoGrowthCount * (FILE_SIZE_CHECK_INTERVAL / 1000)}s! Current: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s. This may indicate a silent write failure.`,
+                        )
+                    } else {
+                        console.log(
+                            `📊 Raw audio file size: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s | No growth detected (${consecutiveNoGrowthCount}/${MAX_CONSECUTIVE_NO_GROWTH})`,
+                        )
+                    }
+                }
+
+                lastFileSize = currentSize
+                lastCheckTime = currentTime
+            } catch (error) {
+                // Don't log errors for missing files during early recording
+                if (fs.existsSync(this.rawAudioPath)) {
+                    console.warn(`⚠️ Error checking raw audio file size: ${error}`)
+                }
+            }
+        }, FILE_SIZE_CHECK_INTERVAL)
+    }
+
     private async uploadAudioChunks(
         chunksDir: string,
         botUuid: string,
@@ -695,9 +813,20 @@ export class ScreenRecorder extends EventEmitter {
 
         try {
             if (fs.existsSync(this.audioOutputPath)) {
+                const stats = fs.statSync(this.audioOutputPath)
+                const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
+                const sizeBytes = stats.size
+                const recordingDurationSeconds = this.recordingStartTime > 0 
+                    ? (Date.now() - this.recordingStartTime) / 1000 
+                    : 0
+                
                 console.log(
                     `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
+                console.log(
+                    `📊 Audio file size before upload: ${sizeMB} MB (${sizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
+                )
+                
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
@@ -712,9 +841,17 @@ export class ScreenRecorder extends EventEmitter {
 
         try {
             if (fs.existsSync(this.outputPath)) {
+                const stats = fs.statSync(this.outputPath)
+                const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
+                const sizeBytes = stats.size
+                
                 console.log(
                     `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
+                console.log(
+                    `📊 Video file size before upload: ${sizeMB} MB (${sizeBytes} bytes)`,
+                )
+                
                 await S3Uploader.getInstance().uploadFile(
                     this.outputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
@@ -799,6 +936,12 @@ export class ScreenRecorder extends EventEmitter {
         if (this.errorMonitorIntervalId) {
             clearInterval(this.errorMonitorIntervalId)
             this.errorMonitorIntervalId = null
+        }
+
+        // Clear file size monitor interval to prevent memory leaks
+        if (this.fileSizeMonitorIntervalId) {
+            clearInterval(this.fileSizeMonitorIntervalId)
+            this.fileSizeMonitorIntervalId = null
         }
 
         // Clear force kill timeout to prevent memory leaks
@@ -941,6 +1084,18 @@ export class ScreenRecorder extends EventEmitter {
             console.log('🔄 Processing audio-only recording...')
 
             if (fs.existsSync(rawAudioPath)) {
+                // Log file size before processing
+                const stats = fs.statSync(rawAudioPath)
+                const fileSizeBytes = stats.size
+                const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
+                const recordingDurationSeconds = this.recordingStartTime > 0
+                    ? (Date.now() - this.recordingStartTime) / 1000
+                    : 0
+                
+                console.log(
+                    `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
+                )
+                
                 // Copy raw audio to final output location
                 fs.copyFileSync(rawAudioPath, this.audioOutputPath)
                 console.log(`✅ Audio copied to: ${this.audioOutputPath}`)
@@ -963,6 +1118,22 @@ export class ScreenRecorder extends EventEmitter {
         console.log(
             '🔄 Starting efficient sync and merge for long recording...',
         )
+
+        // 0. Log raw audio file size before processing
+        if (fs.existsSync(rawAudioPath)) {
+            const stats = fs.statSync(rawAudioPath)
+            const fileSizeBytes = stats.size
+            const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
+            const recordingDurationSeconds = this.recordingStartTime > 0
+                ? (Date.now() - this.recordingStartTime) / 1000
+                : 0
+            
+            console.log(
+                `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
+            )
+        } else {
+            console.warn('⚠️ Raw audio file not found:', rawAudioPath)
+        }
 
         // 1. Calculate sync offset (using your existing calculation)
         const syncResult = await calculateVideoOffset(
@@ -1314,6 +1485,15 @@ file '${absoluteInputPath}'`
             fs.mkdirSync(chunksDir, { recursive: true })
         }
 
+        // Get audio file size and duration
+        let fileSizeBytes = 0
+        let fileSizeMB = 'unknown'
+        if (fs.existsSync(audioPath)) {
+            const stats = fs.statSync(audioPath)
+            fileSizeBytes = stats.size
+            fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
+        }
+        
         // Get audio duration
         const duration = await this.getDuration(audioPath)
         const botUuid = GLOBAL.get().bot_uuid
@@ -1343,6 +1523,9 @@ file '${absoluteInputPath}'`
 
         console.log(
             `🎵 Creating audio chunks (${chunkDuration}s each) from ${duration.toFixed(1)}s audio`,
+        )
+        console.log(
+            `📊 Audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Duration: ${duration.toFixed(1)}s`,
         )
         try {
             // Estimate file size for timeout calculation
