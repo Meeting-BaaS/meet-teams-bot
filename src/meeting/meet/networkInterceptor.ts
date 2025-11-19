@@ -121,6 +121,8 @@ function browserInterceptionLogic(schema: any[]) {
             messageDecoders[typeDef.name] = (buffer: Uint8Array) => type.decode(buffer);
         });
 
+        console.error('[NetworkInterceptor] ✅ Network Interceptor loaded - VERSION 2.1 with full diagnostics');
+        
         // --- Global State ---
         const ssrcToDeviceId = new Map<string, string>(); 
         const trackIdToSSRC = new Map<string, string>(); 
@@ -228,6 +230,8 @@ function browserInterceptionLogic(schema: any[]) {
 
         function processNetworkEvent(data: any, source: string) {
             try {
+                console.error(`[NetworkInterceptor] 📨 processNetworkEvent called from ${source}. Keys:`, Object.keys(data));
+                console.error(`[NetworkInterceptor] 📨 Full data structure:`, JSON.stringify(data, null, 2).substring(0, 500));
                 let hasUpdates = false;
                 if (data.userInfoList) {
                     data.userInfoList.forEach((user: any) => {
@@ -245,8 +249,13 @@ function browserInterceptionLogic(schema: any[]) {
                 }
 
                 if (data.deviceOutputInfoList) {
+                    console.error(`[NetworkInterceptor] 📦 deviceOutputInfoList received! Count: ${data.deviceOutputInfoList.length}`);
+                    if (data.deviceOutputInfoList.length > 0) {
+                        console.error(`[NetworkInterceptor] 📦 Sample entry:`, JSON.stringify(data.deviceOutputInfoList[0], null, 2));
+                    }
                     data.deviceOutputInfoList.forEach((output: any) => {
                         if (output.streamId && output.deviceId && output.deviceOutputType === 1) {
+                            console.error(`[NetworkInterceptor] 📥 Mapping SSRC: ${output.streamId} -> DeviceID: ${output.deviceId.substring(0,16)}...`);
                             ssrcToDeviceId.set(output.streamId, output.deviceId);
                             hasUpdates = true;
                         }
@@ -381,17 +390,41 @@ function browserInterceptionLogic(schema: any[]) {
                 // Always poll if we have unmapped active receivers
                 if (true) { 
                     pc.getStats().then(stats => {
+                        let debugLogOnce = false;
                         stats.forEach(report => {
+                            // DEBUG: Log all inbound-rtp report fields once
+                            if (!debugLogOnce && report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                console.error(`[NetworkInterceptor] 🔍 Sample inbound-rtp report:`, JSON.stringify(report, null, 2));
+                                debugLogOnce = true;
+                            }
+                            
                             // Standard inbound-rtp check
                             if (report.type === 'inbound-rtp' && report.kind === 'audio' && report.trackIdentifier) {
                                 // Prefer explicit SSRC
                                 if (report.ssrc) {
+                                    const wasNew = !trackIdToSSRC.has(report.trackIdentifier);
                                     trackIdToSSRC.set(report.trackIdentifier, String(report.ssrc));
+                                    if (wasNew) {
+                                        console.error(`[NetworkInterceptor] 🔗 Discovered Track->SSRC: ${report.trackIdentifier.substring(0,8)} -> ${report.ssrc}`);
+                                    }
+                                }
+                                // ALSO try to extract SSRC from remoteId (e.g. "ROA6666" -> "6666")
+                                if (report.remoteId) {
+                                    const match = report.remoteId.match(/(\d+)$/);
+                                    if (match && match[1]) {
+                                        const extractedSSRC = match[1];
+                                        // Store both the official SSRC and the remoteId-based one
+                                        trackIdToSSRC.set(report.trackIdentifier + '_remote', extractedSSRC);
+                                    }
                                 }
                             }
                             // Fallback: Check 'track' stats which sometimes link trackId to SSRC indirectly
                             if (report.type === 'track' && report.kind === 'audio' && report.trackIdentifier && report.ssrc) {
-                                 trackIdToSSRC.set(report.trackIdentifier, String(report.ssrc));
+                                const wasNew = !trackIdToSSRC.has(report.trackIdentifier);
+                                trackIdToSSRC.set(report.trackIdentifier, String(report.ssrc));
+                                if (wasNew) {
+                                    console.error(`[NetworkInterceptor] 🔗 Discovered Track->SSRC (track): ${report.trackIdentifier.substring(0,8)} -> ${report.ssrc}`);
+                                }
                             }
                         });
                     }).catch(e => {});
@@ -407,6 +440,11 @@ function browserInterceptionLogic(schema: any[]) {
         function resolveDeviceIdFromSource(source: any, receiver: any): string | null {
             // Method 1: Use trackId -> SSRC mapping from getStats()
             let ssrc = trackIdToSSRC.get(receiver.track.id);
+
+            // Method 1b: Try the remoteId-extracted SSRC
+            if (!ssrc) {
+                ssrc = trackIdToSSRC.get(receiver.track.id + '_remote');
+            }
 
             // Method 2: Use packet SSRC from contributing source (if available)
             if (!ssrc && source && source.source) {
@@ -491,11 +529,9 @@ function browserInterceptionLogic(schema: any[]) {
                     // Diagnostic: Log if we have volume but no DeviceID resolved
                     if (!deviceId && pollCount % 20 === 0) {
                          console.error(`[NetworkInterceptor] ⚠️ Volume ${averageVolume.toFixed(1)} on track ${receiver.track.id.substring(0,8)} but NO DeviceID resolved. Map size: ${trackIdToSSRC.size}`);
-                         console.error(`[NetworkInterceptor] Available Track IDs in map: ${Array.from(trackIdToSSRC.keys()).map(k => k.substring(0,8)).join(', ')}`);
-                         
-                         // Force stats refresh for this specific receiver's peer connection if possible?
-                         // We don't have easy access to the PC here, but we can trigger the global poller?
-                         // Actually, let's just log for now.
+                         console.error(`[NetworkInterceptor] Full Track ID: ${receiver.track.id}`);
+                         console.error(`[NetworkInterceptor] trackIdToSSRC map contents:`, Array.from(trackIdToSSRC.entries()).map(([k, v]) => `${k} -> ${v}`));
+                         console.error(`[NetworkInterceptor] ssrcToDeviceId map contents:`, Array.from(ssrcToDeviceId.entries()).map(([k, v]) => `${k} -> ${v.substring(0,16)}`));
                     }
                     
                     if (deviceId) {
