@@ -28,6 +28,10 @@ export class SpeakerManager {
         SpeakerManager.getInstance()
     }
 
+    public getCurrentSpeaker(): SpeakerData | null {
+        return this.currentSpeaker
+    }
+
     public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
         try {
             // Send the speaker state to the streaming service only if RECORDING is enabled
