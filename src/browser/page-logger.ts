@@ -42,10 +42,8 @@ export function listenPage(page: Page) {
             // Only show DEBUG logs when --debug flag is used
             const isDebugLog = text.includes('DEBUG')
 
-            // Check if this is a NetworkInterceptor log
-            const isNetworkInterceptorLog = text.includes(
-                '[NetworkInterceptor]',
-            )
+            // Always show NetworkInterceptor logs (they're critical for debugging network interception)
+            const isNetworkInterceptorLog = text.includes('[NetworkInterceptor]')
 
             // Always show error messages (ERR type)
             const type = message.type()
@@ -53,15 +51,9 @@ export function listenPage(page: Page) {
             const isError = shortType === 'ERR'
 
             // Print page logs only if PRINT_PAGE_LOGS is true or if DEBUG_LOGS is true and the log contains DEBUG
-            // Exceptions: Always show errors
-            // NetworkInterceptor logs shown only in debug mode (unless they're errors)
-            if (
-                !PRINT_PAGE_LOGS &&
-                (!DEBUG_LOGS || !isDebugLog) &&
-                !isError &&
-                !(isNetworkInterceptorLog && DEBUG_LOGS)
-            ) {
-                return // Skip all logs unless --debug is enabled and log contains DEBUG, or it's an error
+            // Exceptions: Always show NetworkInterceptor logs and error messages
+            if (!PRINT_PAGE_LOGS && (!DEBUG_LOGS || !isDebugLog) && !isNetworkInterceptorLog && !isError) {
+                return // Skip all logs unless --debug is enabled and log contains DEBUG, or it's a NetworkInterceptor log, or it's an error
             }
 
             const args = await Promise.all(
