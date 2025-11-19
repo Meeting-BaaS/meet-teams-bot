@@ -13,7 +13,11 @@ import {
     AudioWarningEvent,
     ScreenRecorderManager,
 } from '../../recording/ScreenRecorder'
+import { Api } from '../../api/methods'
 import { GLOBAL } from '../../singleton'
+import { SpeakerManager } from '../../speaker-manager'
+import { uploadTranscriptTask } from '../../uploadTranscripts'
+import { MeetingStateMachine } from '../machine'
 import { sleep } from '../../utils/sleep'
 
 // Sound level threshold for considering activity (0-100)
@@ -38,8 +42,12 @@ export class RecordingState extends BaseState {
             // Only set it here if it wasn't set earlier (fallback)
             if (!this.context.startTime) {
                 this.context.startTime = startTime
-                ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
-                console.log('Fallback: Meeting start time set in recording state')
+                ScreenRecorderManager.getInstance().setMeetingStartTime(
+                    startTime,
+                )
+                console.log(
+                    'Fallback: Meeting start time set in recording state',
+                )
             }
 
             // Initialize noSpeakerDetectedTime if not already set (for meetings with no participants)
@@ -73,6 +81,13 @@ export class RecordingState extends BaseState {
 
                 if (shouldEnd) {
                     console.info(`Meeting end condition met: ${reason}`)
+                    // Set exit time immediately when meeting end is detected (before cleanup)
+                    const exitTime = Math.floor(Date.now() / 1000)
+                    GLOBAL.setExitTime(exitTime)
+                    console.log(
+                        `Bot exit time set to ${exitTime} (meeting end detected)`,
+                    )
+
                     // Set the end reason in the global singleton
                     GLOBAL.setEndReason(reason)
                     await this.handleMeetingEnd(reason)
@@ -271,6 +286,9 @@ export class RecordingState extends BaseState {
                 )
             }
 
+            // Close final transcript before other cleanup steps
+            await this.closeFinalTranscript()
+
             // These critical steps must execute regardless of previous steps
             console.info('Triggering call ended event')
             await Events.callEnded()
@@ -318,8 +336,9 @@ export class RecordingState extends BaseState {
         }
 
         // Check if we should consider ending due to no attendees
-        const nooneJoinedTimeoutMs = GLOBAL.get().automatic_leave.noone_joined_timeout * 1000
-        const noAttendeesTimeout:boolean =
+        const nooneJoinedTimeoutMs =
+            GLOBAL.get().automatic_leave.noone_joined_timeout * 1000
+        const noAttendeesTimeout: boolean =
             startTime + nooneJoinedTimeoutMs < now
         const shouldConsiderEnding = noAttendeesTimeout || firstUserJoined
 
@@ -366,15 +385,76 @@ export class RecordingState extends BaseState {
     }
 
     /**
+     * Closes the final transcript segment with the exact meeting end time
+     */
+    private async closeFinalTranscript(): Promise<void> {
+        if (GLOBAL.isServerless() || !Api.instance) {
+            return
+        }
+
+        try {
+            const speakerManager = SpeakerManager.getInstance()
+            const currentSpeaker = speakerManager.getCurrentSpeaker()
+
+            if (!currentSpeaker) {
+                console.log('No current speaker to close final transcript')
+                return
+            }
+
+            // Get exit time (when bot was removed/kicked) - already in seconds
+            const exitTime = GLOBAL.get().exit_time
+            if (!exitTime) {
+                console.warn('Exit time not available, using current time')
+                // Fallback to current time if exit_time not set
+                const meetingStartTime =
+                    MeetingStateMachine.instance.getStartTime()
+                if (meetingStartTime) {
+                    const currentTimeSeconds = Math.floor(Date.now() / 1000)
+                    const endTimeRelative =
+                        currentTimeSeconds - Math.floor(meetingStartTime / 1000)
+                    await uploadTranscriptTask(
+                        currentSpeaker,
+                        true,
+                        endTimeRelative,
+                    )
+                }
+                return
+            }
+
+            // Calculate end_time relative to meeting start
+            const meetingStartTime = MeetingStateMachine.instance.getStartTime()
+            if (!meetingStartTime) {
+                console.warn(
+                    'Meeting start time not available for closing final transcript',
+                )
+                return
+            }
+
+            const meetingStartTimeSeconds = Math.floor(meetingStartTime / 1000)
+            const endTimeRelative = exitTime - meetingStartTimeSeconds
+
+            console.log(
+                `Closing final transcript with exit time: ${exitTime} (relative: ${endTimeRelative}s)`,
+            )
+            await uploadTranscriptTask(currentSpeaker, true, endTimeRelative)
+        } catch (error) {
+            console.error('Failed to close final transcript:', error)
+            // Don't throw - continue with cleanup even if this fails
+        }
+    }
+
+    /**
      * Checks if the meeting should end due to absence of sound
      * @param now Current timestamp
      * @returns true if the meeting should end due to absence of sound
      */
     private checkNoSpeaker(now: number): boolean {
-
         // Check if the silence period has exceeded the timeout
-        const silenceDurationSeconds = Math.floor((now - this.lastSoundActivity) / 1000)
-        const shouldEnd = silenceDurationSeconds >= MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000
+        const silenceDurationSeconds = Math.floor(
+            (now - this.lastSoundActivity) / 1000,
+        )
+        const shouldEnd =
+            silenceDurationSeconds >= MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000
         if (shouldEnd) {
             console.log(
                 `[checkNoSpeaker] No sound activity detected for ${silenceDurationSeconds} seconds, ending meeting`,

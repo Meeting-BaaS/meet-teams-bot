@@ -26,6 +26,7 @@ function newTranscriptQueue() {
 export async function uploadTranscriptTask(
     speaker: SpeakerData,
     end: boolean,
+    endTimeSeconds?: number,
 ): Promise<void> {
     if (GLOBAL.isServerless()) {
         console.log('Skipping transcript upload - serverless mode')
@@ -39,7 +40,7 @@ export async function uploadTranscriptTask(
     return new Promise((resolve, reject) => {
         TRANSCRIPT_QUEUE.push(async () => {
             try {
-                await upload(speaker, end)
+                await upload(speaker, end, endTimeSeconds)
                 resolve()
             } catch (error) {
                 reject(error)
@@ -48,7 +49,11 @@ export async function uploadTranscriptTask(
     })
 }
 
-async function upload(speaker: SpeakerData, end: boolean) {
+async function upload(
+    speaker: SpeakerData,
+    end: boolean,
+    endTimeSeconds?: number,
+) {
     if (TRANSCIBER_STOPED) {
         console.info('Transcriber is stoped')
         return
@@ -65,9 +70,15 @@ async function upload(speaker: SpeakerData, end: boolean) {
         const api = Api.instance
         if (LAST_TRANSRIPT) {
             try {
+                // Use provided endTimeSeconds if available (for meeting end), otherwise use speaker timestamp
+                const endTime =
+                    endTimeSeconds !== undefined
+                        ? endTimeSeconds
+                        : (speaker.timestamp - meetingStartTime) / 1000
+
                 await api.patchTranscript({
                     id: LAST_TRANSRIPT.id,
-                    end_time: (speaker.timestamp - meetingStartTime) / 1000,
+                    end_time: endTime,
                 } as ApiTypes.ChangeableTranscript)
             } catch (e) {
                 console.error(
