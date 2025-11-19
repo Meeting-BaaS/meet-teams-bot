@@ -302,7 +302,8 @@ export class MeetSpeakersObserver {
                                     return (
                                         color === 'rgba(26, 115, 232, 0.9)' ||
                                         color === 'rgb(26, 115, 232)' ||
-                                        color === 'rgb(11, 87, 208)' // NEW Meet speaking color!
+                                        color === 'rgb(11, 87, 208)'  || // NEW Meet speaking color!
+                                        color === 'rgb(168, 199, 250)' // New Meet Dark mode speaking color!
                                     )
                                 })
 
@@ -397,7 +398,8 @@ export class MeetSpeakersObserver {
                                     return (
                                         color === 'rgba(26, 115, 232, 0.9)' ||
                                         color === 'rgb(26, 115, 232)' ||
-                                        color === 'rgb(11, 87, 208)' // NEW Meet speaking color!
+                                        color === 'rgb(11, 87, 208)' || // NEW Meet speaking color!
+                                        color === 'rgb(168, 199, 250)' // New Meet Dark speaking color!
                                     )
                                 })
 
