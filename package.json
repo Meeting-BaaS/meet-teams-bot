@@ -22,7 +22,7 @@
         "axios": "0.21.1",
         "express": "4.17.1",
         "pako": "^2.1.0",
-        "protobufjs": "^7.5.3",
+        "protobufjs": "^7.5.4",
         "retry-axios": "^2.5.0",
         "tslib": "^2.8.1",
         "winston": "^3.17.0",
