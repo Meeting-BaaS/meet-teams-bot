@@ -1,78 +1,145 @@
-import { Page } from 'playwright';
-import * as fs from 'fs';
+import * as fs from 'fs'
+import { Page } from 'playwright'
 
 // Protobuf schema definition
 const PROTO_SCHEMA = [
     {
         name: 'CollectionEvent',
         fields: [
-            { name: 'body', fieldNumber: 1, type: 'message', messageType: 'CollectionEventBody' }
-        ]
+            {
+                name: 'body',
+                fieldNumber: 1,
+                type: 'message',
+                messageType: 'CollectionEventBody',
+            },
+        ],
     },
     {
         name: 'CollectionEventBody',
         fields: [
-            { name: 'userInfoListWrapperAndChatWrapperWrapper', fieldNumber: 2, type: 'message', messageType: 'UserInfoListWrapperAndChatWrapperWrapper' }
-        ]
+            {
+                name: 'userInfoListWrapperAndChatWrapperWrapper',
+                fieldNumber: 2,
+                type: 'message',
+                messageType: 'UserInfoListWrapperAndChatWrapperWrapper',
+            },
+        ],
     },
     {
         name: 'UserInfoListWrapperAndChatWrapperWrapper',
         fields: [
-            { name: 'deviceInfoWrapper', fieldNumber: 3, type: 'message', messageType: 'DeviceInfoWrapper' },
-            { name: 'userInfoListWrapperAndChatWrapper', fieldNumber: 13, type: 'message', messageType: 'UserInfoListWrapperAndChatWrapper' }
-        ]
+            {
+                name: 'deviceInfoWrapper',
+                fieldNumber: 3,
+                type: 'message',
+                messageType: 'DeviceInfoWrapper',
+            },
+            {
+                name: 'userInfoListWrapperAndChatWrapper',
+                fieldNumber: 13,
+                type: 'message',
+                messageType: 'UserInfoListWrapperAndChatWrapper',
+            },
+        ],
     },
     {
         name: 'UserInfoListWrapperAndChatWrapper',
         fields: [
-            { name: 'userInfoListWrapper', fieldNumber: 1, type: 'message', messageType: 'UserInfoListWrapper' }
-        ]
+            {
+                name: 'userInfoListWrapper',
+                fieldNumber: 1,
+                type: 'message',
+                messageType: 'UserInfoListWrapper',
+            },
+            {
+                name: 'chatMessageWrapper',
+                fieldNumber: 4,
+                type: 'message',
+                messageType: 'ChatMessageWrapper',
+                repeated: true,
+            },
+        ],
     },
     {
-        name: 'DeviceInfoWrapper',
+        name: 'ChatMessageWrapper',
         fields: [
-            { name: 'deviceOutputInfoList', fieldNumber: 2, type: 'message', messageType: 'DeviceOutputInfoList', repeated: true }
-        ]
+            {
+                name: 'chatMessage',
+                fieldNumber: 2,
+                type: 'message',
+                messageType: 'ChatMessage',
+            },
+        ],
     },
     {
-        name: 'DeviceOutputInfoList',
+        name: 'ChatMessage',
         fields: [
-            { name: 'deviceOutputType', fieldNumber: 2, type: 'int32' }, // 1 = audio, 2 = video
-            { name: 'streamId', fieldNumber: 4, type: 'string' },
-            { name: 'deviceId', fieldNumber: 6, type: 'string' },
-            { name: 'deviceOutputStatus', fieldNumber: 10, type: 'message', messageType: 'DeviceOutputStatus' }
-        ]
+            { name: 'messageId', fieldNumber: 1, type: 'string' },
+            { name: 'deviceId', fieldNumber: 2, type: 'string' },
+            { name: 'timestamp', fieldNumber: 3, type: 'int64' },
+            {
+                name: 'chatMessageContent',
+                fieldNumber: 5,
+                type: 'message',
+                messageType: 'ChatMessageContent',
+            },
+        ],
     },
     {
-        name: 'DeviceOutputStatus',
-        fields: [
-            { name: 'disabled', fieldNumber: 1, type: 'int32' }
-        ]
-    },
-    {
-        name: 'UserInfoListResponse',
-        fields: [
-            { name: 'userInfoListWrapperWrapper', fieldNumber: 2, type: 'message', messageType: 'UserInfoListWrapperWrapper' }
-        ]
-    },
-    {
-        name: 'UserInfoListWrapperWrapper',
-        fields: [
-            { name: 'userInfoListWrapper', fieldNumber: 2, type: 'message', messageType: 'UserInfoListWrapper' }
-        ]
+        name: 'ChatMessageContent',
+        fields: [{ name: 'text', fieldNumber: 1, type: 'string' }],
     },
     {
         name: 'UserEventInfo',
-        fields: [
-            { name: 'eventNumber', fieldNumber: 1, type: 'int32' }
-        ]
+        fields: [{ name: 'eventNumber', fieldNumber: 1, type: 'varint' }],
     },
     {
         name: 'UserInfoListWrapper',
         fields: [
-            { name: 'userEventInfo', fieldNumber: 1, type: 'message', messageType: 'UserEventInfo' },
-            { name: 'userInfoList', fieldNumber: 2, type: 'message', messageType: 'UserInfoList', repeated: true }
-        ]
+            {
+                name: 'userEventInfo',
+                fieldNumber: 1,
+                type: 'message',
+                messageType: 'UserEventInfo',
+            },
+            {
+                name: 'userInfoList',
+                fieldNumber: 2,
+                type: 'message',
+                messageType: 'UserInfoList',
+                repeated: true,
+            },
+        ],
+    },
+    {
+        name: 'DeviceInfoWrapper',
+        fields: [
+            {
+                name: 'deviceOutputInfoList',
+                fieldNumber: 2,
+                type: 'message',
+                messageType: 'DeviceOutputInfoList',
+                repeated: true,
+            },
+        ],
+    },
+    {
+        name: 'DeviceOutputInfoList',
+        fields: [
+            { name: 'deviceOutputType', fieldNumber: 2, type: 'varint' }, // 1=audio, 2=video
+            { name: 'streamId', fieldNumber: 4, type: 'string' }, // This IS the SSRC
+            { name: 'deviceId', fieldNumber: 6, type: 'string' }, // The actual Device ID
+            {
+                name: 'deviceOutputStatus',
+                fieldNumber: 10,
+                type: 'message',
+                messageType: 'DeviceOutputStatus',
+            },
+        ],
+    },
+    {
+        name: 'DeviceOutputStatus',
+        fields: [{ name: 'disabled', fieldNumber: 1, type: 'varint' }],
     },
     {
         name: 'UserInfoList',
@@ -80,432 +147,1178 @@ const PROTO_SCHEMA = [
             { name: 'deviceId', fieldNumber: 1, type: 'string' },
             { name: 'fullName', fieldNumber: 2, type: 'string' },
             { name: 'profilePicture', fieldNumber: 3, type: 'string' },
-            { name: 'status', fieldNumber: 4, type: 'int32' }, // 1 = in meeting, 6 = not in meeting
+            { name: 'status', fieldNumber: 4, type: 'varint' },
             { name: 'isCurrentUserString', fieldNumber: 7, type: 'string' },
+            { name: 'parentDeviceId', fieldNumber: 21, type: 'string' },
             { name: 'displayName', fieldNumber: 29, type: 'string' },
-            { name: 'isHost', fieldNumber: 34, type: 'int32' }
-        ]
-    }
-];
+            { name: 'isHost', fieldNumber: 34, type: 'varint' },
+        ],
+    },
+    // Fetch Response Wrapper
+    {
+        name: 'UserInfoListResponse',
+        fields: [
+            {
+                name: 'userInfoListWrapperWrapper',
+                fieldNumber: 2,
+                type: 'message',
+                messageType: 'UserInfoListWrapperWrapper',
+            },
+        ],
+    },
+    {
+        name: 'UserInfoListWrapperWrapper',
+        fields: [
+            {
+                name: 'userInfoListWrapper',
+                fieldNumber: 2,
+                type: 'message',
+                messageType: 'UserInfoListWrapper',
+            },
+        ],
+    },
+]
 
 // The main interception logic function.
 function browserInterceptionLogic(schema: any[]) {
     try {
-        console.log('[NetworkInterceptor] Initializing...');
+        console.error(
+            '[NetworkInterceptor] 🔍 WEBRTC AUDIO ATTRIBUTION SYSTEM ACTIVATED',
+        )
+        console.error(
+            '[NetworkInterceptor] 📦 Reusable Components: ReceiverManager, UserManager, RTCRtpReceiverInterceptor, AudioFrameProcessor',
+        )
 
         // --- Helper Functions ---
         function base64ToUint8Array(base64: string) {
-            const binaryString = window.atob(base64);
-            const len = binaryString.length;
-            const bytes = new Uint8Array(len);
+            const binaryString = window.atob(base64)
+            const len = binaryString.length
+            const bytes = new Uint8Array(len)
             for (let i = 0; i < len; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
+                bytes[i] = binaryString.charCodeAt(i)
             }
-            return bytes;
+            return bytes
         }
 
-        // --- Protobuf Setup ---
-        const root = new (window as any).protobuf.Root();
-        const messageDecoders: { [key: string]: any } = {};
+        function uint8ArrayToBase64(bytes: Uint8Array) {
+            let binary = ''
+            const len = bytes.byteLength
+            for (let i = 0; i < len; i++) {
+                binary += String.fromCharCode(bytes[i])
+            }
+            return window.btoa(binary)
+        }
 
-        schema.forEach(typeDef => {
-            const type = new (window as any).protobuf.Type(typeDef.name);
-            typeDef.fields.forEach((field: any) => {
-                if (field.type === 'message') {
-                    const fieldRule = field.repeated ? 'repeated' : undefined;
-                    type.add(new (window as any).protobuf.Field(field.name, field.fieldNumber, field.messageType, fieldRule));
-                } else {
-                    type.add(new (window as any).protobuf.Field(field.name, field.fieldNumber, field.type));
+        function bytesToHex(bytes: Uint8Array) {
+            return Array.from(bytes)
+                .map((b) => b.toString(16).padStart(2, '0'))
+                .join(' ')
+        }
+
+        // --- REUSABLE COMPONENT 1: ReceiverManager ---
+        class ReceiverManager {
+            receiverMap: any
+            receiverToTrackMap: any
+
+            constructor() {
+                this.receiverMap = new Map()
+                this.receiverToTrackMap = new Map()
+            }
+
+            updateContributingSources(receiver: any, result: any) {
+                this.receiverMap.set(receiver, result)
+            }
+
+            getContributingSources(receiver: any) {
+                return this.receiverMap.get(receiver) || []
+            }
+
+            linkReceiverToTrack(receiver: any, trackId: any) {
+                this.receiverToTrackMap.set(receiver, trackId)
+            }
+
+            getTrackIdForReceiver(receiver: any) {
+                return this.receiverToTrackMap.get(receiver)
+            }
+        }
+
+        // --- REUSABLE COMPONENT 2: UserManager ---
+        class UserManager {
+            deviceOutputMap: any
+            allUsersMap: any
+            ssrcToDeviceMap: any
+
+            constructor() {
+                this.deviceOutputMap = new Map() // Maps device-output pairs to stream info
+                this.allUsersMap = new Map() // Maps device IDs to user info
+                this.ssrcToDeviceMap = new Map() // Maps SSRC to device ID
+            }
+
+            // Update device output mapping (device ID -> stream ID)
+            updateDeviceOutputs(deviceOutputs: any[]) {
+                for (const output of deviceOutputs) {
+                    const key = `${output.deviceId}-${output.deviceOutputType}`
+                    const deviceOutput = {
+                        deviceId: output.deviceId,
+                        outputType: output.deviceOutputType, // 1=audio, 2=video
+                        streamId: output.streamId, // This IS the SSRC
+                        lastUpdated: Date.now(),
+                    }
+                    this.deviceOutputMap.set(key, deviceOutput)
+
+                    // Map streamId (SSRC) to device ID
+                    if (output.streamId) {
+                        // Store as string
+                        this.ssrcToDeviceMap.set(
+                            output.streamId,
+                            output.deviceId,
+                        )
+                        // Also try mapping as number since contributing sources might return numbers
+                        const numericSSRC = parseInt(output.streamId, 10)
+                        if (!isNaN(numericSSRC)) {
+                            this.ssrcToDeviceMap.set(
+                                numericSSRC,
+                                output.deviceId,
+                            )
+                        }
+                    }
                 }
-            });
-            root.add(type);
-            messageDecoders[typeDef.name] = (buffer: Uint8Array) => type.decode(buffer);
-        });
+            }
 
-        // --- State Maps ---
-        const receiverToStreamId = new Map<any, string>(); // RTCRtpReceiver -> streamId
-        const streamIdToDeviceId = new Map<string, string>(); // streamId -> deviceId
-        const deviceIdToUser = new Map<string, any>();     // deviceId -> UserInfo
-
-        // Active Audio Receivers for Polling
-        const activeAudioReceivers = new Set<any>();
-
-        // Speaking State
-        const speakingState = new Map<string, { isSpeaking: boolean, lastUpdate: number }>();
-        const SILENCE_TIMEOUT = 200; 
-
-        function processNetworkEvent(data: any, source: string) {
-            try {
-            let hasUpdates = false;
-
-            if (data.userInfoList) {
-                data.userInfoList.forEach((user: any) => {
+            // Update user info
+            updateUsers(users: any[]) {
+                for (const user of users) {
                     if (user.deviceId) {
-                            const userInfo = {
-                            deviceId: user.deviceId,
-                                name: user.fullName || user.displayName || 'Unknown',
-                            status: user.status,
-                            isCurrentUser: !!user.isCurrentUserString,
-                            isHost: !!user.isHost
-                            };
-                            deviceIdToUser.set(user.deviceId, userInfo);
-                        hasUpdates = true;
+                        this.allUsersMap.set(user.deviceId, user)
                     }
-                });
-            }
-
-            if (data.deviceOutputInfoList) {
-                data.deviceOutputInfoList.forEach((output: any) => {
-                        // Only map audio streams (deviceOutputType: 1 = audio, 2 = video)
-                        if (output.streamId && output.deviceId && output.deviceOutputType === 1) {
-                        streamIdToDeviceId.set(output.streamId, output.deviceId);
-                        hasUpdates = true;
-                    }
-                });
-            }
-
-            if (hasUpdates) {
-                broadcastState('roster-update');
                 }
-            } catch (error) {
-                console.error(`[NetworkInterceptor] Error in processNetworkEvent (${source}):`, error);
+            }
+
+            // Find user by their stream ID (SSRC)
+            getUserByStreamId(streamId: any) {
+                // Try direct lookup first (as-is)
+                let deviceId = this.ssrcToDeviceMap.get(streamId)
+
+                // Try as string
+                if (!deviceId && typeof streamId !== 'string') {
+                    deviceId = this.ssrcToDeviceMap.get(streamId.toString())
+                }
+
+                // Try as number
+                if (!deviceId && typeof streamId === 'string') {
+                    const numericSSRC = parseInt(streamId, 10)
+                    if (!isNaN(numericSSRC)) {
+                        deviceId = this.ssrcToDeviceMap.get(numericSSRC)
+                    }
+                }
+
+                if (deviceId) {
+                    return this.allUsersMap.get(deviceId)
+                }
+
+                // Fallback: Look through device outputs to find matching stream
+                for (const deviceOutput of this.deviceOutputMap.values()) {
+                    if (
+                        deviceOutput.streamId === streamId ||
+                        deviceOutput.streamId === streamId.toString() ||
+                        deviceOutput.streamId === String(streamId)
+                    ) {
+                        return this.allUsersMap.get(deviceOutput.deviceId)
+                    }
+                }
+                return null
+            }
+
+            getAllUsers() {
+                return Array.from(this.allUsersMap.values())
             }
         }
 
-        function broadcastState(reason: string) {
-            try {
-            if (!(window as any).onNetworkSpeakerUpdate) return;
+        // --- REUSABLE COMPONENT 3: RTCRtpReceiverInterceptor ---
+        class RTCRtpReceiverInterceptor {
+            constructor(onGetContributingSources: any) {
+                // Store the original method
+                const OriginalRTCRtpReceiver = (window as any).RTCRtpReceiver
+                if (
+                    !OriginalRTCRtpReceiver ||
+                    !OriginalRTCRtpReceiver.prototype.getContributingSources
+                ) {
+                    console.error(
+                        '[NetworkInterceptor] ⚠️ RTCRtpReceiver.getContributingSources not available',
+                    )
+                    return
+                }
 
-            const users = Array.from(deviceIdToUser.values()).map(user => {
-                const isSpeaking = speakingState.get(user.deviceId)?.isSpeaking || false;
-                return {
-                    deviceId: user.deviceId,
-                    name: user.name,
-                    status: user.status,
-                    isCurrentUser: user.isCurrentUser,
-                    isHost: user.isHost,
-                    isSpeaking: isSpeaking
-                };
-            });
+                const originalGetContributingSources =
+                    OriginalRTCRtpReceiver.prototype.getContributingSources
 
-            (window as any).onNetworkSpeakerUpdate({
-                source: 'network-interceptor',
-                reason: reason,
-                timestamp: Date.now(),
-                users: users
-            });
-            } catch (error) {
-                console.error(`[NetworkInterceptor] Error in broadcastState:`, error);
-            }
-        }
+                // Replace with intercepted version
+                OriginalRTCRtpReceiver.prototype.getContributingSources =
+                    function () {
+                        // Call original method
+                        const result = originalGetContributingSources.apply(
+                            this,
+                            arguments,
+                        )
 
-        // --- Fetch Interceptor (Roster Initialization) ---
-        const syncMeetingSpaceCollectionsUrl = "https://meet.google.com/$rpc/google.rtc.meetings.v1.MeetingSpaceService/SyncMeetingSpaceCollections";
-        const originalFetch = window.fetch;
-        window.fetch = async function (...args) {
-            const response = await originalFetch.apply(window, args);
-            try {
-                const url = args[0] instanceof Request ? args[0].url : args[0];
-                if (url === syncMeetingSpaceCollectionsUrl) {
-                    const clonedResponse = response.clone();
-                    try {
-                        const responseText = await clonedResponse.text();
-                        const uint8Array = base64ToUint8Array(responseText);
-                        const decoded = messageDecoders['UserInfoListResponse'](uint8Array);
-                        const userInfoListWrapper = decoded?.userInfoListWrapperWrapper?.userInfoListWrapper;
-                        if (userInfoListWrapper) {
-                            processNetworkEvent(userInfoListWrapper, 'fetch');
+                        // Callback with receiver and result
+                        if (
+                            onGetContributingSources &&
+                            result &&
+                            result.length > 0
+                        ) {
+                            onGetContributingSources(this, result)
                         }
-                    } catch (decodeError) {
-                        // Try binary fallback
-                        const arrayBuffer = await response.clone().arrayBuffer();
-                        const uint8Array = new Uint8Array(arrayBuffer);
-                        const decoded = messageDecoders['UserInfoListResponse'](uint8Array);
-                        const userInfoListWrapper = decoded?.userInfoListWrapperWrapper?.userInfoListWrapper;
-                        if (userInfoListWrapper) {
-                            processNetworkEvent(userInfoListWrapper, 'fetch');
+
+                        return result
+                    }
+
+                console.error(
+                    '[NetworkInterceptor] ✅ RTCRtpReceiver.getContributingSources intercepted',
+                )
+            }
+        }
+
+        // Initialize managers
+        const receiverManager = new ReceiverManager()
+        const userManager = new UserManager()
+
+        // Initialize RTCRtpReceiver interceptor
+        new RTCRtpReceiverInterceptor((receiver, contributingSources) => {
+            receiverManager.updateContributingSources(
+                receiver,
+                contributingSources,
+            )
+
+            // Log contributing sources with user mapping
+            if (contributingSources.length > 0) {
+                const sourcesWithUsers = contributingSources.map((cs) => {
+                    const user = userManager.getUserByStreamId(cs.source)
+                    return {
+                        ssrc: cs.source,
+                        audioLevel: cs.audioLevel,
+                        timestamp: cs.timestamp,
+                        foundUser: user ? 'YES' : 'NO',
+                        deviceId: user?.deviceId?.substring(0, 16),
+                    }
+                })
+                console.error(
+                    '[NetworkInterceptor] 🎯 Contributing Sources:',
+                    sourcesWithUsers,
+                )
+
+                // Debug: Show current SSRC mapping state
+                console.error('[NetworkInterceptor] 🗺️ SSRC Map State:', {
+                    totalSSRCMappings: userManager.ssrcToDeviceMap.size,
+                    totalDeviceOutputs: userManager.deviceOutputMap.size,
+                    totalUsers: userManager.allUsersMap.size,
+                })
+            }
+        })
+
+        // --- Protobuf Setup: Use CUSTOM decoder like working JS code ---
+        const messageDecoders: { [key: string]: any } = {}
+
+        // Generic message decoder factory (SAME AS WORKING JS CODE)
+        function createMessageDecoder(messageType: any) {
+            return function decode(reader: any, length?: number) {
+                if (!(reader instanceof (window as any).protobuf.Reader)) {
+                    reader = (window as any).protobuf.Reader.create(reader)
+                }
+
+                const end =
+                    length === undefined ? reader.len : reader.pos + length
+                const message: any = {}
+
+                while (reader.pos < end) {
+                    const tag = reader.uint32()
+                    const fieldNumber = tag >>> 3
+
+                    const field = messageType.fields.find(
+                        (f: any) => f.fieldNumber === fieldNumber,
+                    )
+                    if (!field) {
+                        reader.skipType(tag & 7)
+                        continue
+                    }
+
+                    let value
+                    switch (field.type) {
+                        case 'string':
+                            value = reader.string()
+                            break
+                        case 'int64':
+                            value = reader.int64()
+                            break
+                        case 'varint':
+                            value = reader.uint32()
+                            break
+                        case 'bytes':
+                            value = reader.bytes()
+                            break
+                        case 'message':
+                            value = messageDecoders[field.messageType](
+                                reader,
+                                reader.uint32(),
+                            )
+                            break
+                        default:
+                            reader.skipType(tag & 7)
+                            continue
+                    }
+
+                    if (field.repeated) {
+                        if (!message[field.name]) {
+                            message[field.name] = []
+                        }
+                        message[field.name].push(value)
+                    } else {
+                        message[field.name] = value
+                    }
+                }
+
+                return message
+            }
+        }
+
+        // Create decoders for all message types
+        schema.forEach((type: any) => {
+            messageDecoders[type.name] = createMessageDecoder(type)
+        })
+
+        console.error('[NetworkInterceptor] ✅ Protobuf decoders ready')
+
+        // --- Audio Monitoring State ---
+        const audioCtx = new ((window as any).AudioContext ||
+            (window as any).webkitAudioContext)()
+        const activeAudioTracks = new Map<
+            string,
+            { analyser: AnalyserNode; ssrc?: string; receiver?: any }
+        >()
+        const trackIdToSSRC = new Map<string, string>()
+
+        // --- REUSABLE COMPONENT 4: Audio Frame Processor ---
+        async function processAudioFrames(track: any, receiver: any) {
+            let reader: any = null
+
+            try {
+                // Check if MediaStreamTrackProcessor is available
+                if (
+                    typeof (window as any).MediaStreamTrackProcessor ===
+                        'undefined' ||
+                    typeof (window as any).MediaStreamTrackGenerator ===
+                        'undefined'
+                ) {
+                    console.error(
+                        '[NetworkInterceptor] ⚠️ MediaStreamTrackProcessor/Generator not available, using fallback',
+                    )
+                    return false
+                }
+
+                const processor = new (window as any).MediaStreamTrackProcessor(
+                    { track },
+                )
+                reader = processor.readable.getReader()
+
+                console.error(
+                    `[NetworkInterceptor] 🎬 Audio Frame Processing Started: ${track.id}`,
+                )
+
+                // Helper to decode fullName if it's Uint8Array
+                const decodeUserName = (user: any) => {
+                    if (user.displayName) return user.displayName
+                    if (user.fullName) {
+                        // If it's bytes, decode it
+                        if (user.fullName instanceof Uint8Array) {
+                            try {
+                                // Try to decode as UTF-8
+                                return new TextDecoder().decode(user.fullName)
+                            } catch {
+                                return 'Unknown'
+                            }
+                        }
+                        return user.fullName
+                    }
+                    return 'Unknown'
+                }
+
+                // Process frames in a loop
+                ;(async () => {
+                    try {
+                        while (true) {
+                            const { done, value: frame } = await reader.read()
+                            if (done) break
+                            if (!frame) continue
+
+                            try {
+                                // Extract audio data from frame
+                                const numChannels = frame.numberOfChannels
+                                const numSamples = frame.numberOfFrames
+                                const audioData = new Float32Array(numSamples)
+
+                                // Convert to mono if needed
+                                if (numChannels > 1) {
+                                    const channelData = new Float32Array(
+                                        numSamples,
+                                    )
+                                    for (
+                                        let channel = 0;
+                                        channel < numChannels;
+                                        channel++
+                                    ) {
+                                        frame.copyTo(channelData, {
+                                            planeIndex: channel,
+                                        })
+                                        for (let i = 0; i < numSamples; i++) {
+                                            audioData[i] += channelData[i]
+                                        }
+                                    }
+                                    for (let i = 0; i < numSamples; i++) {
+                                        audioData[i] /= numChannels
+                                    }
+                                } else {
+                                    frame.copyTo(audioData, { planeIndex: 0 })
+                                }
+
+                                // Check if audio has content (not silence)
+                                const hasAudio = audioData.some(
+                                    (v) => Math.abs(v) > 0.001,
+                                )
+
+                                if (hasAudio) {
+                                    // Get attribution from contributing sources
+                                    const contributingSources =
+                                        receiverManager.getContributingSources(
+                                            receiver,
+                                        )
+
+                                    if (
+                                        contributingSources &&
+                                        contributingSources.length > 0
+                                    ) {
+                                        // Map SSRCs to users with audio levels
+                                        const usersWithAudioLevels =
+                                            contributingSources
+                                                .map((source) => ({
+                                                    audioLevel:
+                                                        source?.audioLevel || 0,
+                                                    ssrc: source.source,
+                                                    timestamp: source.timestamp,
+                                                    user: userManager.getUserByStreamId(
+                                                        source.source.toString(),
+                                                    ),
+                                                }))
+                                                .filter(
+                                                    (x) =>
+                                                        x.user &&
+                                                        x.audioLevel > 0.05,
+                                                ) // Only keep entries with valid users and meaningful audio
+                                                .sort(
+                                                    (a, b) =>
+                                                        b.audioLevel -
+                                                        a.audioLevel,
+                                                ) // Sort by loudness
+
+                                        // Get the loudest speaker
+                                        const loudestSpeaker =
+                                            usersWithAudioLevels[0]
+
+                                        if (loudestSpeaker?.user) {
+                                            const userName = decodeUserName(
+                                                loudestSpeaker.user,
+                                            )
+
+                                            console.error(
+                                                '[NetworkInterceptor] 🗣️ Audio Attributed:',
+                                                {
+                                                    userName,
+                                                    deviceId:
+                                                        loudestSpeaker.user
+                                                            .deviceId,
+                                                    audioLevel:
+                                                        loudestSpeaker.audioLevel.toFixed(
+                                                            3,
+                                                        ),
+                                                    ssrc: loudestSpeaker.ssrc,
+                                                    trackId: track.id.substring(
+                                                        0,
+                                                        8,
+                                                    ),
+                                                    samples: numSamples,
+                                                },
+                                            )
+
+                                            // Broadcast speaker info to Node.js with audio data
+                                            if (
+                                                typeof (window as any)
+                                                    .onNetworkSpeakerUpdate ===
+                                                'function'
+                                            ) {
+                                                ;(
+                                                    window as any
+                                                ).onNetworkSpeakerUpdate([
+                                                    {
+                                                        deviceId:
+                                                            loudestSpeaker.user
+                                                                .deviceId,
+                                                        name: userName,
+                                                        audioLevel:
+                                                            loudestSpeaker.audioLevel,
+                                                        ssrc: loudestSpeaker.ssrc,
+                                                        timestamp: Date.now(),
+                                                        audioData:
+                                                            Array.from(
+                                                                audioData,
+                                                            ), // Convert to array for serialization
+                                                        sampleRate:
+                                                            frame.sampleRate,
+                                                        numberOfFrames:
+                                                            numSamples,
+                                                    },
+                                                ])
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Close the frame
+                                frame.close()
+                            } catch (frameError) {
+                                console.error(
+                                    '[NetworkInterceptor] Frame Processing Error:',
+                                    frameError,
+                                )
+                                if (frame) frame.close()
+                            }
+                        }
+                    } catch (readError) {
+                        console.error(
+                            '[NetworkInterceptor] Reader Error:',
+                            readError,
+                        )
+                    } finally {
+                        if (reader) {
+                            try {
+                                await reader.cancel()
+                                reader.releaseLock()
+                            } catch {}
                         }
                     }
+                })()
+
+                return true
+            } catch (e) {
+                console.error(
+                    '[NetworkInterceptor] Audio Frame Processing Setup Error:',
+                    e,
+                )
+                return false
+            }
+        }
+
+        function setupWebAudioMonitoring(track: any, receiver: any) {
+            try {
+                if (audioCtx.state === 'suspended') audioCtx.resume()
+
+                const stream = new MediaStream([track])
+                const source = audioCtx.createMediaStreamSource(stream)
+                const analyser = audioCtx.createAnalyser()
+                analyser.fftSize = 256
+                const gain = audioCtx.createGain()
+                gain.gain.value = 0.001 // Mute but keep processing
+
+                source.connect(analyser)
+                analyser.connect(gain)
+                gain.connect(audioCtx.destination)
+
+                activeAudioTracks.set(track.id, { analyser, receiver })
+                console.error(
+                    `[NetworkInterceptor] 🎤 Web Audio Monitoring: ${track.id}`,
+                )
+
+                track.onended = () => {
+                    activeAudioTracks.delete(track.id)
                 }
             } catch (e) {
-                // Ignore fetch errors
+                console.error('[NetworkInterceptor] Web Audio Setup Error:', e)
             }
-            return response;
-        };
+        }
 
-        // --- WebRTC & DataChannel Interceptor ---
-        function setupWebRTCInterception() {
+        function monitorTrack(
+            track: MediaStreamTrack,
+            receiver: RTCRtpReceiver,
+        ) {
+            if (activeAudioTracks.has(track.id)) return
+
             try {
-                if (typeof (window as any).RTCPeerConnection === 'undefined') return;
+                // Link receiver to track in manager
+                receiverManager.linkReceiverToTrack(receiver, track.id)
 
-                const originalRTCPeerConnection = (window as any).RTCPeerConnection;
-                
-                // Capture receivers from any existing peer connections
-                try {
-                    // Try to find existing peer connections (they might be stored globally)
-                    if ((window as any).RTCPeerConnection && (window as any).RTCPeerConnection.prototype) {
-                        // We can't easily enumerate existing instances, but we'll catch them via track events
+                // Try to use audio frame processing first (preferred method)
+                processAudioFrames(track, receiver).then((success) => {
+                    if (!success) {
+                        // Fallback to Web Audio API monitoring
+                        setupWebAudioMonitoring(track, receiver)
                     }
-                } catch (e) { }
-                
-                (window as any).RTCPeerConnection = function (...args: any[]) {
-                    const pc = new originalRTCPeerConnection(...args);
+                })
 
-                    // 1. Capture Audio Receivers for Polling
-                    pc.addEventListener('track', (event: any) => {
-                        try {
-                            const track = event.track;
-                            if (track && track.kind === 'audio' && event.receiver) {
-                                // Add to our active set for polling
-                                activeAudioReceivers.add(event.receiver);
-
-                                // Try to get streamId from event streams first
-                                if (event.streams && event.streams.length > 0) {
-                                    const streamId = event.streams[0].id;
-                                    receiverToStreamId.set(event.receiver, streamId);
-                                } else if (track.id) {
-                                    // Fallback: use track.id as streamId if streams not available yet
-                                    receiverToStreamId.set(event.receiver, track.id);
-                                }
-                            }
-                        } catch (e) { }
-                    }, { capture: true });
-
-                    // Also capture receivers from existing tracks (in case track event already fired)
-                    // Use setTimeout to ensure connection is established
-                    setTimeout(() => {
-                        try {
-                            const receivers = pc.getReceivers();
-                            receivers.forEach((receiver: any) => {
-                                if (receiver.track && receiver.track.kind === 'audio') {
-                                    activeAudioReceivers.add(receiver);
-                                    // Try to get streamId from receiver's track or streams
-                                    if (receiver.track.id) {
-                                        receiverToStreamId.set(receiver, receiver.track.id);
-                                    } else if (receiver.track.getStreams && receiver.track.getStreams().length > 0) {
-                                        const streamId = receiver.track.getStreams()[0].id;
-                                        receiverToStreamId.set(receiver, streamId);
-                                    }
-                                }
-                            });
-                        } catch (e) { }
-                    }, 100);
-
-                    // 2. Intercept Data Channel for Roster Updates
-            pc.addEventListener('datachannel', (event: any) => {
-                if (event.channel.label === "collections") {
-                    event.channel.addEventListener("message", (messageEvent: any) => {
-                        try {
-                            const decodedData = (window as any).pako.inflate(new Uint8Array(messageEvent.data));
-                            const collectionEvent = messageDecoders['CollectionEvent'](decodedData);
-                            const body = collectionEvent.body?.userInfoListWrapperAndChatWrapperWrapper;
-                            if (body) {
-                                const userInfoList = body?.userInfoListWrapperAndChatWrapper?.userInfoListWrapper?.userInfoList;
-                                        if (userInfoList?.length > 0) processNetworkEvent({ userInfoList }, 'datachannel');
-
-                                const deviceOutputInfoList = body?.deviceInfoWrapper?.deviceOutputInfoList;
-                                        if (deviceOutputInfoList?.length > 0) processNetworkEvent({ deviceOutputInfoList }, 'datachannel');
-                                    }
-                                } catch (e) { }
-                            });
-                        }
-                    });
-                    return pc;
-                };
-            } catch (error) {
-                console.error('[NetworkInterceptor] Error setting up WebRTC interceptor:', error);
+                // Also set up Web Audio API as backup for volume monitoring
+                setupWebAudioMonitoring(track, receiver)
+            } catch (e) {
+                console.error('[NetworkInterceptor] Audio Attach Error:', e)
             }
         }
 
-        // Initialize WebRTC Interceptor
-        if (typeof (window as any).RTCPeerConnection === 'undefined') {
-            const checkRTCPeerConnection = setInterval(() => {
-                if (typeof (window as any).RTCPeerConnection !== 'undefined') {
-                    clearInterval(checkRTCPeerConnection);
-                    setupWebRTCInterception();
-                }
-            }, 100);
-            setTimeout(() => clearInterval(checkRTCPeerConnection), 10000);
-        } else {
-            setupWebRTCInterception();
+        // --- WebRTC Interceptor ---
+        if (typeof (window as any).RTCPeerConnection !== 'undefined') {
+            const OriginalPC = (window as any).RTCPeerConnection
+            ;(window as any).RTCPeerConnection = function (...args: any[]) {
+                const pc = new OriginalPC(...args)
+
+                // 1. Intercept Audio Tracks
+                pc.addEventListener('track', (event: any) => {
+                    if (event.track.kind === 'audio') {
+                        monitorTrack(event.track, event.receiver)
+                    }
+                })
+
+                // 2. Intercept Data Channels
+                pc.addEventListener('datachannel', (event: any) => {
+                    const label = event.channel.label
+                    console.error(
+                        `[NetworkInterceptor] 🔌 DataChannel Attached: "${label}"`,
+                    )
+
+                    event.channel.addEventListener('message', (msg: any) => {
+                        try {
+                            const rawData = new Uint8Array(msg.data)
+
+                            // Log the size of every collections message
+                            console.error(
+                                `[NetworkInterceptor] 📦 Collections message on "${label}": ${rawData.length} bytes`,
+                            )
+
+                            // Try to decode as CollectionEvent
+                            try {
+                                const inflated = (window as any).pako.inflate(
+                                    rawData,
+                                )
+                                const eventData =
+                                    messageDecoders['CollectionEvent'](inflated)
+                                const body = eventData.body
+
+                                if (body) {
+                                    // Log what's actually in the body
+                                    const wrapper =
+                                        body.userInfoListWrapperAndChatWrapperWrapper
+
+                                    // Deep inspection of wrapper structure
+                                    console.error(
+                                        '[NetworkInterceptor] 📋 Body contents:',
+                                        {
+                                            hasWrapper: !!wrapper,
+                                            wrapperKeys: wrapper
+                                                ? Object.keys(wrapper)
+                                                : [],
+                                            hasDeviceInfo:
+                                                !!wrapper?.deviceInfoWrapper,
+                                            deviceInfoKeys:
+                                                wrapper?.deviceInfoWrapper
+                                                    ? Object.keys(
+                                                          wrapper.deviceInfoWrapper,
+                                                      )
+                                                    : [],
+                                            hasUserInfo:
+                                                !!wrapper
+                                                    ?.userInfoListWrapperAndChatWrapper
+                                                    ?.userInfoListWrapper,
+                                            deviceOutputCount:
+                                                wrapper?.deviceInfoWrapper
+                                                    ?.deviceOutputInfoList
+                                                    ?.length || 0,
+                                            userCount:
+                                                wrapper
+                                                    ?.userInfoListWrapperAndChatWrapper
+                                                    ?.userInfoListWrapper
+                                                    ?.userInfoList?.length || 0,
+                                        },
+                                    )
+
+                                    // If wrapper exists, dump its full structure
+                                    if (wrapper) {
+                                        console.error(
+                                            '[NetworkInterceptor] 🔍 Full Wrapper Structure:',
+                                            JSON.stringify(
+                                                wrapper,
+                                                (key, value) => {
+                                                    if (
+                                                        value &&
+                                                        value.constructor ===
+                                                            Uint8Array
+                                                    ) {
+                                                        return `[Bytes: ${value.length}]`
+                                                    }
+                                                    return typeof value ===
+                                                        'bigint'
+                                                        ? value.toString()
+                                                        : value
+                                                },
+                                                2,
+                                            ),
+                                        )
+                                    }
+
+                                    // Extract and update device outputs
+                                    if (
+                                        wrapper?.deviceInfoWrapper
+                                            ?.deviceOutputInfoList
+                                    ) {
+                                        const deviceOutputs =
+                                            wrapper.deviceInfoWrapper
+                                                .deviceOutputInfoList
+                                        userManager.updateDeviceOutputs(
+                                            deviceOutputs,
+                                        )
+                                        console.error(
+                                            `[NetworkInterceptor] 📡 Updated ${deviceOutputs.length} device outputs`,
+                                        )
+
+                                        // Log audio device mappings for debugging
+                                        const audioOutputs =
+                                            deviceOutputs.filter(
+                                                (o: any) =>
+                                                    o.deviceOutputType === 1,
+                                            )
+                                        if (audioOutputs.length > 0) {
+                                            console.error(
+                                                '[NetworkInterceptor] 🎤 Audio Device Mappings:',
+                                                audioOutputs.map((o: any) => ({
+                                                    deviceId:
+                                                        o.deviceId?.substring(
+                                                            0,
+                                                            16,
+                                                        ),
+                                                    streamId: o.streamId,
+                                                    streamIdType:
+                                                        typeof o.streamId,
+                                                    disabled:
+                                                        o.deviceOutputStatus
+                                                            ?.disabled,
+                                                })),
+                                            )
+
+                                            // Debug: Show what got added to SSRC map
+                                            console.error(
+                                                '[NetworkInterceptor] 🗺️ SSRC Map after device update:',
+                                                {
+                                                    totalMappings:
+                                                        userManager
+                                                            .ssrcToDeviceMap
+                                                            .size,
+                                                    sampleMappings: audioOutputs
+                                                        .slice(0, 3)
+                                                        .map((o: any) => ({
+                                                            streamId:
+                                                                o.streamId,
+                                                            deviceId:
+                                                                o.deviceId?.substring(
+                                                                    0,
+                                                                    16,
+                                                                ),
+                                                            mapped:
+                                                                userManager.ssrcToDeviceMap.has(
+                                                                    o.streamId,
+                                                                ) ||
+                                                                userManager.ssrcToDeviceMap.has(
+                                                                    parseInt(
+                                                                        o.streamId,
+                                                                        10,
+                                                                    ),
+                                                                ),
+                                                        })),
+                                                },
+                                            )
+                                        }
+                                    }
+
+                                    // Extract and update user info
+                                    if (
+                                        wrapper
+                                            ?.userInfoListWrapperAndChatWrapper
+                                            ?.userInfoListWrapper?.userInfoList
+                                    ) {
+                                        const users =
+                                            wrapper
+                                                .userInfoListWrapperAndChatWrapper
+                                                .userInfoListWrapper
+                                                .userInfoList
+                                        userManager.updateUsers(users)
+                                        console.error(
+                                            `[NetworkInterceptor] 👥 Updated ${users.length} users`,
+                                        )
+                                    }
+
+                                    console.error(
+                                        `dump::${label}::body`,
+                                        JSON.stringify(
+                                            body,
+                                            (key, value) => {
+                                                if (
+                                                    key.startsWith('field') &&
+                                                    value &&
+                                                    value.constructor ===
+                                                        Uint8Array
+                                                ) {
+                                                    return `[Bytes: ${value.length}]`
+                                                }
+                                                return typeof value === 'bigint'
+                                                    ? value.toString()
+                                                    : value
+                                            },
+                                            2,
+                                        ),
+                                    )
+                                }
+                            } catch (e) {
+                                console.error(
+                                    `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
+                                    e,
+                                )
+                            }
+                        } catch (e) {
+                            console.error(
+                                '[NetworkInterceptor] Critical Message Error:',
+                                e,
+                            )
+                        }
+                    })
+                })
+
+                // 3. Poll Stats for SSRC
+                setInterval(async () => {
+                    try {
+                        const stats = await pc.getStats()
+                        stats.forEach((report: any) => {
+                            if (
+                                report.type === 'inbound-rtp' &&
+                                report.kind === 'audio'
+                            ) {
+                                // Log interesting stats
+                                console.error(
+                                    `[NetworkInterceptor] 📊 Audio Stats Full:`,
+                                    JSON.stringify(report, null, 2),
+                                )
+
+                                if (report.trackIdentifier) {
+                                    if (report.ssrc) {
+                                        trackIdToSSRC.set(
+                                            report.trackIdentifier,
+                                            String(report.ssrc),
+                                        )
+                                        const trackInfo = activeAudioTracks.get(
+                                            report.trackIdentifier,
+                                        )
+                                        if (trackInfo)
+                                            trackInfo.ssrc = String(report.ssrc)
+                                    }
+                                }
+                            }
+                        })
+                    } catch {}
+                }, 2000)
+
+                return pc
+            }
         }
 
-        // --- Active Audio Polling ---
-        // We store the native function to call it manually
-        const originalGetContributingSources = RTCRtpReceiver.prototype.getContributingSources;
-
-        // Poll every 50ms (20Hz)
+        // --- Audio Level Poller (Fallback for browsers without MediaStreamTrackProcessor) ---
         setInterval(() => {
-            const now = Date.now();
-            let changed = false;
+            const dataArray = new Uint8Array(128)
+            activeAudioTracks.forEach((info, trackId) => {
+                info.analyser.getByteFrequencyData(dataArray)
+                let sum = 0
+                for (let i = 0; i < dataArray.length; i++) sum += dataArray[i]
+                const vol = sum / dataArray.length
 
-            // 1. Check all active audio receivers for levels
-            activeAudioReceivers.forEach((receiver) => {
-                try {
-                    // Cleanup ended tracks
-                    if (!receiver.track || receiver.track.readyState === 'ended') {
-                        activeAudioReceivers.delete(receiver);
-                        return;
-                    }
-
-                    // Ensure we have a streamId mapping (try to update if missing)
-                    let streamId = receiverToStreamId.get(receiver);
-                    if (!streamId && receiver.track) {
-                        // Try to get streamId from track.id or track streams
-                        if (receiver.track.id) {
-                            streamId = receiver.track.id;
-                            receiverToStreamId.set(receiver, streamId);
-                        } else if (receiver.track.getStreams && receiver.track.getStreams().length > 0) {
-                            streamId = receiver.track.getStreams()[0].id;
-                            receiverToStreamId.set(receiver, streamId);
-                        }
-                    }
-
-                    // Manually query the browser for audio sources on this receiver
-                    const sources = originalGetContributingSources.call(receiver);
-
-                    if (sources && sources.length > 0) {
-                        // Audio detected
-                        if (streamId) {
-                            const deviceId = streamIdToDeviceId.get(streamId);
-                            if (deviceId) {
-                                const currentState = speakingState.get(deviceId);
-                                if (!currentState || !currentState.isSpeaking) {
-                                    speakingState.set(deviceId, { isSpeaking: true, lastUpdate: now });
-                                    changed = true;
-                                } else {
-                                    // Update timestamp to prevent silence timeout
-                                    currentState.lastUpdate = now;
-                                }
+                if (vol > 5) {
+                    // Only log if volume is significant
+                    // Try to get user info via contributing sources
+                    let userInfo = null
+                    if (info.receiver) {
+                        const contributingSources =
+                            receiverManager.getContributingSources(
+                                info.receiver,
+                            )
+                        if (
+                            contributingSources &&
+                            contributingSources.length > 0
+                        ) {
+                            const loudest = contributingSources
+                                .filter((cs) => cs.audioLevel > 0)
+                                .sort(
+                                    (a, b) =>
+                                        (b.audioLevel || 0) -
+                                        (a.audioLevel || 0),
+                                )[0]
+                            if (loudest) {
+                                userInfo = userManager.getUserByStreamId(
+                                    loudest.source.toString(),
+                                )
                             }
                         }
                     }
-                } catch (e) {
-                    // Receiver invalid
-                    activeAudioReceivers.delete(receiver);
-                }
-            });
 
-            // 2. Check for Silence Timeouts
-            speakingState.forEach((state, deviceId) => {
-                if (state.isSpeaking && (now - state.lastUpdate > SILENCE_TIMEOUT)) {
-                    state.isSpeaking = false;
-                    changed = true;
+                    // Decode userName properly
+                    const userName = (() => {
+                        if (!userInfo) return '???'
+                        if (userInfo.displayName) return userInfo.displayName
+                        if (userInfo.fullName) {
+                            // If it's bytes, decode it
+                            if (userInfo.fullName instanceof Uint8Array) {
+                                try {
+                                    return new TextDecoder().decode(
+                                        userInfo.fullName,
+                                    )
+                                } catch {
+                                    return 'Unknown'
+                                }
+                            }
+                            return userInfo.fullName
+                        }
+                        return 'Unknown'
+                    })()
+                    console.error(
+                        `[NetworkInterceptor] 🔊 Audio: Track ${trackId.substring(0, 8)} | SSRC: ${info.ssrc || '???'} | User: ${userName} | Vol: ${vol.toFixed(1)}`,
+                    )
                 }
-            });
+            })
+        }, 500)
 
-            if (changed) {
-                broadcastState('speaking-change');
+        // --- Fetch Interceptor ---
+        const originalFetch = window.fetch
+        window.fetch = async function (...args) {
+            const url = args[0] instanceof Request ? args[0].url : args[0]
+            const response = await originalFetch.apply(window, args)
+
+            try {
+                if (
+                    typeof url === 'string' &&
+                    (url.includes('SyncMeetingSpaceCollections') ||
+                        url.includes('meet/'))
+                ) {
+                    const cloned = response.clone()
+                    const text = await cloned.text()
+
+                    try {
+                        const bytes = base64ToUint8Array(text)
+                        const decoded =
+                            messageDecoders['UserInfoListResponse'](bytes)
+
+                        if (decoded) {
+                            // Extract and update user info from fetch response
+                            const userInfoList =
+                                decoded.userInfoListWrapperWrapper
+                                    ?.userInfoListWrapper?.userInfoList || []
+                            if (userInfoList.length > 0) {
+                                userManager.updateUsers(userInfoList)
+                                console.error(
+                                    `[NetworkInterceptor] 👥 Updated ${userInfoList.length} users from fetch`,
+                                )
+                            }
+
+                            // Deep scan for fullName to decode
+                            const scanForFullName = (obj: any) => {
+                                if (!obj) return
+                                if (typeof obj === 'object') {
+                                    // Check for fullName as BYTES (Uint8Array)
+                                    if (
+                                        obj.fullName &&
+                                        obj.fullName.constructor === Uint8Array
+                                    ) {
+                                        try {
+                                            const rawBytes =
+                                                obj.fullName as Uint8Array
+                                            obj.fullName_HEX =
+                                                bytesToHex(rawBytes)
+                                            obj.fullName_Base64 =
+                                                uint8ArrayToBase64(rawBytes)
+
+                                            // Try to decode as UserExtraInfo
+                                            try {
+                                                const extra =
+                                                    messageDecoders[
+                                                        'UserExtraInfo'
+                                                    ](rawBytes)
+                                                obj.fullName_decoded = extra
+                                            } catch (e) {
+                                                obj.fullName_decode_error =
+                                                    e.toString()
+                                            }
+                                        } catch (e) {
+                                            obj.fullName_error = e.toString()
+                                        }
+                                    }
+                                    for (const key in obj) {
+                                        if (
+                                            Object.prototype.hasOwnProperty.call(
+                                                obj,
+                                                key,
+                                            ) &&
+                                            typeof obj[key] === 'object' &&
+                                            obj[key] !== null
+                                        ) {
+                                            scanForFullName(obj[key])
+                                        }
+                                    }
+                                }
+                            }
+                            scanForFullName(decoded)
+
+                            console.error(
+                                'dump::fetch',
+                                JSON.stringify(
+                                    decoded,
+                                    (key, value) => {
+                                        if (
+                                            key.startsWith('field') &&
+                                            value &&
+                                            value.constructor === Uint8Array
+                                        ) {
+                                            return `[Bytes: ${value.length}]`
+                                        }
+                                        if (
+                                            key === 'fullName' &&
+                                            value &&
+                                            value.constructor === Uint8Array
+                                        ) {
+                                            return `[Bytes: ${value.length}]` // Don't dump raw bytes in JSON
+                                        }
+                                        return typeof value === 'bigint'
+                                            ? value.toString()
+                                            : value
+                                    },
+                                    2,
+                                ),
+                            )
+                        }
+                    } catch {}
+                }
+            } catch {}
+            return response
+        }
+
+        // --- XHR Interceptor ---
+        const OriginalXHR = (window as any).XMLHttpRequest
+        ;(window as any).XMLHttpRequest = function () {
+            const xhr = new OriginalXHR()
+            const originalOpen = xhr.open
+            xhr.open = function () {
+                return originalOpen.apply(this, arguments)
             }
-        }, 50);
-
-        // Manual trigger exposure
-        (window as any).triggerNetworkBroadcast = function() {
-            broadcastState('manual-trigger');
-        };
-
-        console.log('[NetworkInterceptor] ✅ Initialization complete');
-
-    } catch (error) {
-        console.error('[NetworkInterceptor] ❌ Initialization failed:', error);
-        throw error;
+            return xhr
+        }
+    } catch (e) {
+        console.error('[NetworkInterceptor] Fatal Error:', e)
     }
 }
 
-export async function enableNetworkInterception(page: Page, onSpeakersChange: (speakers: any[]) => void) {
-    // Expose the callback to the browser
-    await page.exposeFunction('onNetworkSpeakerUpdate', (speakers: any[]) => {
-        onSpeakersChange(speakers);
-    });
+export async function enableNetworkInterception(
+    page: Page,
+    onSpeakersChange: (speakers: any[]) => void,
+) {
+    await page.exposeFunction('onNetworkSpeakerUpdate', onSpeakersChange)
 
-    // Load libraries
-    let protobufJsContent = '';
-    let pakoJsContent = '';
+    await page.addInitScript(() => {
+        ;(window as any)._updateNetworkCallback = () => {
+            if ((window as any).triggerNetworkBroadcast)
+                (window as any).triggerNetworkBroadcast()
+        }
+    })
 
+    let libs = ''
     try {
-        const protobufPath = require.resolve('protobufjs/dist/protobuf.min.js');
-        protobufJsContent = fs.readFileSync(protobufPath, 'utf8');
-
-        const pakoPath = require.resolve('pako/dist/pako.min.js');
-        pakoJsContent = fs.readFileSync(pakoPath, 'utf8');
-    } catch (e) {
-        console.error('[NetworkInterceptor] Failed to load libraries:', e);
-        return;
+        libs += fs.readFileSync(
+            require.resolve('protobufjs/dist/protobuf.min.js'),
+            'utf8',
+        )
+        libs += fs.readFileSync(
+            require.resolve('pako/dist/pako.min.js'),
+            'utf8',
+        )
+    } catch {
+        return
     }
 
-    const schemaJson = JSON.stringify(PROTO_SCHEMA);
-    const logicString = browserInterceptionLogic.toString();
+    const schemaJson = JSON.stringify(PROTO_SCHEMA)
+    const logicString = browserInterceptionLogic.toString()
 
-    // Create a simple test script
-    const testScript = `
+    const script = `
         (function() {
             try {
-                window.__networkInterceptorTest = true;
-            } catch (e) {}
-        })();
-    `;
+                ${libs}
 
-    const fullScript = `
-        (function() {
-            try {
-                window.__networkInterceptorMain = true;
-                console.log('[NetworkInterceptor] Injecting interceptor...');
-                
-        ${protobufJsContent}
-        ${pakoJsContent}
-                
-                // Ensure libraries are on window
                 if (typeof window !== 'undefined') {
                     if (typeof protobuf !== 'undefined') window.protobuf = protobuf;
                     else if (typeof window.protobufjs !== 'undefined') window.protobuf = window.protobufjs;
-
                     if (typeof pako !== 'undefined') window.pako = pako;
                 }
-                
+
                 if (!window.protobuf || !window.pako) {
-                    throw new Error('Libraries failed to load on window object');
+                    throw new Error('[NetworkInterceptor] Libraries failed to load');
                 }
-        
-        // Inject the schema and logic
-        const PROTO_SCHEMA_INJECTED = ${schemaJson};
-        
-                // Run the interception logic
-        (${logicString})(PROTO_SCHEMA_INJECTED);
+
+                const PROTO_SCHEMA_INJECTED = ${schemaJson};
+                (${logicString})(PROTO_SCHEMA_INJECTED);
             } catch (error) {
                 console.error('[NetworkInterceptor] ❌ Injection Error:', error);
             }
         })();
-    `;
+    `
 
     try {
-        await page.addInitScript(testScript);
-        await page.addInitScript(fullScript);
-        console.log('[NetworkInterceptor] Scripts registered via addInitScript');
-    } catch (error) {
-        console.error('[NetworkInterceptor] Failed to register via addInitScript:', error);
-        throw error;
-    }
-    
+        await page.addInitScript(script)
+    } catch {}
+}
+
+export async function verifyNetworkInterception(page: Page): Promise<boolean> {
     try {
-    const client = await page.context().newCDPSession(page);
-        await client.send('Page.addScriptToEvaluateOnNewDocument', { source: testScript });
-    await client.send('Page.addScriptToEvaluateOnNewDocument', { source: fullScript });
-    } catch (cdpError) {
-        // Ignore CDP errors
-    }
-    
-    // Fallback check on load
-    page.on('load', async () => {
-        try {
-            await page.waitForTimeout(100);
-            const scriptCheck = await page.evaluate(() => {
-                return typeof (window as any).__networkInterceptorMain !== 'undefined';
-            }).catch(() => false);
-            
-            if (!scriptCheck) {
-                console.log('[NetworkInterceptor] Re-injecting scripts via evaluate...');
-                await page.evaluate(fullScript).catch(() => {});
+        const status = await page.evaluate(() => {
+            return {
+                hasInterceptor:
+                    typeof (window as any).__networkInterceptorMain !==
+                    'undefined',
+                hasProtobuf: typeof (window as any).protobuf !== 'undefined',
+                hasPako: typeof (window as any).pako !== 'undefined',
+                hasCallback:
+                    typeof (window as any).onNetworkSpeakerUpdate !==
+                    'undefined',
+                canTrigger:
+                    typeof (window as any).triggerNetworkBroadcast !==
+                    'undefined',
             }
-        } catch (e) {}
-    });
+        })
+
+        console.error('[NetworkInterceptor] Status:', status)
+
+        if (!status.hasInterceptor) {
+            console.error('[NetworkInterceptor] ❌ Main interceptor not loaded')
+            return false
+        }
+
+        if (!status.hasProtobuf || !status.hasPako) {
+            console.error('[NetworkInterceptor] ❌ Dependencies missing')
+            return false
+        }
+
+        if (!status.hasCallback) {
+            console.warn(
+                '[NetworkInterceptor] ⚠️ Callback not registered yet (expected early in lifecycle)',
+            )
+        }
+
+        return true
+    } catch (e) {
+        console.error('[NetworkInterceptor] ❌ Verification failed:', e)
+        return false
+    }
 }

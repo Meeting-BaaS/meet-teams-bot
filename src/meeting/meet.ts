@@ -13,6 +13,7 @@ import { createStateDetector } from '../utils/meeting-state-detector'
 import { MEET_STATE_CONFIG } from './meet-state-config'
 import { listenPage } from '../browser/page-logger'
 import { enableNetworkInterception } from './meet/networkInterceptor'
+import { sendChatMessage } from './meet/network-interception'
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
