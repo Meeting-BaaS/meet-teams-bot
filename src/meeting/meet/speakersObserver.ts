@@ -1,7 +1,6 @@
 import { Page } from '@playwright/test'
-import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
-import { enableNetworkInterception } from './networkInterceptor'
+import { RecordingMode, SpeakerData } from '../../types'
 
 export class MeetSpeakersObserver {
     private page: Page
@@ -33,33 +32,42 @@ export class MeetSpeakersObserver {
         // Network interception is already set up in meet.ts before page load
         // Register our callback with the existing network interceptor
         if ((this.page as any)._updateNetworkCallback) {
-            console.log('[Meet] Registering speaker callback with network interceptor');
-            (this.page as any)._updateNetworkCallback((payload: any) => {
+            console.log(
+                '[Meet] Registering speaker callback with network interceptor',
+            )
+            ;(this.page as any)._updateNetworkCallback((payload: any) => {
                 try {
                     if (payload && payload.users) {
-                        // Filter out the bot itself
-                        const filteredUsers = payload.users.filter((s: any) => 
-                            !s.isCurrentUser || s.name !== this.botName
-                        );
-                        
+                        // Filter out the bot itself (exclude if current user OR name matches bot name)
+                        const filteredUsers = payload.users.filter(
+                            (s: any) =>
+                                !s.isCurrentUser && s.name !== this.botName,
+                        )
+
                         // Convert network speakers to SpeakerData format
-                        const speakers: SpeakerData[] = filteredUsers.map((s: any) => ({
-                            name: s.name || 'Unknown',
-                            id: 0, // TODO: Hash deviceId to number if needed
-                            timestamp: payload.timestamp || Date.now(),
-                            isSpeaking: s.isSpeaking || false,
-                        }));
-                        
-                        console.log(`[Meet] 🗣️ Network callback: ${speakers.length} speakers (${speakers.filter(s => s.isSpeaking).length} speaking)`);
-                        this.onSpeakersChange(speakers);
+                        const speakers: SpeakerData[] = filteredUsers.map(
+                            (s: any) => ({
+                                name: s.name || 'Unknown',
+                                id: 0, // TODO: Hash deviceId to number if needed
+                                timestamp: payload.timestamp || Date.now(),
+                                isSpeaking: s.isSpeaking || false,
+                            }),
+                        )
+
+                        console.log(
+                            `[Meet] 🗣️ Network callback: ${speakers.length} speakers (${speakers.filter((s) => s.isSpeaking).length} speaking)`,
+                        )
+                        this.onSpeakersChange(speakers)
                     }
                 } catch (error) {
-                    console.error('[Meet] Error in network callback:', error);
+                    console.error('[Meet] Error in network callback:', error)
                 }
-            });
+            })
             console.log('[Meet] ✅ Speaker callback registered')
         } else {
-            console.warn('[Meet] Network callback updater not found - network interception may not be set up')
+            console.warn(
+                '[Meet] Network callback updater not found - network interception may not be set up',
+            )
         }
 
         // Ensure People panel is open (useful for visual confirmation)
