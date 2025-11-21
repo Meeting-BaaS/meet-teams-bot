@@ -8,7 +8,7 @@ import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
 import { closeMeeting } from './meet/closeMeeting'
-import { enableNetworkInterception } from './meet/networkInterceptor'
+import { enableNetworkInterception } from './meet/network-interception'
 import { listenPage } from '../browser/page-logger'
 
 export class MeetProvider implements MeetingProviderInterface {
@@ -120,7 +120,7 @@ export class MeetProvider implements MeetingProviderInterface {
                 if (!scriptCheck.hasTestMarker && !scriptCheck.hasMainMarker) {
                     console.log('[Meet] Network interceptor scripts did not run automatically, evaluating directly...');
                     // Re-evaluate the scripts directly
-                    const { enableNetworkInterception } = await import('./meet/networkInterceptor');
+                    const { enableNetworkInterception } = await import('./meet/network-interception');
                     // We can't easily re-inject here, but the load listener should handle it
                 }
             } catch (e) {
