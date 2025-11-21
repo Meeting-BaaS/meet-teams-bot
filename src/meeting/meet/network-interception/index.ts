@@ -3,7 +3,7 @@
 
 import * as fs from 'fs'
 import { Page } from 'playwright'
-import { browserInterceptionLogic } from './browser'
+import { browserInterceptionLogic } from './browser-bundle'
 import { PROTO_SCHEMA } from './schema'
 
 // Re-export types
@@ -12,6 +12,7 @@ export type { ChatMessage, NetworkPayload, NetworkUser } from './types'
 // Main setup function
 export async function enableNetworkInterception(
     page: Page,
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     onSpeakersChange: (payload: {
         users: any[]
         timestamp: number
@@ -62,64 +63,31 @@ export async function enableNetworkInterception(
     } catch {}
 }
 
-// Send chat message using Meet's internal API
+// Send chat message using network/data channel (protobuf approach)
 export async function sendChatMessage(
     page: Page,
     message: string,
 ): Promise<boolean> {
     try {
-        console.log('[NetworkInterceptor] Sending chat message via API...')
-        
+        console.log('[NetworkInterceptor] Sending chat message via network...')
+
         const result = await page.evaluate(async (msg: string) => {
-            try {
-                // Access Meet's internal chat API
-                // Google Meet exposes its API through the window object
-                const meetApi = (window as any)?.APP_CONTROLLER?.getController?.()
-                
-                if (!meetApi) {
-                    console.error('[NetworkInterceptor] Meet API not found')
-                    return { success: false, error: 'Meet API not found' }
-                }
-                
-                // Try to find the chat service/controller
-                // This may vary based on Meet's internal structure
-                const chatService = meetApi?.getChatController?.() || 
-                                   meetApi?.chatController ||
-                                   (window as any)?.__chatController
-                
-                if (!chatService) {
-                    console.error('[NetworkInterceptor] Chat service not found')
-                    return { success: false, error: 'Chat service not found' }
-                }
-                
-                // Send the message using the internal API
-                if (typeof chatService.sendMessage === 'function') {
-                    await chatService.sendMessage(msg)
-                    console.error('[NetworkInterceptor] ✅ Message sent via API')
-                    return { success: true }
-                } else if (typeof chatService.send === 'function') {
-                    await chatService.send(msg)
-                    console.error('[NetworkInterceptor] ✅ Message sent via API')
-                    return { success: true }
-                }
-                
-                console.error('[NetworkInterceptor] No send method found on chat service')
-                return { success: false, error: 'No send method available' }
-                
-            } catch (e: any) {
-                console.error('[NetworkInterceptor] Error sending message:', e)
-                return { success: false, error: e.toString() }
+            if ((window as any)._sendChatMessage) {
+                // The function is now async, so await it
+                return await (window as any)._sendChatMessage(msg)
             }
+            return false
         }, message)
-        
-        if (result.success) {
-            console.log('[NetworkInterceptor] Chat message sent successfully')
+
+        if (result) {
+            console.log('[NetworkInterceptor] ✅ Chat message sent via network')
             return true
         } else {
-            console.error(`[NetworkInterceptor] Failed to send chat message: ${result.error}`)
+            console.error(
+                '[NetworkInterceptor] ❌ Failed to send chat message via network',
+            )
             return false
         }
-        
     } catch (e) {
         console.error('[NetworkInterceptor] Exception sending chat message:', e)
         return false

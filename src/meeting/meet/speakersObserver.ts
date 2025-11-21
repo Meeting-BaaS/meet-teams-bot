@@ -8,6 +8,7 @@ export class MeetSpeakersObserver {
     private botName: string
     private onSpeakersChange: (speakers: SpeakerData[]) => void
     private isObserving: boolean = false
+    private previousSpeakerState: Map<string, boolean> = new Map() // Track previous speaking state
 
     constructor(
         page: Page,
@@ -54,9 +55,55 @@ export class MeetSpeakersObserver {
                             }),
                         )
 
-                        console.log(
-                            `[Meet] 🗣️ Network callback: ${speakers.length} speakers (${speakers.filter((s) => s.isSpeaking).length} speaking)`,
-                        )
+                        // Check for changes in speaking status
+                        const hasChange = speakers.some((speaker) => {
+                            const previousState = this.previousSpeakerState.get(
+                                speaker.name,
+                            )
+                            return (
+                                previousState === undefined ||
+                                previousState !== speaker.isSpeaking
+                            )
+                        })
+
+                        // Log only on changes (including initial state)
+                        if (hasChange) {
+                            const speakingCount = speakers.filter(
+                                (s) => s.isSpeaking,
+                            ).length
+                            console.log(
+                                `[Meet] 🗣️ Speaker update: ${speakers.length} speakers (${speakingCount} speaking)`,
+                            )
+
+                            // Log speaker map on change
+                            speakers.forEach((speaker) => {
+                                const previousState =
+                                    this.previousSpeakerState.get(speaker.name)
+                                if (
+                                    previousState === undefined ||
+                                    previousState !== speaker.isSpeaking
+                                ) {
+                                    if (previousState === undefined) {
+                                        console.log(
+                                            `[MEET-DEBUG-SPEAKER] ${speaker.name}: ${speaker.isSpeaking ? 'speaking' : 'muted'}`,
+                                        )
+                                    } else {
+                                        console.log(
+                                            `[MEET-DEBUG-SPEAKER] ${speaker.name}: ${previousState ? 'stopped' : 'started'} speaking`,
+                                        )
+                                    }
+                                }
+                            })
+                        }
+
+                        // Update state for all speakers
+                        speakers.forEach((speaker) => {
+                            this.previousSpeakerState.set(
+                                speaker.name,
+                                speaker.isSpeaking,
+                            )
+                        })
+
                         this.onSpeakersChange(speakers)
                     }
                 } catch (error) {
@@ -69,9 +116,6 @@ export class MeetSpeakersObserver {
                 '[Meet] Network callback updater not found - network interception may not be set up',
             )
         }
-
-        // Ensure People panel is open (useful for visual confirmation)
-        await this.ensurePeoplePanelOpen()
 
         this.isObserving = true
         console.log('[Meet] ✅ Observer started successfully')
@@ -91,57 +135,7 @@ export class MeetSpeakersObserver {
 
         console.log('[Meet] Stopping observation...')
         this.isObserving = false
+        this.previousSpeakerState.clear()
         console.log('[Meet] ✅ Observer stopped')
-    }
-
-    private async ensurePeoplePanelOpen(): Promise<void> {
-        try {
-            await this.page.evaluate(() => {
-                // Check if People panel is already open
-                const participantsList = document.querySelector(
-                    "[aria-label='Participants']",
-                )
-                if (participantsList) {
-                    console.log('[Meet-Browser] People panel already open')
-                    return
-                }
-
-                console.log(
-                    '[Meet-Browser] People panel not open, trying to open it...',
-                )
-
-                // Try multiple selectors for the people button
-                const possibleSelectors = [
-                    "[aria-label='Show everyone']",
-                    "[aria-label='People']",
-                    "[data-tooltip='Show everyone']",
-                    "[data-tooltip='People']",
-                    "button[aria-label*='people' i]",
-                    "button[aria-label*='participants' i]",
-                    "button[title*='people' i]",
-                    "button[title*='participants' i]",
-                ]
-
-                for (const selector of possibleSelectors) {
-                    const button = document.querySelector(
-                        selector,
-                    ) as HTMLElement
-                    if (button && button.offsetParent !== null) {
-                        // Check if visible
-                        console.log(
-                            `[Meet-Browser] Found people button with selector: ${selector}`,
-                        )
-                        button.click()
-                        return
-                    }
-                }
-
-                console.warn(
-                    '[Meet-Browser] Could not find people button to open panel',
-                )
-            })
-        } catch (error) {
-            console.warn('[Meet] Failed to ensure people panel is open:', error)
-        }
     }
 }
