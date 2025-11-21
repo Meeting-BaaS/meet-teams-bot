@@ -27,22 +27,46 @@ export class TeamsProvider implements MeetingProviderInterface {
     page.setDefaultTimeout(30000)
     page.setDefaultNavigationTimeout(30000)
 
-    // Set permissions based on streaming_input
-    if (streaming_input) {
-      await browserContext.grantPermissions(["microphone", "camera"], {
-        origin: url.origin
-      })
-    } else {
-      await browserContext.grantPermissions(["camera"], {
-        origin: url.origin
-      })
-    }
+    // Always grant permissions for microphone and camera
+    // Required to capture sound and video
+    await browserContext.grantPermissions(["microphone", "camera"], {
+      origin: url.origin
+    })
 
     try {
       await page.goto(link, {
-        waitUntil: "domcontentloaded",
-        timeout: 15000 // Reduced from 30s
+        waitUntil: "load",
+        timeout: 15000
       })
+
+      // Check for page freeze after goto
+      let pageFrozen = false
+      try {
+        await Promise.race([
+          page.evaluate(() => document.readyState),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error("Page freeze timeout after goto")),
+              10000 // 10 seconds timeout to detect freeze
+            )
+          )
+        ])
+      } catch (_e) {
+        pageFrozen = true
+        console.warn(`⚠️ Page appears to be frozen after goto (attempt ${attempts + 1}/3)`)
+      }
+
+      // Retry if frozen and we haven't exceeded max attempts
+      if (pageFrozen && attempts < 3) {
+        await page.close()
+        console.log(`🔄 Page freeze detected, retrying... (${attempts + 1}/3)`)
+        await sleep(1000) // Wait before retry
+        return await this.openMeetingPage(browserContext, link, streaming_input, attempts + 1)
+      }
+      if (pageFrozen && attempts >= 3) {
+        console.warn("⚠️ Page freeze persists after 3 retries, continuing anyway...")
+        // Continue - page might recover later
+      }
 
       // Quick check for buttons with reduced timeout
       await Promise.race([
@@ -208,6 +232,13 @@ export class TeamsProvider implements MeetingProviderInterface {
       console.warn('Additional "Continue without audio" attempt failed:', e)
     }
 
+    const streaming_input = GLOBAL.get().streaming_input
+    if (streaming_input) {
+      await Promise.race([activateMicrophone(page), sleep(2000)])
+    } else {
+      await Promise.race([deactivateMicrophone(page), sleep(2000)])
+    }
+
     if (isLightInterface) {
       try {
         await handlePermissionDialog(page)
@@ -219,13 +250,6 @@ export class TeamsProvider implements MeetingProviderInterface {
             throw new Error("Camera timeout")
           })
         ]).catch((e) => console.warn("Camera setup failed:", e instanceof Error ? e.message : e))
-
-        const streaming_input = GLOBAL.get().streaming_input
-        if (streaming_input) {
-          await Promise.race([activateMicrophone(page), sleep(2000)])
-        } else {
-          await Promise.race([deactivateMicrophone(page), sleep(2000)])
-        }
       } catch (e) {
         console.warn(
           "Camera/mic setup failed, continuing:",
@@ -320,6 +344,22 @@ export class TeamsProvider implements MeetingProviderInterface {
   async findEndMeeting(page: Page): Promise<boolean> {
     // Check if we're on a Microsoft login page
     if (await isOnMicrosoftLoginPage(page)) {
+      return true
+    }
+
+    // Check for page freeze
+    try {
+      await Promise.race([
+        page.evaluate(() => document.readyState),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("Page freeze timeout")),
+            20000 // 20 seconds timeout like Meet
+          )
+        )
+      ])
+    } catch (_e) {
+      console.log("Page appears to be frozen for 20 seconds - meeting likely ended")
       return true
     }
 
@@ -592,22 +632,45 @@ async function activateCamera(page: Page): Promise<void> {
   }
 }
 
+async function isMicrophoneMuted(page: Page): Promise<boolean> {
+  // Teams shows unmute mic title when microphone is muted
+  const unmuteMicButton = page.locator('button[title="Unmute mic"]')
+  if ((await unmuteMicButton.count()) > 0) {
+    console.log("[Teams] Microphone is muted")
+    return true
+  }
+
+  // Teams shows mute mic title when microphone is not muted
+  const muteMicButton = page.locator('button[title="Mute mic"]')
+  if ((await muteMicButton.count()) > 0) {
+    console.log("[Teams] Microphone is not muted")
+    return false
+  }
+
+  // Default assumption if we cannot determine state
+  console.warn("[Teams] Unable to determine microphone state, assuming unmuted")
+  return false
+}
+
+async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
+  await page.keyboard.down("Control")
+  await page.keyboard.down("Shift")
+  await page.keyboard.press("KeyM")
+  await page.keyboard.up("Shift")
+  await page.keyboard.up("Control")
+  console.log("Microphone toggle shortcut sent (Ctrl+Shift+M)")
+}
+
 async function activateMicrophone(page: Page): Promise<void> {
   console.log("activating microphone")
   try {
-    const micOffText = page.locator('text="Your microphone is muted"')
-    if ((await micOffText.count()) > 0) {
-      const micButton = page.locator('button[title="Unmute"]')
-      if ((await micButton.count()) > 0) {
-        await micButton.click()
-        console.log("Microphone unmuted successfully")
-        await sleep(500)
-      } else {
-        console.log("Failed to find unmute button")
-      }
-    } else {
-      console.log("Microphone is already on or text not found")
+    if (!(await isMicrophoneMuted(page))) {
+      return
     }
+    await toggleMicrophoneWithShortcut(page)
+
+    // Give Teams a moment to apply the state change
+    await sleep(500)
   } catch (error) {
     console.error("Failed to activate microphone:", error)
   }
@@ -616,19 +679,13 @@ async function activateMicrophone(page: Page): Promise<void> {
 async function deactivateMicrophone(page: Page): Promise<void> {
   console.log("deactivating microphone")
   try {
-    const micOnText = page.locator('text="Your microphone is on"')
-    if ((await micOnText.count()) > 0) {
-      const micButton = page.locator('button[title="Mute"]')
-      if ((await micButton.count()) > 0) {
-        await micButton.click()
-        console.log("Microphone muted successfully")
-        await sleep(500)
-      } else {
-        console.log("Failed to find mute button")
-      }
-    } else {
-      console.log("Microphone is already muted or text not found")
+    if (await isMicrophoneMuted(page)) {
+      return
     }
+    await toggleMicrophoneWithShortcut(page)
+
+    // Give Teams a moment to apply the state change
+    await sleep(500)
   } catch (error) {
     console.error("Failed to deactivate microphone:", error)
   }

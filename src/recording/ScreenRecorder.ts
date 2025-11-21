@@ -21,13 +21,31 @@ const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = "192k" // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
 const SCREENSHOT_PERIOD = 5 // every 5 seconds instead of 2
-const SCREENSHOT_WIDTH = 480 // reduced for smaller file size
-const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (16:9 ratio)
+const SCREENSHOT_WIDTH = 480 // reduced for smaller file size (fixed, not affected by RESOLUTION)
+const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (fixed, not affected by RESOLUTION)
 const MIN_AUDIO_CHUNK_SIZE = 100 * 1024 // 100KB
 
 // Environment variables for display and virtual speaker monitor
 const DISPLAY = envVars.DISPLAY
 const VIRTUAL_SPEAKER_MONITOR = envVars.VIRTUAL_SPEAKER_MONITOR
+
+// Resolution configuration from environment variable (defaults to 720p)
+function getResolution(): { width: number; height: number; captureHeight: number } {
+  const resolution = envVars.RESOLUTION
+  if (resolution === "1080") {
+    return {
+      width: 1920,
+      height: 1080,
+      captureHeight: 1240 // 1080 + 160px for browser bar
+    }
+  }
+  // Default to 720p
+  return {
+    width: 1280,
+    height: 720,
+    captureHeight: 880 // 720 + 160px for browser bar
+  }
+}
 
 // Dynamic timeout configuration
 const FFMPEG_TIMEOUTS = {
@@ -241,8 +259,11 @@ export class ScreenRecorder extends EventEmitter {
 
   private buildNativeFFmpegArgs(): string[] {
     const args: string[] = []
+    const res = getResolution()
 
-    console.log("🛠️ Building FFmpeg args for separate audio/video recording...")
+    console.log(
+      `🛠️ Building FFmpeg args for separate audio/video recording (resolution: ${res.width}x${res.height})...`
+    )
 
     const screenshotsPath = PathManager.getInstance().getScreenshotsPath()
     const timestamp = Date.now()
@@ -258,7 +279,7 @@ export class ScreenRecorder extends EventEmitter {
         "-f",
         "pulse",
         "-thread_queue_size",
-        "16384",
+        "4096", // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
         "-i",
         VIRTUAL_SPEAKER_MONITOR,
 
@@ -266,7 +287,7 @@ export class ScreenRecorder extends EventEmitter {
         "-f",
         "x11grab",
         "-video_size",
-        "1280x880",
+        `${res.width}x${res.captureHeight}`,
         "-framerate",
         "30",
         "-i",
@@ -290,7 +311,7 @@ export class ScreenRecorder extends EventEmitter {
         "-map",
         "1:v:0",
         "-vf",
-        `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+        `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
         "-q:v",
         "3", // High quality JPEG compression
         "-f",
@@ -307,6 +328,10 @@ export class ScreenRecorder extends EventEmitter {
         "1",
         "-ar",
         STREAMING_SAMPLE_RATE.toString(),
+        "-fflags",
+        "nobuffer",
+        "-flags",
+        "low_delay",
         "-f",
         "f32le",
         "pipe:1"
@@ -322,7 +347,7 @@ export class ScreenRecorder extends EventEmitter {
         "-f",
         "x11grab",
         "-video_size",
-        "1280x880",
+        `${res.width}x${res.captureHeight}`,
         "-framerate",
         "30",
         "-i",
@@ -332,7 +357,9 @@ export class ScreenRecorder extends EventEmitter {
         "-f",
         "pulse",
         "-thread_queue_size",
-        "16384",
+        "4096", // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
+        "-fflags",
+        "nobuffer",
         "-i",
         VIRTUAL_SPEAKER_MONITOR,
 
@@ -360,7 +387,7 @@ export class ScreenRecorder extends EventEmitter {
         "-refs",
         "1",
         "-vf",
-        "crop=1280:720:0:160",
+        `crop=${res.width}:${res.height}:0:160`,
         "-avoid_negative_ts",
         "make_zero",
         "-f",
@@ -387,7 +414,7 @@ export class ScreenRecorder extends EventEmitter {
         "-map",
         "0:v:0",
         "-vf",
-        `fps=${1 / SCREENSHOT_PERIOD},crop=1280:720:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+        `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
         "-q:v",
         "3", // High quality JPEG compression
         "-f",
@@ -404,6 +431,10 @@ export class ScreenRecorder extends EventEmitter {
         "1",
         "-ar",
         STREAMING_SAMPLE_RATE.toString(),
+        "-fflags",
+        "nobuffer",
+        "-flags",
+        "low_delay",
         "-f",
         "f32le",
         "pipe:1"
@@ -452,7 +483,7 @@ export class ScreenRecorder extends EventEmitter {
 
     // Enhanced error monitoring for PulseAudio issues
     let errorCount = 0
-    const maxErrors = 15 // Higher threshold since we increased buffer sizes
+    const maxErrors = 15 // Threshold for PulseAudio errors (buffer reduced to 4096 for latency)
     const errorWindowMs = 60000 // 60 seconds window
     let lastErrorTime = 0
     const errorCooldownMs = 10000 // 10 second cooldown - less aggressive

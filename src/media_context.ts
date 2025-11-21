@@ -6,7 +6,7 @@ import { envVars } from "./config/env-vars"
 // sudo apt install linux-modules-extra-`uname -r`
 // The env variable VIRTUAL_MIC is used to set the virtual mic name. It needs to be prefixed with 'pulse:'
 const MICRO_DEVICE: string = `pulse:${envVars.VIRTUAL_MIC}` // pulseaudio virtual mic
-const CAMERA_DEVICE: string = envVars.VIDEO_DEVICE || "/dev/video10"
+const CAMERA_DEVICE: string = envVars.VIDEO_DEVICE
 
 // This abstract claas contains the current ffmpeg process
 // A derived class must implement play and stop methods
@@ -37,9 +37,29 @@ abstract class MediaContext {
     this.process = spawn("ffmpeg", args, {
       stdio: ["pipe", "pipe", "pipe"]
     })
+
+    const stdoutListener = (data: Buffer) => {
+      console.log(`[ffmpeg stdout] ${data.toString()}`)
+    }
+    const stderrListener = (data: Buffer) => {
+      const output = data.toString()
+      // Filter out repetitive fps progress updates, but keep important diagnostic info
+      // Note: FFmpeg outputs normal logs to stderr, not just errors, so we use console.log
+      if (output.trim() && !output.match(/^frame=\s*\d+\s+fps=\s*[\d.]+\s+q=/)) {
+        // Filter repetitive progress lines
+        console.log(`[ffmpeg stderr] ${output}`)
+      }
+    }
+
+    this.process.stdout.addListener("data", stdoutListener)
+    this.process.stderr.addListener("data", stderrListener)
+
     this.promise = new Promise((resolve, reject) => {
       this.process.on("exit", (code) => {
         console.log(`process exited with code ${code}`)
+        // Remove event listeners to prevent memory leaks
+        this.process.stdout.removeListener("data", stdoutListener)
+        this.process.stderr.removeListener("data", stderrListener)
         if (code === 0) {
           this.process = null
           after()
@@ -48,15 +68,10 @@ abstract class MediaContext {
       })
       this.process.on("error", (err) => {
         console.error(err)
+        // Remove event listeners to prevent memory leaks
+        this.process.stdout.removeListener("data", stdoutListener)
+        this.process.stderr.removeListener("data", stderrListener)
         reject(err)
-      })
-
-      // IO output
-      this.process.stdout.on("data", (_data) => {
-        // console.log(`stdout: ${_data}`)
-      })
-      this.process.stderr.on("data", (_data) => {
-        // console.error(`stderr: ${_data}`)
       })
     })
     return this.process
@@ -157,8 +172,8 @@ export class SoundContext extends MediaContext {
 // Conversion failed!
 export class VideoContext extends MediaContext {
   public static instance: VideoContext
-  static readonly WIDTH: number = 640
-  static readonly HEIGHT: number = 360
+  static readonly WIDTH: number = 1280
+  static readonly HEIGHT: number = 720
 
   constructor() {
     super()
@@ -166,7 +181,7 @@ export class VideoContext extends MediaContext {
   }
 
   public default() {
-    VideoContext.instance.play("../branding.yuv", true)
+    VideoContext.instance.play("../branding.mjpeg", true)
   }
 
   public play(pathname: string, loop: boolean) {
@@ -176,35 +191,23 @@ export class VideoContext extends MediaContext {
       return
     }
 
-    // ffmpeg -stream_loop -1 -re -f rawvideo -pix_fmt yuv420p -s 640x360 -r 30 -i branding.yuv -f v4l2 -vcodec rawvideo -s 640x360 /dev/video10
+    // ffmpeg -stream_loop -1 -re -i branding.mjpeg -f v4l2 -vcodec mjpeg -q:v 5 -threads 0 /dev/video10
     const args: string[] = []
     if (loop) {
       args.push("-stream_loop", "-1")
     }
     args.push(
       "-re",
-      "-f",
-      "rawvideo",
-      "-pix_fmt",
-      "yuv420p",
-      "-s",
-      `${VideoContext.WIDTH}x${VideoContext.HEIGHT}`,
-      "-r",
-      "30",
       "-i",
       pathname,
       "-f",
       "v4l2",
       "-vcodec",
-      "rawvideo",
-      "-colorspace",
-      "bt709",
-      "-color_primaries",
-      "bt709",
-      "-color_trc",
-      "bt709",
-      "-color_range",
-      "tv",
+      "mjpeg",
+      "-q:v",
+      "5",
+      "-threads",
+      "0",
       CAMERA_DEVICE
     )
     super.execute(args, this.default)
