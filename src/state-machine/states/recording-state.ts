@@ -9,19 +9,16 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 
+import { Api } from '../../api/methods'
 import {
     AudioWarningEvent,
     ScreenRecorderManager,
 } from '../../recording/ScreenRecorder'
-import { Api } from '../../api/methods'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
 import { uploadTranscriptTask } from '../../uploadTranscripts'
-import { MeetingStateMachine } from '../machine'
 import { sleep } from '../../utils/sleep'
-
-// Sound level threshold for considering activity (0-100)
-const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
+import { MeetingStateMachine } from '../machine'
 
 export class RecordingState extends BaseState {
     private isProcessing: boolean = true
@@ -32,6 +29,11 @@ export class RecordingState extends BaseState {
     async execute(): StateExecuteResult {
         try {
             console.info('Starting recording state')
+
+            // Reset sound detection at the start of actual meeting recording
+            // (ignore sync beep that happens before this state)
+            GLOBAL.setSoundDetectedInMeeting(false)
+            GLOBAL.setLastSilenceStart(null)
 
             // Initialize recording
             await this.initializeRecording()
@@ -210,7 +212,7 @@ export class RecordingState extends BaseState {
             if (Streaming.instance) {
                 const currentSoundLevel =
                     Streaming.instance.getCurrentSoundLevel()
-                if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+                if (currentSoundLevel > MEETING_CONSTANTS.SOUND_LEVEL_ACTIVITY_THRESHOLD) {
                     // Only log once per 2 seconds to avoid spam
                     if (now - this.lastSoundActivity >= 2000) {
                         console.log(

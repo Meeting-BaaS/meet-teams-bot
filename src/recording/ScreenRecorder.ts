@@ -9,6 +9,7 @@ import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
 
 import { HtmlSnapshotService } from '../services/html-snapshot-service'
+import { MEETING_CONSTANTS } from '../state-machine/constants'
 import { calculateVideoOffset } from '../utils/CalculVideoOffset'
 import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
@@ -120,7 +121,6 @@ export class ScreenRecorder extends EventEmitter {
     private config: ScreenRecordingConfig
     private isRecording: boolean = false
     private filesUploaded: boolean = false
-    private recordingStartTime: number = 0
     private meetingStartTime: number = 0
     private gracePeriodActive: boolean = false
     private rawAudioPath: string = ''
@@ -178,7 +178,7 @@ export class ScreenRecorder extends EventEmitter {
             })
 
             this.isRecording = true
-            this.recordingStartTime = Date.now()
+            GLOBAL.setRecordingStartTime(Date.now())
             this.gracePeriodActive = false
             this.logMemoryUsage('Starting recording')
             this.setupProcessMonitoring()
@@ -552,8 +552,8 @@ export class ScreenRecorder extends EventEmitter {
                 ) {
                     const now = Date.now()
                     const recordingDurationSeconds =
-                        this.recordingStartTime > 0
-                            ? (now - this.recordingStartTime) / 1000
+                        GLOBAL.getRecordingStartTime() > 0
+                            ? (now - GLOBAL.getRecordingStartTime()) / 1000
                             : 0
 
                     // Log file size at time of error for diagnostics
@@ -614,7 +614,7 @@ export class ScreenRecorder extends EventEmitter {
                     const memoryUsage = process.memoryUsage()
                     const memoryMB = Math.round(memoryUsage.rss / 1024 / 1024)
                     const uptime = Math.round(
-                        (Date.now() - this.recordingStartTime) / 1000,
+                        (Date.now() - GLOBAL.getRecordingStartTime()) / 1000,
                     )
 
                     console.warn(
@@ -715,7 +715,7 @@ export class ScreenRecorder extends EventEmitter {
                 const currentSize = stats.size
                 const currentTime = Date.now()
                 const recordingDurationSeconds =
-                    (currentTime - this.recordingStartTime) / 1000
+                    (currentTime - GLOBAL.getRecordingStartTime()) / 1000
                 const sizeMB = (currentSize / (1024 * 1024)).toFixed(2)
 
                 // Check if file size has grown since last check
@@ -824,8 +824,8 @@ export class ScreenRecorder extends EventEmitter {
                 const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
                 const sizeBytes = stats.size
                 const recordingDurationSeconds =
-                    this.recordingStartTime > 0
-                        ? (Date.now() - this.recordingStartTime) / 1000
+                    GLOBAL.getRecordingStartTime() > 0
+                        ? (Date.now() - GLOBAL.getRecordingStartTime()) / 1000
                         : 0
 
                 console.log(
@@ -1028,8 +1028,8 @@ export class ScreenRecorder extends EventEmitter {
             isRecording: this.isRecording,
             gracePeriodActive: this.gracePeriodActive,
             recordingDurationMs:
-                this.recordingStartTime > 0
-                    ? Date.now() - this.recordingStartTime
+                GLOBAL.getRecordingStartTime() > 0
+                    ? Date.now() - GLOBAL.getRecordingStartTime()
                     : 0,
         }
     }
@@ -1097,16 +1097,52 @@ export class ScreenRecorder extends EventEmitter {
                 const fileSizeBytes = stats.size
                 const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
                 const recordingDurationSeconds =
-                    this.recordingStartTime > 0
-                        ? (Date.now() - this.recordingStartTime) / 1000
+                    GLOBAL.getRecordingStartTime() > 0
+                        ? (Date.now() - GLOBAL.getRecordingStartTime()) / 1000
                         : 0
 
                 console.log(
                     `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
                 )
 
-                // Copy raw audio to final output location
-                fs.copyFileSync(rawAudioPath, this.audioOutputPath)
+                // Trim silence from end if detected (only if sound was detected during meeting)
+                let finalAudioPath = rawAudioPath
+                if (GLOBAL.getSoundDetectedInMeeting()) {
+                    const lastSilenceStart = GLOBAL.getLastSilenceStart()
+                    if (lastSilenceStart !== null && GLOBAL.getRecordingStartTime() > 0) {
+                        // Check if audio file exists and has content
+                        const stats = fs.existsSync(rawAudioPath) ? fs.statSync(rawAudioPath) : null
+                        if (stats && stats.size > 0) {
+                            // Calculate silence duration from recording start time
+                            const silenceStartInRecording = (lastSilenceStart - GLOBAL.getRecordingStartTime()) / 1000 // seconds
+                            const audioDuration = await this.getDuration(rawAudioPath)
+                            const silenceDurationSeconds = audioDuration - silenceStartInRecording
+                            const maxTrimSeconds = MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000 // 10 minutes
+                            const trimSeconds = Math.min(Math.max(0, silenceDurationSeconds), maxTrimSeconds)
+
+                            if (trimSeconds > 1) {
+                                // Only trim if more than 1 second of silence
+                                console.log(
+                                    `🔇 Trimming ${trimSeconds.toFixed(3)}s of silence from audio end (silence started at ${silenceStartInRecording.toFixed(3)}s)`,
+                                )
+                                const trimmedAudioPath = path.join(tempDir, 'trimmed_end.flac')
+                                await this.trimAudioEnd(
+                                    rawAudioPath,
+                                    trimmedAudioPath,
+                                    trimSeconds,
+                                )
+                                finalAudioPath = trimmedAudioPath
+                            }
+                        } else {
+                            console.log('⚠️ Audio file is empty (0 bytes), skipping silence trimming')
+                        }
+                    }
+                } else {
+                    console.log('ℹ️ No sound detected during meeting, keeping full recording (no trimming)')
+                }
+
+                // Copy processed audio to final output location
+                fs.copyFileSync(finalAudioPath, this.audioOutputPath)
                 console.log(`✅ Audio copied to: ${this.audioOutputPath}`)
 
                 // Create audio chunks from the final audio file
@@ -1134,8 +1170,8 @@ export class ScreenRecorder extends EventEmitter {
             const fileSizeBytes = stats.size
             const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
             const recordingDurationSeconds =
-                this.recordingStartTime > 0
-                    ? (Date.now() - this.recordingStartTime) / 1000
+                GLOBAL.getRecordingStartTime() > 0
+                    ? (Date.now() - GLOBAL.getRecordingStartTime()) / 1000
                     : 0
 
             console.log(
@@ -1161,15 +1197,15 @@ export class ScreenRecorder extends EventEmitter {
                 `❌ Bot not accepted - meetingStartTime not set (${this.meetingStartTime})`,
             )
             console.error(`📊 Timing debug:`)
-            console.error(`   recordingStartTime: ${this.recordingStartTime}`)
+            console.error(`   recordingStartTime: ${GLOBAL.getRecordingStartTime()}`)
             console.error(`   meetingStartTime: ${this.meetingStartTime}`)
             console.error(`   Current time: ${Date.now()}`)
             console.error(
-                `   Recording duration: ${Date.now() - this.recordingStartTime}ms`,
+                `   Recording duration: ${Date.now() - GLOBAL.getRecordingStartTime()}ms`,
             )
 
             // Fallback: if we have a reasonable recording duration (>10s), set meetingStartTime to 5s before bot removal
-            const recordingDuration = Date.now() - this.recordingStartTime
+            const recordingDuration = Date.now() - GLOBAL.getRecordingStartTime()
             if (recordingDuration > 10000) {
                 // 10 seconds minimum
                 console.warn(
@@ -1186,7 +1222,7 @@ export class ScreenRecorder extends EventEmitter {
         const calcOffsetVideo =
             syncResult.videoTimestamp +
             (this.meetingStartTime -
-                this.recordingStartTime -
+                GLOBAL.getRecordingStartTime() -
                 FLASH_SCREEN_SLEEP_TIME) /
                 1000
 
@@ -1198,10 +1234,10 @@ export class ScreenRecorder extends EventEmitter {
             `   syncResult.audioTimestamp: ${syncResult.audioTimestamp}s`,
         )
         console.log(`   meetingStartTime: ${this.meetingStartTime}`)
-        console.log(`   recordingStartTime: ${this.recordingStartTime}`)
+        console.log(`   recordingStartTime: ${GLOBAL.getRecordingStartTime()}`)
         console.log(`   FLASH_SCREEN_SLEEP_TIME: ${FLASH_SCREEN_SLEEP_TIME}`)
         console.log(
-            `   Time diff: ${(this.meetingStartTime - this.recordingStartTime - FLASH_SCREEN_SLEEP_TIME) / 1000}s`,
+            `   Time diff: ${(this.meetingStartTime - GLOBAL.getRecordingStartTime() - FLASH_SCREEN_SLEEP_TIME) / 1000}s`,
         )
 
         // 4. Calculate audio padding needed (can be negative for trimming)
@@ -1241,12 +1277,38 @@ export class ScreenRecorder extends EventEmitter {
 
         const videoDuration = await this.getDuration(rawVideoPath)
         const audioDuration = await this.getDuration(processedAudioPath)
-        const finalDuration = Math.min(
+        
+        // 7. Calculate silence trim duration if detected (before final trim)
+        // Only trim if sound was detected during meeting (not for completely silent meetings)
+        let silenceTrimSeconds = 0
+        if (GLOBAL.getSoundDetectedInMeeting()) {
+            const lastSilenceStart = GLOBAL.getLastSilenceStart()
+            if (lastSilenceStart !== null && GLOBAL.getRecordingStartTime() > 0 && audioDuration > 0) {
+                // Calculate silence duration from recording start time
+                // lastSilenceStart is absolute timestamp, convert to relative position in recording
+                const silenceStartInRecording = (lastSilenceStart - GLOBAL.getRecordingStartTime()) / 1000 // seconds
+                const silenceDurationSeconds = audioDuration - silenceStartInRecording
+                const maxTrimSeconds = MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000 // 10 minutes
+                silenceTrimSeconds = Math.min(Math.max(0, silenceDurationSeconds), maxTrimSeconds)
+
+                if (silenceTrimSeconds > 1) {
+                    console.log(
+                        `🔇 Will trim ${silenceTrimSeconds.toFixed(3)}s of silence from end (silence started at ${silenceStartInRecording.toFixed(3)}s)`,
+                    )
+                }
+            }
+        } else {
+            console.log('ℹ️ No sound detected during meeting, keeping full recording (no trimming)')
+        }
+
+        // 8. Calculate final duration (accounting for silence trim)
+        const baseDuration = Math.min(
             videoDuration - calcOffsetVideo,
             audioDuration,
         )
+        const finalDuration = Math.max(0, baseDuration - silenceTrimSeconds)
 
-        console.log(`📊 Final duration: ${finalDuration.toFixed(2)}s`)
+        console.log(`📊 Final duration: ${finalDuration.toFixed(2)}s (${baseDuration.toFixed(2)}s base - ${silenceTrimSeconds.toFixed(2)}s silence)`)
         await this.finalTrimFromOffset(
             mergedPath,
             this.outputPath,
@@ -1254,7 +1316,7 @@ export class ScreenRecorder extends EventEmitter {
             finalDuration,
         )
 
-        // 7. Extract audio from the final trimmed video (ensures perfect sync)
+        // 9. Extract audio from the final trimmed video (ensures perfect sync)
         try {
             await this.extractAudioFromVideo(
                 this.outputPath,
@@ -1264,7 +1326,7 @@ export class ScreenRecorder extends EventEmitter {
                 `✅ Audio extracted from final video: ${this.audioOutputPath}`,
             )
 
-            // 8. Create audio chunks from the extracted audio
+            // 10. Create audio chunks from the extracted audio
             await this.createAudioChunks(this.audioOutputPath)
         } catch (error) {
             console.warn(
@@ -1276,7 +1338,7 @@ export class ScreenRecorder extends EventEmitter {
             // Don't throw - allow cleanup to continue
         }
 
-        // 9. Cleanup temporary files
+        // 11. Cleanup temporary files
         await this.cleanupTempFiles([
             rawVideoPath,
             rawAudioPath,
@@ -1385,6 +1447,47 @@ file '${absoluteInputPath}'`
             `✂️ Trimming ${trimSeconds.toFixed(3)}s from audio start (re-encoding for clean timestamps)`,
         )
         await this.runFFmpeg(args, 'trimAudioStart', trimSeconds)
+    }
+
+    private async trimAudioEnd(
+        inputAudioPath: string,
+        outputAudioPath: string,
+        trimSeconds: number,
+    ): Promise<void> {
+        // Get audio duration first
+        const audioDuration = await this.getDuration(inputAudioPath)
+        const newDuration = Math.max(0, audioDuration - trimSeconds)
+
+        if (newDuration <= 0) {
+            console.warn(
+                `⚠️ Cannot trim ${trimSeconds.toFixed(3)}s from end: audio duration is only ${audioDuration.toFixed(3)}s`,
+            )
+            // Copy original file if trimming would remove everything
+            fs.copyFileSync(inputAudioPath, outputAudioPath)
+            return
+        }
+
+        const args = [
+            '-i',
+            inputAudioPath,
+            '-t',
+            newDuration.toString(),
+            '-sample_fmt',
+            's16', // Re-encode instead of copy to ensure clean timestamps
+            '-ar',
+            AUDIO_SAMPLE_RATE.toString(),
+            '-ac',
+            '1',
+            '-avoid_negative_ts',
+            'make_zero',
+            '-y',
+            outputAudioPath,
+        ]
+
+        console.log(
+            `✂️ Trimming ${trimSeconds.toFixed(3)}s from audio end (keeping ${newDuration.toFixed(3)}s, re-encoding for clean timestamps)`,
+        )
+        await this.runFFmpeg(args, 'trimAudioEnd', trimSeconds)
     }
 
     private async mergeWithSync(

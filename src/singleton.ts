@@ -9,6 +9,9 @@ class Global {
     private meetingParams: MeetingParams | null = null
     private endReason: MeetingEndReason | null = null
     private errorMessage: string | null = null
+    private lastSilenceStart: number | null = null // Timestamp when silence started (ms)
+    private soundDetectedInMeeting: boolean = false // True if sound was detected during meeting
+    private recordingStartTime: number = 0 // Timestamp when FFmpeg recording started (ms)
     public constructor() {}
 
     /**
@@ -165,6 +168,36 @@ class Global {
         // Only clear the error message, keep the end reason
         // This allows normal termination reasons to be preserved
         this.errorMessage = null
+    }
+
+    public setLastSilenceStart(timestamp: number | null): void {
+        // Only set if not already set (don't overwrite existing silence start)
+        if (this.lastSilenceStart === null) {
+            this.lastSilenceStart = timestamp
+        } else if (timestamp === null) {
+            // Reset silence start when sound is detected
+            this.lastSilenceStart = null
+        }
+    }
+
+    public getLastSilenceStart(): number | null {
+        return this.lastSilenceStart
+    }
+
+    public setSoundDetectedInMeeting(detected: boolean): void {
+        this.soundDetectedInMeeting = detected
+    }
+
+    public getSoundDetectedInMeeting(): boolean {
+        return this.soundDetectedInMeeting
+    }
+
+    public setRecordingStartTime(timestamp: number): void {
+        this.recordingStartTime = timestamp
+    }
+
+    public getRecordingStartTime(): number {
+        return this.recordingStartTime
     }
 }
 

@@ -1,9 +1,10 @@
 import * as fs from 'fs'
-import { IncomingMessage } from 'http'
 import { Readable } from 'stream'
-import { RawData, Server, WebSocket } from 'ws'
+import { RawData, WebSocket } from 'ws'
 
 import { SoundContext } from './media_context'
+import { GLOBAL } from './singleton'
+import { MEETING_CONSTANTS } from './state-machine/constants'
 import { SpeakerData } from './types'
 import { PathManager } from './utils/PathManager'
 
@@ -366,8 +367,34 @@ export class Streaming {
         // Update current level for real-time monitoring
         this.currentSoundLevel = normalizedLevel
 
-        // Throttled file logging
+        // Track silence for end trimming
+        // Ignore sounds in first seconds after FFmpeg recording starts (sync beep happens at ~4.5s + 0.8s duration)
         const now = Date.now()
+        const recordingStartTime = GLOBAL.getRecordingStartTime()
+        
+        // Only track sounds if recording has started
+        if (recordingStartTime > 0) {
+            const timeSinceRecordingStart = (now - recordingStartTime) / 1000
+            
+            if (normalizedLevel > MEETING_CONSTANTS.SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+                // Only count as meeting sound if it's after the sync beep window
+                if (timeSinceRecordingStart > MEETING_CONSTANTS.SYNC_BEEP_IGNORE_WINDOW) {
+                    // Sound detected: mark as detected and reset silence start
+                    GLOBAL.setSoundDetectedInMeeting(true)
+                    GLOBAL.setLastSilenceStart(null)
+                }
+                // Ignore sounds in first 10 seconds (sync beep)
+            } else {
+                // Silence detected: set timestamp if not already set
+                // Only start tracking silence after sync beep window
+                if (GLOBAL.getLastSilenceStart() === null && timeSinceRecordingStart > MEETING_CONSTANTS.SYNC_BEEP_IGNORE_WINDOW) {
+                    GLOBAL.setLastSilenceStart(now)
+                }
+            }
+        }
+        // If recording hasn't started yet, ignore all sounds
+
+        // Throttled file logging
         if (now - this.lastSoundLogTime_ms >= this.SOUND_LOG_INTERVAL_MS) {
             const timestamp = new Date(now).toISOString()
             const logEntry = `${timestamp},${normalizedLevel.toFixed(0)}\n`
