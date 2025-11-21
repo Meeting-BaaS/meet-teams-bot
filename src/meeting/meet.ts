@@ -60,16 +60,11 @@ export class MeetProvider implements MeetingProviderInterface {
 
             // Create a wrapper function that will always use the current callback
             const networkCallbackWrapper = (payload: any) => {
-                console.error(
-                    `[Meet] 🔔 Network callback wrapper called: ${payload.users?.length || 0} users, speakerCallback: ${speakerCallback ? 'SET' : 'NULL'}`,
-                )
                 // Call the current callback if it exists
                 if (speakerCallback) {
-                    console.error(
-                        `[Meet] ✅ Calling speakerCallback with ${payload.users?.length || 0} users`,
-                    )
                     speakerCallback(payload)
                 } else {
+                    // Only log error when callback is missing (error condition)
                     console.error(
                         `[Meet] ⚠️ Network data received (no callback set): ${payload.users?.length || 0} users`,
                     )
@@ -352,7 +347,6 @@ export class MeetProvider implements MeetingProviderInterface {
             if (GLOBAL.get().enter_message) {
                 console.log('Sending entry message...')
                 await sendEntryMessage(page, GLOBAL.get().enter_message)
-                await sleep(100)
             }
 
             await clickOutsideModal(page)
@@ -1076,34 +1070,3 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
         return false
     }
 }
-// async function MuteMicrophone(page: Page) {
-//     try {
-//         await page.evaluate(() => {
-//             const tryClickMicrophone = () => {
-//                 const microphoneButtons = Array.from(
-//                     document.querySelectorAll('div'),
-//                 ).filter(
-//                     (el) =>
-//                         el.getAttribute('aria-label') &&
-//                         el
-//                             .getAttribute('aria-label')
-//                             .includes('Turn off microphone'),
-//                 )
-
-//                 if (microphoneButtons.length > 0) {
-//                     microphoneButtons.forEach((button) => button.click())
-//                     console.log(
-//                         `${microphoneButtons.length} microphone button(s) turned off.`,
-//                     )
-//                 } else {
-//                     console.log('No microphone button found. Retrying...')
-//                     setTimeout(tryClickMicrophone, 1000)
-//                 }
-//             }
-
-//             tryClickMicrophone()
-//         })
-//     } catch (e) {
-//         console.error('Error when trying to turn off the microphone:', e)
-//     }
-// }

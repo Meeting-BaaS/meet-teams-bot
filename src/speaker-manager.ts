@@ -14,6 +14,9 @@ export class SpeakerManager {
     private currentSpeaker: SpeakerData | null = null
     private readonly PAUSE_BETWEEN_SENTENCES = 1000 // 1 second
     private lastSpeakerTime: number | null = null
+    private previousSpeakerState: Map<string, { isSpeaking: boolean }> =
+        new Map()
+    private lastSpeakingCount: number = 0
 
     private constructor() {}
 
@@ -60,13 +63,55 @@ export class SpeakerManager {
 
     private async logSpeakers(speakers: SpeakerData[]): Promise<void> {
         const input = JSON.stringify(speakers)
-        const maskedSpeakers = speakers.map((speaker, index) => {
-            return {
-                ...speaker,
-                name: `Speaker ${index + 1}`,
+
+        // Check if there's a change in speaker state
+        const speakingCount = speakers.filter(
+            (s) => s.isSpeaking === true,
+        ).length
+        let hasChange = false
+
+        if (this.previousSpeakerState.size === 0) {
+            hasChange = true // Always log initial state
+        } else {
+            // Check if any speaker's state changed
+            hasChange = speakers.some((speaker) => {
+                const previousState = this.previousSpeakerState.get(
+                    speaker.name,
+                )
+                return (
+                    previousState === undefined ||
+                    previousState.isSpeaking !== speaker.isSpeaking
+                )
+            })
+            // Also check if the number of speaking participants changed
+            if (speakingCount !== this.lastSpeakingCount) {
+                hasChange = true
             }
-        })
-        console.table(maskedSpeakers)
+        }
+
+        // Only log if there's a change
+        if (hasChange) {
+            // Create masked version for console (anonymized names)
+            const maskedSpeakers = speakers.map((speaker, index) => {
+                return {
+                    ...speaker,
+                    name: `Speaker ${index + 1}`,
+                }
+            })
+            // Log anonymized speaker names to console
+            console.table(maskedSpeakers)
+
+            // Update previous state
+            this.previousSpeakerState.clear()
+            speakers.forEach((speaker) => {
+                this.previousSpeakerState.set(speaker.name, {
+                    isSpeaking: speaker.isSpeaking,
+                })
+            })
+            this.lastSpeakingCount = speakingCount
+        }
+
+        // Always append to file (for historical record)
         await fs.promises
             .appendFile(
                 PathManager.getInstance().getSpeakerLogPath(),
