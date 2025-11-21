@@ -23,8 +23,7 @@ export type ChatMessage = {
 export type NetworkPayload = {
     users: NetworkUser[]
     timestamp: number
-    source: 'roster' | 'audio' | 'chat'
-    chatMessages?: ChatMessage[]
+    source: 'roster' | 'audio'
 }
 
 // --- Browser Manager Types ---
