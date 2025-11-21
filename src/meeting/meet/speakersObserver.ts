@@ -38,10 +38,10 @@ export class MeetSpeakersObserver {
             ;(this.page as any)._updateNetworkCallback((payload: any) => {
                 try {
                     if (payload && payload.users) {
-                        // Filter out the bot itself
+                        // Filter out the bot itself (exclude if current user OR name matches bot name)
                         const filteredUsers = payload.users.filter(
                             (s: any) =>
-                                !s.isCurrentUser || s.name !== this.botName,
+                                !s.isCurrentUser && s.name !== this.botName,
                         )
 
                         // Convert network speakers to SpeakerData format
