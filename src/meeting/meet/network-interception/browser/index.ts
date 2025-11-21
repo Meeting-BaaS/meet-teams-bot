@@ -160,75 +160,8 @@ export function browserInterceptionLogic(schema: any[]) {
                                         )
                                     }
 
-                                    // Extract and broadcast chat messages
-                                    if (
-                                        wrapper
-                                            ?.userInfoListWrapperAndChatWrapper
-                                            ?.chatMessageWrapper
-                                    ) {
-                                        const chatWrappers =
-                                            wrapper
-                                                .userInfoListWrapperAndChatWrapper
-                                                .chatMessageWrapper
-                                        const chatMessages = chatWrappers
-                                            .map((wrapper: any) => {
-                                                const msg = wrapper?.chatMessage
-                                                if (!msg) return null
-
-                                                const allUsers =
-                                                    getAllUsers(userManager)
-                                                const sender = allUsers.find(
-                                                    (u: any) =>
-                                                        u.deviceId ===
-                                                        msg.deviceId,
-                                                )
-
-                                                return {
-                                                    messageId: msg.messageId,
-                                                    deviceId: msg.deviceId,
-                                                    timestamp: msg.timestamp,
-                                                    text:
-                                                        msg.chatMessageContent
-                                                            ?.text || '',
-                                                    senderName: sender
-                                                        ? decodeUserName(sender)
-                                                        : 'Unknown',
-                                                }
-                                            })
-                                            .filter((msg: any) => msg !== null)
-
-                                        if (
-                                            chatMessages.length > 0 &&
-                                            typeof (window as any)
-                                                .onNetworkSpeakerUpdate ===
-                                                'function'
-                                        ) {
-                                            ;(
-                                                window as any
-                                            ).onNetworkSpeakerUpdate({
-                                                users: getAllUsers(
-                                                    userManager,
-                                                ).map((user: any) => ({
-                                                    deviceId: user.deviceId,
-                                                    name: decodeUserName(user),
-                                                    isCurrentUser:
-                                                        user.isCurrentUserString ===
-                                                            'true' ||
-                                                        user.isCurrentUserString ===
-                                                            '1',
-                                                    isSpeaking: false,
-                                                    status: user.status,
-                                                    isHost: user.isHost === 1,
-                                                })),
-                                                timestamp: Date.now(),
-                                                source: 'chat',
-                                                chatMessages,
-                                            })
-                                            console.error(
-                                                `[NetworkInterceptor] 💬 Broadcast ${chatMessages.length} chat messages`,
-                                            )
-                                        }
-                                    }
+                                    // Chat messages available but not processed yet
+                                    // (Backend cannot handle them currently)
                                 }
                             } catch (e) {
                                 console.error(
