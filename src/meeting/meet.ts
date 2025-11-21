@@ -12,8 +12,7 @@ import { closeMeeting } from './meet/closeMeeting'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { MEET_STATE_CONFIG } from './meet-state-config'
 import { listenPage } from '../browser/page-logger'
-import { enableNetworkInterception } from './meet/networkInterceptor'
-import { sendChatMessage } from './meet/network-interception'
+import { enableNetworkInterception, sendChatMessage } from './meet/network-interception'
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
@@ -124,15 +123,6 @@ export class MeetProvider implements MeetingProviderInterface {
                     };
                 });
                 
-                if (!scriptCheck.hasTestMarker && !scriptCheck.hasMainMarker) {
-                    console.log('[Meet] Network interceptor scripts did not run automatically, evaluating directly...');
-                    // Re-evaluate the scripts directly
-                    const { enableNetworkInterception } = await import('./meet/networkInterceptor');
-                    // We can't easily re-inject here, but the load listener should handle it
-                }
-            } catch (e) {
-                console.warn('[Meet] Could not check network interceptor script status:', e);
-            }
 
 
             // Check for page freeze after goto (same as Teams)

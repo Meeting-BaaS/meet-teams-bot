@@ -10,10 +10,6 @@ export type NetworkUser = {
     status: number
     isHost: boolean
     audioLevel?: number
-    // PII fields for enhanced logging
-    fullName?: string
-    displayName?: string
-    profilePicture?: string
 }
 
 export type ChatMessage = {
@@ -27,7 +23,8 @@ export type ChatMessage = {
 export type NetworkPayload = {
     users: NetworkUser[]
     timestamp: number
-    source: 'roster' | 'audio'
+    source: 'roster' | 'audio' | 'chat'
+    chatMessages?: ChatMessage[]
 }
 
 // --- Browser Manager Types ---
