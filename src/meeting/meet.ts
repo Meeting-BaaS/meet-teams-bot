@@ -3,6 +3,7 @@ import { BrowserContext, Page } from '@playwright/test'
 import { MeetingEndReason } from '../state-machine/types'
 import { MeetingProviderInterface } from '../types'
 
+import { listenPage } from '../browser/page-logger'
 import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
@@ -11,8 +12,11 @@ import { formatError } from '../utils/Logger'
 import { closeMeeting } from './meet/closeMeeting'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { MEET_STATE_CONFIG } from './meet-state-config'
-import { enableNetworkInterception } from './meet/networkInterceptor'
 import { listenPage } from '../browser/page-logger'
+import {
+    enableNetworkInterception,
+    sendChatMessage,
+} from './meet/network-interception'
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
@@ -47,53 +51,78 @@ export class MeetProvider implements MeetingProviderInterface {
 
             // Set up network interception IMMEDIATELY after page creation, before ANY navigation
             // This ensures the script is injected before the page loads
-            console.log('[Meet] Setting up network interception before page load...')
+            console.log(
+                '[Meet] Setting up network interception before page load...',
+            )
 
             // Store a reference to the callback that can be updated later
-            let speakerCallback: ((payload: any) => void) | null = null;
+            let speakerCallback: ((payload: any) => void) | null = null
 
             // Create a wrapper function that will always use the current callback
             const networkCallbackWrapper = (payload: any) => {
-                console.error(`[Meet] 🔔 Network callback wrapper called: ${payload.users?.length || 0} users, speakerCallback: ${speakerCallback ? 'SET' : 'NULL'}`);
+                console.error(
+                    `[Meet] 🔔 Network callback wrapper called: ${payload.users?.length || 0} users, speakerCallback: ${speakerCallback ? 'SET' : 'NULL'}`,
+                )
                 // Call the current callback if it exists
                 if (speakerCallback) {
-                    console.error(`[Meet] ✅ Calling speakerCallback with ${payload.users?.length || 0} users`);
-                    speakerCallback(payload);
+                    console.error(
+                        `[Meet] ✅ Calling speakerCallback with ${payload.users?.length || 0} users`,
+                    )
+                    speakerCallback(payload)
                 } else {
-                    console.error(`[Meet] ⚠️ Network data received (no callback set): ${payload.users?.length || 0} users`);
+                    console.error(
+                        `[Meet] ⚠️ Network data received (no callback set): ${payload.users?.length || 0} users`,
+                    )
                 }
-            };
+            }
 
             // Attach a function to the page that allows updating the callback
-            (page as any)._updateNetworkCallback = async (callback: (payload: any) => void) => {
-                console.error('[Meet] 🔧 Updating network callback - setting speakerCallback');
-                speakerCallback = callback;
-                console.error(`[Meet] ✅ Callback set, speakerCallback is now: ${speakerCallback ? 'SET' : 'NULL'}`);
+            ;(page as any)._updateNetworkCallback = async (
+                callback: (payload: any) => void,
+            ) => {
+                console.error(
+                    '[Meet] 🔧 Updating network callback - setting speakerCallback',
+                )
+                speakerCallback = callback
+                console.error(
+                    `[Meet] ✅ Callback set, speakerCallback is now: ${speakerCallback ? 'SET' : 'NULL'}`,
+                )
                 // Test the callback immediately to verify it works
                 if (speakerCallback) {
-                    console.error('[Meet] 🧪 Testing callback with empty payload...');
+                    console.error(
+                        '[Meet] 🧪 Testing callback with empty payload...',
+                    )
                     try {
-                        speakerCallback({ users: [], timestamp: Date.now(), source: 'test' });
-                        console.error('[Meet] ✅ Callback test successful');
+                        speakerCallback({
+                            users: [],
+                            timestamp: Date.now(),
+                            source: 'test',
+                        })
+                        console.error('[Meet] ✅ Callback test successful')
                     } catch (e) {
-                        console.error('[Meet] ❌ Callback test failed:', e);
+                        console.error('[Meet] ❌ Callback test failed:', e)
                     }
                 }
-                
+
                 // Trigger a manual broadcast to send current state immediately
                 // This ensures we get the current roster even if we missed earlier broadcasts
                 try {
-                    console.error('[Meet] 🔔 Triggering manual broadcast to send current state...');
+                    console.error(
+                        '[Meet] 🔔 Triggering manual broadcast to send current state...',
+                    )
                     await page.evaluate(() => {
                         if ((window as any).triggerNetworkBroadcast) {
-                            (window as any).triggerNetworkBroadcast();
+                            ;(window as any).triggerNetworkBroadcast()
                         }
-                    });
-                    console.error('[Meet] ✅ Manual broadcast triggered');
+                    })
+                    console.error('[Meet] ✅ Manual broadcast triggered')
                 } catch (e) {
-                    console.error('[Meet] ⚠️ Failed to trigger manual broadcast:', e);
+                    console.error(
+                        '[Meet] ⚠️ Failed to trigger manual broadcast:',
+                        e,
+                    )
                 }
-            };
+            }
 
             await enableNetworkInterception(page, networkCallbackWrapper)
             console.log('[Meet] Network interception configured')
@@ -111,26 +140,37 @@ export class MeetProvider implements MeetingProviderInterface {
                 timeout: 30000,
             })
             console.log('Navigation completed')
-            
+
             // Ensure network interceptor scripts run after navigation
             // Sometimes addInitScript doesn't fire for SPAs, so we evaluate directly
             try {
-                await page.waitForTimeout(200); // Give addInitScript a chance to run
+                await page.waitForTimeout(200) // Give addInitScript a chance to run
                 const scriptCheck = await page.evaluate(() => {
                     return {
-                        hasTestMarker: typeof (window as any).__networkInterceptorTest !== 'undefined',
-                        hasMainMarker: typeof (window as any).__networkInterceptorMain !== 'undefined',
-                    };
-                });
-                
+                        hasTestMarker:
+                            typeof (window as any).__networkInterceptorTest !==
+                            'undefined',
+                        hasMainMarker:
+                            typeof (window as any).__networkInterceptorMain !==
+                            'undefined',
+                    }
+                })
+
                 if (!scriptCheck.hasTestMarker && !scriptCheck.hasMainMarker) {
-                    console.log('[Meet] Network interceptor scripts did not run automatically, evaluating directly...');
+                    console.log(
+                        '[Meet] Network interceptor scripts did not run automatically, evaluating directly...',
+                    )
                     // Re-evaluate the scripts directly
-                    const { enableNetworkInterception } = await import('./meet/network-interception');
+                    const { enableNetworkInterception } = await import(
+                        './meet/network-interception'
+                    )
                     // We can't easily re-inject here, but the load listener should handle it
                 }
             } catch (e) {
-                console.warn('[Meet] Could not check network interceptor script status:', e);
+                console.warn(
+                    '[Meet] Could not check network interceptor script status:',
+                    e,
+                )
             }
 
             // Check for page freeze after goto (same as Teams)
@@ -140,7 +180,10 @@ export class MeetProvider implements MeetingProviderInterface {
                     page.evaluate(() => document.readyState),
                     new Promise((_, reject) =>
                         setTimeout(
-                            () => reject(new Error('Page freeze timeout after goto')),
+                            () =>
+                                reject(
+                                    new Error('Page freeze timeout after goto'),
+                                ),
                             10000, // 10 seconds timeout to detect freeze
                         ),
                     ),
@@ -515,7 +558,8 @@ async function sendEntryMessage(
     page: Page,
     enterMessage: string,
 ): Promise<boolean> {
-    console.log('Attempting to send entry message...')
+    console.log('Attempting to send entry message via network API...')
+
     // First check if we are still in the meeting
     const inMeeting = await isInMeeting(page)
     if (!inMeeting) {
@@ -528,39 +572,18 @@ async function sendEntryMessage(
         return false
     }
 
-    // truncate the message as meet only allows 516 characters
+    // Truncate the message as meet only allows 516 characters
     enterMessage = enterMessage.substring(0, 500)
-    try {
-        await page.click('button[aria-label="Chat with everyone"]')
-        await page.waitForSelector(
-            'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
-            { state: 'visible' },
-        )
 
-        // Check again if we are still in the meeting
-        if (!(await isInMeeting(page))) {
-            console.log('Bot is no longer in the meeting after opening chat')
-            return false
-        }
-
-        const textarea = page.locator(
-            'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
-        )
-        await textarea.fill(enterMessage)
-
-        const sendButton = page.locator('button:has(i:text("send"))')
-        if ((await sendButton.count()) > 0) {
-            await sendButton.click()
-            console.log('Clicked on send button')
-            await page.click('button[aria-label="Chat with everyone"]')
-            return true
-        }
-        console.log('Send button not found')
-        return false
-    } catch (error) {
-        console.error('Failed to send entry message:', error)
-        return false
+    // Send via network API
+    const success = await sendChatMessage(page, enterMessage)
+    if (success) {
+        console.log('✅ Entry message sent via network API')
+        return true
     }
+
+    console.error('❌ Failed to send entry message via network API')
+    return false
 }
 
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
