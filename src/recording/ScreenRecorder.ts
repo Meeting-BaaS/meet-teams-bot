@@ -23,6 +23,7 @@ const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability
 const SCREENSHOT_PERIOD = 5 // every 5 seconds instead of 2
 const SCREENSHOT_WIDTH = 480 // reduced for smaller file size
 const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (16:9 ratio)
+const MIN_AUDIO_CHUNK_SIZE = 100 * 1024 // 100KB
 
 // Environment variables for display and virtual speaker monitor
 const DISPLAY = envVars.DISPLAY
@@ -592,6 +593,20 @@ export class ScreenRecorder extends EventEmitter {
               type: "audio",
               errorCode: "FILE_TOO_SMALL",
               errorMessage: `Chunk file is empty: ${chunkPath}. Size: ${stats.size} bytes`
+            })
+            continue
+          }
+          if (stats.size < MIN_AUDIO_CHUNK_SIZE) {
+            console.warn(`Chunk file is too small: ${filename}`)
+            GLOBAL.addAudioChunk({
+              s3Key: null,
+              filePath: chunkPath,
+              extension: "flac",
+              uploaded: false,
+              uploadedAt: null,
+              type: "audio",
+              errorCode: "FILE_TOO_SMALL",
+              errorMessage: `Chunk file is too small: ${chunkPath}. Size: ${stats.size} bytes`
             })
             continue
           }
