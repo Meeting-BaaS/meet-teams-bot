@@ -126,7 +126,7 @@ export class MeetProvider implements MeetingProviderInterface {
                 if (!scriptCheck.hasTestMarker && !scriptCheck.hasMainMarker) {
                     console.log('[Meet] Network interceptor scripts did not run automatically, evaluating directly...');
                     // Re-evaluate the scripts directly
-                    const { enableNetworkInterception } = await import('./meet/networkInterceptor');
+                    const { enableNetworkInterception } = await import('./meet/network-interception');
                     // We can't easily re-inject here, but the load listener should handle it
                 }
             } catch (e) {
