@@ -453,8 +453,11 @@ export class RecordingState extends BaseState {
         const silenceDurationSeconds = Math.floor(
             (now - this.lastSoundActivity) / 1000,
         )
-        const shouldEnd =
-            silenceDurationSeconds >= MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000
+        // Use the silence timeout from API (in seconds), convert to milliseconds
+        const silenceTimeoutMs =
+            GLOBAL.get().automatic_leave.silence_timeout! * 1000
+
+        const shouldEnd = silenceDurationSeconds >= silenceTimeoutMs / 1000
         if (shouldEnd) {
             console.log(
                 `[checkNoSpeaker] No sound activity detected for ${silenceDurationSeconds} seconds, ending meeting`,
@@ -464,7 +467,7 @@ export class RecordingState extends BaseState {
             if (silenceDurationSeconds % 30 === 0) {
                 // Log every 30 seconds
                 console.log(
-                    `[checkNoSpeaker] No speaker detected for ${silenceDurationSeconds}s / ${MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000}s`,
+                    `[checkNoSpeaker] No speaker detected for ${silenceDurationSeconds}s / ${silenceTimeoutMs / 1000}s`,
                 )
             }
         }

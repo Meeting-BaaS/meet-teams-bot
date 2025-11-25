@@ -1,7 +1,7 @@
 {
     "id": "meeting-bot-session",
     "use_my_vocabulary": false,
-    "meeting_url": "https://meet.google.com/bfe-bdys-ads?authuser=0",
+    "meeting_url": "https://teams.microsoft.com/meet/32699900209041?p=gQJASLjTCRV5Zg7QaP",
     "user_token": "dummy-token-for-production",
     "bot_name": "Recording Bot",
     "user_id": 123,
@@ -22,7 +22,8 @@
     "local_recording_server_location": "docker",
     "automatic_leave": {
         "waiting_room_timeout": 600,
-        "noone_joined_timeout": 600
+        "noone_joined_timeout": 600,
+        "silence_timeout": 600
     },
     "mp4_s3_path": "recordings/output.mp4",
     "custom_branding_bot_path": "https://i.ibb.co/N9YtnDZ/ducobu.jpg",

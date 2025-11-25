@@ -10,7 +10,6 @@ export const MEETING_CONSTANTS = {
     SETUP_TIMEOUT: 30_000, // 30 secondes
     RECORDING_TIMEOUT: 3600 * 4 * 1000, // 4 heures
     INITIAL_WAIT_TIME: 1000 * 60 * 7, // 7 minutes
-    SILENCE_TIMEOUT: 1000 * 60 * 10, // 10 minutes
     EMPTY_MEETING_CONFIRMATION_MS: 45_000, // 45 seconds before confirming no attendees
     CLEANUP_TIMEOUT: 1000 * 60 * 60, // 1 heure
     RESUMING_TIMEOUT: 1000 * 60 * 60, // 1 heure
