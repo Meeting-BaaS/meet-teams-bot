@@ -70,6 +70,8 @@ export type MeetingParams = {
         waiting_room_timeout: number
         // The number of seconds after which the bot will automatically leave the call, if it has joined the meeting but no other participant has joined.
         noone_joined_timeout: number
+        // The number of seconds after which the bot will automatically leave the call, if no speaker is detected (through Audio and UI).
+        silence_timeout?: number
         // The number of seconds after which the bot will automatically leave the call, if there were other participants in the call who have all left.
         // everyone_left_timeout?: number
         // The number of seconds after which the bot will automatically leave the call, if it has joined the call but not started recording.
