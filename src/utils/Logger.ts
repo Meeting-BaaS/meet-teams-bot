@@ -266,6 +266,11 @@ export async function uploadLogsToS3(): Promise<void> {
       console.log("No speaker separation log file found at path:", speakerLogPath)
     }
 
+    // Upload screenshots if they are not already uploaded
+    if (GLOBAL.getArtifactKeys().some((artifact) => artifact.type !== "screenshots")) {
+      await uploadScreenshotsToS3()
+    }
+
     // Upload HTML snapshots directory
     if (fs.existsSync(htmlSnapshotsPath)) {
       const htmlSnapshotFiles = fs.readdirSync(htmlSnapshotsPath)
