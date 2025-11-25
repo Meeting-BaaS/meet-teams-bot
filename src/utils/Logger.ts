@@ -147,51 +147,15 @@ export function setupConsoleLogger() {
   console.log("Console logger setup complete")
 }
 
-export async function uploadLogsToS3(): Promise<void> {
+export async function uploadScreenshotsToS3(): Promise<void> {
+  const pathManager = PathManager.getInstance()
+  const logPath = currentBotLogFile || pathManager.getIdentifier()
+
+  // Screenshots directory
+  const screenshotsPath = pathManager.getScreenshotsPath()
+  const s3ScreenshotsPath = `${logPath}/screenshots`
   try {
-    const pathManager = PathManager.getInstance()
-    const logPath = currentBotLogFile || pathManager.getIdentifier()
-
-    // Sound log file
-    const soundLogPath = pathManager.getSoundLogPath()
-    const s3SoundLogPath = `${logPath}/sound.log`
-
-    // Speaker separation log file
-    const speakerLogPath = pathManager.getSpeakerLogPath()
-    const s3SpeakerLogPath = `${logPath}/speaker_separation.log`
-
-    // Screenshots directory
-    const screenshotsPath = pathManager.getScreenshotsPath()
-    const s3ScreenshotsPath = `${logPath}/screenshots`
-
-    // HTML snapshots directory
-    const htmlSnapshotsPath = pathManager.getHtmlSnapshotsPath()
-    const s3HtmlSnapshotsPath = `${logPath}/html_snapshots`
-
-    console.log("Looking for internal log files at:", {
-      soundLogPath,
-      speakerLogPath,
-      screenshotsPath,
-      htmlSnapshotsPath
-    })
-
-    // Upload sound log file (internal log file)
-    if (fs.existsSync(soundLogPath)) {
-      logger.info("Uploading sound logs to S3...")
-      await s3cp(soundLogPath, s3SoundLogPath)
-      logger.info("Sound logs uploaded to S3")
-    } else {
-      console.log("No sound log file found at path:", soundLogPath)
-    }
-
-    // Upload speaker separation log file
-    if (fs.existsSync(speakerLogPath)) {
-      logger.info("Uploading speaker separation logs to S3...")
-      await s3cp(speakerLogPath, s3SpeakerLogPath)
-      logger.info("Speaker separation logs uploaded to S3")
-    } else {
-      console.log("No speaker separation log file found at path:", speakerLogPath)
-    }
+    console.log("Looking for screenshots at:", screenshotsPath)
 
     // Upload screenshots directory
     if (fs.existsSync(screenshotsPath)) {
@@ -245,6 +209,61 @@ export async function uploadLogsToS3(): Promise<void> {
       }
     } else {
       console.log("No screenshots directory found at path:", screenshotsPath)
+    }
+  } catch (error) {
+    logger.error("Failed to upload screenshots to S3:", error)
+    GLOBAL.addArtifactKey({
+      s3Key: null,
+      filePath: screenshotsPath,
+      extension: "directory",
+      uploaded: false,
+      uploadedAt: null,
+      type: "screenshots",
+      errorCode: "UPLOAD_FAILED",
+      errorMessage: error instanceof Error ? error.message : JSON.stringify(error)
+    })
+  }
+}
+
+export async function uploadLogsToS3(): Promise<void> {
+  try {
+    const pathManager = PathManager.getInstance()
+    const logPath = currentBotLogFile || pathManager.getIdentifier()
+
+    // Sound log file
+    const soundLogPath = pathManager.getSoundLogPath()
+    const s3SoundLogPath = `${logPath}/sound.log`
+
+    // Speaker separation log file
+    const speakerLogPath = pathManager.getSpeakerLogPath()
+    const s3SpeakerLogPath = `${logPath}/speaker_separation.log`
+
+    // HTML snapshots directory
+    const htmlSnapshotsPath = pathManager.getHtmlSnapshotsPath()
+    const s3HtmlSnapshotsPath = `${logPath}/html_snapshots`
+
+    console.log("Looking for internal log files at:", {
+      soundLogPath,
+      speakerLogPath,
+      htmlSnapshotsPath
+    })
+
+    // Upload sound log file (internal log file)
+    if (fs.existsSync(soundLogPath)) {
+      logger.info("Uploading sound logs to S3...")
+      await s3cp(soundLogPath, s3SoundLogPath)
+      logger.info("Sound logs uploaded to S3")
+    } else {
+      console.log("No sound log file found at path:", soundLogPath)
+    }
+
+    // Upload speaker separation log file
+    if (fs.existsSync(speakerLogPath)) {
+      logger.info("Uploading speaker separation logs to S3...")
+      await s3cp(speakerLogPath, s3SpeakerLogPath)
+      logger.info("Speaker separation logs uploaded to S3")
+    } else {
+      console.log("No speaker separation log file found at path:", speakerLogPath)
     }
 
     // Upload HTML snapshots directory

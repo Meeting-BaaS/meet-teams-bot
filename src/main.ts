@@ -8,7 +8,12 @@ import { SpeakerManager } from "./speaker-manager"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { getErrorMessageFromCode } from "./state-machine/types"
 import type { MeetingParams } from "./types"
-import { setupConsoleLogger, setupExitHandler, uploadLogsToS3 } from "./utils/Logger"
+import {
+  setupConsoleLogger,
+  setupExitHandler,
+  uploadLogsToS3,
+  uploadScreenshotsToS3
+} from "./utils/Logger"
 import { BotMessageSchema } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
 
@@ -71,6 +76,11 @@ async function handleSuccessfulRecording(): Promise<void> {
 
   // Send success webhook - Waits for completion to ensure status history order is correct
   await Events.recordingSucceeded()
+
+  // Upload screenshots before endMeetingTrampoline so they're included in artifacts
+  if (!GLOBAL.isServerless()) {
+    await uploadScreenshotsToS3()
+  }
 
   // Handle API endpoint call with built-in retry logic
   if (!GLOBAL.isServerless()) {
