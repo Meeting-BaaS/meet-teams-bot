@@ -13,6 +13,7 @@ export const MEETING_CONSTANTS = {
     EMPTY_MEETING_CONFIRMATION_MS: 45_000, // 45 seconds before confirming no attendees
     CLEANUP_TIMEOUT: 1000 * 60 * 60, // 1 heure
     RESUMING_TIMEOUT: 1000 * 60 * 60, // 1 heure
+    DEFAULT_SILENCE_TIMEOUT_SECONDS: 600, // 10 minutes - default fallback when global value is nil
 
     // Autres constantes
     FIND_END_MEETING_SLEEP: 250,
