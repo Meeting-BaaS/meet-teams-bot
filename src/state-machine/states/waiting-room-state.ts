@@ -56,8 +56,7 @@ export class WaitingRoomState extends BaseState {
             )
 
             ScreenRecorderManager.getInstance().startRecording(
-                this.context.playwrightPage,
-            )
+                this.context.playwrightPage            )
 
             // Send waiting room event after the page is open
             Events.inWaitingRoom()
