@@ -449,22 +449,15 @@ export class RecordingState extends BaseState {
      * @returns true if the meeting should end due to absence of sound
      */
     private checkNoSpeaker(now: number): boolean {
-        // Get configurable silence timeout (in seconds), with safe fallback to constant default
-        const configuredTimeout = GLOBAL.get().automatic_leave.silence_timeout
+        // Use the silence timeout from API (in seconds), or fallback to default if not provided
         const silenceTimeoutSeconds =
-            configuredTimeout !== null && configuredTimeout !== undefined
-                ? configuredTimeout
-                : MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000
+            GLOBAL.get().automatic_leave.silence_timeout ??
+            MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS
 
         // Check if the silence period has exceeded the timeout
         const silenceDurationSeconds = Math.floor(
             (now - this.lastSoundActivity) / 1000,
         )
-
-        // Use the silence timeout from API (in seconds), or fallback to default if not provided
-        const silenceTimeoutSeconds =
-            GLOBAL.get().automatic_leave.silence_timeout ??
-            MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS
 
         const shouldEnd = silenceDurationSeconds >= silenceTimeoutSeconds
         if (shouldEnd) {

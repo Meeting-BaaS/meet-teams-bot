@@ -110,6 +110,9 @@ export interface MeetingContext {
     // Speakers observation
     speakersObserver?: import('../meeting/speakersObserver').SpeakersObserver
 
+    // Network speaker logger (debugging)
+    networkSpeakerLogger?: import('../meeting/meet/NetworkSpeakerLogger').NetworkSpeakerLogger
+
     // HTML cleanup
     htmlCleaner?: import('../meeting/htmlCleaner').HtmlCleaner
 

@@ -70,12 +70,12 @@ export class CleanupState extends BaseState {
 
             // 🚀 PARALLEL CLEANUP: Independent steps that can run simultaneously
             console.info(
-                '🧹 Steps 4-6: Running parallel cleanup (streaming + speakers + HTML)',
+                '🧹 Steps 4-7: Running parallel cleanup (streaming + speakers + network logger + HTML)',
             )
             await Promise.allSettled([
                 // 4. Stop the streaming (fast, no await needed)
                 (async () => {
-                    console.info('🧹 Step 4/7: Stopping streaming service')
+                    console.info('🧹 Step 4/8: Stopping streaming service')
                     if (this.context.streamingService) {
                         this.context.streamingService.stop()
                     }
@@ -83,20 +83,26 @@ export class CleanupState extends BaseState {
 
                 // 5. Stop speakers observer (with 3s timeout)
                 (async () => {
-                    console.info('🧹 Step 5/7: Stopping speakers observer')
+                    console.info('🧹 Step 5/8: Stopping speakers observer')
                     await this.stopSpeakersObserver()
                 })(),
 
-                // 6. Stop HTML cleaner (with 3s timeout)
+                // 6. Stop network speaker logger (fast)
                 (async () => {
-                    console.info('🧹 Step 6/7: Stopping HTML cleaner')
+                    console.info('🧹 Step 6/8: Stopping network speaker logger')
+                    this.stopNetworkSpeakerLogger()
+                })(),
+
+                // 7. Stop HTML cleaner (with 3s timeout)
+                (async () => {
+                    console.info('🧹 Step 7/8: Stopping HTML cleaner')
                     await this.stopHtmlCleaner()
                 })(),
             ])
 
             console.info('🧹 Parallel cleanup completed')
 
-            console.info('🧹 Step 7/7: Cleaning up browser resources')
+            console.info('🧹 Step 8/8: Cleaning up browser resources')
             // 8. Clean up browser resources (must be sequential after others)
             await this.cleanupBrowserResources()
 
@@ -146,6 +152,23 @@ export class CleanupState extends BaseState {
                 console.error('Error stopping speakers observer:', error)
             }
             // Don't throw as this is non-critical
+        }
+    }
+
+    private stopNetworkSpeakerLogger(): void {
+        try {
+            if (this.context.networkSpeakerLogger) {
+                console.log('Stopping network speaker logger from cleanup state...')
+                this.context.networkSpeakerLogger.stop()
+                this.context.networkSpeakerLogger = undefined
+                console.log('Network speaker logger stopped successfully')
+            } else {
+                console.log('Network speaker logger not active, nothing to stop')
+            }
+        } catch (error) {
+            console.error('Error stopping network speaker logger:', error)
+            // Don't throw as this is non-critical
+            this.context.networkSpeakerLogger = undefined
         }
     }
 
