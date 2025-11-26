@@ -17,7 +17,7 @@ import { generateSyncSignal } from '../utils/SyncSignal'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
-const STREAMING_SAMPLE_RATE = 24_000
+const DEFAULT_STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = '192k' // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
@@ -120,6 +120,7 @@ export class ScreenRecorder extends EventEmitter {
     private meetingStartTime: number = 0
     private gracePeriodActive: boolean = false
     private rawAudioPath: string = ''
+    private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
 
     constructor(config: Partial<ScreenRecordingConfig> = {}) {
         super()
@@ -152,10 +153,12 @@ export class ScreenRecorder extends EventEmitter {
         this.meetingStartTime = startTime
     }
 
-    public async startRecording(page: Page): Promise<void> {
+    public async startRecording(page: Page   ): Promise<void> {
         if (this.isRecording) {
             throw new Error('Recording is already in progress')
         }
+
+        this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency ?  GLOBAL.get().streaming_audio_frequency : DEFAULT_STREAMING_SAMPLE_RATE
 
         // Capture DOM state before starting screen recording (void to avoid blocking)
         const htmlSnapshot = HtmlSnapshotService.getInstance()
@@ -362,7 +365,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-ac',
                 '1',
                 '-ar',
-                STREAMING_SAMPLE_RATE.toString(),
+                this.streamingSampleRate.toString(),
                 '-fflags',
                 'nobuffer',
                 '-flags',
@@ -467,7 +470,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-ac',
                 '1',
                 '-ar',
-                STREAMING_SAMPLE_RATE.toString(),
+                this.streamingSampleRate.toString(),
                 '-fflags',
                 'nobuffer',
                 '-flags',
