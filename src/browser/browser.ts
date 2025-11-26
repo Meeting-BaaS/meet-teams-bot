@@ -20,10 +20,13 @@ export async function openBrowser(
             headless: false,
             viewport: { width, height },
             executablePath: chromePath,
+            locale: 'en-US', // Set locale for Playwright context
             args: [
                 // Security configurations
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--lang=en-US', // Force English language with region code
+                '--accept-lang=en-US,en', // Accept English for HTTP requests
 
                 // ========================================
                 // AUDIO CONFIGURATION FOR PULSEAUDIO
