@@ -1,5 +1,6 @@
 import { Events } from '../../events'
 import { HtmlCleaner } from '../../meeting/htmlCleaner'
+import { NetworkSpeakerLogger } from '../../meeting/meet/NetworkSpeakerLogger'
 import { SpeakersObserver } from '../../meeting/speakersObserver'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
@@ -167,6 +168,25 @@ export class InCallState extends BaseState {
                 error,
             )
             throw error
+        }
+
+        // Start network speaker logger for Google Meet only (for debugging/comparison)
+        if (GLOBAL.get().meetingProvider === 'Meet') {
+            try {
+                const networkLogger = new NetworkSpeakerLogger(
+                    this.context.playwrightPage,
+                    GLOBAL.get().bot_name,
+                )
+                await networkLogger.start()
+
+                // Store the logger in context for cleanup later
+                this.context.networkSpeakerLogger = networkLogger
+
+                console.log('Network speaker logger started successfully')
+            } catch (error) {
+                console.error('Failed to start network speaker logger:', error)
+                // Continue even if network logger fails - it's just for debugging
+            }
         }
     }
 
