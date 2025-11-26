@@ -17,17 +17,33 @@ export function browserInterceptionLogic(schema: any[]) {
         }
 
         function decodeUserName(user: any): string {
-            if (user.displayName) return user.displayName
+            // Prefer fullName if it contains whitespace (has last name), otherwise use displayName
             if (user.fullName) {
+                let fullName: string
                 if (user.fullName instanceof Uint8Array) {
                     try {
-                        return new TextDecoder().decode(user.fullName)
+                        fullName = new TextDecoder().decode(user.fullName)
                     } catch {
-                        return 'Unknown'
+                        fullName = ''
                     }
+                } else {
+                    fullName = user.fullName
                 }
-                return user.fullName
+                
+                // If fullName has whitespace (contains last name), prefer it
+                if (fullName && fullName.trim().includes(' ')) {
+                    return fullName
+                }
+                
+                // If fullName exists but no whitespace, still prefer it over displayName
+                if (fullName) {
+                    return fullName
+                }
             }
+            
+            // Fall back to displayName if fullName not available or empty
+            if (user.displayName) return user.displayName
+            
             return 'Unknown'
         }
 
