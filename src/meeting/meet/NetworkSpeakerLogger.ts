@@ -98,14 +98,20 @@ export class NetworkSpeakerLogger {
             return
         }
 
+        // Create anonymized version for console (same pattern as speaker-manager.ts)
+        const anonymizedSpeakers = speakers.map((speaker, index) => ({
+            ...speaker,
+            name: `Speaker ${index + 1}`,
+        }))
+
         // Build table header
         const lines = [
             '│ name            │ id              │ timestamp       │ isSpeaking      │',
             '│ --------------- │ --------------- │ --------------- │ --------------- │',
         ]
 
-        // Add each speaker as a row
-        speakers.forEach((speaker) => {
+        // Add each speaker as a row (using anonymized names)
+        anonymizedSpeakers.forEach((speaker) => {
             const name = speaker.name.padEnd(15).substring(0, 15)
             const id = String(speaker.id).padEnd(15).substring(0, 15)
             const timestamp = String(speaker.timestamp).padEnd(15).substring(0, 15)
