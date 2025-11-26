@@ -1,7 +1,6 @@
 import * as fs from 'fs'
-import { IncomingMessage } from 'http'
 import { Readable } from 'stream'
-import { RawData, Server, WebSocket } from 'ws'
+import { RawData, WebSocket } from 'ws'
 
 import { SoundContext } from './media_context'
 import { SpeakerData } from './types'
@@ -56,6 +55,10 @@ export class Streaming {
         if (sample_rate) {
             this.sample_rate = sample_rate
         }
+
+        console.log(
+            `🎵 Streaming service initialized with sample rate: ${this.sample_rate} Hz${sample_rate ? ' (from user config)' : ` (default: ${DEFAULT_SAMPLE_RATE} Hz)`}`,
+        )
 
         this.audioPacketsReceived = 0
 
