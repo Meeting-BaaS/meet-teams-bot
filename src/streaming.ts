@@ -56,6 +56,10 @@ export class Streaming {
       this.sample_rate = sample_rate
     }
 
+    console.log(
+      `🎵 Streaming service initialized with sample rate: ${this.sample_rate} Hz${sample_rate ? " (from user config)" : ` (default: ${DEFAULT_SAMPLE_RATE} Hz)`}`
+    )
+
     this.audioPacketsReceived = 0
 
     this.start()
