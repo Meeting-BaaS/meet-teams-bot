@@ -57,6 +57,7 @@ export class WaitingRoomState extends BaseState {
 
             ScreenRecorderManager.getInstance().startRecording(
                 this.context.playwrightPage,
+                GLOBAL.get().streaming_audio_frequency,
             )
 
             // Send waiting room event after the page is open
