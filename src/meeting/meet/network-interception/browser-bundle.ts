@@ -619,104 +619,104 @@ export function browserInterceptionLogic(schema: any[]) {
 
         if (typeof (window as any).RTCPeerConnection !== 'undefined') {
             const OriginalPC = (window as any).RTCPeerConnection
-                ; (window as any).RTCPeerConnection = function (...args: any[]) {
-                    const pc = new OriginalPC(...args)
-                    pc.addEventListener('track', (event: any) => {
-                        if (event.track.kind === 'audio') {
-                            monitorTrack(
-                                event.track,
-                                event.receiver,
-                                receiverManager,
-                                userManager,
-                                audioCtx,
-                                activeAudioTracks,
-                            )
-                        }
-                    })
-                    pc.addEventListener('datachannel', (event: any) => {
-                        const label = event.channel.label
-                        allDataChannels.set(label, event.channel)
-
-                        console.error(
-                            `[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`,
+            ;(window as any).RTCPeerConnection = function (...args: any[]) {
+                const pc = new OriginalPC(...args)
+                pc.addEventListener('track', (event: any) => {
+                    if (event.track.kind === 'audio') {
+                        monitorTrack(
+                            event.track,
+                            event.receiver,
+                            receiverManager,
+                            userManager,
+                            audioCtx,
+                            activeAudioTracks,
                         )
+                    }
+                })
+                pc.addEventListener('datachannel', (event: any) => {
+                    const label = event.channel.label
+                    allDataChannels.set(label, event.channel)
 
-                        if (label === 'meet_messages') {
-                            meetMessagesDataChannel = event.channel
-                            console.error(
-                                '[NetworkInterceptor] 💬 Chat channel ready',
-                            )
-                        }
-                        event.channel.addEventListener('message', (msg: any) => {
+                    console.error(
+                        `[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`,
+                    )
+
+                    if (label === 'meet_messages') {
+                        meetMessagesDataChannel = event.channel
+                        console.error(
+                            '[NetworkInterceptor] 💬 Chat channel ready',
+                        )
+                    }
+                    event.channel.addEventListener('message', (msg: any) => {
+                        try {
+                            const rawData = new Uint8Array(msg.data)
                             try {
-                                const rawData = new Uint8Array(msg.data)
-                                try {
-                                    // Defensive check for pako availability
-                                    if (
-                                        typeof (window as any).pako === 'undefined' ||
-                                        typeof (window as any).pako.inflate !== 'function'
-                                    ) {
-                                        console.error(
-                                            '[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available',
-                                        )
-                                        console.warn(
-                                            '[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression',
-                                        )
-                                        throw new Error(
-                                            'pako.inflate is not available',
-                                        )
-                                    }
-                                    const inflated = (window as any).pako.inflate(
-                                        rawData,
-                                    )
-                                    const eventData =
-                                        messageDecoders['CollectionEvent'](inflated)
-                                    const body = eventData.body
-                                    if (body) {
-                                        const wrapper =
-                                            body.userInfoListWrapperAndChatWrapperWrapper
-                                        if (
-                                            wrapper?.deviceInfoWrapper
-                                                ?.deviceOutputInfoList
-                                        ) {
-                                            const deviceOutputs =
-                                                wrapper.deviceInfoWrapper
-                                                    .deviceOutputInfoList
-                                            updateDeviceOutputs(
-                                                userManager,
-                                                deviceOutputs,
-                                            )
-                                        }
-                                        if (
-                                            wrapper
-                                                ?.userInfoListWrapperAndChatWrapper
-                                                ?.userInfoListWrapper?.userInfoList
-                                        ) {
-                                            const users =
-                                                wrapper
-                                                    .userInfoListWrapperAndChatWrapper
-                                                    .userInfoListWrapper
-                                                    .userInfoList
-                                            updateUsers(userManager, users)
-                                            console.error(
-                                                `[NetworkInterceptor] 👥 Updated ${users.length} users`,
-                                            )
-                                        }
-                                    }
-                                } catch (e) {
+                                // Defensive check for pako availability
+                                if (
+                                    typeof (window as any).pako === 'undefined' ||
+                                    typeof (window as any).pako.inflate !== 'function'
+                                ) {
                                     console.error(
-                                        `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
-                                        e,
+                                        '[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available',
                                     )
+                                    console.warn(
+                                        '[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression',
+                                    )
+                                    throw new Error(
+                                        'pako.inflate is not available',
+                                    )
+                                }
+                                const inflated = (window as any).pako.inflate(
+                                    rawData,
+                                )
+                                const eventData =
+                                    messageDecoders['CollectionEvent'](inflated)
+                                const body = eventData.body
+                                if (body) {
+                                    const wrapper =
+                                        body.userInfoListWrapperAndChatWrapperWrapper
+                                    if (
+                                        wrapper?.deviceInfoWrapper
+                                            ?.deviceOutputInfoList
+                                    ) {
+                                        const deviceOutputs =
+                                            wrapper.deviceInfoWrapper
+                                                .deviceOutputInfoList
+                                        updateDeviceOutputs(
+                                            userManager,
+                                            deviceOutputs,
+                                        )
+                                    }
+                                    if (
+                                        wrapper
+                                            ?.userInfoListWrapperAndChatWrapper
+                                            ?.userInfoListWrapper?.userInfoList
+                                    ) {
+                                        const users =
+                                            wrapper
+                                                .userInfoListWrapperAndChatWrapper
+                                                .userInfoListWrapper
+                                                .userInfoList
+                                        updateUsers(userManager, users)
+                                        console.error(
+                                            `[NetworkInterceptor] 👥 Updated ${users.length} users`,
+                                        )
+                                    }
                                 }
                             } catch (e) {
                                 console.error(
-                                    '[NetworkInterceptor] Critical Message Error:',
+                                    `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
                                     e,
                                 )
                             }
-                        })
+                        } catch (e) {
+                            console.error(
+                                '[NetworkInterceptor] Critical Message Error:',
+                                e,
+                            )
+                        }
                     })
+                })
 
                     // Create meet_messages channel for chat functionality
                     setTimeout(() => {

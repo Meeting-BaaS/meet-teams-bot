@@ -2,8 +2,8 @@
 // Main exports and Node.js setup
 
 import * as fs from 'fs'
-import { Page } from 'playwright'
-import { browserInterceptionLogic } from './browser'
+import { Page } from '@playwright/test'
+import { browserInterceptionLogic } from './browser-bundle'
 import { PROTO_SCHEMA } from './schema'
 
 // Re-export types
