@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { Streaming } from '../streaming'
 
-import { Page } from 'playwright'
+import { Page } from '@playwright/test'
 import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
 

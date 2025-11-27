@@ -1,28 +1,28 @@
 /**
  * API Auto-Learner for Google Meet
- * 
+ *
  * This module provides a Playwright-based interface to automatically learn
  * API calls by observing network requests during UI interactions.
- * 
+ *
  * Usage:
  * ```typescript
  * const learner = new MeetAPILearner(page)
  * await learner.startSession('typing_bot_name')
- * 
- * const action = await learner.recordAction('type', {
+ *
+ * const { success, actionId } = await learner.recordAction('type', {
  *   selector: 'input[name="name"]',
  *   value: 'Bot Name'
  * })
- * 
+ *
  * await page.type('input[name="name"]', 'Bot Name')
- * await learner.waitForRequests(action.id)
- * 
- * const requests = await learner.getActionRequests(action.id)
+ * await learner.waitForRequests(actionId)
+ *
+ * const requests = await learner.getActionRequests(actionId)
  * const session = await learner.endSession()
  * ```
  */
 
-import { Page } from 'playwright'
+import { Page } from '@playwright/test'
 
 export interface ActionData {
     selector?: string

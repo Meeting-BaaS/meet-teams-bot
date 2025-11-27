@@ -726,6 +726,21 @@ export function browserInterceptionLogic(schema: any[]) {
                         try {
                             const rawData = new Uint8Array(msg.data)
                             try {
+                                // Defensive check for pako availability
+                                if (
+                                    typeof (window as any).pako === 'undefined' ||
+                                    typeof (window as any).pako.inflate !== 'function'
+                                ) {
+                                    console.error(
+                                        '[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available',
+                                    )
+                                    console.warn(
+                                        '[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression',
+                                    )
+                                    throw new Error(
+                                        'pako.inflate is not available',
+                                    )
+                                }
                                 const inflated = (window as any).pako.inflate(
                                     rawData,
                                 )
