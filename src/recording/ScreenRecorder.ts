@@ -153,12 +153,12 @@ export class ScreenRecorder extends EventEmitter {
         this.meetingStartTime = startTime
     }
 
-    public async startRecording(page: Page   ): Promise<void> {
+    public async startRecording(page: Page): Promise<void> {
         if (this.isRecording) {
             throw new Error('Recording is already in progress')
         }
 
-        this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency ?  GLOBAL.get().streaming_audio_frequency : DEFAULT_STREAMING_SAMPLE_RATE
+        this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency ? GLOBAL.get().streaming_audio_frequency : DEFAULT_STREAMING_SAMPLE_RATE
 
         // Capture DOM state before starting screen recording (void to avoid blocking)
         const htmlSnapshot = HtmlSnapshotService.getInstance()
@@ -184,18 +184,27 @@ export class ScreenRecorder extends EventEmitter {
             this.setupStreamingAudio()
             this.setupFileSizeMonitoring()
 
-            await sleep(FLASH_SCREEN_SLEEP_TIME)
-            await generateSyncSignal(page, {
-                duration: 800, // Much longer signal for reliable detection
-                frequency: 1000, // Keep 1000Hz for consistency
-                volume: 0.95, // Higher volume for better detection
-            })
-
             console.log('Native recording started successfully')
             this.emit('started', {
                 outputPath: this.outputPath,
                 isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
             })
+
+            // Generate sync signal asynchronously (don't block streaming)
+            // This is for video/audio alignment, not for streaming initialization
+            void (async () => {
+                try {
+                    await sleep(FLASH_SCREEN_SLEEP_TIME)
+                    await generateSyncSignal(page, {
+                        duration: 800, // Much longer signal for reliable detection
+                        frequency: 1000, // Keep 1000Hz for consistency
+                        volume: 0.95, // Higher volume for better detection
+                    })
+                    console.log('✅ Sync signal generated')
+                } catch (error) {
+                    console.warn('⚠️ Failed to generate sync signal:', error)
+                }
+            })()
         } catch (error) {
             console.error('Failed to start native recording:', error)
             this.isRecording = false
@@ -557,7 +566,7 @@ export class ScreenRecorder extends EventEmitter {
                     const recordingDurationSeconds = this.recordingStartTime > 0
                         ? (now - this.recordingStartTime) / 1000
                         : 0
-                    
+
                     // Log file size at time of error for diagnostics
                     let currentFileSize = 'unknown'
                     try {
@@ -568,7 +577,7 @@ export class ScreenRecorder extends EventEmitter {
                     } catch (e) {
                         // Ignore file stat errors
                     }
-                    
+
                     console.error(
                         `❌ CRITICAL: FFmpeg file write error detected!`,
                     )
@@ -581,19 +590,19 @@ export class ScreenRecorder extends EventEmitter {
                     console.error(
                         `   🔍 Error details: ${output.trim()}`,
                     )
-                    
+
                     // Log system resources for diagnostics
                     this.logSystemResources()
-                    
-                    // Emit a critical error event
-                    ;(this as EventEmitter).emit('error', {
-                        type: 'fileWriteError',
-                        message: 'FFmpeg file write error detected',
-                        error: output.trim(),
-                        recordingDuration: recordingDurationSeconds,
-                        currentFileSize,
-                        timestamp: now,
-                    })
+
+                        // Emit a critical error event
+                        ; (this as EventEmitter).emit('error', {
+                            type: 'fileWriteError',
+                            message: 'FFmpeg file write error detected',
+                            error: output.trim(),
+                            recordingDuration: recordingDurationSeconds,
+                            currentFileSize,
+                            timestamp: now,
+                        })
                 }
                 // Check for specific PulseAudio errors that indicate audio input failure
                 else if (
@@ -717,18 +726,18 @@ export class ScreenRecorder extends EventEmitter {
                 const currentTime = Date.now()
                 const recordingDurationSeconds = (currentTime - this.recordingStartTime) / 1000
                 const sizeMB = (currentSize / (1024 * 1024)).toFixed(2)
-                
+
                 // Check if file size has grown since last check
                 const hasGrown = currentSize > lastFileSize
                 const timeSinceLastCheck = (currentTime - lastCheckTime) / 1000
-                
+
                 if (hasGrown) {
                     consecutiveNoGrowthCount = 0
                     const growthBytes = currentSize - lastFileSize
                     const growthMB = (growthBytes / (1024 * 1024)).toFixed(2)
                     const growthRate = growthBytes / timeSinceLastCheck // bytes per second
                     const growthRateMBps = (growthRate / (1024 * 1024)).toFixed(2)
-                    
+
                     console.log(
                         `📊 Raw audio file size: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s | Growth: +${growthMB} MB in ${timeSinceLastCheck.toFixed(1)}s (${growthRateMBps} MB/s)`,
                     )
@@ -819,17 +828,17 @@ export class ScreenRecorder extends EventEmitter {
                 const stats = fs.statSync(this.audioOutputPath)
                 const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
                 const sizeBytes = stats.size
-                const recordingDurationSeconds = this.recordingStartTime > 0 
-                    ? (Date.now() - this.recordingStartTime) / 1000 
+                const recordingDurationSeconds = this.recordingStartTime > 0
+                    ? (Date.now() - this.recordingStartTime) / 1000
                     : 0
-                
+
                 console.log(
                     `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
                 console.log(
                     `📊 Audio file size before upload: ${sizeMB} MB (${sizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
                 )
-                
+
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
@@ -847,14 +856,14 @@ export class ScreenRecorder extends EventEmitter {
                 const stats = fs.statSync(this.outputPath)
                 const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
                 const sizeBytes = stats.size
-                
+
                 console.log(
                     `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
                 console.log(
                     `📊 Video file size before upload: ${sizeMB} MB (${sizeBytes} bytes)`,
                 )
-                
+
                 await S3Uploader.getInstance().uploadFile(
                     this.outputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
@@ -1057,7 +1066,7 @@ export class ScreenRecorder extends EventEmitter {
                     if (
                         GLOBAL.hasError() &&
                         GLOBAL.getEndReason() ===
-                            MeetingEndReason.BotNotAccepted
+                        MeetingEndReason.BotNotAccepted
                     ) {
                         console.log(
                             'Preserving existing BotNotAccepted error instead of creating BotRemovedTooEarly',
@@ -1094,11 +1103,11 @@ export class ScreenRecorder extends EventEmitter {
                 const recordingDurationSeconds = this.recordingStartTime > 0
                     ? (Date.now() - this.recordingStartTime) / 1000
                     : 0
-                
+
                 console.log(
                     `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
                 )
-                
+
                 // Copy raw audio to final output location
                 fs.copyFileSync(rawAudioPath, this.audioOutputPath)
                 console.log(`✅ Audio copied to: ${this.audioOutputPath}`)
@@ -1130,7 +1139,7 @@ export class ScreenRecorder extends EventEmitter {
             const recordingDurationSeconds = this.recordingStartTime > 0
                 ? (Date.now() - this.recordingStartTime) / 1000
                 : 0
-            
+
             console.log(
                 `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
             )
@@ -1181,7 +1190,7 @@ export class ScreenRecorder extends EventEmitter {
             (this.meetingStartTime -
                 this.recordingStartTime -
                 FLASH_SCREEN_SLEEP_TIME) /
-                1000
+            1000
 
         console.log(`📊 Debug values:`)
         console.log(
@@ -1496,7 +1505,7 @@ file '${absoluteInputPath}'`
             fileSizeBytes = stats.size
             fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
         }
-        
+
         // Get audio duration
         const duration = await this.getDuration(audioPath)
         const botUuid = GLOBAL.get().bot_uuid
