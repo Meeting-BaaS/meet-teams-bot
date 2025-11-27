@@ -28,7 +28,6 @@ export class RecordingState extends BaseState {
     private readonly CHECK_INTERVAL = 250
     private lastSoundActivity: number = Date.now()
     private lastNoOneJoinedPeriodLog: number = 0
-    private hasLoggedNoOneJoinedPeriodEnd: boolean = false
     private hasNoOneJoinedPeriodEnded: boolean = false
 
     async execute(): StateExecuteResult {
@@ -369,12 +368,14 @@ export class RecordingState extends BaseState {
         // We only use this when it's positive (count > 0 or firstUserJoined = true)
         // This way, if UI detection works, we use it; if it doesn't, we fall back to sound
         if (attendeesCount > 0 || firstUserJoined) {
-            this.hasNoOneJoinedPeriodEnded = true
-            if (!this.hasLoggedNoOneJoinedPeriodEnd) {
+            if (!this.hasNoOneJoinedPeriodEnded) {
+                // Reset silence timer to start monitoring from now, even though no one joined was detected via UI
+                // This is important to ensure that the silence timeout is not triggered too early
+                this.lastSoundActivity = now
                 console.log(
                     `[noone-joined] Grace period ended (attendees detected via UI: count=${attendeesCount}, firstUserJoined=${firstUserJoined}), enabling silence timeout checks`,
                 )
-                this.hasLoggedNoOneJoinedPeriodEnd = true
+                this.hasNoOneJoinedPeriodEnded = true
             }
             return { shouldEnd: false }
         }
