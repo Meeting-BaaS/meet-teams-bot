@@ -1,6 +1,14 @@
 import { Page } from '@playwright/test'
+import * as crypto from 'crypto'
 import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+
+/**
+ * Generate a stable user ID from participant name.
+ */
+function generateStableUserId(name: string): string {
+    return crypto.createHash('sha256').update(name).digest('hex').substring(0, 16)
+}
 
 export class MeetSpeakersObserver {
     private page: Page
@@ -14,6 +22,10 @@ export class MeetSpeakersObserver {
     private readonly CHECK_INTERVAL = 10000 // 10s
     private readonly FREEZE_TIMEOUT = 8000 // 8s
 
+    // Persistent mapping from hash-based stable ID to sequential numeric ID
+    private stableIdToSequentialId: Map<string, number> = new Map()
+    private nextSequentialId: number = 1
+
     constructor(
         page: Page,
         recordingMode: RecordingMode,
@@ -24,6 +36,18 @@ export class MeetSpeakersObserver {
         this.recordingMode = recordingMode
         this.botName = botName
         this.onSpeakersChange = onSpeakersChange
+    }
+
+    /**
+     * Get or assign a sequential ID for a speaker based on their stable hash ID.
+     * This ensures speakers keep the same numeric ID across rejoins.
+     */
+    private getSequentialId(stableId: string): number {
+        if (!this.stableIdToSequentialId.has(stableId)) {
+            this.stableIdToSequentialId.set(stableId, this.nextSequentialId)
+            this.nextSequentialId++
+        }
+        return this.stableIdToSequentialId.get(stableId)!
     }
 
     public async startObserving(): Promise<void> {
@@ -445,12 +469,16 @@ export class MeetSpeakersObserver {
                         // Build the final participant list
                         const speakers = Array.from(
                             uniqueParticipants.values(),
-                        ).map((participant) => ({
-                            name: participant.name,
-                            id: 0,
-                            timestamp,
-                            isSpeaking: participant.isSpeaking,
-                        }))
+                        ).map((participant) => {
+                            const stableId = generateStableUserId(participant.name)
+                            const sequentialId = this.getSequentialId(stableId)
+                            return {
+                                name: participant.name,
+                                id: sequentialId,
+                                timestamp,
+                                isSpeaking: participant.isSpeaking,
+                            }
+                        })
 
                         lastValidSpeakers = speakers
                         lastValidSpeakerCheck = currentTime
