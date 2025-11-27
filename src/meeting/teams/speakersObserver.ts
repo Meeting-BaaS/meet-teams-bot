@@ -1,6 +1,14 @@
 import { Page } from '@playwright/test'
+import * as crypto from 'crypto'
 import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+
+/**
+ * Generate a stable user ID from participant name.
+ */
+function generateStableUserId(name: string): string {
+    return crypto.createHash('sha256').update(name).digest('hex').substring(0, 16)
+}
 
 export class TeamsSpeakersObserver {
     private page: Page
@@ -13,6 +21,10 @@ export class TeamsSpeakersObserver {
     private readonly SPEAKER_LATENCY = 1500 // ms
     private readonly MUTATION_DEBOUNCE = 50 // ms - EXACT SAME AS EXTENSION
     private readonly CHECK_INTERVAL = 10000 // 10s - EXACT SAME AS EXTENSION
+
+    // Persistent mapping from hash-based stable ID to sequential numeric ID
+    private stableIdToSequentialId: Map<string, number> = new Map()
+    private nextSequentialId: number = 1
     private readonly FREEZE_TIMEOUT = 8000 // 8s - EXACT SAME AS EXTENSION
 
     constructor(
@@ -25,6 +37,18 @@ export class TeamsSpeakersObserver {
         this.recordingMode = recordingMode
         this.botName = botName
         this.onSpeakersChange = onSpeakersChange
+    }
+
+    /**
+     * Get or assign a sequential ID for a speaker based on their stable hash ID.
+     * This ensures speakers keep the same numeric ID across rejoins.
+     */
+    private getSequentialId(stableId: string): number {
+        if (!this.stableIdToSequentialId.has(stableId)) {
+            this.stableIdToSequentialId.set(stableId, this.nextSequentialId)
+            this.nextSequentialId++
+        }
+        return this.stableIdToSequentialId.get(stableId)!
     }
 
     public async startObserving(): Promise<void> {
@@ -168,6 +192,8 @@ export class TeamsSpeakersObserver {
                                     `[TEAMS-DEBUG] Old teams - found name of length: "${name.length}"`,
                                 )
                                 if (name !== '') {
+                                    const stableId = generateStableUserId(name)
+                                    const sequentialId = this.getSequentialId(stableId)
                                     if (
                                         element
                                             .getAttribute('aria-label')
@@ -175,14 +201,14 @@ export class TeamsSpeakersObserver {
                                     ) {
                                         return {
                                             name,
-                                            id: 0,
+                                            id: sequentialId,
                                             timestamp,
                                             isSpeaking: false,
                                         }
                                     } else {
                                         return {
                                             name,
-                                            id: 0,
+                                            id: sequentialId,
                                             timestamp,
                                             isSpeaking: checkIfSpeaking(
                                                 element as HTMLElement,
@@ -219,9 +245,11 @@ export class TeamsSpeakersObserver {
                                               )
                                             : false
 
+                                    const stableId = generateStableUserId(name)
+                                    const sequentialId = this.getSequentialId(stableId)
                                     return {
                                         name,
-                                        id: 0,
+                                        id: sequentialId,
                                         timestamp,
                                         isSpeaking,
                                     }
@@ -251,9 +279,11 @@ export class TeamsSpeakersObserver {
                                               )
                                             : false
 
+                                    const stableId = generateStableUserId(name)
+                                    const sequentialId = this.getSequentialId(stableId)
                                     return {
                                         name,
-                                        id: 0,
+                                        id: sequentialId,
                                         timestamp,
                                         isSpeaking,
                                     }

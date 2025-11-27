@@ -1,7 +1,18 @@
 import { Page } from '@playwright/test'
 import * as fs from 'fs/promises'
+import * as crypto from 'crypto'
 import { EnhancedSpeakerData } from '../../types'
 import { PathManager } from '../../utils/PathManager'
+
+/**
+ * Generate a stable user ID from profile picture URL or full name.
+ * This ID persists across rejoin events since it's based on account-level data.
+ */
+function generateStableUserId(fullName: string, profilePicture?: string): string {
+    // Prefer profile picture URL (tied to Google account) over name for stability
+    const input = profilePicture || fullName
+    return crypto.createHash('sha256').update(input).digest('hex').substring(0, 16)
+}
 
 /**
  * NetworkSpeakerLogger
@@ -16,11 +27,30 @@ export class NetworkSpeakerLogger {
     private isLogging: boolean = false
     private previousSpeakerState: Map<string, boolean> = new Map()
     private logFilePath: string
+    private participantsMetadataPath: string
+    // Persistent mapping from hash-based stable ID to sequential numeric ID
+    private stableIdToSequentialId: Map<string, number> = new Map()
+    private nextSequentialId: number = 1
+    // Track which participant IDs have been written to metadata file
+    private writtenParticipantIds: Set<number> = new Set()
 
     constructor(page: Page, botName: string) {
         this.page = page
         this.botName = botName
         this.logFilePath = PathManager.getInstance().getNetworkSpeakerLogPath()
+        this.participantsMetadataPath = PathManager.getInstance().getParticipantsMetadataPath()
+    }
+
+    /**
+     * Get or assign a sequential ID for a speaker based on their stable hash ID.
+     * This ensures speakers keep the same numeric ID across rejoins.
+     */
+    private getSequentialId(stableId: string): number {
+        if (!this.stableIdToSequentialId.has(stableId)) {
+            this.stableIdToSequentialId.set(stableId, this.nextSequentialId)
+            this.nextSequentialId++
+        }
+        return this.stableIdToSequentialId.get(stableId)!
     }
 
     async start(): Promise<void> {
@@ -59,17 +89,21 @@ export class NetworkSpeakerLogger {
                 )
 
                 // Convert network speakers to EnhancedSpeakerData format with PII
-                const speakers: EnhancedSpeakerData[] = filteredUsers.map((s: any) => ({
-                    name: s.name || 'Unknown',
-                    id: 0,
-                    timestamp: payload.timestamp || Date.now(),
-                    isSpeaking: s.isSpeaking || false,
-                    // PII fields
-                    fullName: s.fullName,
-                    displayName: s.displayName,
-                    profilePicture: s.profilePicture,
-                    // deviceId: s.deviceId,  // Could be useful for detecting merged speakers
-                }))
+                const speakers: EnhancedSpeakerData[] = filteredUsers.map((s: any) => {
+                    const stableId = generateStableUserId(s.fullName || s.name || 'Unknown', s.profilePicture)
+                    const sequentialId = this.getSequentialId(stableId)
+                    return {
+                        name: s.name || 'Unknown',
+                        id: sequentialId,
+                        timestamp: payload.timestamp || Date.now(),
+                        isSpeaking: s.isSpeaking || false,
+                        // PII fields
+                        fullName: s.fullName,
+                        displayName: s.displayName,
+                        profilePicture: s.profilePicture,
+                        // deviceId: s.deviceId,  // Could be useful for detecting merged speakers
+                    }
+                })
 
                 // Check for changes in speaking status
                 const hasChange = speakers.some((speaker) => {
@@ -81,6 +115,16 @@ export class NetworkSpeakerLogger {
                         previousState !== speaker.isSpeaking
                     )
                 })
+
+                // Write participant metadata for new participants
+                for (const speaker of speakers) {
+                    this.writeParticipantMetadata(speaker).catch((err) => {
+                        console.error(
+                            '[NetworkSpeakerLogger] Failed to write participant metadata:',
+                            err,
+                        )
+                    })
+                }
 
                 // Log only on changes (including initial state)
                 if (hasChange) {
@@ -139,12 +183,46 @@ export class NetworkSpeakerLogger {
 
     private async writeLogToFile(speakers: EnhancedSpeakerData[]): Promise<void> {
         try {
-            // Write enhanced data with PII to file (NOT anonymized)
-            const logEntry = JSON.stringify(speakers)
+            // Write activity log without PII (just name, id, timestamp, isSpeaking)
+            const activityLog = speakers.map(s => ({
+                name: s.name,
+                id: s.id,
+                timestamp: s.timestamp,
+                isSpeaking: s.isSpeaking
+            }))
+            const logEntry = JSON.stringify(activityLog)
             await fs.appendFile(this.logFilePath, `${logEntry}\n`)
         } catch (error) {
             console.error(
                 '[NetworkSpeakerLogger] Cannot append network speaker log file:',
+                error,
+            )
+        }
+    }
+
+    private async writeParticipantMetadata(speaker: EnhancedSpeakerData): Promise<void> {
+        try {
+            // Only write if we haven't written this participant ID yet
+            if (this.writtenParticipantIds.has(speaker.id)) {
+                return
+            }
+
+            // Write participant metadata (id, name, fullName, displayName, profilePicture)
+            const metadata = {
+                id: speaker.id,
+                name: speaker.name,
+                fullName: speaker.fullName,
+                displayName: speaker.displayName,
+                profilePicture: speaker.profilePicture
+            }
+            const logEntry = JSON.stringify(metadata)
+            await fs.appendFile(this.participantsMetadataPath, `${logEntry}\n`)
+
+            // Mark this ID as written
+            this.writtenParticipantIds.add(speaker.id)
+        } catch (error) {
+            console.error(
+                '[NetworkSpeakerLogger] Cannot append participants metadata file:',
                 error,
             )
         }
