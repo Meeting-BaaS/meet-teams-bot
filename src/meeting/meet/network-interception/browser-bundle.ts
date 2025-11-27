@@ -376,6 +376,19 @@ export function browserInterceptionLogic(schema: any[]) {
                                                             user.deviceId ===
                                                             loudestSpeaker.user
                                                                 .deviceId
+
+                                                        // Decode fullName if it's a Uint8Array
+                                                        let fullName: string | undefined
+                                                        if (user.fullName instanceof Uint8Array) {
+                                                            try {
+                                                                fullName = new TextDecoder().decode(user.fullName)
+                                                            } catch {
+                                                                fullName = undefined
+                                                            }
+                                                        } else if (user.fullName) {
+                                                            fullName = user.fullName
+                                                        }
+
                                                         return {
                                                             deviceId:
                                                                 user.deviceId,
@@ -395,6 +408,10 @@ export function browserInterceptionLogic(schema: any[]) {
                                                                 isCurrentlySpeaking
                                                                     ? loudestSpeaker.audioLevel
                                                                     : 0,
+                                                            // PII fields for enhanced logging
+                                                            fullName: fullName,
+                                                            displayName: user.displayName,
+                                                            profilePicture: user.profilePicture,
                                                         }
                                                     },
                                                 )
@@ -428,29 +445,47 @@ export function browserInterceptionLogic(schema: any[]) {
                                                         )
                                                     const users =
                                                         filteredUsers.map(
-                                                            (user: any) => ({
-                                                                deviceId:
-                                                                    user.deviceId,
-                                                                name: decodeUserName(
-                                                                    user,
-                                                                ),
-                                                                isCurrentUser:
-                                                                    !!(
-                                                                        user.isCurrentUserString &&
-                                                                        user.isCurrentUserString !==
-                                                                            '' &&
-                                                                        user.isCurrentUserString !==
-                                                                            'false' &&
-                                                                        user.isCurrentUserString !==
-                                                                            '0'
+                                                            (user: any) => {
+                                                                // Decode fullName if it's a Uint8Array
+                                                                let fullName: string | undefined
+                                                                if (user.fullName instanceof Uint8Array) {
+                                                                    try {
+                                                                        fullName = new TextDecoder().decode(user.fullName)
+                                                                    } catch {
+                                                                        fullName = undefined
+                                                                    }
+                                                                } else if (user.fullName) {
+                                                                    fullName = user.fullName
+                                                                }
+
+                                                                return {
+                                                                    deviceId:
+                                                                        user.deviceId,
+                                                                    name: decodeUserName(
+                                                                        user,
                                                                     ),
-                                                                isSpeaking:
-                                                                    false,
-                                                                status: user.status,
-                                                                isHost:
-                                                                    user.isHost ===
-                                                                    1,
-                                                            }),
+                                                                    isCurrentUser:
+                                                                        !!(
+                                                                            user.isCurrentUserString &&
+                                                                            user.isCurrentUserString !==
+                                                                                '' &&
+                                                                            user.isCurrentUserString !==
+                                                                                'false' &&
+                                                                            user.isCurrentUserString !==
+                                                                                '0'
+                                                                        ),
+                                                                    isSpeaking:
+                                                                        false,
+                                                                    status: user.status,
+                                                                    isHost:
+                                                                        user.isHost ===
+                                                                        1,
+                                                                    // PII fields for enhanced logging
+                                                                    fullName: fullName,
+                                                                    displayName: user.displayName,
+                                                                    profilePicture: user.profilePicture,
+                                                                }
+                                                            },
                                                         )
                                                     ;(
                                                         window as any
@@ -593,19 +628,37 @@ export function browserInterceptionLogic(schema: any[]) {
                 const filteredUsers = allUsers.filter(
                     (user: any) => !user.parentDeviceId && user.status === 1,
                 )
-                const users = filteredUsers.map((user: any) => ({
-                    deviceId: user.deviceId,
-                    name: decodeUserName(user),
-                    isCurrentUser: !!(
-                        user.isCurrentUserString &&
-                        user.isCurrentUserString !== '' &&
-                        user.isCurrentUserString !== 'false' &&
-                        user.isCurrentUserString !== '0'
-                    ),
-                    isSpeaking: speakingState.get(user.deviceId) || false,
-                    status: user.status,
-                    isHost: user.isHost === 1,
-                }))
+                const users = filteredUsers.map((user: any) => {
+                    // Decode fullName if it's a Uint8Array
+                    let fullName: string | undefined
+                    if (user.fullName instanceof Uint8Array) {
+                        try {
+                            fullName = new TextDecoder().decode(user.fullName)
+                        } catch {
+                            fullName = undefined
+                        }
+                    } else if (user.fullName) {
+                        fullName = user.fullName
+                    }
+
+                    return {
+                        deviceId: user.deviceId,
+                        name: decodeUserName(user),
+                        isCurrentUser: !!(
+                            user.isCurrentUserString &&
+                            user.isCurrentUserString !== '' &&
+                            user.isCurrentUserString !== 'false' &&
+                            user.isCurrentUserString !== '0'
+                        ),
+                        isSpeaking: speakingState.get(user.deviceId) || false,
+                        status: user.status,
+                        isHost: user.isHost === 1,
+                        // PII fields for enhanced logging
+                        fullName: fullName,
+                        displayName: user.displayName,
+                        profilePicture: user.profilePicture,
+                    }
+                })
                 if (
                     typeof (window as any).onNetworkSpeakerUpdate === 'function'
                 ) {
