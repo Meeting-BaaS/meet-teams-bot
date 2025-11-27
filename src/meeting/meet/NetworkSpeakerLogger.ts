@@ -1,12 +1,13 @@
 import { Page } from '@playwright/test'
 import * as fs from 'fs/promises'
-import { SpeakerData } from '../../types'
+import { EnhancedSpeakerData } from '../../types'
 import { PathManager } from '../../utils/PathManager'
 
 /**
  * NetworkSpeakerLogger
  *
- * Logs speaker information detected via network interception.
+ * Logs speaker information detected via network interception with PII.
+ * Captures full name, display name, profile picture, and device ID.
  * This is separate from UI-based speaker detection and is used for debugging/comparison.
  */
 export class NetworkSpeakerLogger {
@@ -57,12 +58,17 @@ export class NetworkSpeakerLogger {
                     (s: any) => !s.isCurrentUser && s.name !== this.botName,
                 )
 
-                // Convert network speakers to SpeakerData format
-                const speakers: SpeakerData[] = filteredUsers.map((s: any) => ({
+                // Convert network speakers to EnhancedSpeakerData format with PII
+                const speakers: EnhancedSpeakerData[] = filteredUsers.map((s: any) => ({
                     name: s.name || 'Unknown',
                     id: 0,
                     timestamp: payload.timestamp || Date.now(),
                     isSpeaking: s.isSpeaking || false,
+                    // PII fields
+                    fullName: s.fullName,
+                    displayName: s.displayName,
+                    profilePicture: s.profilePicture,
+                    // deviceId: s.deviceId,  // Could be useful for detecting merged speakers
                 }))
 
                 // Check for changes in speaking status
@@ -92,7 +98,7 @@ export class NetworkSpeakerLogger {
         }
     }
 
-    private logSpeakersTable(speakers: SpeakerData[]): void {
+    private logSpeakersTable(speakers: EnhancedSpeakerData[]): void {
         if (speakers.length === 0) {
             console.log('[NetworkSpeakerLogger] No speakers detected')
             return
@@ -102,6 +108,9 @@ export class NetworkSpeakerLogger {
         const anonymizedSpeakers = speakers.map((speaker, index) => ({
             ...speaker,
             name: `Speaker ${index + 1}`,
+            fullName: undefined, // Anonymize PII
+            displayName: undefined,
+            profilePicture: undefined,
         }))
 
         // Build table header
@@ -123,8 +132,9 @@ export class NetworkSpeakerLogger {
         lines.forEach((line) => console.log(line))
     }
 
-    private async writeLogToFile(speakers: SpeakerData[]): Promise<void> {
+    private async writeLogToFile(speakers: EnhancedSpeakerData[]): Promise<void> {
         try {
+            // Write enhanced data with PII to file (NOT anonymized)
             const logEntry = JSON.stringify(speakers)
             await fs.appendFile(this.logFilePath, `${logEntry}\n`)
         } catch (error) {

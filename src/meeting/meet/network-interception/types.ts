@@ -10,6 +10,10 @@ export type NetworkUser = {
     status: number
     isHost: boolean
     audioLevel?: number
+    // PII fields for enhanced logging
+    fullName?: string
+    displayName?: string
+    profilePicture?: string
 }
 
 export type ChatMessage = {

@@ -110,4 +110,13 @@ export type SpeakerData = {
     timestamp: number
     isSpeaking: boolean
 }
+
+// Enhanced speaker data with PII from network interception
+export type EnhancedSpeakerData = SpeakerData & {
+    fullName?: string
+    displayName?: string
+    profilePicture?: string
+    // deviceId?: string  // Could be useful for detecting merged speakers
+}
+
 export type MeetingProvider = 'Meet' | 'Teams' | 'Zoom'
