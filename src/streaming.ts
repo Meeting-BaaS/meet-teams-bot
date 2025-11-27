@@ -37,6 +37,11 @@ export class Streaming {
     private audioBuffer: Float32Array[] = [] // Buffer for batch processing
     private readonly AUDIO_BUFFER_SIZE: number = 12
 
+    // WebSocket connection buffer (for chunks received before WS is ready)
+    private connectionBuffer: Float32Array[] = []
+    private readonly MAX_CONNECTION_BUFFER_SIZE: number = 100 // ~4 seconds at 24kHz
+    private wsConnectionStartTime: number = 0
+
     // Statistics tracking
     private audioPacketsReceived: number = 0
     private lastStatsLogTime: number = 0
@@ -109,7 +114,25 @@ export class Streaming {
         // Increment packet counter for stats
         this.audioPacketsReceived++
 
-        // Log stats periodically
+        // if (this.isPaused) {
+        //     // If paused, store chunks for later processing
+        //     const buffer = Buffer.from(audioData.buffer)
+        //     this.pausedChunks.push(buffer)
+        //     return
+        // }
+
+        // ⭐ IMMEDIATE FORWARD: Send to external services first (no buffering delay)
+        this.forwardToExternalService(audioData)
+
+        // Then buffer audio for batch processing (sound level analysis)
+        // This batching only affects analysis, not real-time streaming
+        this.audioBuffer.push(audioData)
+        if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
+            this.processBatchedAudio().catch(console.error)
+            this.audioBuffer = []
+        }
+
+        // Log stats periodically (moved to end to avoid blocking)
         const now = Date.now()
         if (now - this.lastStatsLogTime >= this.STATS_LOG_INTERVAL_MS) {
             const packetsInInterval = this.audioPacketsReceived
@@ -119,39 +142,71 @@ export class Streaming {
             this.audioPacketsReceived = 0
             this.lastStatsLogTime = now
         }
-
-        if (this.isPaused) {
-            // If paused, store chunks for later processing
-            const buffer = Buffer.from(audioData.buffer)
-            this.pausedChunks.push(buffer)
-            return
-        }
-
-        // Buffer audio for batch processing (sound level analysis)
-        this.audioBuffer.push(audioData)
-        if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
-            this.processBatchedAudio().catch(console.error)
-            this.audioBuffer = []
-        }
-
-        // Forward to external output service if connected
-        this.forwardToExternalService(audioData)
     }
 
     /**
      * Forward audio to external services (if any)
      */
     private forwardToExternalService(audioData: Float32Array): void {
-        if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
-            // Convert f32Array to s16Array for external services
-            const s16Array = new Int16Array(audioData.length)
-            for (let i = 0; i < audioData.length; i++) {
-                s16Array[i] = Math.round(
-                    Math.max(-32768, Math.min(32767, audioData[i] * 32768)),
+        if (!this.output_ws) {
+            return // No WebSocket configured
+        }
+
+        if (this.output_ws.readyState === WebSocket.OPEN) {
+            // WebSocket is ready - send immediately
+            this.sendAudioChunk(audioData)
+        } else if (this.output_ws.readyState === WebSocket.CONNECTING) {
+            // WebSocket is still connecting - buffer the chunk
+            if (this.connectionBuffer.length < this.MAX_CONNECTION_BUFFER_SIZE) {
+                this.connectionBuffer.push(audioData)
+            } else {
+                // Buffer is full - drop oldest chunk and add new one
+                this.connectionBuffer.shift()
+                this.connectionBuffer.push(audioData)
+                console.warn(
+                    `⚠️ Connection buffer full (${this.MAX_CONNECTION_BUFFER_SIZE} chunks), dropping oldest chunk`,
                 )
             }
-            this.output_ws.send(s16Array.buffer)
         }
+        // If CLOSED or CLOSING, chunks are dropped (expected behavior)
+    }
+
+    /**
+     * Send a single audio chunk to the WebSocket
+     */
+    private sendAudioChunk(audioData: Float32Array): void {
+        if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+            return
+        }
+
+        // Convert f32Array to s16Array for external services
+        const s16Array = new Int16Array(audioData.length)
+        for (let i = 0; i < audioData.length; i++) {
+            s16Array[i] = Math.round(
+                Math.max(-32768, Math.min(32767, audioData[i] * 32768)),
+            )
+        }
+        this.output_ws.send(s16Array.buffer)
+    }
+
+    /**
+     * Flush the connection buffer (send all buffered chunks)
+     */
+    private flushConnectionBuffer(): void {
+        if (this.connectionBuffer.length === 0) {
+            return
+        }
+
+        const bufferSize = this.connectionBuffer.length
+        console.log(
+            `📤 Flushing connection buffer: ${bufferSize} chunks (~${(bufferSize * 0.04).toFixed(2)}s of audio)`,
+        )
+
+        for (const chunk of this.connectionBuffer) {
+            this.sendAudioChunk(chunk)
+        }
+
+        this.connectionBuffer = []
     }
 
     /**
@@ -159,9 +214,17 @@ export class Streaming {
      */
     private setupExternalOutputWS(): void {
         try {
+            this.wsConnectionStartTime = Date.now()
+            console.log('🔌 Initiating WebSocket connection...')
+
             this.output_ws = new WebSocket(this.outputUrl!)
 
             this.output_ws.on('open', () => {
+                const connectionTime = Date.now() - this.wsConnectionStartTime
+                console.log(
+                    `✅ External output WebSocket connected (took ${connectionTime}ms)`,
+                )
+
                 if (this.output_ws) {
                     this.output_ws.send(
                         JSON.stringify({
@@ -170,7 +233,9 @@ export class Streaming {
                             offset: 0.0,
                         }),
                     )
-                    console.log('✅ External output WebSocket connected')
+
+                    // Flush any buffered audio chunks
+                    this.flushConnectionBuffer()
                 }
             })
 
@@ -180,6 +245,8 @@ export class Streaming {
 
             this.output_ws.on('close', () => {
                 console.log('External output WebSocket closed')
+                // Clear connection buffer on close
+                this.connectionBuffer = []
             })
 
             // Handle dual channel (input/output same URL)
@@ -377,7 +444,7 @@ export class Streaming {
 
             try {
                 const soundLogPath = PathManager.getInstance().getSoundLogPath()
-                fs.promises.appendFile(soundLogPath, logEntry).catch(() => {})
+                fs.promises.appendFile(soundLogPath, logEntry).catch(() => { })
                 this.lastSoundLogTime_ms = now
             } catch (error) {
                 // Silently handle file errors
@@ -435,7 +502,7 @@ export class Streaming {
 
     private createAudioStreamFromWebSocket = (input_ws: WebSocket) => {
         const stream = new Readable({
-            read() {},
+            read() { },
         })
 
         input_ws.on('message', (message: RawData) => {
