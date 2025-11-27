@@ -85,7 +85,12 @@ export class NetworkSpeakerLogger {
                 // Log only on changes (including initial state)
                 if (hasChange) {
                     this.logSpeakersTable(speakers)
-                    this.writeLogToFile(speakers)
+                    this.writeLogToFile(speakers).catch((err) => {
+                        console.error(
+                            '[NetworkSpeakerLogger] Failed to write log to file:',
+                            err,
+                        )
+                    })
                 }
 
                 // Update state for all speakers

@@ -48,8 +48,9 @@ export function listenPage(page: Page) {
             )
 
             // Always show error messages (ERR type)
-            const messageType = message.type().substr(0, 3).toUpperCase()
-            const isError = messageType === 'ERR'
+            const type = message.type()
+            const shortType = type.substr(0, 3).toUpperCase()
+            const isError = shortType === 'ERR'
 
             // Print page logs only if PRINT_PAGE_LOGS is true or if DEBUG_LOGS is true and the log contains DEBUG
             // Exceptions: Always show errors
@@ -73,12 +74,10 @@ export function listenPage(page: Page) {
                     }
                 }),
             )
-
-            const type = message.type().substr(0, 3).toUpperCase()
             const tags = `${location.url}:${location.lineNumber}`
             const formattedText = args.length === 1 ? args[0] : args.join(' ')
 
-            switch (type) {
+            switch (shortType) {
                 case 'LOG':
                     console.log(`${tags}\n${formattedText}`)
                     break
@@ -102,7 +101,7 @@ export function listenPage(page: Page) {
                     break
                 default:
                     console.log(
-                        `DEFAULT CASE ${type} ! ${tags}\n${formattedText}`,
+                        `DEFAULT CASE ${shortType} ! ${tags}\n${formattedText}`,
                     )
             }
         } catch (e) {

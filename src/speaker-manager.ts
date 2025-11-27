@@ -87,6 +87,10 @@ export class SpeakerManager {
             if (speakingCount !== this.lastSpeakingCount) {
                 hasChange = true
             }
+            // Also check if any speaker left
+            if (!hasChange && this.previousSpeakerState.size !== speakers.length) {
+                hasChange = true
+            }
         }
 
         // Only log if there's a change

@@ -129,37 +129,6 @@ export class MeetProvider implements MeetingProviderInterface {
             })
             console.log('Navigation completed')
 
-            // Ensure network interceptor scripts run after navigation
-            // Sometimes addInitScript doesn't fire for SPAs, so we evaluate directly
-            try {
-                await page.waitForTimeout(200) // Give addInitScript a chance to run
-                const scriptCheck = await page.evaluate(() => {
-                    return {
-                        hasTestMarker:
-                            typeof (window as any).__networkInterceptorTest !==
-                            'undefined',
-                        hasMainMarker:
-                            typeof (window as any).__networkInterceptorMain !==
-                            'undefined',
-                    }
-                })
-
-                if (!scriptCheck.hasTestMarker && !scriptCheck.hasMainMarker) {
-                    console.log(
-                        '[Meet] Network interceptor scripts did not run automatically, evaluating directly...',
-                    )
-                    // Re-evaluate the scripts directly
-                    const { enableNetworkInterception } = await import(
-                        './meet/network-interception'
-                    )
-                    // We can't easily re-inject here, but the load listener should handle it
-                }
-            } catch (e) {
-                console.warn(
-                    '[Meet] Could not check network interceptor script status:',
-                    e,
-                )
-            }
 
             // Check for page freeze after goto (same as Teams)
             let pageFrozen = false

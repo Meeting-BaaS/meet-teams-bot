@@ -17,7 +17,7 @@ export function browserInterceptionLogic(schema: any[]) {
         }
 
         function decodeUserName(user: any): string {
-            // Prefer fullName if it contains whitespace (has last name), otherwise use displayName
+            // Prefer fullName if available, otherwise use displayName
             if (user.fullName) {
                 let fullName: string
                 if (user.fullName instanceof Uint8Array) {
@@ -29,21 +29,16 @@ export function browserInterceptionLogic(schema: any[]) {
                 } else {
                     fullName = user.fullName
                 }
-                
-                // If fullName has whitespace (contains last name), prefer it
-                if (fullName && fullName.trim().includes(' ')) {
-                    return fullName
-                }
-                
-                // If fullName exists but no whitespace, still prefer it over displayName
-                if (fullName) {
+
+                // Return fullName if non-empty after trimming
+                if (fullName.trim()) {
                     return fullName
                 }
             }
-            
+
             // Fall back to displayName if fullName not available or empty
             if (user.displayName) return user.displayName
-            
+
             return 'Unknown'
         }
 
@@ -203,12 +198,10 @@ export function browserInterceptionLogic(schema: any[]) {
             if (deviceId) {
                 return userManager.allUsersMap.get(deviceId)
             }
+            const normalizedStreamId = streamId != null ? String(streamId) : null
             for (const deviceOutput of userManager.deviceOutputMap.values()) {
-                if (
-                    deviceOutput.streamId === streamId ||
-                    deviceOutput.streamId === streamId.toString() ||
-                    deviceOutput.streamId === String(streamId)
-                ) {
+                const normalizedDeviceStreamId = deviceOutput.streamId != null ? String(deviceOutput.streamId) : null
+                if (normalizedDeviceStreamId === normalizedStreamId) {
                     return userManager.allUsersMap.get(deviceOutput.deviceId)
                 }
             }
@@ -273,10 +266,8 @@ export function browserInterceptionLogic(schema: any[]) {
                     { track },
                 )
                 reader = processor.readable.getReader()
-                console.error(
-                    `[NetworkInterceptor] 🎬 Audio Frame Processing Started: ${track.id}`,
-                )
-                ;(async () => {
+
+                const processFrames = async () => {
                     try {
                         while (true) {
                             const { done, value: frame } = await reader.read()
@@ -526,7 +517,23 @@ export function browserInterceptionLogic(schema: any[]) {
                             } catch {}
                         }
                     }
-                })()
+                }
+
+                // Read first frame to verify processing works before returning true
+                const firstRead = await reader.read()
+                if (firstRead.done) {
+                    console.error(
+                        '[NetworkInterceptor] ⚠️ Audio stream ended immediately',
+                    )
+                    return false
+                }
+                if (firstRead.value) firstRead.value.close()
+
+                console.error(
+                    `[NetworkInterceptor] 🎬 Audio Frame Processing Started: ${track.id}`,
+                )
+                // Start background processing
+                processFrames()
                 return true
             } catch (e) {
                 console.error(
