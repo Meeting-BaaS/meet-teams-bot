@@ -372,14 +372,11 @@ export class RecordingState extends BaseState {
       console.log(
         `[checkNoSpeaker] No sound activity detected for ${silenceDurationSeconds} seconds, ending meeting`
       )
-    } else {
-      // Log progress periodically
-      if (silenceDurationSeconds % 30 === 0) {
-        // Log every 30 seconds
-        console.log(
-          `[checkNoSpeaker] No speaker detected for ${silenceDurationSeconds}s / ${silenceTimeoutSeconds}s`
-        )
-      }
+    } else if (silenceDurationSeconds % 30 === 0) {
+      // Log every 30 seconds
+      console.log(
+        `[checkNoSpeaker] No speaker detected for ${silenceDurationSeconds}s / ${silenceTimeoutSeconds}s`
+      )
     }
     return shouldEnd
   }
