@@ -18,8 +18,7 @@ export class TeamsProvider implements MeetingProviderInterface {
   async openMeetingPage(
     browserContext: BrowserContext,
     link: string,
-    streaming_input: string | undefined,
-    attempts = 0
+    streaming_input: string | undefined
   ): Promise<Page> {
     const url = new URL(link)
     const page = await browserContext.newPage()
@@ -34,65 +33,27 @@ export class TeamsProvider implements MeetingProviderInterface {
     })
 
     try {
+      // Wait for page to load completely (Teams is heavy with lots of JS)
+      // 'networkidle' waits for network requests to finish, better for heavy JS pages
       await page.goto(link, {
-        waitUntil: "load",
-        timeout: 15000
+        waitUntil: "networkidle",
+        timeout: 30000
       })
 
-      // Check for page freeze after goto
-      let pageFrozen = false
-      try {
-        await Promise.race([
-          page.evaluate(() => document.readyState),
-          new Promise((_, reject) =>
-            setTimeout(
-              () => reject(new Error("Page freeze timeout after goto")),
-              10000 // 10 seconds timeout to detect freeze
-            )
-          )
-        ])
-      } catch (_e) {
-        pageFrozen = true
-        console.warn(`⚠️ Page appears to be frozen after goto (attempt ${attempts + 1}/3)`)
-      }
+      // Ensure page is fully loaded before proceeding
+      await ensurePageLoaded(page, 30000)
 
-      // Retry if frozen and we haven't exceeded max attempts
-      if (pageFrozen && attempts < 3) {
-        await page.close()
-        console.log(`🔄 Page freeze detected, retrying... (${attempts + 1}/3)`)
-        await sleep(1000) // Wait before retry
-        return await this.openMeetingPage(browserContext, link, streaming_input, attempts + 1)
-      }
-      if (pageFrozen && attempts >= 3) {
-        console.warn("⚠️ Page freeze persists after 3 retries, continuing anyway...")
-        // Continue - page might recover later
-      }
-
-      // Quick check for buttons with reduced timeout
+      // Quick check for buttons to confirm page is interactive
       await Promise.race([
-        page.getByRole("button", { name: "Join now" }).waitFor({ timeout: 5000 }),
+        page.getByRole("button", { name: "Join now" }).waitFor({ timeout: 10000 }),
         page
           .getByRole("button", {
             name: "Continue without audio or video"
           })
-          .waitFor({ timeout: 5000 })
+          .waitFor({ timeout: 10000 })
       ]).catch(() => {
-        // Silent catch - no need to log timeout
+        // Silent catch - buttons might not be visible yet, but page is loaded
       })
-
-      const currentUrl = await page.url()
-      const isLightInterface = currentUrl.includes("light-meetings") || currentUrl.includes("light")
-
-      if (isLightInterface && attempts < 3) {
-        // Limit retries to 3
-        await page.close()
-        console.log(`🥕 Light interface detected, retry ${attempts + 1}/3`)
-        await sleep(500) // Reduced wait time
-        return await this.openMeetingPage(browserContext, link, streaming_input, attempts + 1)
-      }
-      if (isLightInterface && attempts >= 3) {
-        console.log("🥕 Light interface persists after 3 retries, continuing anyway")
-      }
 
       return page
     } catch (error) {
@@ -347,53 +308,19 @@ export class TeamsProvider implements MeetingProviderInterface {
       return true
     }
 
-    // Check for page freeze
-    try {
-      await Promise.race([
-        page.evaluate(() => document.readyState),
-        new Promise((_, reject) =>
-          setTimeout(
-            () => reject(new Error("Page freeze timeout")),
-            20000 // 20 seconds timeout like Meet
-          )
-        )
-      ])
-    } catch (_e) {
-      console.log("Page appears to be frozen for 20 seconds - meeting likely ended")
-      return true
-    }
-
     return await isRemovedFromTheMeeting(page)
   }
 
   async closeMeeting(page: Page): Promise<void> {
     console.log("Attempting to leave the meeting")
     try {
-      // Try multiple approaches to find and click the leave button
-
-      // Approach 1: Try to find by aria-label
-      // const leaveButton = page.locator('button[aria-label="Leave (⌘+Shift+H)"], button[aria-label*="Leave"]')
-      // if (await leaveButton.count() > 0) {
-      //     await leaveButton.click()
-      //     console.log('Clicked leave button by aria-label')
-      //     return
-      // }
-
-      // // Approach 2: Try to find by data-tid attribute
-      // const hangupButton = page.locator('button[data-tid="hangup-main-btn"]')
-      // if (await hangupButton.count() > 0) {
-      //     await hangupButton.click()
-      //     console.log('Clicked leave button by data-tid')
-      //     return
-      // }
-
-      // Approach 3: Try to find by text content
+      // Try to find by text content
       if (await clickWithInnerText(page, "button", "Leave", 5, true)) {
         console.log("Clicked leave button by text content")
         return
       }
 
-      // Approach 4: Try to find by role and name
+      // Try to find by role and name
       const leaveByRole = page.getByRole("button", { name: "Leave" })
       if ((await leaveByRole.count()) > 0) {
         await leaveByRole.click()
@@ -551,8 +478,6 @@ async function isRemovedFromTheMeeting(page: Page): Promise<boolean> {
     const raiseButton = page.locator('button#raisehands-button:has-text("Raise")')
     const buttonExists = (await raiseButton.count()) > 0
 
-    // console.log('raiseButton', JSON.stringify(raiseButton))
-    // console.log('buttonExists', JSON.stringify(buttonExists))
     if (!buttonExists) {
       console.log("no raise button found, Bot removed from the meeting")
       return true
@@ -603,7 +528,7 @@ async function handlePermissionDialog(page: Page): Promise<void> {
 async function activateCamera(page: Page): Promise<void> {
   console.log("activating camera")
   try {
-    // Essayer d'abord l'interface normale de Teams
+    // Try normal Teams interface first
     const cameraOffText = page.locator('text="Your camera is turned off"')
     if ((await cameraOffText.count()) > 0) {
       const cameraButton = page.locator('button[title="Turn camera on"]')
@@ -616,7 +541,7 @@ async function activateCamera(page: Page): Promise<void> {
       console.log("Camera button not found in normal interface, trying light interface")
     }
 
-    // Essayer l'interface light de Teams
+    // Try Teams light interface
     const lightCameraButton = page.locator(
       '[data-tid="toggle-video"][aria-checked="false"], [aria-label="Camera"][aria-checked="false"]'
     )
@@ -703,20 +628,20 @@ async function ensurePageLoaded(page: Page, timeout = 20000): Promise<boolean> {
   }
 }
 
-// New function to check if we are in the Teams meeting
+// Check if we are in the Teams meeting
 async function isInTeamsMeeting(page: Page): Promise<boolean> {
   try {
     const indicators = [
       // The React button is a good indicator that we are in the meeting
       await clickWithInnerText(page, "button", "React", 1, false),
 
-      // Le bouton Raise hand aussi
+      // The Raise hand button too
       await page.locator('button#raisehands-button:has-text("Raise")').isVisible(),
 
-      // La présence du chat
+      // The presence of chat
       await page.locator('button[aria-label*="chat"], button[title*="chat"]').isVisible(),
 
-      // L'absence des textes de waiting room
+      // The absence of waiting room texts
       !(await isBotNotAccepted(page)),
 
       // The absence of the Join now button (which only exists in the waiting room)
