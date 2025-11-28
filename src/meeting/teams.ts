@@ -26,11 +26,9 @@ export class TeamsProvider implements MeetingProviderInterface {
         browserContext: BrowserContext,
         link: string,
         streaming_input: string | undefined,
-        attempts: number = 0,
     ): Promise<Page> {
         const url = new URL(link)
         const page = await browserContext.newPage()
-        const maxAttempts = 10
 
         page.setDefaultTimeout(30000)
         page.setDefaultNavigationTimeout(30000)
@@ -42,87 +40,29 @@ export class TeamsProvider implements MeetingProviderInterface {
         })
 
         try {
+            // Wait for page to load completely (Teams is heavy with lots of JS)
+            // 'networkidle' waits for network requests to finish, better for heavy JS pages
             await page.goto(link, {
-                waitUntil: 'load', 
-                timeout: 15000,
+                waitUntil: 'networkidle',
+                timeout: 30000,
             })
 
-            // Check for page freeze after goto
-            let pageFrozen = false
-            try {
-                await Promise.race([
-                    page.evaluate(() => document.readyState),
-                    new Promise((_, reject) =>
-                        setTimeout(
-                            () => reject(new Error('Page freeze timeout after goto')),
-                            10000, // 10 seconds timeout to detect freeze
-                        ),
-                    ),
-                ])
-            } catch (e) {
-                pageFrozen = true
-                console.warn(
-                    `⚠️ Page appears to be frozen after goto (attempt ${attempts + 1}/3)`,
-                )
-            }
+            // Ensure page is fully loaded before proceeding
+            await ensurePageLoaded(page, 30000)
 
-            // Retry if frozen and we haven't exceeded max attempts
-            if (pageFrozen && attempts < 3) {
-                await page.close()
-                console.log(
-                    `🔄 Page freeze detected, retrying... (${attempts + 1}/3)`,
-                )
-                await sleep(1000) // Wait before retry
-                return await this.openMeetingPage(
-                    browserContext,
-                    link,
-                    streaming_input,
-                    attempts + 1,
-                )
-            } else if (pageFrozen && attempts >= 3) {
-                console.warn(
-                    '⚠️ Page freeze persists after 3 retries, continuing anyway...',
-                )
-                // Continue - page might recover later
-            }
-
-            // Quick check for buttons with reduced timeout
+            // Quick check for buttons to confirm page is interactive
             await Promise.race([
                 page
                     .getByRole('button', { name: 'Join now' })
-                    .waitFor({ timeout: 5000 }),
+                    .waitFor({ timeout: 10000 }),
                 page
                     .getByRole('button', {
                         name: 'Continue without audio or video',
                     })
-                    .waitFor({ timeout: 5000 }),
+                    .waitFor({ timeout: 10000 }),
             ]).catch(() => {
-                // Silent catch - no need to log timeout
+                // Silent catch - buttons might not be visible yet, but page is loaded
             })
-
-            const currentUrl = await page.url()
-            const isLightInterface =
-                currentUrl.includes('light-meetings') ||
-                currentUrl.includes('light')
-
-            if (isLightInterface && attempts < 3) {
-                // Limit retries to 3
-                await page.close()
-                console.log(
-                    `🥕 Light interface detected, retry ${attempts + 1}/3`,
-                )
-                await sleep(500) // Reduced wait time
-                return await this.openMeetingPage(
-                    browserContext,
-                    link,
-                    streaming_input,
-                    attempts + 1,
-                )
-            } else if (isLightInterface && attempts >= 3) {
-                console.log(
-                    '🥕 Light interface persists after 3 retries, continuing anyway',
-                )
-            }
 
             return page
         } catch (error) {
@@ -441,22 +381,6 @@ export class TeamsProvider implements MeetingProviderInterface {
     async findEndMeeting(page: Page): Promise<boolean> {
         // Check if we're on a Microsoft login page
         if (await isOnMicrosoftLoginPage(page)) {
-            return true
-        }
-
-        // Check for page freeze
-        try {
-            await Promise.race([
-                page.evaluate(() => document.readyState),
-                new Promise((_, reject) =>
-                    setTimeout(
-                        () => reject(new Error('Page freeze timeout')),
-                        20000, // 20 seconds timeout like Meet
-                    ),
-                ),
-            ])
-        } catch (e) {
-            console.log('Page appears to be frozen for 20 seconds - meeting likely ended')
             return true
         }
 
