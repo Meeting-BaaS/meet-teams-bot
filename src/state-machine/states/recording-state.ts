@@ -26,8 +26,9 @@ const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
 export class RecordingState extends BaseState {
     private isProcessing: boolean = true
     private readonly CHECK_INTERVAL = 250
-    private noAttendeesConfirmationStartTime: number = 0
     private lastSoundActivity: number = Date.now()
+    private lastNoOneJoinedPeriodLog: number = 0
+    private hasNoOneJoinedPeriodEnded: boolean = false
 
     async execute(): StateExecuteResult {
         try {
@@ -206,11 +207,18 @@ export class RecordingState extends BaseState {
                 return this.getBotRemovedReason()
             }
 
-            // Check for sound activity first - if detected, reset all silence timers
+            // Check for sound activity first - if detected, mark it and reset silence timers
             if (Streaming.instance) {
                 const currentSoundLevel =
                     Streaming.instance.getCurrentSoundLevel()
                 if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+                    // Mark that sound has been detected (ends noone_joined grace period)
+                    if (!this.hasNoOneJoinedPeriodEnded) {
+                        this.hasNoOneJoinedPeriodEnded = true
+                        console.log(
+                            `[checkEndConditions] First sound detected (${currentSoundLevel.toFixed(2)}), ending noone_joined_timeout grace period and enabling silence monitoring`,
+                        )
+                    }
                     // Only log once per 2 seconds to avoid spam
                     if (now - this.lastSoundActivity >= 2000) {
                         console.log(
@@ -218,15 +226,24 @@ export class RecordingState extends BaseState {
                         )
                     }
                     this.lastSoundActivity = now
-                    return { shouldEnd: false }
                 }
             }
 
-            // Check participants and audio activity
-            if (await this.checkNoAttendees(now)) {
-                return { shouldEnd: true, reason: MeetingEndReason.NoAttendees }
+            // Check if we're still in the noone_joined_period
+            const noOneJoinedResult = this.checkNoOneJoined(now)
+            if (noOneJoinedResult.shouldEnd) {
+                return noOneJoinedResult
             }
 
+            // If we get here, either:
+            // 1. No one joined period has ended (sound or attendees detected) → enable silence monitoring
+            // 2. Still in no one joined period (no sound/attendees yet, timeout not expired) → return false
+            if (!this.hasNoOneJoinedPeriodEnded) {
+                // Still waiting for first sound or attendees, no one joined period not over yet
+                return { shouldEnd: false }
+            }
+
+            // No one joined period is over - check silence timeout
             if (await this.checkNoSpeaker(now)) {
                 return { shouldEnd: true, reason: MeetingEndReason.NoSpeaker }
             }
@@ -320,68 +337,74 @@ export class RecordingState extends BaseState {
     }
 
     /**
-     * Checks if the meeting should end due to lack of participants
+     * Checks if the noone_joined_period should end the meeting due to no sound/attendees
+     * No one joined period ends when:
+     * - Sound is first detected, OR
+     * - Attendees are detected via UI (positive signal only as layout is fickle, so we need to be sure), OR
+     * - Timeout elapses (no sound and no attendees detected)
      * @param now Current timestamp
-     * @returns true if the meeting should end due to lack of participants
+     * @returns Object indicating if meeting should end and reason
      */
-    private checkNoAttendees(now: number): boolean {
+    private checkNoOneJoined(now: number): {
+        shouldEnd: boolean
+        reason?: MeetingEndReason
+    } {
+        const startTime = this.context.startTime
+        if (!startTime) {
+            return { shouldEnd: false }
+        }
+
+        // Check for positive attendee signals (only use when true, not when false/0)
+        // This helps when users are present but haven't spoken yet
         const attendeesCount = this.context.attendeesCount || 0
-        const startTime = this.context.startTime || 0
         const firstUserJoined = this.context.firstUserJoined || false
 
-        // If participants are present, reset timer and exit
-        if (attendeesCount > 0) {
-            this.noAttendeesConfirmationStartTime = 0
-            return false
+        // If grace period has already ended (by sound or attendees), return early
+        if (this.hasNoOneJoinedPeriodEnded) {
+            return { shouldEnd: false }
         }
 
-        // Check if we should consider ending due to no attendees
-        const nooneJoinedTimeoutMs =
-            GLOBAL.get().automatic_leave.noone_joined_timeout * 1000
-        const noAttendeesTimeout: boolean =
-            startTime + nooneJoinedTimeoutMs < now
-        const shouldConsiderEnding = noAttendeesTimeout || firstUserJoined
-
-        // If we shouldn't consider ending, reset timer and exit
-        if (!shouldConsiderEnding) {
-            this.noAttendeesConfirmationStartTime = 0
-            return false
-        }
-
-        // Start confirmation timer if not already started
-        if (this.noAttendeesConfirmationStartTime === 0) {
-            this.noAttendeesConfirmationStartTime = now
+        // If attendees detected via UI (positive signal), end grace period
+        // We only use this when it's positive (count > 0 or firstUserJoined = true)
+        // This way, if UI detection works, we use it; if it doesn't, we fall back to sound
+        if (attendeesCount > 0 || firstUserJoined) {
+            // Reset silence timer to start monitoring from now, even though no one joined was detected via UI
+            // This is important to ensure that the silence timeout is not triggered too early
+            this.lastSoundActivity = now
             console.log(
-                `[checkNoAttendees] Starting empty meeting confirmation timer (timeout: ${GLOBAL.get().automatic_leave.noone_joined_timeout}s)`,
+                `[noone-joined] Grace period ended (attendees detected via UI: count=${attendeesCount}, firstUserJoined=${firstUserJoined}), enabling silence timeout checks`,
             )
-            return false
+            this.hasNoOneJoinedPeriodEnded = true
+            return { shouldEnd: false }
         }
 
-        // Check if we've had no attendees for long enough
-        const noAttendeesDuration = now - this.noAttendeesConfirmationStartTime
-        const hasEnoughConfirmation: boolean =
-            noAttendeesDuration >=
-            MEETING_CONSTANTS.EMPTY_MEETING_CONFIRMATION_MS
+        // Use noone_joined_timeout from config, with fallback to default
+        const nooneJoinedTimeoutSeconds =
+            GLOBAL.get().automatic_leave.noone_joined_timeout ??
+            MEETING_CONSTANTS.DEFAULT_NOONE_JOINED_TIMEOUT_SECONDS
+        const gracePeriodMs = nooneJoinedTimeoutSeconds * 1000
+        const elapsed = now - startTime
 
-        // Log progress if we're still waiting
-        if (
-            !hasEnoughConfirmation &&
-            noAttendeesDuration % 5000 < this.CHECK_INTERVAL
-        ) {
-            console.log(
-                `[checkNoAttendees] Waiting for empty meeting confirmation: ${Math.floor(noAttendeesDuration / 1000)}s / ${MEETING_CONSTANTS.EMPTY_MEETING_CONFIRMATION_MS / 1000}s`,
-            )
+        // If grace period hasn't elapsed yet, continue waiting
+        if (elapsed < gracePeriodMs) {
+            // Log at most every 30 seconds to avoid noisy logs
+            if (now - this.lastNoOneJoinedPeriodLog >= 30_000) {
+                const remainingSeconds = Math.ceil(
+                    (gracePeriodMs - elapsed) / 1000,
+                )
+                console.log(
+                    `[noone-joined] Waiting for first sound or attendees... ${remainingSeconds}s remaining before timeout`,
+                )
+                this.lastNoOneJoinedPeriodLog = now
+            }
+            return { shouldEnd: false }
         }
 
-        if (hasEnoughConfirmation) {
-            console.log(
-                `[checkNoAttendees] Empty meeting confirmation reached (${Math.floor(noAttendeesDuration / 1000)}s), ending meeting due to no attendees`,
-            )
-            // End meeting due to no attendees - don't wait for sound activity
-            return this.checkNoSpeaker(now)
-        }
-
-        return false
+        // Grace period elapsed and no sound/attendees detected - exit with NoAttendees
+        console.log(
+            `[noone-joined] No sound or attendees detected during ${nooneJoinedTimeoutSeconds}s grace period, ending meeting with NoAttendees`,
+        )
+        return { shouldEnd: true, reason: MeetingEndReason.NoAttendees }
     }
 
     /**

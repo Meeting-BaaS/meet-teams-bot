@@ -14,6 +14,7 @@ export const MEETING_CONSTANTS = {
     CLEANUP_TIMEOUT: 1000 * 60 * 60, // 1 heure
     RESUMING_TIMEOUT: 1000 * 60 * 60, // 1 heure
     DEFAULT_SILENCE_TIMEOUT_SECONDS: 600, // 10 minutes - default fallback when global value is nil
+    DEFAULT_NOONE_JOINED_TIMEOUT_SECONDS: 300, // 5 minutes - default fallback matching API server default
 
     // Autres constantes
     FIND_END_MEETING_SLEEP: 250,
