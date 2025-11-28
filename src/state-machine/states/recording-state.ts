@@ -9,16 +9,16 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 
+import { Api } from '../../api/methods'
 import {
     AudioWarningEvent,
     ScreenRecorderManager,
 } from '../../recording/ScreenRecorder'
-import { Api } from '../../api/methods'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
 import { uploadTranscriptTask } from '../../uploadTranscripts'
-import { MeetingStateMachine } from '../machine'
 import { sleep } from '../../utils/sleep'
+import { MeetingStateMachine } from '../machine'
 
 // Sound level threshold for considering activity (0-100)
 const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
@@ -27,8 +27,12 @@ export class RecordingState extends BaseState {
     private isProcessing: boolean = true
     private readonly CHECK_INTERVAL = 250
     private lastSoundActivity: number = Date.now()
+<<<<<<< Updated upstream
     private lastNoOneJoinedPeriodLog: number = 0
     private hasNoOneJoinedPeriodEnded: boolean = false
+=======
+    private lastNoSpeakerLogTime: number = 0
+>>>>>>> Stashed changes
 
     async execute(): StateExecuteResult {
         try {
@@ -487,12 +491,12 @@ export class RecordingState extends BaseState {
                 `[checkNoSpeaker] No sound activity detected for ${silenceDurationSeconds} seconds, ending meeting`,
             )
         } else {
-            // Log progress periodically
-            if (silenceDurationSeconds % 30 === 0) {
-                // Log every 30 seconds
+            // Log only every 120 seconds to avoid spam
+            if (now - this.lastNoSpeakerLogTime >= 120000) {
                 console.log(
                     `[checkNoSpeaker] No speaker detected for ${silenceDurationSeconds}s / ${silenceTimeoutSeconds}s`,
                 )
+                this.lastNoSpeakerLogTime = now
             }
         }
         return shouldEnd
