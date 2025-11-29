@@ -7,6 +7,7 @@ import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/teamsUrlParser'
 import { sleep } from '../utils/sleep'
+import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from './teams/audio-capture'
 
 export class TeamsProvider implements MeetingProviderInterface {
     constructor() {}
@@ -41,9 +42,13 @@ export class TeamsProvider implements MeetingProviderInterface {
             origin: url.origin,
         })
 
+        // Enable Web Audio mixing for clean streaming (KISS approach!)
+        await enableTeamsAudioCapture(page)
+        console.log('[Teams] ✅ Web Audio capture enabled for streaming')
+
         try {
             await page.goto(link, {
-                waitUntil: 'load', 
+                waitUntil: 'load',
                 timeout: 15000,
             })
 
@@ -387,6 +392,9 @@ export class TeamsProvider implements MeetingProviderInterface {
 
         // Capture DOM state after successfully joining Teams meeting
         await htmlSnapshot.captureSnapshot(page, 'teams_join_meeting_success')
+
+        // Verify audio capture is working
+        await verifyTeamsAudioCapture(page)
 
         // Check for "Continue without audio or video" that might appear AFTER joining (light interface)
         try {
