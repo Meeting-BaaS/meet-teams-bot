@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     # Media processing
     ffmpeg \
     # Utilities
-    curl unzip \
+    curl unzip jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AWS CLI v2

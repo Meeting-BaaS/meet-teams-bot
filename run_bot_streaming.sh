@@ -230,6 +230,15 @@ run_bot() {
         print_info "🔄 Converted WebSocket URL for Docker: $DOCKER_WEBSOCKET_URL"
     fi
 
+    # Set streaming_output in config
+    print_info "Setting streaming_output to: $DOCKER_WEBSOCKET_URL"
+    if command -v jq &> /dev/null; then
+        processed_config=$(echo "$processed_config" | jq --arg url "$DOCKER_WEBSOCKET_URL" '.streaming_output = $url')
+    else
+        print_error "jq not available, cannot set streaming_output"
+        exit 1
+    fi
+
     print_success "🚀 Starting bot with streaming to $DOCKER_WEBSOCKET_URL"
     echo ""
 

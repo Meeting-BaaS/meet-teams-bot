@@ -384,16 +384,78 @@ export function browserInterceptionLogic(schema: any[]) {
                             if (!frame) continue
 
                             try {
-                                // Extract and process audio data
-                                const audioData = extractAudioData(frame)
+                                // Extract audio data from the frame
+                                const numChannels = frame.numberOfChannels
+                                const numSamples = frame.numberOfFrames
+                                const audioData = new Float32Array(numSamples)
 
-                                if (hasAudioActivity(audioData)) {
-                                    const contributingSources = getContributingSources(
-                                        receiverManager,
-                                        receiver,
-                                    )
+                                // Extract and mix all channels
+                                if (numChannels > 1) {
+                                    const channelData = new Float32Array(numSamples)
+                                    for (
+                                        let channel = 0;
+                                        channel < numChannels;
+                                        channel++
+                                    ) {
+                                        frame.copyTo(channelData, {
+                                            planeIndex: channel,
+                                        })
+                                        for (let i = 0; i < numSamples; i++) {
+                                            audioData[i] += channelData[i]
+                                        }
+                                    }
+                                    for (let i = 0; i < numSamples; i++) {
+                                        audioData[i] /= numChannels
+                                    }
+                                } else {
+                                    frame.copyTo(audioData, { planeIndex: 0 })
+                                }
 
-                                    if (contributingSources && contributingSources.length > 0) {
+                                // 🚀 ULTRA-LOW LATENCY AUDIO STREAMING
+                                // Send raw audio directly to Node.js for WebSocket streaming
+                                // This bypasses FFmpeg entirely for minimal latency (<50ms)
+                                if (typeof (window as any).onBrowserAudioChunk === 'function') {
+                                    try {
+                                        // Send audio data + metadata for correlation
+                                        const streamingSources = getContributingSources(
+                                            receiverManager,
+                                            receiver,
+                                        )
+                                        const streamingSSRC = streamingSources?.[0]?.source || null
+
+                                        // Get user info if available
+                                        let streamingUser = null
+                                        if (streamingSSRC && typeof getUserByStreamId === 'function') {
+                                            streamingUser = getUserByStreamId(userManager, streamingSSRC.toString())
+                                        }
+
+                                        // Send audio chunk with metadata
+                                        ; (window as any).onBrowserAudioChunk({
+                                            audioData: Array.from(audioData),
+                                            sampleRate: frame.sampleRate,
+                                            timestamp: frame.timestamp,
+                                            numberOfFrames: numSamples,
+                                            ssrc: streamingSSRC,
+                                            deviceId: streamingUser?.deviceId || null,
+                                            userName: streamingUser ? decodeUserName(streamingUser) : null,
+                                        })
+                                    } catch (e) {
+                                        console.error('[NetworkInterceptor] Failed to send audio chunk:', e)
+                                    }
+                                }
+
+
+
+                                const hasAudio = audioData.some(
+                                    (v) => Math.abs(v) > 0.001,
+                                )
+                                if (hasAudio) {
+                                    const contributingSources =
+                                        getContributingSources(
+                                            receiverManager,
+                                            receiver,
+                                        )
+                                        if (contributingSources && contributingSources.length > 0) {
                                         const usersWithAudioLevels = getUsersWithAudio(
                                             contributingSources,
                                             userManager,
@@ -405,18 +467,137 @@ export function browserInterceptionLogic(schema: any[]) {
                                             speakingState.clear()
                                             speakingState.set(loudestSpeaker.user.deviceId, true)
 
-                                            // Broadcast with current speaker
-                                            broadcastSpeakerUpdate(
-                                                userManager,
-                                                loudestSpeaker.user.deviceId,
-                                                loudestSpeaker.audioLevel,
-                                                'audio',
-                                            )
+                                            // Broadcast with current speaker (inline version with PII fields)
+                                            if (typeof (window as any).onNetworkSpeakerUpdate === 'function') {
+                                                const allUsers = getAllUsers(userManager)
+                                                const filteredUsers = filterActiveUsers(allUsers)
+                                                const users = filteredUsers.map(
+                                                    (user: any) => {
+                                                        const decodedName =
+                                                            decodeUserName(user)
+                                                        const isCurrentlySpeaking =
+                                                            user.deviceId ===
+                                                            loudestSpeaker.user
+                                                                .deviceId
+
+                                                        // Decode fullName if it's a Uint8Array
+                                                        let fullName: string | undefined
+                                                        if (user.fullName instanceof Uint8Array) {
+                                                            try {
+                                                                fullName = new TextDecoder().decode(user.fullName)
+                                                            } catch {
+                                                                fullName = undefined
+                                                            }
+                                                        } else if (user.fullName) {
+                                                            fullName = user.fullName
+                                                        }
+
+                                                        return {
+                                                            deviceId:
+                                                                user.deviceId,
+                                                            name: decodedName,
+                                                            isCurrentUser:
+                                                                user.isCurrentUserString ===
+                                                                'true' ||
+                                                                user.isCurrentUserString ===
+                                                                '1',
+                                                            isSpeaking:
+                                                                isCurrentlySpeaking,
+                                                            status: user.status,
+                                                            isHost:
+                                                                user.isHost ===
+                                                                1,
+                                                            audioLevel:
+                                                                isCurrentlySpeaking
+                                                                    ? loudestSpeaker.audioLevel
+                                                                    : 0,
+                                                            // PII fields for enhanced logging
+                                                            fullName: fullName,
+                                                            displayName: user.displayName,
+                                                            profilePicture: user.profilePicture,
+                                                        }
+                                                    },
+                                                )
+                                                    ; (
+                                                        window as any
+                                                    ).onNetworkSpeakerUpdate({
+                                                        users,
+                                                        timestamp: Date.now(),
+                                                        source: 'audio',
+                                                    })
+                                            }
                                         } else {
                                             // No speaker with meaningful audio - clear speaking state
                                             if (speakingState.size > 0) {
                                                 speakingState.clear()
-                                                broadcastSpeakerUpdate(userManager, null, 0, 'audio')
+                                                // Broadcast update to clear speaking status
+                                                if (
+                                                    typeof (window as any)
+                                                        .onNetworkSpeakerUpdate ===
+                                                    'function'
+                                                ) {
+                                                    const allUsers =
+                                                        getAllUsers(userManager)
+                                                    // Filter out screen sharing devices (users with parentDeviceId) and users who left (status !== 1)
+                                                    const filteredUsers =
+                                                        allUsers.filter(
+                                                            (user: any) =>
+                                                                !user.parentDeviceId &&
+                                                                user.status ===
+                                                                1,
+                                                        )
+                                                    const users =
+                                                        filteredUsers.map(
+                                                            (user: any) => {
+                                                                // Decode fullName if it's a Uint8Array
+                                                                let fullName: string | undefined
+                                                                if (user.fullName instanceof Uint8Array) {
+                                                                    try {
+                                                                        fullName = new TextDecoder().decode(user.fullName)
+                                                                    } catch {
+                                                                        fullName = undefined
+                                                                    }
+                                                                } else if (user.fullName) {
+                                                                    fullName = user.fullName
+                                                                }
+
+                                                                return {
+                                                                    deviceId:
+                                                                        user.deviceId,
+                                                                    name: decodeUserName(
+                                                                        user,
+                                                                    ),
+                                                                    isCurrentUser:
+                                                                        !!(
+                                                                            user.isCurrentUserString &&
+                                                                            user.isCurrentUserString !==
+                                                                            '' &&
+                                                                            user.isCurrentUserString !==
+                                                                            'false' &&
+                                                                            user.isCurrentUserString !==
+                                                                            '0'
+                                                                        ),
+                                                                    isSpeaking:
+                                                                        false,
+                                                                    status: user.status,
+                                                                    isHost:
+                                                                        user.isHost ===
+                                                                        1,
+                                                                    // PII fields for enhanced logging
+                                                                    fullName: fullName,
+                                                                    displayName: user.displayName,
+                                                                    profilePicture: user.profilePicture,
+                                                                }
+                                                            },
+                                                        )
+                                                        ; (
+                                                            window as any
+                                                        ).onNetworkSpeakerUpdate({
+                                                            users,
+                                                            timestamp: Date.now(),
+                                                            source: 'audio',
+                                                        })
+                                                }
                                             }
                                         }
                                     } else {
@@ -592,9 +773,10 @@ export function browserInterceptionLogic(schema: any[]) {
                         profilePicture: user.profilePicture,
                     }
                 })
-
-                if (typeof (window as any).onNetworkSpeakerUpdate === 'function') {
-                    ;(window as any).onNetworkSpeakerUpdate({
+                if (
+                    typeof (window as any).onNetworkSpeakerUpdate === 'function'
+                ) {
+                    ; (window as any).onNetworkSpeakerUpdate({
                         users,
                         timestamp: Date.now(),
                         source: 'roster',
@@ -619,104 +801,104 @@ export function browserInterceptionLogic(schema: any[]) {
 
         if (typeof (window as any).RTCPeerConnection !== 'undefined') {
             const OriginalPC = (window as any).RTCPeerConnection
-            ;(window as any).RTCPeerConnection = function (...args: any[]) {
-                const pc = new OriginalPC(...args)
-                pc.addEventListener('track', (event: any) => {
-                    if (event.track.kind === 'audio') {
-                        monitorTrack(
-                            event.track,
-                            event.receiver,
-                            receiverManager,
-                            userManager,
-                            audioCtx,
-                            activeAudioTracks,
-                        )
-                    }
-                })
-                pc.addEventListener('datachannel', (event: any) => {
-                    const label = event.channel.label
-                    allDataChannels.set(label, event.channel)
-
-                    console.error(
-                        `[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`,
-                    )
-
-                    if (label === 'meet_messages') {
-                        meetMessagesDataChannel = event.channel
-                        console.error(
-                            '[NetworkInterceptor] 💬 Chat channel ready',
-                        )
-                    }
-                    event.channel.addEventListener('message', (msg: any) => {
-                        try {
-                            const rawData = new Uint8Array(msg.data)
-                            try {
-                                // Defensive check for pako availability
-                                if (
-                                    typeof (window as any).pako === 'undefined' ||
-                                    typeof (window as any).pako.inflate !== 'function'
-                                ) {
-                                    console.error(
-                                        '[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available',
-                                    )
-                                    console.warn(
-                                        '[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression',
-                                    )
-                                    throw new Error(
-                                        'pako.inflate is not available',
-                                    )
-                                }
-                                const inflated = (window as any).pako.inflate(
-                                    rawData,
-                                )
-                                const eventData =
-                                    messageDecoders['CollectionEvent'](inflated)
-                                const body = eventData.body
-                                if (body) {
-                                    const wrapper =
-                                        body.userInfoListWrapperAndChatWrapperWrapper
-                                    if (
-                                        wrapper?.deviceInfoWrapper
-                                            ?.deviceOutputInfoList
-                                    ) {
-                                        const deviceOutputs =
-                                            wrapper.deviceInfoWrapper
-                                                .deviceOutputInfoList
-                                        updateDeviceOutputs(
-                                            userManager,
-                                            deviceOutputs,
-                                        )
-                                    }
-                                    if (
-                                        wrapper
-                                            ?.userInfoListWrapperAndChatWrapper
-                                            ?.userInfoListWrapper?.userInfoList
-                                    ) {
-                                        const users =
-                                            wrapper
-                                                .userInfoListWrapperAndChatWrapper
-                                                .userInfoListWrapper
-                                                .userInfoList
-                                        updateUsers(userManager, users)
-                                        console.error(
-                                            `[NetworkInterceptor] 👥 Updated ${users.length} users`,
-                                        )
-                                    }
-                                }
-                            } catch (e) {
-                                console.error(
-                                    `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
-                                    e,
-                                )
-                            }
-                        } catch (e) {
-                            console.error(
-                                '[NetworkInterceptor] Critical Message Error:',
-                                e,
+                ; (window as any).RTCPeerConnection = function (...args: any[]) {
+                    const pc = new OriginalPC(...args)
+                    pc.addEventListener('track', (event: any) => {
+                        if (event.track.kind === 'audio') {
+                            monitorTrack(
+                                event.track,
+                                event.receiver,
+                                receiverManager,
+                                userManager,
+                                audioCtx,
+                                activeAudioTracks,
                             )
                         }
                     })
-                })
+                    pc.addEventListener('datachannel', (event: any) => {
+                        const label = event.channel.label
+                        allDataChannels.set(label, event.channel)
+
+                        console.error(
+                            `[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`,
+                        )
+
+                        if (label === 'meet_messages') {
+                            meetMessagesDataChannel = event.channel
+                            console.error(
+                                '[NetworkInterceptor] 💬 Chat channel ready',
+                            )
+                        }
+                        event.channel.addEventListener('message', (msg: any) => {
+                            try {
+                                const rawData = new Uint8Array(msg.data)
+                                try {
+                                    // Defensive check for pako availability
+                                    if (
+                                        typeof (window as any).pako === 'undefined' ||
+                                        typeof (window as any).pako.inflate !== 'function'
+                                    ) {
+                                        console.error(
+                                            '[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available',
+                                        )
+                                        console.warn(
+                                            '[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression',
+                                        )
+                                        throw new Error(
+                                            'pako.inflate is not available',
+                                        )
+                                    }
+                                    const inflated = (window as any).pako.inflate(
+                                        rawData,
+                                    )
+                                    const eventData =
+                                        messageDecoders['CollectionEvent'](inflated)
+                                    const body = eventData.body
+                                    if (body) {
+                                        const wrapper =
+                                            body.userInfoListWrapperAndChatWrapperWrapper
+                                        if (
+                                            wrapper?.deviceInfoWrapper
+                                                ?.deviceOutputInfoList
+                                        ) {
+                                            const deviceOutputs =
+                                                wrapper.deviceInfoWrapper
+                                                    .deviceOutputInfoList
+                                            updateDeviceOutputs(
+                                                userManager,
+                                                deviceOutputs,
+                                            )
+                                        }
+                                        if (
+                                            wrapper
+                                                ?.userInfoListWrapperAndChatWrapper
+                                                ?.userInfoListWrapper?.userInfoList
+                                        ) {
+                                            const users =
+                                                wrapper
+                                                    .userInfoListWrapperAndChatWrapper
+                                                    .userInfoListWrapper
+                                                    .userInfoList
+                                            updateUsers(userManager, users)
+                                            console.error(
+                                                `[NetworkInterceptor] 👥 Updated ${users.length} users`,
+                                            )
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.error(
+                                        `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
+                                        e,
+                                    )
+                                }
+                            } catch (e) {
+                                console.error(
+                                    '[NetworkInterceptor] Critical Message Error:',
+                                    e,
+                                )
+                            }
+                        })
+                    })
 
                     // Create meet_messages channel for chat functionality
                     setTimeout(() => {

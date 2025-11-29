@@ -267,15 +267,38 @@ apply_overrides() {
 }
 
 # Process JSON configuration to add UUID if missing
+# Process JSON configuration to add UUID and Streaming params if missing
 process_config() {
     local config_json="$1"
     local bot_uuid
     bot_uuid=$(generate_uuid)
     print_info "${ICON_BOT} Generated bot session ID: ${bot_uuid:0:8}..."
+    
     if command -v jq &> /dev/null; then
-        echo "$config_json" | jq --arg bot_uuid "$bot_uuid" '.bot_uuid = $bot_uuid'
+        # Build jq command to update bot_uuid and optionally streaming params
+        local jq_cmd='.bot_uuid = $bot_uuid'
+        
+        if [ -n "$STREAMING_OUTPUT" ]; then
+            print_info "Injecting STREAMING_OUTPUT from env: $STREAMING_OUTPUT"
+            jq_cmd="$jq_cmd | .streaming_output = \"$STREAMING_OUTPUT\""
+        fi
+        
+        if [ -n "$STREAMING_INPUT" ]; then
+            print_info "Injecting STREAMING_INPUT from env: $STREAMING_INPUT"
+            jq_cmd="$jq_cmd | .streaming_input = \"$STREAMING_INPUT\""
+        fi
+        
+        if [ -n "$STREAMING_AUDIO_FREQUENCY" ]; then
+            print_info "Injecting STREAMING_AUDIO_FREQUENCY from env: $STREAMING_AUDIO_FREQUENCY"
+            # Note: frequency is a number, so we don't use quotes in jq assignment if we want a number type,
+            # but usually environment vars are strings. Let's cast to number with tonumber if possible, or just pass as is.
+            # Safest for JSON is to let jq handle it.
+            jq_cmd="$jq_cmd | .streaming_audio_frequency = ($STREAMING_AUDIO_FREQUENCY | tonumber)"
+        fi
+        
+        echo "$config_json" | jq --arg bot_uuid "$bot_uuid" "$jq_cmd"
     else
-        print_warning "jq not found, falling back to sed for bot_uuid (may be fragile)"
+        print_warning "jq not found, falling back to sed for bot_uuid (streaming params injection skipped)"
         if echo "$config_json" | grep -q '"bot_uuid"[[:space:]]*:[[:space:]]*"[^\"]*"'; then
             echo "$config_json" | sed 's/"bot_uuid"[[:space:]]*:[[:space:]]*"[^\"]*"/"bot_uuid": "'$bot_uuid'"/g'
         else

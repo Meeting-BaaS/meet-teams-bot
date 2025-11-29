@@ -5,6 +5,7 @@ import * as fs from 'fs'
 import { Page } from '@playwright/test'
 import { browserInterceptionLogic } from './browser-bundle'
 import { PROTO_SCHEMA } from './schema'
+import { Streaming } from '../../../streaming'
 
 // Re-export types
 export type { ChatMessage, NetworkPayload, NetworkUser } from './types'
@@ -20,8 +21,28 @@ export async function enableNetworkInterception(
 ): Promise<void> {
     await page.exposeFunction('onNetworkSpeakerUpdate', onSpeakersChange)
 
+    // Expose function for ultra-low latency audio streaming from browser
+    await page.exposeFunction('onBrowserAudioChunk', async (audioChunk: {
+        audioData: number[]
+        sampleRate: number
+        timestamp: number
+        numberOfFrames: number
+        ssrc: any
+        deviceId: string | null
+        userName: string | null
+    }) => {
+        // Forward to Streaming instance for WebSocket transmission
+        if (Streaming.instance) {
+            try {
+                Streaming.instance.processBrowserAudioChunk(audioChunk)
+            } catch (error) {
+                console.error('[NetworkInterceptor] Failed to process browser audio chunk:', error)
+            }
+        }
+    })
+
     await page.addInitScript(() => {
-        ;(window as any)._updateNetworkCallback = () => {
+        ; (window as any)._updateNetworkCallback = () => {
             if ((window as any).triggerNetworkBroadcast)
                 (window as any).triggerNetworkBroadcast()
         }
@@ -59,7 +80,7 @@ export async function enableNetworkInterception(
 
     try {
         await page.addInitScript(script)
-    } catch {}
+    } catch { }
 }
 
 // Send chat message using Meet's internal API

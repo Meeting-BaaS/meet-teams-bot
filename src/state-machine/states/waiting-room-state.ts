@@ -56,9 +56,10 @@ export class WaitingRoomState extends BaseState {
                 GLOBAL.get().streaming_audio_frequency,
                 GLOBAL.get().bot_uuid,
             )
+            this.context.streamingService.start()
 
             ScreenRecorderManager.getInstance().startRecording(
-                this.context.playwrightPage            )
+                this.context.playwrightPage)
 
             // Send waiting room event after the page is open
             Events.inWaitingRoom()
