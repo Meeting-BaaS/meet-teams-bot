@@ -697,6 +697,8 @@ export function browserInterceptionLogic(schema: any[]) {
             if (activeAudioTracks.has(track.id)) return
             try {
                 linkReceiverToTrack(receiverManager, receiver, track.id)
+
+                // Pipeline 1: Per-track analysis (for speaker separation, SSRC tracking)
                 processAudioFrames(
                     track,
                     receiver,
@@ -721,6 +723,15 @@ export function browserInterceptionLogic(schema: any[]) {
                             activeAudioTracks,
                         )
                     })
+                setupWebAudioMonitoring(
+                    track,
+                    receiver,
+                    audioCtx,
+                    activeAudioTracks,
+                )
+
+                // Pipeline 2: Web Audio mixer (for clean streaming - KISS!)
+                connectTrackToMixer(track)
             } catch (e) {
                 console.error('[NetworkInterceptor] Audio Attach Error:', e)
             }
@@ -798,6 +809,120 @@ export function browserInterceptionLogic(schema: any[]) {
             string,
             { analyser: AnalyserNode; ssrc?: string; receiver?: RTCRtpReceiver }
         >()
+
+        // ===== WEB AUDIO MIXING PIPELINE (KISS approach) =====
+        // Create a destination for mixing all tracks automatically
+        const mixerDestination = audioCtx.createMediaStreamDestination()
+        const mixedAudioSources = new Map<string, MediaStreamAudioSourceNode>()
+        let mixedStreamProcessor: any = null
+
+        // Start reading the pre-mixed stream
+        async function startMixedStreamProcessor() {
+            if (mixedStreamProcessor) return // Already started
+
+            const mixedTrack = mixerDestination.stream.getAudioTracks()[0]
+            if (!mixedTrack) {
+                console.error('[NetworkInterceptor] ⚠️ No mixed audio track available')
+                return
+            }
+
+            try {
+                if (typeof (window as any).MediaStreamTrackProcessor === 'undefined') {
+                    console.error('[NetworkInterceptor] ⚠️ MediaStreamTrackProcessor not available for mixing')
+                    return
+                }
+
+                const processor = new (window as any).MediaStreamTrackProcessor({ track: mixedTrack })
+                const reader = processor.readable.getReader()
+                mixedStreamProcessor = reader
+
+                console.error('[NetworkInterceptor] 🎵 Started Web Audio mixed stream processor')
+
+                // Read pre-mixed frames continuously
+                const processFrames = async () => {
+                    try {
+                        while (true) {
+                            const { done, value: frame } = await reader.read()
+                            if (done) break
+                            if (!frame) continue
+
+                            try {
+                                const numChannels = frame.numberOfChannels
+                                const numSamples = frame.numberOfFrames
+                                const audioData = new Float32Array(numSamples)
+
+                                // Mix channels if stereo
+                                if (numChannels > 1) {
+                                    const channelData = new Float32Array(numSamples)
+                                    for (let channel = 0; channel < numChannels; channel++) {
+                                        frame.copyTo(channelData, { planeIndex: channel })
+                                        for (let i = 0; i < numSamples; i++) {
+                                            audioData[i] += channelData[i]
+                                        }
+                                    }
+                                    for (let i = 0; i < numSamples; i++) {
+                                        audioData[i] /= numChannels
+                                    }
+                                } else {
+                                    frame.copyTo(audioData, { planeIndex: 0 })
+                                }
+
+                                // Send pre-mixed audio to Node.js (no manual mixing needed!)
+                                if (typeof (window as any).onBrowserMixedAudioChunk === 'function') {
+                                    (window as any).onBrowserMixedAudioChunk({
+                                        audioData: Array.from(audioData),
+                                        sampleRate: frame.sampleRate,
+                                        timestamp: frame.timestamp,
+                                        numberOfFrames: numSamples,
+                                    })
+                                }
+
+                                frame.close()
+                            } catch (err) {
+                                console.error('[NetworkInterceptor] Frame processing error:', err)
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[NetworkInterceptor] Mixed stream error:', err)
+                    }
+                }
+
+                processFrames()
+            } catch (e) {
+                console.error('[NetworkInterceptor] Failed to start mixed stream processor:', e)
+            }
+        }
+
+        // Connect a track to the mixer
+        function connectTrackToMixer(track: MediaStreamTrack) {
+            if (mixedAudioSources.has(track.id)) return // Already connected
+
+            try {
+                if (audioCtx.state === 'suspended') audioCtx.resume()
+
+                const stream = new MediaStream([track])
+                const source = audioCtx.createMediaStreamSource(stream)
+
+                // Connect to mixer destination (browser does the mixing!)
+                source.connect(mixerDestination)
+                mixedAudioSources.set(track.id, source)
+
+                console.error(`[NetworkInterceptor] 🎚️ Connected track ${track.id} to mixer (${mixedAudioSources.size} total)`)
+
+                // Start the processor when first track is connected
+                if (mixedAudioSources.size === 1) {
+                    startMixedStreamProcessor()
+                }
+
+                track.onended = () => {
+                    source.disconnect()
+                    mixedAudioSources.delete(track.id)
+                    console.error(`[NetworkInterceptor] 🔌 Disconnected track ${track.id} from mixer`)
+                }
+            } catch (e) {
+                console.error('[NetworkInterceptor] Failed to connect track to mixer:', e)
+            }
+        }
 
         if (typeof (window as any).RTCPeerConnection !== 'undefined') {
             const OriginalPC = (window as any).RTCPeerConnection

@@ -39,9 +39,14 @@ export class Streaming {
     private readonly AUDIO_BUFFER_SIZE: number = 12
 
     // Browser audio mixing (combine multiple tracks into one stream)
-    private browserAudioMixer: Map<number, Float32Array> = new Map() // timestamp -> mixed audio
+    private browserAudioBuffer: Array<{
+        data: Float32Array
+        timestamp: number
+        ssrc?: number
+        userName?: string
+    }> = []
     private lastMixerFlushTime: number = 0
-    private readonly MIXER_WINDOW_MS: number = 20 // Mix chunks within 20ms windows
+    private readonly MIXER_FLUSH_INTERVAL_MS: number = 10 // Flush every 10ms
     private sourceSampleRate: number = 44100 // Default to 48k, updated by incoming chunks
 
     // Latency monitoring (minimal overhead)
@@ -218,25 +223,18 @@ export class Streaming {
                 }
             }
 
-            // Use timestamp rounded to 20ms windows for mixing
-            const timeWindow = Math.floor(audioChunk.timestamp / 20000) * 20000
+            // Add chunk to mixer buffer
+            this.browserAudioBuffer.push({
+                data: float32Data,
+                timestamp: audioChunk.timestamp,
+                ssrc: audioChunk.ssrc,
+                userName: audioChunk.userName
+            })
 
-            // Get or create mixed buffer for this time window
-            let mixedBuffer = this.browserAudioMixer.get(timeWindow)
-            if (!mixedBuffer) {
-                mixedBuffer = new Float32Array(float32Data.length).fill(0)
-                this.browserAudioMixer.set(timeWindow, mixedBuffer)
-            }
-
-            // Mix this chunk into the buffer (simple addition)
-            for (let i = 0; i < Math.min(float32Data.length, mixedBuffer.length); i++) {
-                mixedBuffer[i] += float32Data[i]
-            }
-
-            // Flush mixer periodically (every 20ms)
+            // Flush mixer periodically (every 10ms)
             const now = Date.now()
-            if (now - this.lastMixerFlushTime >= this.MIXER_WINDOW_MS) {
-                this.flushMixer()
+            if (now - this.lastMixerFlushTime >= this.MIXER_FLUSH_INTERVAL_MS) {
+                this.flushAudioMixer()
                 this.lastMixerFlushTime = now
             }
 
@@ -250,7 +248,7 @@ export class Streaming {
             const packetsInInterval = this.browserAudioPacketsReceived
             const chunksSent = this.browserAudioChunksSent
             console.log(
-                `🎵 Browser audio: ${packetsInInterval} packets received, ${chunksSent} chunks sent (${this.sourceSampleRate}Hz -> ${this.sample_rate}Hz)`,
+                `🎵 Browser audio (per-track): ${packetsInInterval} packets received, ${chunksSent} chunks sent (${this.sourceSampleRate}Hz -> ${this.sample_rate}Hz)`,
             )
             this.browserAudioPacketsReceived = 0
             this.browserAudioChunksSent = 0
@@ -259,103 +257,243 @@ export class Streaming {
     }
 
     /**
-     * Flush the audio mixer - send all mixed buffers to WebSocket
+     * ⭐ NEW: Process pre-mixed audio from Web Audio API
+     * KISS approach: Browser mixes automatically, we just forward it!
+     * No manual buffering, no timestamps, no mixing logic - just works!
      */
-    private flushMixer(): void {
-        if (this.browserAudioMixer.size === 0) {
+    public processMixedAudioChunk(audioChunk: {
+        audioData: number[]
+        sampleRate: number
+        timestamp: number
+        numberOfFrames: number
+    }): void {
+        if (!this.isInitialized) {
             return
         }
 
-        // Sort by timestamp (oldest first)
-        const sortedWindows = Array.from(this.browserAudioMixer.entries())
-            .sort(([a], [b]) => a - b)
+        if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+            return
+        }
 
-        for (const [timestamp, mixedBuffer] of sortedWindows) {
-            // Measure latency (WebRTC timestamp to send time)
-            const sendTime = Date.now()
-            const latencyMs = sendTime - (timestamp / 1000) // timestamp is in microseconds
+        try {
+            const float32Data = new Float32Array(audioChunk.audioData)
 
-            // Track latency (keep last 50 measurements for rolling average)
-            this.latencyMeasurements.push(latencyMs)
-            if (this.latencyMeasurements.length > 50) {
-                this.latencyMeasurements.shift()
-            }
-
-            // Log average latency every 10 seconds
-            if (sendTime - this.lastLatencyLogTime >= this.LATENCY_LOG_INTERVAL_MS) {
-                const avgLatency = this.latencyMeasurements.reduce((a, b) => a + b, 0) / this.latencyMeasurements.length
-                console.log(
-                    `⚡ Browser audio latency: avg ${avgLatency.toFixed(1)}ms (last 50 chunks)`
-                )
-                this.lastLatencyLogTime = sendTime
-            }
-
-            // Calculate peak amplitude for dynamic gain
-            let peak = 0
-            for (let i = 0; i < mixedBuffer.length; i++) {
-                peak = Math.max(peak, Math.abs(mixedBuffer[i]))
-            }
-
-            // Apply dynamic gain control
-            // Target peak is 0.7 to leave headroom, with safety divider of 3 for multiple speakers
-            const targetPeak = 0.7
-            const safetyDivider = 3
-            let gain = peak > 0 ? Math.min(targetPeak / peak, safetyDivider) : safetyDivider
-
-            // Log gain occasionally for debugging
-            if (Math.random() < 0.01) { // Log 1% of chunks
-                console.log(`🔊 AGC: peak=${peak.toFixed(4)}, gain=${gain.toFixed(2)}x`)
-            }
-
-            // Normalize with dynamic gain
-            const normalized = new Float32Array(mixedBuffer.length)
-            for (let i = 0; i < mixedBuffer.length; i++) {
-                normalized[i] = Math.max(-1, Math.min(1, mixedBuffer[i] * gain))
-            }
-
-            // Resample if needed (e.g. 48kHz -> 16kHz)
-            // Use the actual source rate detected from browser chunks
-            const sourceRate = this.sourceSampleRate
-            const targetRate = this.sample_rate
-
-            let finalBuffer = normalized
-
-            if (sourceRate !== targetRate) {
-                const ratio = sourceRate / targetRate
-                const newLength = Math.round(normalized.length / ratio)
-                const resampled = new Float32Array(newLength)
-
-                for (let i = 0; i < newLength; i++) {
-                    const sourceIndex = i * ratio
-                    const index = Math.floor(sourceIndex)
-                    const decimal = sourceIndex - index
-
-                    // Linear interpolation
-                    const p0 = normalized[index] || 0
-                    const p1 = normalized[index + 1] || p0
-                    resampled[i] = p0 + (p1 - p0) * decimal
+            // Update source sample rate
+            if (audioChunk.sampleRate && audioChunk.sampleRate > 0) {
+                if (this.sourceSampleRate !== audioChunk.sampleRate) {
+                    console.log(`🎵 Web Audio mixer sample rate: ${audioChunk.sampleRate} Hz`)
+                    this.sourceSampleRate = audioChunk.sampleRate
                 }
-                finalBuffer = resampled
             }
 
-            // Convert to Int16 for WebSocket transmission
-            const s16Array = new Int16Array(finalBuffer.length)
-            for (let i = 0; i < finalBuffer.length; i++) {
-                s16Array[i] = Math.round(
-                    Math.max(-32768, Math.min(32767, finalBuffer[i] * 32768)),
-                )
+            // Send directly - no buffering, no manual mixing!
+            this.processAndSendAudioChunk(float32Data)
+
+        } catch (error) {
+            console.error('Failed to process mixed audio chunk:', error)
+        }
+    }
+
+    /**
+     * Process clean mixed audio from Web Audio tap (for streaming output)
+     * This receives already-mixed, properly-normalized audio from Google Meet's output
+     * No mixing or AGC needed - just convert and send!
+     */
+    public processStreamingAudioChunk(audioChunk: {
+        audioData: number[]
+        sampleRate: number
+        timestamp: number
+    }): void {
+        if (!this.isInitialized) {
+            console.warn('🔴 processStreamingAudioChunk called but not initialized')
+            return
+        }
+
+        if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+            return // No WebSocket or not ready
+        }
+
+        try {
+            // Convert number[] to Float32Array
+            const float32Data = new Float32Array(audioChunk.audioData)
+
+            // Log amplitude occasionally for debugging
+            if (Math.random() < 0.01) {
+                let peak = 0
+                for (let i = 0; i < float32Data.length; i++) {
+                    peak = Math.max(peak, Math.abs(float32Data[i]))
+                }
+                console.log(`🎧 Clean streaming audio: peak=${peak.toFixed(6)}, samples=${float32Data.length}, rate=${audioChunk.sampleRate}Hz`)
             }
 
-            // Send mixed chunk
-            this.output_ws?.send(s16Array.buffer)
+            // Convert Float32 to Int16 PCM (already at 16kHz from Web Audio tap)
+            const s16Array = new Int16Array(float32Data.length)
+            for (let i = 0; i < float32Data.length; i++) {
+                // Clamp to [-1, 1] and convert to Int16 range
+                const clamped = Math.max(-1, Math.min(1, float32Data[i]))
+                s16Array[i] = Math.round(clamped * 32767)
+            }
+
+            // Send directly to WebSocket
+            if (this.output_ws.readyState === WebSocket.OPEN) {
+                this.output_ws.send(s16Array.buffer)
+            }
+
+            // Save to debug file if enabled
+            if (this.debugAudioStream) {
+                this.debugAudioStream.write(Buffer.from(s16Array.buffer))
+            }
+
+        } catch (error) {
+            console.error('Failed to process streaming audio chunk:', error)
+        }
+    }
+
+    /**
+     * Process and send a single audio chunk immediately
+     */
+    private processAndSendAudioChunk(audioData: Float32Array): void {
+        // Simple clipping protection - no AGC (KISS principle)
+        // Mixed audio should already have proper levels from track averaging
+        const normalized = new Float32Array(audioData.length)
+        for (let i = 0; i < audioData.length; i++) {
+            normalized[i] = Math.max(-1, Math.min(1, audioData[i]))
+        }
+
+        // Resample if needed (e.g. 48kHz -> 16kHz)
+        const sourceRate = this.sourceSampleRate
+        const targetRate = this.sample_rate
+        let finalBuffer = normalized
+
+        if (sourceRate !== targetRate) {
+            const ratio = sourceRate / targetRate
+            const newLength = Math.round(normalized.length / ratio)
+            const resampled = new Float32Array(newLength)
+
+            for (let i = 0; i < newLength; i++) {
+                const sourceIndex = i * ratio
+                const index = Math.floor(sourceIndex)
+                const decimal = sourceIndex - index
+
+                // Linear interpolation
+                const p0 = normalized[index] || 0
+                const p1 = normalized[index + 1] || p0
+                resampled[i] = p0 + (p1 - p0) * decimal
+            }
+            finalBuffer = resampled
+        }
+
+        // Convert to Int16 for WebSocket transmission
+        const s16Array = new Int16Array(finalBuffer.length)
+        for (let i = 0; i < finalBuffer.length; i++) {
+            s16Array[i] = Math.round(
+                Math.max(-32768, Math.min(32767, finalBuffer[i] * 32768)),
+            )
+        }
+
+        // Send to WebSocket
+        if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
+            this.output_ws.send(s16Array.buffer)
             this.browserAudioChunksSent++
 
             // Write to debug file
             this.writeDebugAudioChunk(s16Array)
         }
+    }
 
-        // Clear mixer
-        this.browserAudioMixer.clear()
+    /**
+     * Flush the audio mixer - mix all buffered chunks and send
+     */
+    private flushAudioMixer(): void {
+        if (this.browserAudioBuffer.length === 0) {
+            return
+        }
+
+        // Filter out silent and duplicate tracks
+        const SILENCE_THRESHOLD = 0.00001 // Ignore tracks with peak below this
+        const seenSSRCs = new Map<number, { peak: number, chunk: any }>()
+
+        const validChunks = this.browserAudioBuffer.filter(chunk => {
+            // Calculate peak
+            let peak = 0
+            for (let i = 0; i < chunk.data.length; i++) {
+                peak = Math.max(peak, Math.abs(chunk.data[i]))
+            }
+
+            // Filter out silent tracks
+            if (peak < SILENCE_THRESHOLD) {
+                return false
+            }
+
+            // Deduplicate by SSRC - keep only the loudest chunk per SSRC
+            if (chunk.ssrc) {
+                const existing = seenSSRCs.get(chunk.ssrc)
+                if (existing) {
+                    if (peak > existing.peak) {
+                        // This chunk is louder, replace the existing one
+                        seenSSRCs.set(chunk.ssrc, { peak, chunk })
+                        // Remove the old chunk from valid list
+                        return false
+                    } else {
+                        // Keep the existing louder chunk
+                        return false
+                    }
+                } else {
+                    seenSSRCs.set(chunk.ssrc, { peak, chunk })
+                    return true
+                }
+            }
+
+            // Keep chunks without SSRC if they have audio
+            return true
+        })
+
+        // Get deduplicated chunks
+        const chunksToMix = Array.from(seenSSRCs.values()).map(v => v.chunk)
+
+        if (chunksToMix.length === 0) {
+            this.browserAudioBuffer = []
+            return
+        }
+
+        // Log track information occasionally for debugging
+        if (Math.random() < 0.02) { // Log 2% of flushes
+            const trackInfo = chunksToMix.map(chunk => {
+                let peak = 0
+                for (let i = 0; i < chunk.data.length; i++) {
+                    peak = Math.max(peak, Math.abs(chunk.data[i]))
+                }
+                return `${chunk.userName || 'Unknown'}(${chunk.ssrc || 'N/A'}):peak=${peak.toFixed(6)}`
+            })
+            console.log(`🎚️  Mixing ${chunksToMix.length} tracks (filtered from ${this.browserAudioBuffer.length}): [${trackInfo.join(', ')}]`)
+        }
+
+        // Find the maximum length among all chunks (they should all be the same, but just in case)
+        const maxLength = Math.max(...chunksToMix.map(c => c.data.length))
+
+        // Mix all chunks together by adding them
+        const mixedAudio = new Float32Array(maxLength).fill(0)
+        for (const chunk of chunksToMix) {
+            for (let i = 0; i < chunk.data.length; i++) {
+                mixedAudio[i] += chunk.data[i]
+            }
+        }
+
+        // Average by dividing by number of tracks (critical for proper mixing!)
+        const numTracks = chunksToMix.length
+        if (numTracks > 1) {
+            for (let i = 0; i < mixedAudio.length; i++) {
+                mixedAudio[i] /= numTracks
+            }
+        }
+
+        // ❌ DISABLED: Per-track manual mixing no longer used for streaming
+        // Web Audio API now handles mixing automatically (KISS approach!)
+        // This pipeline is kept only for logging and speaker analysis
+        // this.processAndSendAudioChunk(mixedAudio)
+
+        // Clear buffer
+        this.browserAudioBuffer = []
     }
 
 

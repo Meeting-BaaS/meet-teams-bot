@@ -21,7 +21,7 @@ export async function enableNetworkInterception(
 ): Promise<void> {
     await page.exposeFunction('onNetworkSpeakerUpdate', onSpeakersChange)
 
-    // Expose function for ultra-low latency audio streaming from browser
+    // Expose function for ultra-low latency audio streaming from browser (per-track for analysis)
     await page.exposeFunction('onBrowserAudioChunk', async (audioChunk: {
         audioData: number[]
         sampleRate: number
@@ -31,12 +31,29 @@ export async function enableNetworkInterception(
         deviceId: string | null
         userName: string | null
     }) => {
-        // Forward to Streaming instance for WebSocket transmission
+        // Forward to Streaming instance for analysis/logging only
         if (Streaming.instance) {
             try {
                 Streaming.instance.processBrowserAudioChunk(audioChunk)
             } catch (error) {
                 console.error('[NetworkInterceptor] Failed to process browser audio chunk:', error)
+            }
+        }
+    })
+
+    // Expose function for pre-mixed audio from Web Audio API (KISS approach!)
+    await page.exposeFunction('onBrowserMixedAudioChunk', async (audioChunk: {
+        audioData: number[]
+        sampleRate: number
+        timestamp: number
+        numberOfFrames: number
+    }) => {
+        // Forward pre-mixed audio directly to streaming (no manual mixing needed!)
+        if (Streaming.instance) {
+            try {
+                Streaming.instance.processMixedAudioChunk(audioChunk)
+            } catch (error) {
+                console.error('[NetworkInterceptor] Failed to process mixed audio chunk:', error)
             }
         }
     })
