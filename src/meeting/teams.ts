@@ -10,6 +10,7 @@ import { sleep } from '../utils/sleep'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { TEAMS_STATE_CONFIG } from './teams-state-config'
 import { formatError } from '../utils/Logger'
+import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from './teams/audio-capture'
 
 // Create a singleton detector instance for Microsoft Teams
 const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
@@ -47,9 +48,13 @@ export class TeamsProvider implements MeetingProviderInterface {
             origin: url.origin,
         })
 
+        // Enable Web Audio mixing for clean streaming (KISS approach!)
+        await enableTeamsAudioCapture(page)
+        console.log('[Teams] ✅ Web Audio capture enabled for streaming')
+
         try {
             await page.goto(link, {
-                waitUntil: 'load', 
+                waitUntil: 'load',
                 timeout: 15000,
             })
 
@@ -393,6 +398,9 @@ export class TeamsProvider implements MeetingProviderInterface {
 
         // Capture DOM state after successfully joining Teams meeting
         await htmlSnapshot.captureSnapshot(page, 'teams_join_meeting_success')
+
+        // Verify audio capture is working
+        await verifyTeamsAudioCapture(page)
 
         // Check for "Continue without audio or video" that might appear AFTER joining (light interface)
         try {
