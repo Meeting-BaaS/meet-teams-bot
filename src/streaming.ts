@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { promises as fsPromises } from 'fs'
 import { Readable } from 'stream'
 import { RawData, WebSocket } from 'ws'
 
@@ -70,6 +71,7 @@ export class Streaming {
     // Debug: Save streamed audio to file
     private debugAudioStream: fs.WriteStream | null = null
     private debugAudioBytesWritten: number = 0
+    private readonly debugAudioEnabled: boolean = false
 
     constructor(
         input: string | undefined,
@@ -85,9 +87,15 @@ export class Streaming {
             this.sample_rate = sample_rate
         }
 
+        // Read debug audio configuration from environment variable
+        ;(this as any).debugAudioEnabled = process.env.DEBUG_AUDIO === 'true'
+
         console.log(
             `🎵 Streaming service initialized with sample rate: ${this.sample_rate} Hz${sample_rate ? ' (from user config)' : ` (default: ${DEFAULT_SAMPLE_RATE} Hz)`}`,
         )
+        if (this.debugAudioEnabled) {
+            console.log('🐛 Debug audio file recording enabled (DEBUG_AUDIO=true)')
+        }
 
         this.audioPacketsReceived = 0
 
@@ -588,8 +596,10 @@ export class Streaming {
                     // Flush any buffered audio chunks
                     this.flushConnectionBuffer()
 
-                    // Initialize debug audio file
-                    this.initDebugAudioFile()
+                    // Initialize debug audio file if enabled
+                    if (this.debugAudioEnabled) {
+                        this.initDebugAudioFile()
+                    }
                 }
             })
 
@@ -985,14 +995,30 @@ export class Streaming {
 
         try {
             const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
-            this.debugAudioStream.end(() => {
-                // Update WAV header with correct size
-                const fd = fs.openSync(debugPath, 'r+')
-                const header = this.createWavHeader(this.debugAudioBytesWritten, this.sample_rate, 1, 16)
-                fs.writeSync(fd, header, 0, 44, 0)
-                fs.closeSync(fd)
+            const bytesWritten = this.debugAudioBytesWritten
+            const sampleRate = this.sample_rate
 
-                console.log(`🎤 Debug: Streamed audio saved to ${debugPath} (${(this.debugAudioBytesWritten / 1024).toFixed(1)} KB)`)
+            this.debugAudioStream.end(async () => {
+                let fd: fsPromises.FileHandle | null = null
+                try {
+                    // Update WAV header with correct size using async file operations
+                    fd = await fsPromises.open(debugPath, 'r+')
+                    const header = this.createWavHeader(bytesWritten, sampleRate, 1, 16)
+                    await fd.write(header, 0, 44, 0)
+
+                    console.log(`🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`)
+                } catch (error) {
+                    console.error('Failed to update WAV header:', error)
+                } finally {
+                    // Always close the file descriptor
+                    if (fd) {
+                        try {
+                            await fd.close()
+                        } catch (closeError) {
+                            console.error('Failed to close debug audio file:', closeError)
+                        }
+                    }
+                }
             })
         } catch (error) {
             console.error('Failed to finalize debug audio file:', error)
