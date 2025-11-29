@@ -77,6 +77,10 @@ export class PathManager {
         return path.join(this.getBasePath(), 'sound_levels.log')
     }
 
+    public getDebugStreamedAudioPath(): string {
+        return path.join(this.getBasePath(), 'debug_streamed_audio.wav')
+    }
+
     public getTempPath(): string {
         return path.join(this.getBasePath(), 'temp')
     }

@@ -37,6 +37,17 @@ export class Streaming {
     private audioBuffer: Float32Array[] = [] // Buffer for batch processing
     private readonly AUDIO_BUFFER_SIZE: number = 12
 
+    // Browser audio mixing (combine multiple tracks into one stream)
+    private browserAudioMixer: Map<number, Float32Array> = new Map() // timestamp -> mixed audio
+    private lastMixerFlushTime: number = 0
+    private readonly MIXER_WINDOW_MS: number = 20 // Mix chunks within 20ms windows
+    private sourceSampleRate: number = 44100 // Default to 48k, updated by incoming chunks
+
+    // Latency monitoring (minimal overhead)
+    private latencyMeasurements: number[] = []
+    private lastLatencyLogTime: number = 0
+    private readonly LATENCY_LOG_INTERVAL_MS: number = 10000 // Log every 10s
+
     // WebSocket connection buffer (for chunks received before WS is ready)
     private connectionBuffer: Float32Array[] = []
     private readonly MAX_CONNECTION_BUFFER_SIZE: number = 100 // ~4 seconds at 24kHz
@@ -46,6 +57,13 @@ export class Streaming {
     private audioPacketsReceived: number = 0
     private lastStatsLogTime: number = 0
     private readonly STATS_LOG_INTERVAL_MS: number = 15000
+    private browserAudioPacketsReceived: number = 0
+    private browserAudioChunksSent: number = 0
+    private lastBrowserStatsLogTime: number = 0
+
+    // Debug: Save streamed audio to file
+    private debugAudioStream: fs.WriteStream | null = null
+    private debugAudioBytesWritten: number = 0
 
     constructor(
         input: string | undefined,
@@ -121,10 +139,12 @@ export class Streaming {
         //     return
         // }
 
-        // ⭐ IMMEDIATE FORWARD: Send to external services first (no buffering delay)
-        this.forwardToExternalService(audioData)
+        // ❌ DISABLED: FFmpeg streaming disabled - now using browser WebRTC pipeline
+        // Browser WebRTC provides <50ms latency vs FFmpeg's ~200-500ms
+        // See processBrowserAudioChunk() for the active streaming pipeline
+        // this.forwardToExternalService(audioData)
 
-        // Then buffer audio for batch processing (sound level analysis)
+        // Buffer audio for batch processing (sound level analysis)
         // This batching only affects analysis, not real-time streaming
         this.audioBuffer.push(audioData)
         if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
@@ -143,6 +163,200 @@ export class Streaming {
             this.lastStatsLogTime = now
         }
     }
+
+    /**
+     * 🚀 ULTRA-LOW LATENCY: Process audio chunk directly from browser WebRTC
+     * This bypasses FFmpeg entirely, providing <50ms latency streaming
+     * 
+     * MIXING STRATEGY:
+     * - Buffers chunks from multiple speakers within 20ms time windows
+     * - Mixes all chunks in each window into a single stream
+     * - Sends mixed stream to WebSocket (simpler for receiving end)
+     */
+    public processBrowserAudioChunk(audioChunk: {
+        audioData: number[]
+        sampleRate: number
+        timestamp: number
+        numberOfFrames: number
+        ssrc: any
+        deviceId: string | null
+        userName: string | null
+    }): void {
+        if (!this.isInitialized) {
+            console.warn('🔴 processBrowserAudioChunk called but not initialized')
+            return
+        }
+
+        if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+            return // No WebSocket or not ready
+        }
+
+        // Increment packet counter for stats
+        this.browserAudioPacketsReceived++
+
+        try {
+            // Convert number[] to Float32Array
+            const float32Data = new Float32Array(audioChunk.audioData)
+
+            // Log raw audio amplitude occasionally for debugging
+            if (Math.random() < 0.01) { // Log 1% of chunks
+                let peak = 0
+                for (let i = 0; i < float32Data.length; i++) {
+                    peak = Math.max(peak, Math.abs(float32Data[i]))
+                }
+                const userName = audioChunk.userName || 'Unknown'
+                const ssrc = audioChunk.ssrc || 'N/A'
+                console.log(`📊 Raw audio from ${userName} (SSRC: ${ssrc}): peak=${peak.toFixed(6)} (normal speech: 0.01-1.0)`)
+            }
+
+            // Update source sample rate from the chunk if available
+            if (audioChunk.sampleRate && audioChunk.sampleRate > 0) {
+                if (this.sourceSampleRate !== audioChunk.sampleRate) {
+                    console.log(`🎵 Detected browser audio sample rate: ${audioChunk.sampleRate} Hz (was ${this.sourceSampleRate} Hz)`)
+                    this.sourceSampleRate = audioChunk.sampleRate
+                }
+            }
+
+            // Use timestamp rounded to 20ms windows for mixing
+            const timeWindow = Math.floor(audioChunk.timestamp / 20000) * 20000
+
+            // Get or create mixed buffer for this time window
+            let mixedBuffer = this.browserAudioMixer.get(timeWindow)
+            if (!mixedBuffer) {
+                mixedBuffer = new Float32Array(float32Data.length).fill(0)
+                this.browserAudioMixer.set(timeWindow, mixedBuffer)
+            }
+
+            // Mix this chunk into the buffer (simple addition)
+            for (let i = 0; i < Math.min(float32Data.length, mixedBuffer.length); i++) {
+                mixedBuffer[i] += float32Data[i]
+            }
+
+            // Flush mixer periodically (every 20ms)
+            const now = Date.now()
+            if (now - this.lastMixerFlushTime >= this.MIXER_WINDOW_MS) {
+                this.flushMixer()
+                this.lastMixerFlushTime = now
+            }
+
+        } catch (error) {
+            console.error('Failed to process browser audio chunk:', error)
+        }
+
+        // Log stats periodically
+        const now = Date.now()
+        if (now - this.lastBrowserStatsLogTime >= this.STATS_LOG_INTERVAL_MS) {
+            const packetsInInterval = this.browserAudioPacketsReceived
+            const chunksSent = this.browserAudioChunksSent
+            console.log(
+                `🎵 Browser audio: ${packetsInInterval} packets received, ${chunksSent} chunks sent (${this.sourceSampleRate}Hz -> ${this.sample_rate}Hz)`,
+            )
+            this.browserAudioPacketsReceived = 0
+            this.browserAudioChunksSent = 0
+            this.lastBrowserStatsLogTime = now
+        }
+    }
+
+    /**
+     * Flush the audio mixer - send all mixed buffers to WebSocket
+     */
+    private flushMixer(): void {
+        if (this.browserAudioMixer.size === 0) {
+            return
+        }
+
+        // Sort by timestamp (oldest first)
+        const sortedWindows = Array.from(this.browserAudioMixer.entries())
+            .sort(([a], [b]) => a - b)
+
+        for (const [timestamp, mixedBuffer] of sortedWindows) {
+            // Measure latency (WebRTC timestamp to send time)
+            const sendTime = Date.now()
+            const latencyMs = sendTime - (timestamp / 1000) // timestamp is in microseconds
+
+            // Track latency (keep last 50 measurements for rolling average)
+            this.latencyMeasurements.push(latencyMs)
+            if (this.latencyMeasurements.length > 50) {
+                this.latencyMeasurements.shift()
+            }
+
+            // Log average latency every 10 seconds
+            if (sendTime - this.lastLatencyLogTime >= this.LATENCY_LOG_INTERVAL_MS) {
+                const avgLatency = this.latencyMeasurements.reduce((a, b) => a + b, 0) / this.latencyMeasurements.length
+                console.log(
+                    `⚡ Browser audio latency: avg ${avgLatency.toFixed(1)}ms (last 50 chunks)`
+                )
+                this.lastLatencyLogTime = sendTime
+            }
+
+            // Calculate peak amplitude for dynamic gain
+            let peak = 0
+            for (let i = 0; i < mixedBuffer.length; i++) {
+                peak = Math.max(peak, Math.abs(mixedBuffer[i]))
+            }
+
+            // Apply dynamic gain control
+            // Target peak is 0.7 to leave headroom, with safety divider of 3 for multiple speakers
+            const targetPeak = 0.7
+            const safetyDivider = 3
+            let gain = peak > 0 ? Math.min(targetPeak / peak, safetyDivider) : safetyDivider
+
+            // Log gain occasionally for debugging
+            if (Math.random() < 0.01) { // Log 1% of chunks
+                console.log(`🔊 AGC: peak=${peak.toFixed(4)}, gain=${gain.toFixed(2)}x`)
+            }
+
+            // Normalize with dynamic gain
+            const normalized = new Float32Array(mixedBuffer.length)
+            for (let i = 0; i < mixedBuffer.length; i++) {
+                normalized[i] = Math.max(-1, Math.min(1, mixedBuffer[i] * gain))
+            }
+
+            // Resample if needed (e.g. 48kHz -> 16kHz)
+            // Use the actual source rate detected from browser chunks
+            const sourceRate = this.sourceSampleRate
+            const targetRate = this.sample_rate
+
+            let finalBuffer = normalized
+
+            if (sourceRate !== targetRate) {
+                const ratio = sourceRate / targetRate
+                const newLength = Math.round(normalized.length / ratio)
+                const resampled = new Float32Array(newLength)
+
+                for (let i = 0; i < newLength; i++) {
+                    const sourceIndex = i * ratio
+                    const index = Math.floor(sourceIndex)
+                    const decimal = sourceIndex - index
+
+                    // Linear interpolation
+                    const p0 = normalized[index] || 0
+                    const p1 = normalized[index + 1] || p0
+                    resampled[i] = p0 + (p1 - p0) * decimal
+                }
+                finalBuffer = resampled
+            }
+
+            // Convert to Int16 for WebSocket transmission
+            const s16Array = new Int16Array(finalBuffer.length)
+            for (let i = 0; i < finalBuffer.length; i++) {
+                s16Array[i] = Math.round(
+                    Math.max(-32768, Math.min(32767, finalBuffer[i] * 32768)),
+                )
+            }
+
+            // Send mixed chunk
+            this.output_ws?.send(s16Array.buffer)
+            this.browserAudioChunksSent++
+
+            // Write to debug file
+            this.writeDebugAudioChunk(s16Array)
+        }
+
+        // Clear mixer
+        this.browserAudioMixer.clear()
+    }
+
 
     /**
      * Forward audio to external services (if any)
@@ -214,28 +428,29 @@ export class Streaming {
      */
     private setupExternalOutputWS(): void {
         try {
-            this.wsConnectionStartTime = Date.now()
-            console.log('🔌 Initiating WebSocket connection...')
-
+            console.log(`🔌 Connecting to external output WebSocket: ${this.outputUrl}`)
             this.output_ws = new WebSocket(this.outputUrl!)
+            this.wsConnectionStartTime = Date.now()
 
             this.output_ws.on('open', () => {
                 const connectionTime = Date.now() - this.wsConnectionStartTime
-                console.log(
-                    `✅ External output WebSocket connected (took ${connectionTime}ms)`,
-                )
+                console.log(`✅ External output WebSocket connected in ${connectionTime}ms`)
 
                 if (this.output_ws) {
-                    this.output_ws.send(
-                        JSON.stringify({
-                            protocol_version: 1,
-                            bot_id: this.botId,
-                            offset: 0.0,
-                        }),
-                    )
+                    const handshake = {
+                        protocol_version: 1,
+                        bot_id: this.botId,
+                        offset: 0.0,
+                        sample_rate: this.sample_rate,
+                    }
+                    console.log(`🤝 Sending handshake to ${this.outputUrl}: ${JSON.stringify(handshake)}`)
+                    this.output_ws.send(JSON.stringify(handshake))
 
                     // Flush any buffered audio chunks
                     this.flushConnectionBuffer()
+
+                    // Initialize debug audio file
+                    this.initDebugAudioFile()
                 }
             })
 
@@ -320,6 +535,9 @@ export class Streaming {
         }
 
         console.log('🛑 Stopping simplified streaming service...')
+
+        // Finalize debug audio file
+        this.finalizeDebugAudioFile()
 
         // Close external WebSockets only
         this.closeExternalWebSockets()
@@ -536,5 +754,93 @@ export class Streaming {
 
     public getCurrentSoundLevel(): number {
         return this.currentSoundLevel
+    }
+
+    /**
+     * Initialize debug audio file for saving streamed audio
+     */
+    private initDebugAudioFile(): void {
+        try {
+            const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
+            console.log(`🎤 Debug: Saving streamed audio to ${debugPath}`)
+
+            this.debugAudioStream = fs.createWriteStream(debugPath)
+            this.debugAudioBytesWritten = 0
+
+            // Write WAV header (will be updated with correct size when closing)
+            const header = this.createWavHeader(0, this.sample_rate, 1, 16)
+            this.debugAudioStream.write(header)
+        } catch (error) {
+            console.error('Failed to initialize debug audio file:', error)
+            this.debugAudioStream = null
+        }
+    }
+
+    /**
+     * Create WAV header
+     */
+    private createWavHeader(dataSize: number, sampleRate: number, channels: number, bitsPerSample: number): Buffer {
+        const header = Buffer.alloc(44)
+
+        // RIFF header
+        header.write('RIFF', 0)
+        header.writeUInt32LE(36 + dataSize, 4) // File size - 8
+        header.write('WAVE', 8)
+
+        // fmt chunk
+        header.write('fmt ', 12)
+        header.writeUInt32LE(16, 16) // fmt chunk size
+        header.writeUInt16LE(1, 20) // Audio format (1 = PCM)
+        header.writeUInt16LE(channels, 22)
+        header.writeUInt32LE(sampleRate, 24)
+        header.writeUInt32LE(sampleRate * channels * bitsPerSample / 8, 28) // Byte rate
+        header.writeUInt16LE(channels * bitsPerSample / 8, 32) // Block align
+        header.writeUInt16LE(bitsPerSample, 34)
+
+        // data chunk
+        header.write('data', 36)
+        header.writeUInt32LE(dataSize, 40)
+
+        return header
+    }
+
+    /**
+     * Write audio chunk to debug file
+     */
+    private writeDebugAudioChunk(audioData: Int16Array): void {
+        if (!this.debugAudioStream) return
+
+        try {
+            const buffer = Buffer.from(audioData.buffer)
+            this.debugAudioStream.write(buffer)
+            this.debugAudioBytesWritten += buffer.length
+        } catch (error) {
+            console.error('Failed to write debug audio chunk:', error)
+        }
+    }
+
+    /**
+     * Finalize debug audio file (update WAV header with correct size)
+     */
+    private finalizeDebugAudioFile(): void {
+        if (!this.debugAudioStream) return
+
+        try {
+            const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
+            this.debugAudioStream.end(() => {
+                // Update WAV header with correct size
+                const fd = fs.openSync(debugPath, 'r+')
+                const header = this.createWavHeader(this.debugAudioBytesWritten, this.sample_rate, 1, 16)
+                fs.writeSync(fd, header, 0, 44, 0)
+                fs.closeSync(fd)
+
+                console.log(`🎤 Debug: Streamed audio saved to ${debugPath} (${(this.debugAudioBytesWritten / 1024).toFixed(1)} KB)`)
+            })
+        } catch (error) {
+            console.error('Failed to finalize debug audio file:', error)
+        }
+
+        this.debugAudioStream = null
+        this.debugAudioBytesWritten = 0
     }
 }
