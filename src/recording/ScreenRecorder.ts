@@ -2,7 +2,6 @@ import { ChildProcess, spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import * as fs from 'fs'
 import * as path from 'path'
-import { Streaming } from '../streaming'
 
 import { Page } from '@playwright/test'
 import { GLOBAL } from '../singleton'
@@ -17,7 +16,6 @@ import { generateSyncSignal } from '../utils/SyncSignal'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
-const DEFAULT_STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = '192k' // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
@@ -120,7 +118,6 @@ export class ScreenRecorder extends EventEmitter {
     private meetingStartTime: number = 0
     private gracePeriodActive: boolean = false
     private rawAudioPath: string = ''
-    private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
 
     constructor(config: Partial<ScreenRecordingConfig> = {}) {
         super()
@@ -158,8 +155,6 @@ export class ScreenRecorder extends EventEmitter {
             throw new Error('Recording is already in progress')
         }
 
-        this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency ? GLOBAL.get().streaming_audio_frequency : DEFAULT_STREAMING_SAMPLE_RATE
-
         // Capture DOM state before starting screen recording (void to avoid blocking)
         const htmlSnapshot = HtmlSnapshotService.getInstance()
         void htmlSnapshot.captureSnapshot(page, 'screen_recording_start')
@@ -181,7 +176,6 @@ export class ScreenRecorder extends EventEmitter {
             this.gracePeriodActive = false
             this.logMemoryUsage('Starting recording')
             this.setupProcessMonitoring()
-            this.setupStreamingAudio()
             this.setupFileSizeMonitoring()
 
             console.log('Native recording started successfully')
@@ -304,7 +298,7 @@ export class ScreenRecorder extends EventEmitter {
         const res = getResolution()
 
         console.log(
-            `🛠️ Building FFmpeg args for separate audio/video recording (resolution: ${res.width}x${res.height})...`,
+            `🛠️ Building FFmpeg args for recording (resolution: ${res.width}x${res.height})...`,
         )
 
         const screenshotsPath = PathManager.getInstance().getScreenshotsPath()
@@ -324,7 +318,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '4096', // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
+                '4096',
                 '-i',
                 VIRTUAL_SPEAKER_MONITOR,
 
@@ -365,23 +359,6 @@ export class ScreenRecorder extends EventEmitter {
                 'image2',
                 '-y',
                 screenshotPattern,
-
-                // === OUTPUT 3: STREAMING AUDIO ===
-                '-map',
-                '0:a:0',
-                '-acodec',
-                'pcm_f32le',
-                '-ac',
-                '1',
-                '-ar',
-                this.streamingSampleRate.toString(),
-                '-fflags',
-                'nobuffer',
-                '-flags',
-                'low_delay',
-                '-f',
-                'f32le',
-                'pipe:1',
             )
         } else {
             // Separate audio and video recording
@@ -404,7 +381,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '4096', // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
+                '4096',
                 '-fflags',
                 'nobuffer',
                 '-i',
@@ -470,23 +447,6 @@ export class ScreenRecorder extends EventEmitter {
                 'image2',
                 '-y',
                 screenshotPattern,
-
-                // === OUTPUT 4: STREAMING AUDIO ===
-                '-map',
-                '1:a:0',
-                '-acodec',
-                'pcm_f32le',
-                '-ac',
-                '1',
-                '-ar',
-                this.streamingSampleRate.toString(),
-                '-fflags',
-                'nobuffer',
-                '-flags',
-                'low_delay',
-                '-f',
-                'f32le',
-                'pipe:1',
             )
         }
 
@@ -681,29 +641,6 @@ export class ScreenRecorder extends EventEmitter {
         }, errorWindowMs)
     }
 
-    private setupStreamingAudio(): void {
-        if (!Streaming.instance || !this.ffmpegProcess) return
-
-        try {
-            this.ffmpegProcess.stdout?.on('data', (data: Buffer) => {
-                try {
-                    if (Streaming.instance) {
-                        const float32Array = new Float32Array(
-                            data.buffer,
-                            data.byteOffset,
-                            data.length / 4,
-                        )
-                        Streaming.instance.processAudioChunk(float32Array)
-                    }
-                } catch (error) {
-                    console.error('Failed to process audio chunk:', error)
-                    // Don't throw - continue processing other chunks
-                }
-            })
-        } catch (error) {
-            console.error('Failed to setup streaming audio:', error)
-        }
-    }
 
     private setupFileSizeMonitoring(): void {
         if (!this.rawAudioPath) return
