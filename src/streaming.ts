@@ -6,6 +6,7 @@ import { RawData, WebSocket } from 'ws'
 import { SoundContext } from './media_context'
 import { SpeakerData } from './types'
 import { PathManager } from './utils/PathManager'
+import { WebRTCManager } from './webrtc/WebRTCManager'
 
 const DEFAULT_SAMPLE_RATE: number = 24_000
 
@@ -47,7 +48,7 @@ export class Streaming {
     }> = []
     private lastMixerFlushTime: number = 0
     private readonly MIXER_FLUSH_INTERVAL_MS: number = 10 // Flush every 10ms
-    private sourceSampleRate: number = 44100 // Default to 48k, updated by incoming chunks
+    private sourceSampleRate: number = 48000 // Default to 48k, updated by incoming chunks
 
     // Latency monitoring (minimal overhead)
     private latencyMeasurements: number[] = []
@@ -77,6 +78,8 @@ export class Streaming {
         output: string | undefined,
         sample_rate: number | undefined,
         bot_id: string,
+        webrtc_enabled?: boolean,
+        webrtc_signaling_url?: string,
     ) {
         this.inputUrl = input
         this.outputUrl = output
@@ -94,6 +97,20 @@ export class Streaming {
         )
         if (this.debugAudioEnabled) {
             console.log('🐛 Debug audio file recording enabled (DEBUG_AUDIO=true)')
+        }
+
+        // Initialize WebRTC if enabled
+        if (webrtc_enabled) {
+            console.log('🌐 WebRTC streaming enabled')
+            if (webrtc_signaling_url) {
+                console.log(`🌐 WebRTC signaling URL: ${webrtc_signaling_url}`)
+            }
+            // Initialize WebRTC manager
+            WebRTCManager.getInstance(webrtc_signaling_url)
+                .initialize()
+                .catch((error) => {
+                    console.error('Failed to initialize WebRTC:', error)
+                })
         }
 
         this.audioPacketsReceived = 0
@@ -388,6 +405,14 @@ export class Streaming {
                 resampled[i] = p0 + (p1 - p0) * decimal
             }
             finalBuffer = resampled
+        }
+
+        // Send to WebRTC (Float32 for better quality)
+        if (WebRTCManager.hasInstance()) {
+            const webrtc = WebRTCManager.getInstance()
+            if (webrtc.isEnabled()) {
+                webrtc.sendAudioToPeers(finalBuffer)
+            }
         }
 
         // Convert to Int16 for WebSocket transmission

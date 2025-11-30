@@ -53,6 +53,8 @@ export class WaitingRoomState extends BaseState {
                 GLOBAL.get().streaming_output,
                 GLOBAL.get().streaming_audio_frequency,
                 GLOBAL.get().bot_uuid,
+                GLOBAL.get().streaming_webrtc_enabled,
+                GLOBAL.get().streaming_webrtc_signaling_url,
             )
             this.context.streamingService.start()
 

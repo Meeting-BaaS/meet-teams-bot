@@ -59,6 +59,8 @@ export type MeetingParams = {
     streaming_input?: string
     streaming_output?: string
     streaming_audio_frequency?: number
+    streaming_webrtc_enabled?: boolean
+    streaming_webrtc_signaling_url?: string
     bot_uuid: string
     enter_message?: string
     bots_api_key: string
