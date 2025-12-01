@@ -36,5 +36,6 @@ export const BotMessageSchema = object({
   exit_time: number().int().default(0),
   waiting_room_timeout: number().int().positive().default(600),
   no_one_joined_timeout: number().int().positive().default(600),
+  silence_timeout: number().int().positive().default(600),
   speech_to_text_provider: SpeechToTextProviderSchema.default("none")
 })
