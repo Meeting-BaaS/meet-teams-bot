@@ -538,15 +538,48 @@ async function sendEntryMessage(
     // Truncate the message as meet only allows 516 characters
     enterMessage = enterMessage.substring(0, 500)
 
-    // Send via network API
+    // Try network API first
     const success = await sendChatMessage(page, enterMessage)
     if (success) {
         console.log('✅ Entry message sent via network API')
         return true
     }
 
-    console.error('❌ Failed to send entry message via network API')
-    return false
+    console.warn('⚠️ Network API failed, falling back to UI-based message sending...')
+
+    // Fallback: Try UI-based approach
+    try {
+        await page.click('button[aria-label="Chat with everyone"]')
+        await page.waitForSelector(
+            'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
+            { state: 'visible', timeout: 5000 },
+        )
+
+        // Check again if we are still in the meeting
+        if (!(await isInMeeting(page))) {
+            console.log('Bot is no longer in the meeting after opening chat')
+            return false
+        }
+
+        const textarea = page.locator(
+            'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
+        )
+        await textarea.fill(enterMessage)
+
+        const sendButton = page.locator('button:has(i:text("send"))')
+        if ((await sendButton.count()) > 0) {
+            await sendButton.click()
+            console.log('✅ Clicked on send button (UI fallback)')
+            await page.click('button[aria-label="Chat with everyone"]')
+            return true
+        }
+
+        console.log('❌ Send button not found in UI fallback')
+        return false
+    } catch (error) {
+        console.error('❌ Failed to send entry message via UI fallback:', error)
+        return false
+    }
 }
 
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
