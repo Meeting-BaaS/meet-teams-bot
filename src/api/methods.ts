@@ -36,6 +36,7 @@ export class Api {
         diarization_v2: false,
         bot_joined_at: startTime,
         bot_exited_at: exitTime,
+        transformed_meeting_url: GLOBAL.get().transformed_meeting_url,
         participants,
         speakers,
         audioChunks,
@@ -61,6 +62,7 @@ export class Api {
         timeout: 10000,
         data: {
           meeting_url: GLOBAL.get().meeting_url,
+          transformed_meeting_url: GLOBAL.get().transformed_meeting_url,
           message: msg,
           ...(code && { error_code: code }),
           extra: extra
