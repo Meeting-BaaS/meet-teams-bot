@@ -270,9 +270,9 @@ export function browserInterceptionLogic(schema: any[]) {
             try {
                 if (
                     typeof (window as any).MediaStreamTrackProcessor ===
-                        'undefined' ||
+                    'undefined' ||
                     typeof (window as any).MediaStreamTrackGenerator ===
-                        'undefined'
+                    'undefined'
                 ) {
                     console.error(
                         '[NetworkInterceptor] ⚠️ MediaStreamTrackProcessor/Generator not available, using fallback',
@@ -386,9 +386,9 @@ export function browserInterceptionLogic(schema: any[]) {
                                                             name: decodedName,
                                                             isCurrentUser:
                                                                 user.isCurrentUserString ===
-                                                                    'true' ||
+                                                                'true' ||
                                                                 user.isCurrentUserString ===
-                                                                    '1',
+                                                                '1',
                                                             isSpeaking:
                                                                 isCurrentlySpeaking,
                                                             status: user.status,
@@ -406,13 +406,13 @@ export function browserInterceptionLogic(schema: any[]) {
                                                         }
                                                     },
                                                 )
-                                                ;(
-                                                    window as any
-                                                ).onNetworkSpeakerUpdate({
-                                                    users,
-                                                    timestamp: Date.now(),
-                                                    source: 'audio',
-                                                })
+                                                    ; (
+                                                        window as any
+                                                    ).onNetworkSpeakerUpdate({
+                                                        users,
+                                                        timestamp: Date.now(),
+                                                        source: 'audio',
+                                                    })
                                             }
                                         } else {
                                             // No speaker with meaningful audio - clear speaking state
@@ -441,11 +441,11 @@ export function browserInterceptionLogic(schema: any[]) {
                                                                         !!(
                                                                             user.isCurrentUserString &&
                                                                             user.isCurrentUserString !==
-                                                                                '' &&
+                                                                            '' &&
                                                                             user.isCurrentUserString !==
-                                                                                'false' &&
+                                                                            'false' &&
                                                                             user.isCurrentUserString !==
-                                                                                '0'
+                                                                            '0'
                                                                         ),
                                                                     isSpeaking:
                                                                         false,
@@ -460,13 +460,13 @@ export function browserInterceptionLogic(schema: any[]) {
                                                                 }
                                                             },
                                                         )
-                                                    ;(
-                                                        window as any
-                                                    ).onNetworkSpeakerUpdate({
-                                                        users,
-                                                        timestamp: Date.now(),
-                                                        source: 'audio',
-                                                    })
+                                                        ; (
+                                                            window as any
+                                                        ).onNetworkSpeakerUpdate({
+                                                            users,
+                                                            timestamp: Date.now(),
+                                                            source: 'audio',
+                                                        })
                                                 }
                                             }
                                         }
@@ -496,7 +496,7 @@ export function browserInterceptionLogic(schema: any[]) {
                             try {
                                 await reader.cancel()
                                 reader.releaseLock()
-                            } catch {}
+                            } catch { }
                         }
                     }
                 }
@@ -571,22 +571,25 @@ export function browserInterceptionLogic(schema: any[]) {
                     receiver,
                     receiverManager,
                     userManager,
-                ).then((success) => {
-                    if (!success) {
+                )
+                    .then((success) => {
+                        if (!success) {
+                            setupWebAudioMonitoring(
+                                track,
+                                receiver,
+                                audioCtx,
+                                activeAudioTracks,
+                            )
+                        }
+                    })
+                    .catch(() => {
                         setupWebAudioMonitoring(
                             track,
                             receiver,
                             audioCtx,
                             activeAudioTracks,
                         )
-                    }
-                })
-                setupWebAudioMonitoring(
-                    track,
-                    receiver,
-                    audioCtx,
-                    activeAudioTracks,
-                )
+                    })
             } catch (e) {
                 console.error('[NetworkInterceptor] Audio Attach Error:', e)
             }
@@ -636,7 +639,7 @@ export function browserInterceptionLogic(schema: any[]) {
                 if (
                     typeof (window as any).onNetworkSpeakerUpdate === 'function'
                 ) {
-                    ;(window as any).onNetworkSpeakerUpdate({
+                    ; (window as any).onNetworkSpeakerUpdate({
                         users,
                         timestamp: Date.now(),
                         source: 'roster',
@@ -647,7 +650,7 @@ export function browserInterceptionLogic(schema: any[]) {
             }
         }
 
-        ;(window as any).triggerNetworkBroadcast = broadcastCurrentState
+            ; (window as any).triggerNetworkBroadcast = broadcastCurrentState
 
         const messageDecoders = createDecoders(schema)
         console.error('[NetworkInterceptor] ✅ Protobuf decoders ready')
@@ -661,141 +664,141 @@ export function browserInterceptionLogic(schema: any[]) {
 
         if (typeof (window as any).RTCPeerConnection !== 'undefined') {
             const OriginalPC = (window as any).RTCPeerConnection
-            ;(window as any).RTCPeerConnection = function (...args: any[]) {
-                const pc = new OriginalPC(...args)
-                pc.addEventListener('track', (event: any) => {
-                    if (event.track.kind === 'audio') {
-                        monitorTrack(
-                            event.track,
-                            event.receiver,
-                            receiverManager,
-                            userManager,
-                            audioCtx,
-                            activeAudioTracks,
-                        )
-                    }
-                })
-                pc.addEventListener('datachannel', (event: any) => {
-                    const label = event.channel.label
-                    allDataChannels.set(label, event.channel)
-
-                    console.error(
-                        `[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`,
-                    )
-
-                    if (label === 'meet_messages') {
-                        meetMessagesDataChannel = event.channel
-                        console.error(
-                            '[NetworkInterceptor] 💬 Chat channel ready',
-                        )
-                    }
-                    event.channel.addEventListener('message', (msg: any) => {
-                        try {
-                            const rawData = new Uint8Array(msg.data)
-                            try {
-                                // Defensive check for pako availability
-                                if (
-                                    typeof (window as any).pako === 'undefined' ||
-                                    typeof (window as any).pako.inflate !== 'function'
-                                ) {
-                                    console.error(
-                                        '[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available',
-                                    )
-                                    console.warn(
-                                        '[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression',
-                                    )
-                                    throw new Error(
-                                        'pako.inflate is not available',
-                                    )
-                                }
-                                const inflated = (window as any).pako.inflate(
-                                    rawData,
-                                )
-                                const eventData =
-                                    messageDecoders['CollectionEvent'](inflated)
-                                const body = eventData.body
-                                if (body) {
-                                    const wrapper =
-                                        body.userInfoListWrapperAndChatWrapperWrapper
-                                    if (
-                                        wrapper?.deviceInfoWrapper
-                                            ?.deviceOutputInfoList
-                                    ) {
-                                        const deviceOutputs =
-                                            wrapper.deviceInfoWrapper
-                                                .deviceOutputInfoList
-                                        updateDeviceOutputs(
-                                            userManager,
-                                            deviceOutputs,
-                                        )
-                                    }
-                                    if (
-                                        wrapper
-                                            ?.userInfoListWrapperAndChatWrapper
-                                            ?.userInfoListWrapper?.userInfoList
-                                    ) {
-                                        const users =
-                                            wrapper
-                                                .userInfoListWrapperAndChatWrapper
-                                                .userInfoListWrapper
-                                                .userInfoList
-                                        updateUsers(userManager, users)
-                                        console.error(
-                                            `[NetworkInterceptor] 👥 Updated ${users.length} users`,
-                                        )
-                                    }
-                                }
-                            } catch (e) {
-                                console.error(
-                                    `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
-                                    e,
-                                )
-                            }
-                        } catch (e) {
-                            console.error(
-                                '[NetworkInterceptor] Critical Message Error:',
-                                e,
+                ; (window as any).RTCPeerConnection = function (...args: any[]) {
+                    const pc = new OriginalPC(...args)
+                    pc.addEventListener('track', (event: any) => {
+                        if (event.track.kind === 'audio') {
+                            monitorTrack(
+                                event.track,
+                                event.receiver,
+                                receiverManager,
+                                userManager,
+                                audioCtx,
+                                activeAudioTracks,
                             )
                         }
                     })
-                })
+                    pc.addEventListener('datachannel', (event: any) => {
+                        const label = event.channel.label
+                        allDataChannels.set(label, event.channel)
 
-                // Create meet_messages channel for chat functionality
-                setTimeout(() => {
-                    try {
-                        const meetMessagesChannel = pc.createDataChannel(
-                            'meet_messages',
-                            { ordered: true },
+                        console.error(
+                            `[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`,
                         )
 
-                        meetMessagesChannel.addEventListener('open', () => {
-                            meetMessagesDataChannel = meetMessagesChannel
+                        if (label === 'meet_messages') {
+                            meetMessagesDataChannel = event.channel
                             console.error(
-                                '[NetworkInterceptor] ✅ Chat channel ready',
+                                '[NetworkInterceptor] 💬 Chat channel ready',
                             )
-                        })
-
-                        meetMessagesChannel.addEventListener('close', () => {
-                            if (
-                                meetMessagesDataChannel === meetMessagesChannel
-                            ) {
-                                meetMessagesDataChannel = null
+                        }
+                        event.channel.addEventListener('message', (msg: any) => {
+                            try {
+                                const rawData = new Uint8Array(msg.data)
+                                try {
+                                    // Defensive check for pako availability
+                                    if (
+                                        typeof (window as any).pako === 'undefined' ||
+                                        typeof (window as any).pako.inflate !== 'function'
+                                    ) {
+                                        console.error(
+                                            '[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available',
+                                        )
+                                        console.warn(
+                                            '[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression',
+                                        )
+                                        throw new Error(
+                                            'pako.inflate is not available',
+                                        )
+                                    }
+                                    const inflated = (window as any).pako.inflate(
+                                        rawData,
+                                    )
+                                    const eventData =
+                                        messageDecoders['CollectionEvent'](inflated)
+                                    const body = eventData.body
+                                    if (body) {
+                                        const wrapper =
+                                            body.userInfoListWrapperAndChatWrapperWrapper
+                                        if (
+                                            wrapper?.deviceInfoWrapper
+                                                ?.deviceOutputInfoList
+                                        ) {
+                                            const deviceOutputs =
+                                                wrapper.deviceInfoWrapper
+                                                    .deviceOutputInfoList
+                                            updateDeviceOutputs(
+                                                userManager,
+                                                deviceOutputs,
+                                            )
+                                        }
+                                        if (
+                                            wrapper
+                                                ?.userInfoListWrapperAndChatWrapper
+                                                ?.userInfoListWrapper?.userInfoList
+                                        ) {
+                                            const users =
+                                                wrapper
+                                                    .userInfoListWrapperAndChatWrapper
+                                                    .userInfoListWrapper
+                                                    .userInfoList
+                                            updateUsers(userManager, users)
+                                            console.error(
+                                                `[NetworkInterceptor] 👥 Updated ${users.length} users`,
+                                            )
+                                        }
+                                    }
+                                } catch (e) {
+                                    console.error(
+                                        `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
+                                        e,
+                                    )
+                                }
+                            } catch (e) {
+                                console.error(
+                                    '[NetworkInterceptor] Critical Message Error:',
+                                    e,
+                                )
                             }
                         })
-                    } catch (e) {
-                        console.error(
-                            '[NetworkInterceptor] ❌ Failed to create chat channel:',
-                            e,
-                        )
-                    }
-                }, 100)
+                    })
 
-                return pc
-            }
+                    // Create meet_messages channel for chat functionality
+                    setTimeout(() => {
+                        try {
+                            const meetMessagesChannel = pc.createDataChannel(
+                                'meet_messages',
+                                { ordered: true },
+                            )
+
+                            meetMessagesChannel.addEventListener('open', () => {
+                                meetMessagesDataChannel = meetMessagesChannel
+                                console.error(
+                                    '[NetworkInterceptor] ✅ Chat channel ready',
+                                )
+                            })
+
+                            meetMessagesChannel.addEventListener('close', () => {
+                                if (
+                                    meetMessagesDataChannel === meetMessagesChannel
+                                ) {
+                                    meetMessagesDataChannel = null
+                                }
+                            })
+                        } catch (e) {
+                            console.error(
+                                '[NetworkInterceptor] ❌ Failed to create chat channel:',
+                                e,
+                            )
+                        }
+                    }, 100)
+
+                    return pc
+                }
         }
 
         // ===== EXPOSE CHAT MESSAGE SENDING =====
-        ;(window as any)._sendChatMessage = async (
+        ; (window as any)._sendChatMessage = async (
             messageText: string,
         ): Promise<boolean> => {
             try {
@@ -834,7 +837,7 @@ export function browserInterceptionLogic(schema: any[]) {
 
                 // Initialize message counter
                 if (!(window as any).__meetMessagesCounter) {
-                    ;(window as any).__meetMessagesCounter = 1
+                    ; (window as any).__meetMessagesCounter = 1
                 }
                 const messageCounter = (window as any).__meetMessagesCounter++
 
@@ -938,9 +941,9 @@ export function browserInterceptionLogic(schema: any[]) {
                                 )
                             }
                         }
-                    } catch {}
+                    } catch { }
                 }
-            } catch {}
+            } catch { }
             return response
         }
     } catch (e: any) {

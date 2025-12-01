@@ -136,12 +136,7 @@ export class InCallState extends BaseState {
             return
         }
 
-        // Create and start integrated speakers observer
-        const speakersObserver = new SpeakersObserver(
-            GLOBAL.get().meetingProvider,
-        )
-
-        // Callback to handle speakers changes
+        // Callback to handle speakers changes and broadcast to SpeakerManager/API
         const onSpeakersChange = async (speakers: any[]) => {
             try {
                 await SpeakerManager.getInstance().handleSpeakerUpdate(speakers)
@@ -150,40 +145,52 @@ export class InCallState extends BaseState {
             }
         }
 
+        // ===== UI-BASED SPEAKER DETECTION (PRIMARY) =====
+        // Detects speakers by observing DOM elements (participant panels, speaking borders)
+        // Comment out this block to disable UI-based detection
         try {
+            const speakersObserver = new SpeakersObserver(
+                GLOBAL.get().meetingProvider,
+            )
+
             await speakersObserver.startObserving(
                 this.context.playwrightPage,
                 GLOBAL.get().recording_mode,
                 GLOBAL.get().bot_name,
-                onSpeakersChange,
+                onSpeakersChange, // ← Broadcasts to API
             )
 
             // Store the observer in context for cleanup later
             this.context.speakersObserver = speakersObserver
 
-            console.log('Integrated speakers observer started successfully')
+            console.log('UI-based speakers observer started successfully')
         } catch (error) {
             console.error(
-                'Failed to start integrated speakers observer:',
+                'Failed to start UI-based speakers observer:',
                 error,
             )
             throw error
         }
 
-        // Start network speaker logger for Google Meet only (for debugging/comparison)
+        // ===== NETWORK-BASED SPEAKER DETECTION (LOGGING ONLY) =====
+        // Detects speakers via WebRTC network interception (Google Meet only)
+        // By default, only logs to network_speaker_detection.log for debugging/comparison
+        // To broadcast to API instead of (or in addition to) UI detection:
+        //   1. Pass onSpeakersChange as the 3rd parameter below
+        //   2. Comment out the UI-based detection block above if desired
         if (GLOBAL.get().meetingProvider === 'Meet') {
             try {
                 const networkLogger = new NetworkSpeakerLogger(
                     this.context.playwrightPage,
                     GLOBAL.get().bot_name,
-                    onSpeakersChange,
+                    // onSpeakersChange, // ← Uncomment to broadcast to API
                 )
                 await networkLogger.start()
 
                 // Store the logger in context for cleanup later
                 this.context.networkSpeakerLogger = networkLogger
 
-                console.log('Network speaker logger started successfully')
+                console.log('Network speaker logger started (logging to file only)')
             } catch (error) {
                 console.error('Failed to start network speaker logger:', error)
                 // Continue even if network logger fails - it's just for debugging

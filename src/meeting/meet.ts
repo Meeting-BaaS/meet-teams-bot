@@ -75,16 +75,16 @@ export class MeetProvider implements MeetingProviderInterface {
             ;(page as any)._updateNetworkCallback = async (
                 callback: (payload: any) => void,
             ) => {
-                console.error(
+                console.log(
                     '[Meet] 🔧 Updating network callback - setting speakerCallback',
                 )
                 speakerCallback = callback
-                console.error(
+                console.log(
                     `[Meet] ✅ Callback set, speakerCallback is now: ${speakerCallback ? 'SET' : 'NULL'}`,
                 )
                 // Test the callback immediately to verify it works
                 if (speakerCallback) {
-                    console.error(
+                    console.log(
                         '[Meet] 🧪 Testing callback with empty payload...',
                     )
                     try {
@@ -93,7 +93,7 @@ export class MeetProvider implements MeetingProviderInterface {
                             timestamp: Date.now(),
                             source: 'test',
                         })
-                        console.error('[Meet] ✅ Callback test successful')
+                        console.log('[Meet] ✅ Callback test successful')
                     } catch (e) {
                         console.error('[Meet] ❌ Callback test failed:', e)
                     }
@@ -102,7 +102,7 @@ export class MeetProvider implements MeetingProviderInterface {
                 // Trigger a manual broadcast to send current state immediately
                 // This ensures we get the current roster even if we missed earlier broadcasts
                 try {
-                    console.error(
+                    console.log(
                         '[Meet] 🔔 Triggering manual broadcast to send current state...',
                     )
                     await page.evaluate(() => {
@@ -110,7 +110,7 @@ export class MeetProvider implements MeetingProviderInterface {
                             ;(window as any).triggerNetworkBroadcast()
                         }
                     })
-                    console.error('[Meet] ✅ Manual broadcast triggered')
+                    console.log('[Meet] ✅ Manual broadcast triggered')
                 } catch (e) {
                     console.error(
                         '[Meet] ⚠️ Failed to trigger manual broadcast:',
