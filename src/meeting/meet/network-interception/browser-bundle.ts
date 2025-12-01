@@ -241,6 +241,23 @@ export function browserInterceptionLogic(schema: any[]) {
             )
         }
 
+        // ===== USER DATA HELPERS =====
+
+        function decodeFullName(user: any): string | undefined {
+            if (user.fullName instanceof Uint8Array) {
+                try {
+                    return new TextDecoder().decode(user.fullName)
+                } catch {
+                    return undefined
+                }
+            }
+            return user.fullName
+        }
+
+        function filterActiveUsers(users: any[]) {
+            return users.filter((user: any) => !user.parentDeviceId && user.status === 1)
+        }
+
         // ===== AUDIO FUNCTIONS (inlined from audio.ts) =====
 
         async function processAudioFrames(
@@ -344,13 +361,8 @@ export function browserInterceptionLogic(schema: any[]) {
                                             ) {
                                                 const allUsers =
                                                     getAllUsers(userManager)
-                                                // Filter out screen sharing devices (users with parentDeviceId) and users who left (status !== 1)
                                                 const filteredUsers =
-                                                    allUsers.filter(
-                                                        (user: any) =>
-                                                            !user.parentDeviceId &&
-                                                            user.status === 1,
-                                                    )
+                                                    filterActiveUsers(allUsers)
                                                 // Update speaking state - clear previous and set current speaker
                                                 speakingState.clear()
                                                 speakingState.set(
@@ -367,18 +379,6 @@ export function browserInterceptionLogic(schema: any[]) {
                                                             user.deviceId ===
                                                             loudestSpeaker.user
                                                                 .deviceId
-
-                                                        // Decode fullName if it's a Uint8Array
-                                                        let fullName: string | undefined
-                                                        if (user.fullName instanceof Uint8Array) {
-                                                            try {
-                                                                fullName = new TextDecoder().decode(user.fullName)
-                                                            } catch {
-                                                                fullName = undefined
-                                                            }
-                                                        } else if (user.fullName) {
-                                                            fullName = user.fullName
-                                                        }
 
                                                         return {
                                                             deviceId:
@@ -400,7 +400,7 @@ export function browserInterceptionLogic(schema: any[]) {
                                                                     ? loudestSpeaker.audioLevel
                                                                     : 0,
                                                             // PII fields for enhanced logging
-                                                            fullName: fullName,
+                                                            fullName: decodeFullName(user),
                                                             displayName: user.displayName,
                                                             profilePicture: user.profilePicture,
                                                         }
@@ -426,29 +426,11 @@ export function browserInterceptionLogic(schema: any[]) {
                                                 ) {
                                                     const allUsers =
                                                         getAllUsers(userManager)
-                                                    // Filter out screen sharing devices (users with parentDeviceId) and users who left (status !== 1)
                                                     const filteredUsers =
-                                                        allUsers.filter(
-                                                            (user: any) =>
-                                                                !user.parentDeviceId &&
-                                                                user.status ===
-                                                                    1,
-                                                        )
+                                                        filterActiveUsers(allUsers)
                                                     const users =
                                                         filteredUsers.map(
                                                             (user: any) => {
-                                                                // Decode fullName if it's a Uint8Array
-                                                                let fullName: string | undefined
-                                                                if (user.fullName instanceof Uint8Array) {
-                                                                    try {
-                                                                        fullName = new TextDecoder().decode(user.fullName)
-                                                                    } catch {
-                                                                        fullName = undefined
-                                                                    }
-                                                                } else if (user.fullName) {
-                                                                    fullName = user.fullName
-                                                                }
-
                                                                 return {
                                                                     deviceId:
                                                                         user.deviceId,
@@ -472,7 +454,7 @@ export function browserInterceptionLogic(schema: any[]) {
                                                                         user.isHost ===
                                                                         1,
                                                                     // PII fields for enhanced logging
-                                                                    fullName: fullName,
+                                                                    fullName: decodeFullName(user),
                                                                     displayName: user.displayName,
                                                                     profilePicture: user.profilePicture,
                                                                 }
@@ -631,23 +613,8 @@ export function browserInterceptionLogic(schema: any[]) {
             try {
                 const allUsers = getAllUsers(userManager)
                 if (allUsers.length === 0) return
-                // Filter out screen sharing devices (users with parentDeviceId) and users who left (status !== 1)
-                const filteredUsers = allUsers.filter(
-                    (user: any) => !user.parentDeviceId && user.status === 1,
-                )
+                const filteredUsers = filterActiveUsers(allUsers)
                 const users = filteredUsers.map((user: any) => {
-                    // Decode fullName if it's a Uint8Array
-                    let fullName: string | undefined
-                    if (user.fullName instanceof Uint8Array) {
-                        try {
-                            fullName = new TextDecoder().decode(user.fullName)
-                        } catch {
-                            fullName = undefined
-                        }
-                    } else if (user.fullName) {
-                        fullName = user.fullName
-                    }
-
                     return {
                         deviceId: user.deviceId,
                         name: decodeUserName(user),
@@ -661,7 +628,7 @@ export function browserInterceptionLogic(schema: any[]) {
                         status: user.status,
                         isHost: user.isHost === 1,
                         // PII fields for enhanced logging
-                        fullName: fullName,
+                        fullName: decodeFullName(user),
                         displayName: user.displayName,
                         profilePicture: user.profilePicture,
                     }

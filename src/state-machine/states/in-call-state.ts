@@ -176,6 +176,7 @@ export class InCallState extends BaseState {
                 const networkLogger = new NetworkSpeakerLogger(
                     this.context.playwrightPage,
                     GLOBAL.get().bot_name,
+                    onSpeakersChange,
                 )
                 await networkLogger.start()
 

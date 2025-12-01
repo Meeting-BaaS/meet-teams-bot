@@ -1,18 +1,8 @@
 import { Page } from '@playwright/test'
 import * as fs from 'fs/promises'
-import * as crypto from 'crypto'
 import { EnhancedSpeakerData } from '../../types'
 import { PathManager } from '../../utils/PathManager'
-
-/**
- * Generate a stable user ID from profile picture URL or full name.
- * This ID persists across rejoin events since it's based on account-level data.
- */
-function generateStableUserId(fullName: string, profilePicture?: string): string {
-    // Prefer profile picture URL (tied to Google account) over name for stability
-    const input = profilePicture || fullName
-    return crypto.createHash('sha256').update(input).digest('hex').substring(0, 16)
-}
+import { generateStableUserId } from '../../utils/speaker-id'
 
 /**
  * NetworkSpeakerLogger
@@ -24,21 +14,25 @@ function generateStableUserId(fullName: string, profilePicture?: string): string
 export class NetworkSpeakerLogger {
     private page: Page
     private botName: string
-    private isLogging: boolean = false
+    private isActive: boolean = false
     private previousSpeakerState: Map<string, boolean> = new Map()
     private logFilePath: string
-    private participantsMetadataPath: string
     // Persistent mapping from hash-based stable ID to sequential numeric ID
     private stableIdToSequentialId: Map<string, number> = new Map()
     private nextSequentialId: number = 1
-    // Track which participant IDs have been written to metadata file
-    private writtenParticipantIds: Set<number> = new Set()
+    // Track which participant IDs have had metadata written
+    private writtenMetadata: Set<number> = new Set()
+    private onSpeakersChange?: (speakers: EnhancedSpeakerData[]) => void
 
-    constructor(page: Page, botName: string) {
+    constructor(
+        page: Page,
+        botName: string,
+        onSpeakersChange?: (speakers: EnhancedSpeakerData[]) => void
+    ) {
         this.page = page
         this.botName = botName
         this.logFilePath = PathManager.getInstance().getNetworkSpeakerLogPath()
-        this.participantsMetadataPath = PathManager.getInstance().getParticipantsMetadataPath()
+        this.onSpeakersChange = onSpeakersChange
     }
 
     /**
@@ -54,8 +48,8 @@ export class NetworkSpeakerLogger {
     }
 
     async start(): Promise<void> {
-        if (this.isLogging) {
-            console.log('[NetworkSpeakerLogger] Already logging')
+        if (this.isActive) {
+            console.log('[NetworkSpeakerLogger] Already active')
             return
         }
 
@@ -66,9 +60,9 @@ export class NetworkSpeakerLogger {
             console.log(
                 '[NetworkSpeakerLogger] Registering callback with network interceptor',
             )
-            ;(this.page as any)._updateNetworkCallback((payload: any) => {
-                this.handleNetworkPayload(payload)
-            })
+                ; (this.page as any)._updateNetworkCallback((payload: any) => {
+                    this.handleNetworkPayload(payload)
+                })
             console.log('[NetworkSpeakerLogger] ✅ Callback registered')
         } else {
             console.warn(
@@ -76,11 +70,16 @@ export class NetworkSpeakerLogger {
             )
         }
 
-        this.isLogging = true
+        this.isActive = true
         console.log('[NetworkSpeakerLogger] ✅ Logger started successfully')
     }
 
     private handleNetworkPayload(payload: any): void {
+        // Early exit if logging has been stopped
+        if (!this.isActive) {
+            return
+        }
+
         try {
             if (payload && payload.users) {
                 // Filter out the bot itself (exclude if current user OR name matches bot name)
@@ -105,6 +104,11 @@ export class NetworkSpeakerLogger {
                     }
                 })
 
+                // Notify listeners (SpeakerManager)
+                if (this.onSpeakersChange) {
+                    this.onSpeakersChange(speakers)
+                }
+
                 // Check for changes in speaking status
                 const hasChange = speakers.some((speaker) => {
                     const previousState = this.previousSpeakerState.get(
@@ -115,16 +119,6 @@ export class NetworkSpeakerLogger {
                         previousState !== speaker.isSpeaking
                     )
                 })
-
-                // Write participant metadata for new participants
-                for (const speaker of speakers) {
-                    this.writeParticipantMetadata(speaker).catch((err) => {
-                        console.error(
-                            '[NetworkSpeakerLogger] Failed to write participant metadata:',
-                            err,
-                        )
-                    })
-                }
 
                 // Log only on changes (including initial state)
                 if (hasChange) {
@@ -183,15 +177,33 @@ export class NetworkSpeakerLogger {
 
     private async writeLogToFile(speakers: EnhancedSpeakerData[]): Promise<void> {
         try {
-            // Write activity log without PII (just name, id, timestamp, isSpeaking)
-            const activityLog = speakers.map(s => ({
-                name: s.name,
-                id: s.id,
-                timestamp: s.timestamp,
-                isSpeaking: s.isSpeaking
-            }))
-            const logEntry = JSON.stringify(activityLog)
-            await fs.appendFile(this.logFilePath, `${logEntry}\n`)
+            // Write metadata for new participants (with PII)
+            for (const speaker of speakers) {
+                if (!this.writtenMetadata.has(speaker.id)) {
+                    const metadata = {
+                        type: 'metadata',
+                        id: speaker.id,
+                        name: speaker.name,
+                        fullName: speaker.fullName,
+                        displayName: speaker.displayName,
+                        profilePicture: speaker.profilePicture
+                    }
+                    await fs.appendFile(this.logFilePath, `${JSON.stringify(metadata)}\n`)
+                    this.writtenMetadata.add(speaker.id)
+                }
+            }
+
+            // Write activity log (without PII)
+            const activityLog = {
+                type: 'activity',
+                timestamp: Date.now(),
+                users: speakers.map(s => ({
+                    id: s.id,
+                    name: s.name,
+                    isSpeaking: s.isSpeaking
+                }))
+            }
+            await fs.appendFile(this.logFilePath, `${JSON.stringify(activityLog)}\n`)
         } catch (error) {
             console.error(
                 '[NetworkSpeakerLogger] Cannot append network speaker log file:',
@@ -200,41 +212,13 @@ export class NetworkSpeakerLogger {
         }
     }
 
-    private async writeParticipantMetadata(speaker: EnhancedSpeakerData): Promise<void> {
-        try {
-            // Only write if we haven't written this participant ID yet
-            if (this.writtenParticipantIds.has(speaker.id)) {
-                return
-            }
-
-            // Write participant metadata (id, name, fullName, displayName, profilePicture)
-            const metadata = {
-                id: speaker.id,
-                name: speaker.name,
-                fullName: speaker.fullName,
-                displayName: speaker.displayName,
-                profilePicture: speaker.profilePicture
-            }
-            const logEntry = JSON.stringify(metadata)
-            await fs.appendFile(this.participantsMetadataPath, `${logEntry}\n`)
-
-            // Mark this ID as written
-            this.writtenParticipantIds.add(speaker.id)
-        } catch (error) {
-            console.error(
-                '[NetworkSpeakerLogger] Cannot append participants metadata file:',
-                error,
-            )
-        }
-    }
-
     stop(): void {
-        if (!this.isLogging) {
+        if (!this.isActive) {
             return
         }
 
         console.log('[NetworkSpeakerLogger] Stopping logger...')
-        this.isLogging = false
+        this.isActive = false
         this.previousSpeakerState.clear()
         console.log('[NetworkSpeakerLogger] ✅ Logger stopped')
     }

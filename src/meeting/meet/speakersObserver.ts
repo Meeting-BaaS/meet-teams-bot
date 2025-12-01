@@ -1,14 +1,7 @@
 import { Page } from '@playwright/test'
-import * as crypto from 'crypto'
 import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
-
-/**
- * Generate a stable user ID from participant name.
- */
-function generateStableUserId(name: string): string {
-    return crypto.createHash('sha256').update(name).digest('hex').substring(0, 16)
-}
+import { generateStableUserId } from '../../utils/speaker-id'
 
 export class MeetSpeakersObserver {
     private page: Page
