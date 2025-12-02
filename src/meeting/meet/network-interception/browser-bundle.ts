@@ -261,12 +261,12 @@ export function browserInterceptionLogic(schema: any[]) {
         // ===== AUDIO FUNCTIONS (inlined from audio.ts) =====
 
         async function processAudioFrames(
-            track: any,
-            receiver: any,
+            track: MediaStreamTrack,
+            receiver: RTCRtpReceiver,
             receiverManager: any,
             userManager: any,
         ): Promise<boolean> {
-            let reader: any = null
+            let reader: ReadableStreamDefaultReader<any> | null = null
             try {
                 if (
                     typeof (window as any).MediaStreamTrackProcessor ===
@@ -527,10 +527,10 @@ export function browserInterceptionLogic(schema: any[]) {
         }
 
         function setupWebAudioMonitoring(
-            track: any,
-            receiver: any,
+            track: MediaStreamTrack,
+            receiver: RTCRtpReceiver,
             audioCtx: AudioContext,
-            activeAudioTracks: Map<string, any>,
+            activeAudioTracks: Map<string, { analyser: AnalyserNode; receiver?: RTCRtpReceiver }>,
         ): void {
             try {
                 if (audioCtx.state === 'suspended') audioCtx.resume()
@@ -561,7 +561,7 @@ export function browserInterceptionLogic(schema: any[]) {
             receiverManager: any,
             userManager: any,
             audioCtx: AudioContext,
-            activeAudioTracks: Map<string, any>,
+            activeAudioTracks: Map<string, { analyser: AnalyserNode; receiver?: RTCRtpReceiver }>,
         ): void {
             if (activeAudioTracks.has(track.id)) return
             try {
@@ -659,7 +659,7 @@ export function browserInterceptionLogic(schema: any[]) {
             (window as any).webkitAudioContext)()
         const activeAudioTracks = new Map<
             string,
-            { analyser: AnalyserNode; ssrc?: string; receiver?: any }
+            { analyser: AnalyserNode; ssrc?: string; receiver?: RTCRtpReceiver }
         >()
 
         if (typeof (window as any).RTCPeerConnection !== 'undefined') {
