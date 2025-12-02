@@ -3,7 +3,6 @@ import { BrowserContext, Page } from '@playwright/test'
 import { MeetingEndReason } from '../state-machine/types'
 import { MeetingProviderInterface } from '../types'
 
-import { listenPage } from '../browser/page-logger'
 import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'

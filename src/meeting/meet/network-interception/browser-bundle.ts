@@ -260,6 +260,98 @@ export function browserInterceptionLogic(schema: any[]) {
 
         // ===== AUDIO FUNCTIONS (inlined from audio.ts) =====
 
+        // Extract audio data from a multi-channel frame by averaging channels
+        function extractAudioData(frame: any): Float32Array {
+            const numChannels = frame.numberOfChannels
+            const numSamples = frame.numberOfFrames
+            const audioData = new Float32Array(numSamples)
+
+            if (numChannels > 1) {
+                const channelData = new Float32Array(numSamples)
+                for (let channel = 0; channel < numChannels; channel++) {
+                    frame.copyTo(channelData, { planeIndex: channel })
+                    for (let i = 0; i < numSamples; i++) {
+                        audioData[i] += channelData[i]
+                    }
+                }
+                for (let i = 0; i < numSamples; i++) {
+                    audioData[i] /= numChannels
+                }
+            } else {
+                frame.copyTo(audioData, { planeIndex: 0 })
+            }
+
+            return audioData
+        }
+
+        // Check if audio data contains meaningful audio
+        function hasAudioActivity(audioData: Float32Array): boolean {
+            return audioData.some((v) => Math.abs(v) > 0.001)
+        }
+
+        // Find users with audio levels from contributing sources
+        function getUsersWithAudio(
+            contributingSources: any[],
+            userManager: any,
+        ): any[] {
+            return contributingSources
+                .map((source) => ({
+                    audioLevel: source?.audioLevel || 0,
+                    ssrc: source.source,
+                    timestamp: source.timestamp,
+                    user: getUserByStreamId(userManager, source.source.toString()),
+                }))
+                .filter((x) => x.user && x.audioLevel > 0.05)
+                .sort((a, b) => b.audioLevel - a.audioLevel)
+        }
+
+        // Build user state list with speaking status
+        function buildUserStateList(
+            filteredUsers: any[],
+            speakingDeviceId: string | null,
+            audioLevel: number = 0,
+        ): any[] {
+            return filteredUsers.map((user: any) => {
+                const isCurrentlySpeaking = user.deviceId === speakingDeviceId
+                return {
+                    deviceId: user.deviceId,
+                    name: decodeUserName(user),
+                    isCurrentUser:
+                        user.isCurrentUserString === 'true' ||
+                        user.isCurrentUserString === '1',
+                    isSpeaking: isCurrentlySpeaking,
+                    status: user.status,
+                    isHost: user.isHost === 1,
+                    audioLevel: isCurrentlySpeaking ? audioLevel : 0,
+                    fullName: decodeFullName(user),
+                    displayName: user.displayName,
+                    profilePicture: user.profilePicture,
+                }
+            })
+        }
+
+        // Broadcast speaker update with all users
+        function broadcastSpeakerUpdate(
+            userManager: any,
+            speakingDeviceId: string | null,
+            audioLevel: number = 0,
+            source: string = 'audio',
+        ): void {
+            if (typeof (window as any).onNetworkSpeakerUpdate !== 'function') {
+                return
+            }
+
+            const allUsers = getAllUsers(userManager)
+            const filteredUsers = filterActiveUsers(allUsers)
+            const users = buildUserStateList(filteredUsers, speakingDeviceId, audioLevel)
+
+            ;(window as any).onNetworkSpeakerUpdate({
+                users,
+                timestamp: Date.now(),
+                source,
+            })
+        }
+
         async function processAudioFrames(
             track: MediaStreamTrack,
             receiver: RTCRtpReceiver,
@@ -290,193 +382,51 @@ export function browserInterceptionLogic(schema: any[]) {
                             const { done, value: frame } = await reader.read()
                             if (done) break
                             if (!frame) continue
+
                             try {
-                                const numChannels = frame.numberOfChannels
-                                const numSamples = frame.numberOfFrames
-                                const audioData = new Float32Array(numSamples)
-                                if (numChannels > 1) {
-                                    const channelData = new Float32Array(
-                                        numSamples,
+                                // Extract and process audio data
+                                const audioData = extractAudioData(frame)
+
+                                if (hasAudioActivity(audioData)) {
+                                    const contributingSources = getContributingSources(
+                                        receiverManager,
+                                        receiver,
                                     )
-                                    for (
-                                        let channel = 0;
-                                        channel < numChannels;
-                                        channel++
-                                    ) {
-                                        frame.copyTo(channelData, {
-                                            planeIndex: channel,
-                                        })
-                                        for (let i = 0; i < numSamples; i++) {
-                                            audioData[i] += channelData[i]
-                                        }
-                                    }
-                                    for (let i = 0; i < numSamples; i++) {
-                                        audioData[i] /= numChannels
-                                    }
-                                } else {
-                                    frame.copyTo(audioData, { planeIndex: 0 })
-                                }
-                                const hasAudio = audioData.some(
-                                    (v) => Math.abs(v) > 0.001,
-                                )
-                                if (hasAudio) {
-                                    const contributingSources =
-                                        getContributingSources(
-                                            receiverManager,
-                                            receiver,
+
+                                    if (contributingSources && contributingSources.length > 0) {
+                                        const usersWithAudioLevels = getUsersWithAudio(
+                                            contributingSources,
+                                            userManager,
                                         )
-                                    if (
-                                        contributingSources &&
-                                        contributingSources.length > 0
-                                    ) {
-                                        const usersWithAudioLevels =
-                                            contributingSources
-                                                .map((source) => ({
-                                                    audioLevel:
-                                                        source?.audioLevel || 0,
-                                                    ssrc: source.source,
-                                                    timestamp: source.timestamp,
-                                                    user: getUserByStreamId(
-                                                        userManager,
-                                                        source.source.toString(),
-                                                    ),
-                                                }))
-                                                .filter(
-                                                    (x) =>
-                                                        x.user &&
-                                                        x.audioLevel > 0.05,
-                                                )
-                                                .sort(
-                                                    (a, b) =>
-                                                        b.audioLevel -
-                                                        a.audioLevel,
-                                                )
-                                        const loudestSpeaker =
-                                            usersWithAudioLevels[0]
+                                        const loudestSpeaker = usersWithAudioLevels[0]
+
                                         if (loudestSpeaker?.user) {
-                                            if (
-                                                typeof (window as any)
-                                                    .onNetworkSpeakerUpdate ===
-                                                'function'
-                                            ) {
-                                                const allUsers =
-                                                    getAllUsers(userManager)
-                                                const filteredUsers =
-                                                    filterActiveUsers(allUsers)
-                                                // Update speaking state - clear previous and set current speaker
-                                                speakingState.clear()
-                                                speakingState.set(
-                                                    loudestSpeaker.user
-                                                        .deviceId,
-                                                    true,
-                                                )
+                                            // Update speaking state - clear previous and set current speaker
+                                            speakingState.clear()
+                                            speakingState.set(loudestSpeaker.user.deviceId, true)
 
-                                                const users = filteredUsers.map(
-                                                    (user: any) => {
-                                                        const decodedName =
-                                                            decodeUserName(user)
-                                                        const isCurrentlySpeaking =
-                                                            user.deviceId ===
-                                                            loudestSpeaker.user
-                                                                .deviceId
-
-                                                        return {
-                                                            deviceId:
-                                                                user.deviceId,
-                                                            name: decodedName,
-                                                            isCurrentUser:
-                                                                user.isCurrentUserString ===
-                                                                'true' ||
-                                                                user.isCurrentUserString ===
-                                                                '1',
-                                                            isSpeaking:
-                                                                isCurrentlySpeaking,
-                                                            status: user.status,
-                                                            isHost:
-                                                                user.isHost ===
-                                                                1,
-                                                            audioLevel:
-                                                                isCurrentlySpeaking
-                                                                    ? loudestSpeaker.audioLevel
-                                                                    : 0,
-                                                            // PII fields for enhanced logging
-                                                            fullName: decodeFullName(user),
-                                                            displayName: user.displayName,
-                                                            profilePicture: user.profilePicture,
-                                                        }
-                                                    },
-                                                )
-                                                    ; (
-                                                        window as any
-                                                    ).onNetworkSpeakerUpdate({
-                                                        users,
-                                                        timestamp: Date.now(),
-                                                        source: 'audio',
-                                                    })
-                                            }
+                                            // Broadcast with current speaker
+                                            broadcastSpeakerUpdate(
+                                                userManager,
+                                                loudestSpeaker.user.deviceId,
+                                                loudestSpeaker.audioLevel,
+                                                'audio',
+                                            )
                                         } else {
                                             // No speaker with meaningful audio - clear speaking state
                                             if (speakingState.size > 0) {
                                                 speakingState.clear()
-                                                // Broadcast update to clear speaking status
-                                                if (
-                                                    typeof (window as any)
-                                                        .onNetworkSpeakerUpdate ===
-                                                    'function'
-                                                ) {
-                                                    const allUsers =
-                                                        getAllUsers(userManager)
-                                                    const filteredUsers =
-                                                        filterActiveUsers(allUsers)
-                                                    const users =
-                                                        filteredUsers.map(
-                                                            (user: any) => {
-                                                                return {
-                                                                    deviceId:
-                                                                        user.deviceId,
-                                                                    name: decodeUserName(
-                                                                        user,
-                                                                    ),
-                                                                    isCurrentUser:
-                                                                        !!(
-                                                                            user.isCurrentUserString &&
-                                                                            user.isCurrentUserString !==
-                                                                            '' &&
-                                                                            user.isCurrentUserString !==
-                                                                            'false' &&
-                                                                            user.isCurrentUserString !==
-                                                                            '0'
-                                                                        ),
-                                                                    isSpeaking:
-                                                                        false,
-                                                                    status: user.status,
-                                                                    isHost:
-                                                                        user.isHost ===
-                                                                        1,
-                                                                    // PII fields for enhanced logging
-                                                                    fullName: decodeFullName(user),
-                                                                    displayName: user.displayName,
-                                                                    profilePicture: user.profilePicture,
-                                                                }
-                                                            },
-                                                        )
-                                                        ; (
-                                                            window as any
-                                                        ).onNetworkSpeakerUpdate({
-                                                            users,
-                                                            timestamp: Date.now(),
-                                                            source: 'audio',
-                                                        })
-                                                }
+                                                broadcastSpeakerUpdate(userManager, null, 0, 'audio')
                                             }
                                         }
                                     } else {
-                                        // No audio detected - clear speaking state if it was set
+                                        // No contributing sources - clear speaking state if set
                                         if (speakingState.size > 0) {
                                             speakingState.clear()
                                         }
                                     }
                                 }
+
                                 frame.close()
                             } catch (frameError) {
                                 console.error(
@@ -616,8 +566,14 @@ export function browserInterceptionLogic(schema: any[]) {
             try {
                 const allUsers = getAllUsers(userManager)
                 if (allUsers.length === 0) return
+
+                // Find who is currently speaking from the state map
+                const currentSpeakingDeviceId = Array.from(speakingState.entries())
+                    .find(([_, isSpeaking]) => isSpeaking)?.[0] || null
+
                 const filteredUsers = filterActiveUsers(allUsers)
                 const users = filteredUsers.map((user: any) => {
+                    const isSpeaking = speakingState.get(user.deviceId) || false
                     return {
                         deviceId: user.deviceId,
                         name: decodeUserName(user),
@@ -627,19 +583,18 @@ export function browserInterceptionLogic(schema: any[]) {
                             user.isCurrentUserString !== 'false' &&
                             user.isCurrentUserString !== '0'
                         ),
-                        isSpeaking: speakingState.get(user.deviceId) || false,
+                        isSpeaking,
                         status: user.status,
                         isHost: user.isHost === 1,
-                        // PII fields for enhanced logging
+                        audioLevel: isSpeaking ? 1 : 0, // Default audio level for periodic broadcast
                         fullName: decodeFullName(user),
                         displayName: user.displayName,
                         profilePicture: user.profilePicture,
                     }
                 })
-                if (
-                    typeof (window as any).onNetworkSpeakerUpdate === 'function'
-                ) {
-                    ; (window as any).onNetworkSpeakerUpdate({
+
+                if (typeof (window as any).onNetworkSpeakerUpdate === 'function') {
+                    ;(window as any).onNetworkSpeakerUpdate({
                         users,
                         timestamp: Date.now(),
                         source: 'roster',
