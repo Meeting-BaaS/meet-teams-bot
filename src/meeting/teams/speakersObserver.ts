@@ -1,7 +1,8 @@
 import { Page } from '@playwright/test'
 import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
-import { generateStableUserId } from '../../utils/speaker-id'
+import { generateStableUserId, createSequentialIdManager } from '../../utils/speaker-id'
+import * as path from 'path'
 
 export class TeamsSpeakersObserver {
     private page: Page
@@ -14,11 +15,9 @@ export class TeamsSpeakersObserver {
     private readonly SPEAKER_LATENCY = 1500 // ms
     private readonly MUTATION_DEBOUNCE = 50 // ms - EXACT SAME AS EXTENSION
     private readonly CHECK_INTERVAL = 10000 // 10s - EXACT SAME AS EXTENSION
-
-    // Persistent mapping from hash-based stable ID to sequential numeric ID
-    private stableIdToSequentialId: Map<string, number> = new Map()
-    private nextSequentialId: number = 1
     private readonly FREEZE_TIMEOUT = 8000 // 8s - EXACT SAME AS EXTENSION
+
+    private sequentialIdManager = createSequentialIdManager()
 
     constructor(
         page: Page,
@@ -32,18 +31,6 @@ export class TeamsSpeakersObserver {
         this.onSpeakersChange = onSpeakersChange
     }
 
-    /**
-     * Get or assign a sequential ID for a speaker based on their stable hash ID.
-     * This ensures speakers keep the same numeric ID across rejoins.
-     */
-    private getSequentialId(stableId: string): number {
-        if (!this.stableIdToSequentialId.has(stableId)) {
-            this.stableIdToSequentialId.set(stableId, this.nextSequentialId)
-            this.nextSequentialId++
-        }
-        return this.stableIdToSequentialId.get(stableId)!
-    }
-
     public async startObserving(): Promise<void> {
         if (this.isObserving) {
             console.warn('[Teams] Already observing')
@@ -53,6 +40,10 @@ export class TeamsSpeakersObserver {
         console.log('[Teams] Starting speaker observation...')
 
         // Browser console logs are handled by centralized page-logger in base-state.ts
+
+        // Inject browser utilities script (compiled from .ts)
+        const utilsPath = path.join(__dirname, '../../utils/browser-speaker-utils.js')
+        await this.page.addScriptTag({ path: utilsPath })
 
         // Expose callback function to the page
         await this.page.exposeFunction(
@@ -88,6 +79,10 @@ export class TeamsSpeakersObserver {
                 console.log(
                     '[Teams-Browser] Setting up observation - EXACT EXTENSION LOGIC',
                 )
+
+                // Use shared browser utilities (injected via browser-speaker-utils.js)
+                const { generateStableUserId, createSequentialIdManager, areMapsEqual } = window.__speakerUtils
+                const { getSequentialId } = createSequentialIdManager()
 
                 // EXACT SAME VARIABLES AS EXTENSION
                 let CUR_SPEAKERS = new Map<string, boolean>()
@@ -186,7 +181,7 @@ export class TeamsSpeakersObserver {
                                 )
                                 if (name !== '') {
                                     const stableId = generateStableUserId(name)
-                                    const sequentialId = this.getSequentialId(stableId)
+                                    const sequentialId = getSequentialId(stableId)
                                     if (
                                         element
                                             .getAttribute('aria-label')
@@ -445,22 +440,6 @@ export class TeamsSpeakersObserver {
                     }
 
                     return result
-                }
-
-                // SHARED CRITICAL LOGIC from speakersUtils
-                function areMapsEqual<K, V>(
-                    map1: Map<K, V>,
-                    map2: Map<K, V>,
-                ): boolean {
-                    if (map1.size !== map2.size) {
-                        return false
-                    }
-                    for (let [key, value] of map1) {
-                        if (!map2.has(key) || map2.get(key) !== value) {
-                            return false
-                        }
-                    }
-                    return true
                 }
 
                 // SHARED CRITICAL checkSpeakers logic
