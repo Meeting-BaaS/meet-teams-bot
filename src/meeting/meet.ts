@@ -119,8 +119,20 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
-            await enableNetworkInterception(page, networkCallbackWrapper)
-            console.log('[Meet] Network interception configured')
+            const networkInterceptionEnabled = await enableNetworkInterception(
+                page,
+                networkCallbackWrapper,
+            )
+            if (!networkInterceptionEnabled) {
+                console.error(
+                    '[Meet] ❌ Failed to enable network interception - network-based features will not be available',
+                )
+                console.warn(
+                    '[Meet] ⚠️ Continuing without network interception (falling back to UI-based detection)',
+                )
+            } else {
+                console.log('[Meet] ✅ Network interception configured successfully')
+            }
 
             // Set permissions based on streaming_input
             if (streaming_input) {

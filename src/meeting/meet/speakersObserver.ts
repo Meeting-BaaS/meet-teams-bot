@@ -1,7 +1,6 @@
 import { Page } from '@playwright/test'
 import { RecordingMode, SpeakerData } from '../../types'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
-import { generateStableUserId, createSequentialIdManager } from '../../utils/speaker-id'
 import * as path from 'path'
 
 export class MeetSpeakersObserver {
@@ -15,8 +14,6 @@ export class MeetSpeakersObserver {
     private readonly MUTATION_DEBOUNCE = 50 // ms
     private readonly CHECK_INTERVAL = 10000 // 10s
     private readonly FREEZE_TIMEOUT = 8000 // 8s
-
-    private sequentialIdManager = createSequentialIdManager()
 
     constructor(
         page: Page,
@@ -55,6 +52,7 @@ export class MeetSpeakersObserver {
                     console.log(
                         `[Meet] 🗣️ CALLBACK RECEIVED: ${speakers.length} speakers from browser`,
                     )
+                    // IDs are now generated in browser using window.__speakerUtils
                     this.onSpeakersChange(speakers)
                     // console.log(`[Meet] ✅ onSpeakersChange callback completed`)
                 } catch (error) {
@@ -83,6 +81,14 @@ export class MeetSpeakersObserver {
                 // Use shared browser utilities (injected via browser-speaker-utils.js)
                 const { generateStableUserId, createSequentialIdManager, areMapsEqual } = window.__speakerUtils
                 const { getSequentialId } = createSequentialIdManager()
+
+                // Browser-side speaker data type (matches SpeakerData from types.ts)
+                type SpeakerData = {
+                    name: string
+                    id: number
+                    timestamp: number
+                    isSpeaking: boolean
+                }
 
                 // EXACT SAME VARIABLES AS EXTENSION
                 let CUR_SPEAKERS = new Map<string, boolean>()
@@ -455,6 +461,7 @@ export class MeetSpeakersObserver {
                         }
 
                         // Build the final participant list
+                        // IDs are generated in browser using window.__speakerUtils
                         const speakers = Array.from(
                             uniqueParticipants.values(),
                         ).map((participant) => {

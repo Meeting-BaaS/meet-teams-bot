@@ -18,28 +18,58 @@ export async function enableNetworkInterception(
         timestamp: number
         source: string
     }) => void,
-): Promise<void> {
-    await page.exposeFunction('onNetworkSpeakerUpdate', onSpeakersChange)
+): Promise<boolean> {
+    try {
+        await page.exposeFunction('onNetworkSpeakerUpdate', onSpeakersChange)
 
-    await page.addInitScript(() => {
-        ;(window as any)._updateNetworkCallback = () => {
-            if ((window as any).triggerNetworkBroadcast)
-                (window as any).triggerNetworkBroadcast()
-        }
-    })
+        await page.addInitScript(() => {
+            ;(window as any)._updateNetworkCallback = () => {
+                if ((window as any).triggerNetworkBroadcast)
+                    (window as any).triggerNetworkBroadcast()
+            }
+        })
+    } catch (error) {
+        console.error(
+            '[NetworkInterceptor] Failed to expose function or add callback script:',
+            error,
+        )
+        console.error('Stack:', (error as Error).stack)
+        return false
+    }
 
+    // Load required dependencies (protobufjs and pako)
     let libs = ''
     try {
         libs += fs.readFileSync(
             require.resolve('protobufjs/dist/protobuf.min.js'),
             'utf8',
         )
+    } catch (error) {
+        console.error(
+            '[NetworkInterceptor] ❌ Failed to load protobufjs dependency:',
+            error,
+        )
+        console.error(
+            'Attempted path:',
+            require.resolve('protobufjs/dist/protobuf.min.js'),
+        )
+        console.error('Stack:', (error as Error).stack)
+        return false
+    }
+
+    try {
         libs += fs.readFileSync(
             require.resolve('pako/dist/pako.min.js'),
             'utf8',
         )
-    } catch {
-        return
+    } catch (error) {
+        console.error(
+            '[NetworkInterceptor] ❌ Failed to load pako dependency:',
+            error,
+        )
+        console.error('Attempted path:', require.resolve('pako/dist/pako.min.js'))
+        console.error('Stack:', (error as Error).stack)
+        return false
     }
 
     const script = `
@@ -52,15 +82,34 @@ export async function enableNetworkInterception(
                     window.pako = window.pako;
                 }
                 if (!window.protobuf || !window.pako) return;
-                
+
                 (${browserInterceptionLogic.toString()})(${JSON.stringify(PROTO_SCHEMA)});
             } catch (e) { console.error(e); }
         })();
     `
 
+    // Inject the main network interception script
     try {
         await page.addInitScript(script)
-    } catch {}
+        console.log('[NetworkInterceptor] ✅ Network interception script injected')
+        return true
+    } catch (error) {
+        console.error(
+            '[NetworkInterceptor] ❌ Failed to inject network interception script:',
+            error,
+        )
+        console.error('Error details:', {
+            name: (error as Error).name,
+            message: (error as Error).message,
+            stack: (error as Error).stack,
+        })
+        console.error(
+            'Script snippet (first 200 chars):',
+            script.substring(0, 200),
+        )
+        // Return false to allow graceful degradation
+        return false
+    }
 }
 
 // Send chat message using network/data channel (protobuf approach)
