@@ -70,31 +70,61 @@ export class DiarizationTracker {
    * Finalize the tracker by closing the last segment.
    * @param lastTimestamp - Last timestamp of the meeting in milliseconds
    * @param meetingStartTime - Meeting start timestamp in milliseconds
+   * @returns Promise that resolves when the file stream is fully closed and flushed
    */
-  public end(lastTimestamp: number, meetingStartTime: number): void {
+  public end(lastTimestamp: number, meetingStartTime: number): Promise<void> {
     if (this.isEnded) {
-      return
+      return Promise.resolve()
     }
     this.isEnded = true
 
-    // Close the last segment if it exists
-    if (this.currentSegment) {
-      const relativeTime = (lastTimestamp - meetingStartTime) / 1000
-      const finalSegment: DiarizationSegment = {
-        speaker: this.currentSegment.speaker,
-        start_time: this.currentSegment.startTime,
-        end_time: relativeTime
-      }
-      this.writeToFile(finalSegment)
-    }
-
-    // Close the file stream
+    // Close the file stream and wait for it to finish flushing
     if (this.fileStream) {
-      this.fileStream.end()
-      this.fileStream = null
+      return new Promise<void>((resolve, reject) => {
+        const stream = this.fileStream!
+        this.fileStream = null
+
+        // Write the last segment if it exists
+        if (this.currentSegment) {
+          const relativeTime = (lastTimestamp - meetingStartTime) / 1000
+          const finalSegment: DiarizationSegment = {
+            speaker: this.currentSegment.speaker,
+            start_time: this.currentSegment.startTime,
+            end_time: relativeTime
+          }
+          const line = `${JSON.stringify(finalSegment)}\n`
+
+          // Write the final segment and check if we need to wait for drain
+          const writeSuccess = stream.write(line)
+          if (!writeSuccess) {
+            // If write returned false, wait for drain before ending
+            stream.once("drain", () => {
+              stream.end()
+            })
+          } else {
+            // Write was successful, can end immediately
+            stream.end()
+          }
+        } else {
+          // No final segment to write, just end the stream
+          stream.end()
+        }
+
+        // Wait for the stream to finish flushing all data
+        stream.once("finish", () => {
+          console.log(`Diarization tracking completed: ${this.filePath}`)
+          resolve()
+        })
+
+        stream.once("error", (error) => {
+          console.error(`DiarizationTracker: Error closing stream: ${error}`)
+          reject(error)
+        })
+      })
     }
 
     console.log(`Diarization tracking completed: ${this.filePath}`)
+    return Promise.resolve()
   }
 
   /**

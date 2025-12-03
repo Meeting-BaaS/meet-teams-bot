@@ -39,7 +39,8 @@ export class SpeakerManager {
       const lastTimestamp = Date.now()
       const meetingStartTime = MeetingStateMachine.instance.getStartTime()
       if (meetingStartTime) {
-        instance.diarizationTracker.end(lastTimestamp, meetingStartTime)
+        // Wait for the stream to fully flush before continuing
+        await instance.diarizationTracker.end(lastTimestamp, meetingStartTime)
       }
     }
   }
