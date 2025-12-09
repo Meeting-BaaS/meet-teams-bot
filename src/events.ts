@@ -145,11 +145,7 @@ export class Events {
                     },
                 },
             })
-            console.log(
-                'Event sent successfully:',
-                code,
-                this.botId
-            )
+            console.log('Event sent successfully:', code, this.botId)
         } catch (error) {
             if (error instanceof Error) {
                 console.warn(

@@ -60,7 +60,7 @@ export class S3Uploader {
             console.log(`✅ S3 upload successful: ${s3Path}`)
         } catch (error) {
             console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
-            
+
             // Fallback to EFS with the same structure
             await this.copyToEFS(filePath, s3Path)
         }
@@ -182,13 +182,15 @@ export class S3Uploader {
     private async copyToEFS(filePath: string, s3Path: string): Promise<void> {
         try {
             const global = GLOBAL.get()
-            
+
             // Only use EFS for prod and preprod environments
             if (global.environ === 'dev' || global.environ === 'local') {
-                console.warn(`⚠️ EFS not available in ${global.environ} environment - file will remain on local disk`)
+                console.warn(
+                    `⚠️ EFS not available in ${global.environ} environment - file will remain on local disk`,
+                )
                 return
             }
-            
+
             // Determine EFS environment path
             let efsEnvPath: string
             switch (global.environ) {
@@ -199,20 +201,26 @@ export class S3Uploader {
                     efsEnvPath = 'preprod'
                     break
                 default:
-                    console.warn(`⚠️ Unknown environment ${global.environ} - skipping EFS fallback`)
+                    console.warn(
+                        `⚠️ Unknown environment ${global.environ} - skipping EFS fallback`,
+                    )
                     return
             }
-            
-            const efsBasePath = path.join(EFS_MOUNT_POINT, efsEnvPath, global.bot_uuid)
+
+            const efsBasePath = path.join(
+                EFS_MOUNT_POINT,
+                efsEnvPath,
+                global.bot_uuid,
+            )
             const efsFilePath = path.join(efsBasePath, s3Path)
             const efsDir = path.dirname(efsFilePath)
-            
+
             // Create EFS directory structure
             await fs.promises.mkdir(efsDir, { recursive: true })
-            
+
             // Copy file to EFS
             await fs.promises.copyFile(filePath, efsFilePath)
-            
+
             console.log(`📁 File copied to EFS: ${efsFilePath}`)
         } catch (error) {
             console.error(`❌ Failed to copy to EFS: ${error}`)

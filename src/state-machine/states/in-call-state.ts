@@ -76,7 +76,9 @@ export class InCallState extends BaseState {
             const startTime = Date.now()
             this.context.startTime = startTime
             ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
-            console.log(`Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`)
+            console.log(
+                `Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`,
+            )
 
             // Start HTML cleanup first to clean the interface
             await this.startHtmlCleaning()

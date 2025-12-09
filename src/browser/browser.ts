@@ -7,7 +7,9 @@ export async function openBrowser(
     // Defaults to 720p if RESOLUTION is not set or invalid
     const resolution = process.env.RESOLUTION || '720'
     const { width, height } =
-        resolution === '1080' ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
+        resolution === '1080'
+            ? { width: 1920, height: 1080 }
+            : { width: 1280, height: 720 }
 
     try {
         console.log('Launching persistent context with exact extension args...')
@@ -20,10 +22,13 @@ export async function openBrowser(
             headless: false,
             viewport: { width, height },
             executablePath: chromePath,
+            locale: 'en-US', // Set locale for Playwright context
             args: [
                 // Security configurations
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
+                '--lang=en-US', // Force English language with region code
+                '--accept-lang=en-US,en', // Accept English for HTTP requests
 
                 // ========================================
                 // AUDIO CONFIGURATION FOR PULSEAUDIO

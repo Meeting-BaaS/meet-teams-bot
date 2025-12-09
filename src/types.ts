@@ -76,8 +76,9 @@ export type MeetingParams = {
         // in_call_not_recording_timeout?: number
         // The number of seconds after which the bot will automatically leave the call, if it has joined the call and started recording it. This can be used to enforce a maximum recording time limit for a bot. There is no default value for this parameter, meaning a bot will continue to record for as long as the meeting lasts.
         // in_call_recording_timeout?: number
-        // The number of seconds after which the bot will automatically leave the call, if it has joined the call but has not started recording. For e.g This can occur due to bot being denied permission to record(Zoom meetings).
+        // The number of seconds after which the bot will automatically leave the call, if it does not detect sound or relevant UI elements coming in from the meeting (i.e. there is no one).
         // recording_permission_denied_timeout?: number
+        silence_timeout: number
     }
     mp4_s3_path: string
     // ----------------- TODO -------------------- SECTION RAJOUTEE

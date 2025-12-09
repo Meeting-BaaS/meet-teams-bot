@@ -43,7 +43,7 @@ export class TeamsProvider implements MeetingProviderInterface {
 
         try {
             await page.goto(link, {
-                waitUntil: 'load', 
+                waitUntil: 'load',
                 timeout: 15000,
             })
 
@@ -54,7 +54,10 @@ export class TeamsProvider implements MeetingProviderInterface {
                     page.evaluate(() => document.readyState),
                     new Promise((_, reject) =>
                         setTimeout(
-                            () => reject(new Error('Page freeze timeout after goto')),
+                            () =>
+                                reject(
+                                    new Error('Page freeze timeout after goto'),
+                                ),
                             10000, // 10 seconds timeout to detect freeze
                         ),
                     ),
@@ -456,7 +459,9 @@ export class TeamsProvider implements MeetingProviderInterface {
                 ),
             ])
         } catch (e) {
-            console.log('Page appears to be frozen for 20 seconds - meeting likely ended')
+            console.log(
+                'Page appears to be frozen for 20 seconds - meeting likely ended',
+            )
             return true
         }
 

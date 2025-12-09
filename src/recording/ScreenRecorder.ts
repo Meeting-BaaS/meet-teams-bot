@@ -18,7 +18,7 @@ import { generateSyncSignal } from '../utils/SyncSignal'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
-const STREAMING_SAMPLE_RATE = 24_000
+const DEFAULT_STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = '192k' // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
@@ -124,6 +124,7 @@ export class ScreenRecorder extends EventEmitter {
     private meetingStartTime: number = 0
     private gracePeriodActive: boolean = false
     private rawAudioPath: string = ''
+    private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
 
     constructor(config: Partial<ScreenRecordingConfig> = {}) {
         super()
@@ -160,6 +161,10 @@ export class ScreenRecorder extends EventEmitter {
         if (this.isRecording) {
             throw new Error('Recording is already in progress')
         }
+
+        this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency
+            ? GLOBAL.get().streaming_audio_frequency
+            : DEFAULT_STREAMING_SAMPLE_RATE
 
         // Capture DOM state before starting screen recording (void to avoid blocking)
         const htmlSnapshot = HtmlSnapshotService.getInstance()
@@ -364,7 +369,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-ac',
                 '1',
                 '-ar',
-                STREAMING_SAMPLE_RATE.toString(),
+                this.streamingSampleRate.toString(),
                 '-fflags',
                 'nobuffer',
                 '-flags',
@@ -467,7 +472,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-ac',
                 '1',
                 '-ar',
-                STREAMING_SAMPLE_RATE.toString(),
+                this.streamingSampleRate.toString(),
                 '-fflags',
                 'nobuffer',
                 '-flags',
@@ -1109,23 +1114,42 @@ export class ScreenRecorder extends EventEmitter {
                 let finalAudioPath = rawAudioPath
                 if (GLOBAL.getSoundDetectedInMeeting()) {
                     const lastSilenceStart = GLOBAL.getLastSilenceStart()
-                    if (lastSilenceStart !== null && GLOBAL.getRecordingStartTime() > 0) {
+                    if (
+                        lastSilenceStart !== null &&
+                        GLOBAL.getRecordingStartTime() > 0
+                    ) {
                         // Check if audio file exists and has content
-                        const stats = fs.existsSync(rawAudioPath) ? fs.statSync(rawAudioPath) : null
+                        const stats = fs.existsSync(rawAudioPath)
+                            ? fs.statSync(rawAudioPath)
+                            : null
                         if (stats && stats.size > 0) {
                             // Calculate silence duration from recording start time
-                            const silenceStartInRecording = (lastSilenceStart - GLOBAL.getRecordingStartTime()) / 1000 // seconds
-                            const audioDuration = await this.getDuration(rawAudioPath)
-                            const silenceDurationSeconds = audioDuration - silenceStartInRecording
-                            const maxTrimSeconds = MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000 // 10 minutes
-                            const trimSeconds = Math.min(Math.max(0, silenceDurationSeconds), maxTrimSeconds)
+                            const silenceStartInRecording =
+                                (lastSilenceStart -
+                                    GLOBAL.getRecordingStartTime()) /
+                                1000 // seconds
+                            const audioDuration =
+                                await this.getDuration(rawAudioPath)
+                            const silenceDurationSeconds =
+                                audioDuration - silenceStartInRecording
+                            const maxTrimSeconds =
+                                GLOBAL.get().automatic_leave.silence_timeout ??
+                                MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS /
+                                    1000 // 10 minutes
+                            const trimSeconds = Math.min(
+                                Math.max(0, silenceDurationSeconds),
+                                maxTrimSeconds,
+                            )
 
                             if (trimSeconds > 1) {
                                 // Only trim if more than 1 second of silence
                                 console.log(
                                     `🔇 Trimming ${trimSeconds.toFixed(3)}s of silence from audio end (silence started at ${silenceStartInRecording.toFixed(3)}s)`,
                                 )
-                                const trimmedAudioPath = path.join(tempDir, 'trimmed_end.flac')
+                                const trimmedAudioPath = path.join(
+                                    tempDir,
+                                    'trimmed_end.flac',
+                                )
                                 await this.trimAudioEnd(
                                     rawAudioPath,
                                     trimmedAudioPath,
@@ -1134,11 +1158,15 @@ export class ScreenRecorder extends EventEmitter {
                                 finalAudioPath = trimmedAudioPath
                             }
                         } else {
-                            console.log('⚠️ Audio file is empty (0 bytes), skipping silence trimming')
+                            console.log(
+                                '⚠️ Audio file is empty (0 bytes), skipping silence trimming',
+                            )
                         }
                     }
                 } else {
-                    console.log('ℹ️ No sound detected during meeting, keeping full recording (no trimming)')
+                    console.log(
+                        'ℹ️ No sound detected during meeting, keeping full recording (no trimming)',
+                    )
                 }
 
                 // Copy processed audio to final output location
@@ -1197,7 +1225,9 @@ export class ScreenRecorder extends EventEmitter {
                 `❌ Bot not accepted - meetingStartTime not set (${this.meetingStartTime})`,
             )
             console.error(`📊 Timing debug:`)
-            console.error(`   recordingStartTime: ${GLOBAL.getRecordingStartTime()}`)
+            console.error(
+                `   recordingStartTime: ${GLOBAL.getRecordingStartTime()}`,
+            )
             console.error(`   meetingStartTime: ${this.meetingStartTime}`)
             console.error(`   Current time: ${Date.now()}`)
             console.error(
@@ -1205,7 +1235,8 @@ export class ScreenRecorder extends EventEmitter {
             )
 
             // Fallback: if we have a reasonable recording duration (>10s), set meetingStartTime to 5s before bot removal
-            const recordingDuration = Date.now() - GLOBAL.getRecordingStartTime()
+            const recordingDuration =
+                Date.now() - GLOBAL.getRecordingStartTime()
             if (recordingDuration > 10000) {
                 // 10 seconds minimum
                 console.warn(
@@ -1277,19 +1308,30 @@ export class ScreenRecorder extends EventEmitter {
 
         const videoDuration = await this.getDuration(rawVideoPath)
         const audioDuration = await this.getDuration(processedAudioPath)
-        
+
         // 7. Calculate silence trim duration if detected (before final trim)
         // Only trim if sound was detected during meeting (not for completely silent meetings)
         let silenceTrimSeconds = 0
         if (GLOBAL.getSoundDetectedInMeeting()) {
             const lastSilenceStart = GLOBAL.getLastSilenceStart()
-            if (lastSilenceStart !== null && GLOBAL.getRecordingStartTime() > 0 && audioDuration > 0) {
+            if (
+                lastSilenceStart !== null &&
+                GLOBAL.getRecordingStartTime() > 0 &&
+                audioDuration > 0
+            ) {
                 // Calculate silence duration from recording start time
                 // lastSilenceStart is absolute timestamp, convert to relative position in recording
-                const silenceStartInRecording = (lastSilenceStart - GLOBAL.getRecordingStartTime()) / 1000 // seconds
-                const silenceDurationSeconds = audioDuration - silenceStartInRecording
-                const maxTrimSeconds = MEETING_CONSTANTS.SILENCE_TIMEOUT / 1000 // 10 minutes
-                silenceTrimSeconds = Math.min(Math.max(0, silenceDurationSeconds), maxTrimSeconds)
+                const silenceStartInRecording =
+                    (lastSilenceStart - GLOBAL.getRecordingStartTime()) / 1000 // seconds
+                const silenceDurationSeconds =
+                    audioDuration - silenceStartInRecording
+                const maxTrimSeconds =
+                    GLOBAL.get().automatic_leave.silence_timeout ??
+                    MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS / 1000 // 10 minutes
+                silenceTrimSeconds = Math.min(
+                    Math.max(0, silenceDurationSeconds),
+                    maxTrimSeconds,
+                )
 
                 if (silenceTrimSeconds > 1) {
                     console.log(
@@ -1298,7 +1340,9 @@ export class ScreenRecorder extends EventEmitter {
                 }
             }
         } else {
-            console.log('ℹ️ No sound detected during meeting, keeping full recording (no trimming)')
+            console.log(
+                'ℹ️ No sound detected during meeting, keeping full recording (no trimming)',
+            )
         }
 
         // 8. Calculate final duration (accounting for silence trim)
@@ -1308,7 +1352,9 @@ export class ScreenRecorder extends EventEmitter {
         )
         const finalDuration = Math.max(0, baseDuration - silenceTrimSeconds)
 
-        console.log(`📊 Final duration: ${finalDuration.toFixed(2)}s (${baseDuration.toFixed(2)}s base - ${silenceTrimSeconds.toFixed(2)}s silence)`)
+        console.log(
+            `📊 Final duration: ${finalDuration.toFixed(2)}s (${baseDuration.toFixed(2)}s base - ${silenceTrimSeconds.toFixed(2)}s silence)`,
+        )
         await this.finalTrimFromOffset(
             mergedPath,
             this.outputPath,

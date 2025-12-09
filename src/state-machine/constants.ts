@@ -1,26 +1,24 @@
 import { MeetingEndReason } from './types'
 
 export const MEETING_CONSTANTS = {
-    // Duration
+    // Durées
     CHUNKS_PER_TRANSCRIPTION: 18,
     CHUNK_DURATION: 10_000, // 10 secondes pour chaque chunk
-    
+    // TRANSCRIBE_DURATION: 10_000 * MEETING_CONSTANTS.CHUNKS_PER_TRANSCRIPTION, // 3 minutes pour chaque transcription
+
     // Timeouts
     SETUP_TIMEOUT: 30_000, // 30 secondes
     RECORDING_TIMEOUT: 3600 * 4 * 1000, // 4 heures
     INITIAL_WAIT_TIME: 1000 * 60 * 7, // 7 minutes
-    SILENCE_TIMEOUT: 1000 * 60 * 10, // 10 minutes
     EMPTY_MEETING_CONFIRMATION_MS: 45_000, // 45 seconds before confirming no attendees
     CLEANUP_TIMEOUT: 1000 * 60 * 60, // 1 heure
     RESUMING_TIMEOUT: 1000 * 60 * 60, // 1 heure
+    DEFAULT_SILENCE_TIMEOUT_SECONDS: 600, // 10 minutes - default fallback when global value is nil
+    DEFAULT_NOONE_JOINED_TIMEOUT_SECONDS: 300, // 5 minutes - default fallback matching API server default
 
-    // Other constants
+    // Autres constantes
     FIND_END_MEETING_SLEEP: 250,
     MAX_RETRIES: 3,
-    
-    // Audio detection
-    SOUND_LEVEL_ACTIVITY_THRESHOLD: 5, // Sound level threshold for considering activity (0-100)
-    SYNC_BEEP_IGNORE_WINDOW: 9, // Ignore sounds in first 9 seconds after recording start (beep at ~4.5s + 0.8s duration + margin)
 } as const
 
 export const NORMAL_END_REASONS = [

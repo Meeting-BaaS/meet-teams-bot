@@ -39,7 +39,7 @@ abstract class MediaContext {
         this.process = spawn('ffmpeg', args, {
             stdio: ['pipe', 'pipe', 'pipe'],
         })
-        
+
         const stdoutListener = (data: Buffer) => {
             console.log(`[ffmpeg stdout] ${data.toString()}`)
         }
@@ -47,8 +47,11 @@ abstract class MediaContext {
             const output = data.toString()
             // Filter out repetitive fps progress updates, but keep important diagnostic info
             // Note: FFmpeg outputs normal logs to stderr, not just errors, so we use console.log
-            if (output.trim() && 
-                !output.match(/^frame=\s*\d+\s+fps=\s*[\d.]+\s+q=/)) { // Filter repetitive progress lines
+            if (
+                output.trim() &&
+                !output.match(/^frame=\s*\d+\s+fps=\s*[\d.]+\s+q=/)
+            ) {
+                // Filter repetitive progress lines
                 console.log(`[ffmpeg stderr] ${output}`)
             }
         }

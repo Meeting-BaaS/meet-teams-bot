@@ -54,7 +54,10 @@ export class MeetProvider implements MeetingProviderInterface {
                     page.evaluate(() => document.readyState),
                     new Promise((_, reject) =>
                         setTimeout(
-                            () => reject(new Error('Page freeze timeout after goto')),
+                            () =>
+                                reject(
+                                    new Error('Page freeze timeout after goto'),
+                                ),
                             10000, // 10 seconds timeout to detect freeze
                         ),
                     ),
