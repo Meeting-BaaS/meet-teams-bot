@@ -390,39 +390,35 @@ async function isInMeeting(page: Page): Promise<boolean> {
             return false
         }
 
-        // PRIORITY: Check elements that indicate we are in the meeting FIRST
-        // This ensures that if we detect clear meeting indicators, we return true
-        // even if isInWaitingRoom has a false positive
+        // First check if we're in waiting room - if yes, we're definitely not in meeting
+        if (await isInWaitingRoom(page)) {
+            return false
+        }
+
+        // Check elements that indicate we are in the meeting
+        // Using more specific selectors to avoid false positives
         const meetingIndicators = [
+            // Call controls - very specific, only appears in active meeting
             'div[role="region"][aria-label="Call controls"]',
-            '[aria-label*="participant"], [aria-label="Show everyone"]',
-            'button[aria-label*="Chat with everyone"]',
-            '[data-participant-id], [data-self-name]',
-            '[aria-label*="Meeting details"]',
+            // People button in nav - specific to active meeting
+            'nav button[aria-label="People"][role="button"]',
+            'nav button[aria-label="Show everyone"][role="button"]',
+            // Chat button - specific to active meeting
+            'button[aria-label="Chat with everyone"]',
+            // Participant tiles - only in active meeting
+            '[data-participant-id]',
+            '[data-self-name]',
         ]
 
         const confirmedIndicators = await checkIndicators(
             page,
             meetingIndicators,
         )
-        console.log(`Meeting presence indicators: ${confirmedIndicators}/5`)
+        console.log(`Meeting presence indicators: ${confirmedIndicators}/6`)
 
-        // If we have clear confirmation we're in the meeting (≥2 indicators),
-        // return true immediately without checking waiting room
-        // This prevents false positives from isInWaitingRoom from blocking us
-        if (confirmedIndicators >= 2) {
-            return true
-        }
-
-        // Only if we don't have clear meeting indicators, check waiting room
-        // This acts as a fallback to avoid false positives
-        if (await isInWaitingRoom(page)) {
-            return false
-        }
-
-        // If we have at least 1 indicator but less than 2, still consider we're in meeting
-        // (we just verified we're not in waiting room)
-        return confirmedIndicators >= 1
+        // Require at least 3 indicators to be more strict and avoid false positives
+        // This ensures we're really in the meeting, not just in waiting room
+        return confirmedIndicators >= 3
     } catch (error) {
         console.error('Error checking if in meeting:', error)
         return false
