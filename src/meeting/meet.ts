@@ -159,14 +159,27 @@ export class MeetProvider implements MeetingProviderInterface {
 
             // Wait to be in the meeting with regular cancelCheck verification
             console.log('Waiting to confirm meeting join...')
+            let inWaitingRoom = false
             while (true) {
                 if (cancelCheck()) {
                     GLOBAL.setError(MeetingEndReason.ApiRequest)
                     throw new Error('API request to stop recording')
                 }
 
-                // Retry clicking join button if it's visible (every 2 seconds)
-                if (Date.now() - lastJoinClickAt >= joinRetryCooldownMs) {
+                // Check if we're in the waiting room
+                const nowInWaitingRoom = await isInWaitingRoom(page)
+                if (nowInWaitingRoom && !inWaitingRoom) {
+                    console.log(
+                        '📋 Bot is in waiting room, waiting for host to admit...',
+                    )
+                    inWaitingRoom = true
+                }
+
+                // Only retry clicking join button if NOT in waiting room
+                if (
+                    !inWaitingRoom &&
+                    Date.now() - lastJoinClickAt >= joinRetryCooldownMs
+                ) {
                     const retried = await clickJoinCtaIfPresent(page)
                     if (retried) {
                         lastJoinClickAt = Date.now()
@@ -374,9 +387,17 @@ async function findShowEveryOne(
 // New function to check if we are actually in the meeting
 async function isInMeeting(page: Page): Promise<boolean> {
     try {
+        // First dismiss any modal dialogs that might be blocking
+        await dismissModalDialogs(page)
+
         // First check if we have been removed from the meeting
         if (await notAcceptedInMeeting(page)) {
             console.log('Bot has been removed from the meeting')
+            return false
+        }
+
+        // Check if we're still in waiting room (means NOT in meeting)
+        if (await isInWaitingRoom(page)) {
             return false
         }
 
@@ -385,23 +406,39 @@ async function isInMeeting(page: Page): Promise<boolean> {
             // La présence des contrôles de réunion
             await page
                 .locator('div[role="region"][aria-label="Call controls"]')
-                .isVisible(),
+                .isVisible()
+                .catch(() => false),
 
             // La présence du bouton "People" ou du nombre de participants
             await page
                 .locator(
                     '[aria-label*="participant"], [aria-label="Show everyone"]',
                 )
-                .isVisible(),
+                .isVisible()
+                .catch(() => false),
 
             // La présence du bouton de chat
             await page
                 .locator('button[aria-label*="Chat with everyone"]')
-                .isVisible(),
+                .isVisible()
+                .catch(() => false),
+
+            // Additional indicators: video grid or participant tiles
+            await page
+                .locator('[data-participant-id], [data-self-name]')
+                .count()
+                .then((c) => c > 0)
+                .catch(() => false),
+
+            // Meeting info or timer
+            await page
+                .locator('[aria-label*="Meeting details"]')
+                .isVisible()
+                .catch(() => false),
         ]
 
         const confirmedIndicators = indicators.filter(Boolean).length
-        console.log(`Meeting presence indicators: ${confirmedIndicators}/3`)
+        console.log(`Meeting presence indicators: ${confirmedIndicators}/5`)
 
         // We consider we are in the meeting if at least 2 indicators are present
         return confirmedIndicators >= 2
@@ -633,6 +670,85 @@ async function clickWithInnerText(
     return false
 }
 
+/**
+ * Dismisses modal dialogs that Google Meet shows (e.g., "Sign in with your Google account")
+ */
+async function dismissModalDialogs(page: Page): Promise<void> {
+    try {
+        // Look for common modal dialog patterns
+        const modalSelectors = [
+            // "Got it" button in sign-in modal
+            'button:has-text("Got it")',
+            // Generic dismiss buttons
+            'button[aria-label*="dismiss"]',
+            'button[aria-label*="close"]',
+            // Modal with "Sign in" text
+            '[role="dialog"]:has-text("Sign in with your Google account") button',
+        ]
+
+        for (const selector of modalSelectors) {
+            try {
+                const locator = page.locator(selector).first()
+                const count = await locator.count()
+                if (count > 0) {
+                    const isVisible = await locator.isVisible().catch(() => false)
+                    if (isVisible) {
+                        await locator.click({ timeout: 1000 })
+                        console.log(`Dismissed modal using selector: ${selector}`)
+                        await page.waitForTimeout(200)
+                        return
+                    }
+                }
+            } catch (e) {
+                // Continue to next selector
+            }
+        }
+    } catch (error) {
+        // Silent fail - modals are optional
+    }
+}
+
+/**
+ * Checks if the bot is in the waiting room (waiting to be admitted)
+ */
+async function isInWaitingRoom(page: Page): Promise<boolean> {
+    try {
+        // Look for waiting room indicators
+        const waitingRoomIndicators = [
+            'text="Asking to join"',
+            'text="Your request to join"',
+            'text="Waiting for the host"',
+            'text="waiting to be let in"',
+            'text="Instead of waiting to be let in"',
+            '[aria-label*="waiting"]',
+        ]
+
+        for (const selector of waitingRoomIndicators) {
+            try {
+                const count = await page.locator(selector).count()
+                if (count > 0) {
+                    const isVisible = await page
+                        .locator(selector)
+                        .first()
+                        .isVisible()
+                        .catch(() => false)
+                    if (isVisible) {
+                        console.log(
+                            `Detected waiting room using indicator: ${selector}`,
+                        )
+                        return true
+                    }
+                }
+            } catch (e) {
+                // Continue checking other indicators
+            }
+        }
+        return false
+    } catch (error) {
+        return false
+    }
+}
+
 async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
     // Try multiple selector strategies to find join button
     const joinSelectors = [
@@ -654,6 +770,9 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
     ]
 
     try {
+        // Dismiss Google Meet modal dialogs first (sign-in prompts, etc.)
+        await dismissModalDialogs(page)
+
         // Press Escape first to close any modal that might be blocking
         await page.keyboard.press('Escape')
         await page.waitForTimeout(100)
