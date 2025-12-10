@@ -251,7 +251,18 @@ export class RecordingState extends BaseState {
             return { shouldEnd: false }
         } catch (error) {
             console.error('Error checking end conditions:', error)
-            return this.getBotRemovedReason()
+            console.error('Error stack:', (error as Error).stack)
+
+            // If it's a timeout checking bot removal, the page is likely frozen/unresponsive
+            // This is a strong indicator that the bot was actually removed
+            const errorMessage = (error as Error).message || ''
+            if (errorMessage.includes('Bot removed check timeout')) {
+                console.warn('Bot removal check timed out - treating as bot removal')
+                return this.getBotRemovedReason()
+            }
+
+            // For other errors, don't assume bot was removed - just retry next iteration
+            return { shouldEnd: false }
         }
     }
 
