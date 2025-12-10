@@ -51,8 +51,8 @@ export class SimpleDialogObserver {
 
     protected startGlobalDialogObserver() {
         console.info(`[SimpleDialogObserver] Starting dialog observer`)
-        // Check every 5 seconds
-        this.dialogObserverInterval = setInterval(this.observer, 5000)
+        // Check every 2 seconds for faster modal dismissal during join
+        this.dialogObserverInterval = setInterval(this.observer, 2000)
     }
 
     protected observer = async (): Promise<void> => {
