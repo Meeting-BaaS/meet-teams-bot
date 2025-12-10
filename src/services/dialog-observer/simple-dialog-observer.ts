@@ -55,6 +55,42 @@ export class SimpleDialogObserver {
         this.dialogObserverInterval = setInterval(this.observer, 2000)
     }
 
+    /**
+     * Try multiple click strategies on a locator to handle various edge cases
+     * (normal click → force click → JavaScript click)
+     */
+    private async tryMultipleClickStrategies(
+        locator: Locator,
+        buttonText: string,
+        timeout: number,
+    ): Promise<void> {
+        // Try normal click first
+        try {
+            await locator.click({ timeout })
+            return
+        } catch (error) {
+            // If normal click fails (e.g., intercepted by overlay),
+            // try force click or JavaScript click
+            console.info(
+                `[SimpleDialogObserver] Normal click failed, trying force click for "${buttonText}"`,
+            )
+            try {
+                await locator.click({ timeout, force: true })
+                return
+            } catch (forceError) {
+                // Last resort: use JavaScript click
+                console.info(
+                    `[SimpleDialogObserver] Force click failed, trying JavaScript click for "${buttonText}"`,
+                )
+                await locator.evaluate((el: HTMLElement) => {
+                    if (el instanceof HTMLElement) {
+                        el.click()
+                    }
+                })
+            }
+        }
+    }
+
     protected observer = async (): Promise<void> => {
         if (!this.context.playwrightPage) {
             console.warn(
@@ -273,36 +309,12 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button: "${buttonText}"`,
                     )
-                    // Try normal click first
-                    try {
-                        await button
-                            .first()
-                            .click({ timeout: timeouts.CLICK_TIMEOUT })
-                        return true
-                    } catch (error) {
-                        // If normal click fails (e.g., intercepted by overlay),
-                        // try force click or JavaScript click
-                        console.info(
-                            `[SimpleDialogObserver] Normal click failed, trying force click for "${buttonText}"`,
-                        )
-                        try {
-                            await button
-                                .first()
-                                .click({ timeout: timeouts.CLICK_TIMEOUT, force: true })
-                            return true
-                        } catch (forceError) {
-                            // Last resort: use JavaScript click
-                            console.info(
-                                `[SimpleDialogObserver] Force click failed, trying JavaScript click for "${buttonText}"`,
-                            )
-                            await button.first().evaluate((el: HTMLElement) => {
-                                if (el instanceof HTMLElement) {
-                                    el.click()
-                                }
-                            })
-                            return true
-                        }
-                    }
+                    await this.tryMultipleClickStrategies(
+                        button.first(),
+                        buttonText,
+                        timeouts.CLICK_TIMEOUT,
+                    )
+                    return true
                 }
 
                 // Try partial text match
@@ -320,26 +332,12 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button (partial match): "${buttonText}"`,
                     )
-                    try {
-                        await button
-                            .first()
-                            .click({ timeout: timeouts.CLICK_TIMEOUT })
-                        return true
-                    } catch (error) {
-                        try {
-                            await button
-                                .first()
-                                .click({ timeout: timeouts.CLICK_TIMEOUT, force: true })
-                            return true
-                        } catch (forceError) {
-                            await button.first().evaluate((el: HTMLElement) => {
-                                if (el instanceof HTMLElement) {
-                                    el.click()
-                                }
-                            })
-                            return true
-                        }
-                    }
+                    await this.tryMultipleClickStrategies(
+                        button.first(),
+                        buttonText,
+                        timeouts.CLICK_TIMEOUT,
+                    )
+                    return true
                 }
 
                 // Try span content (for Material Design buttons)
@@ -357,27 +355,12 @@ export class SimpleDialogObserver {
                     )
                     // Navigate to parent button element
                     const parentButton = button.first().locator('xpath=..')
-                    try {
-                        await parentButton.click({
-                            timeout: timeouts.CLICK_TIMEOUT,
-                        })
-                        return true
-                    } catch (error) {
-                        try {
-                            await parentButton.click({
-                                timeout: timeouts.CLICK_TIMEOUT,
-                                force: true,
-                            })
-                            return true
-                        } catch (forceError) {
-                            await parentButton.evaluate((el: HTMLElement) => {
-                                if (el instanceof HTMLElement) {
-                                    el.click()
-                                }
-                            })
-                            return true
-                        }
-                    }
+                    await this.tryMultipleClickStrategies(
+                        parentButton,
+                        buttonText,
+                        timeouts.CLICK_TIMEOUT,
+                    )
+                    return true
                 }
             } catch (error) {
                 console.warn(
