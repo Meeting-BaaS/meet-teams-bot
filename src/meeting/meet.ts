@@ -473,62 +473,50 @@ async function sendEntryMessage(
 }
 
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
-    // Generic user-denied entry texts
-    const deniedTexts = [
-        'denied',
-        "You've been removed",
-        'we encountered a problem joining',
-        "You can't join",
-        'You left the meeting', // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
-        'Your sign-in credentials might have changed',
-    ]
-
-    // Google Meet itself has denied entry
-    const googleMeetDeniedTexts = ["You can't join this video call"]
-
-    // Google Meet has its own timeout which would deny entry into the meeting after ~10 minutes
-    const timeoutTextsFromGoogle = [
-        'No one responded to your request to join the call',
-    ]
-
-    // Check for Google Meet denied texts first since the message overlaps with the user denied entry message
-    for (const text of googleMeetDeniedTexts) {
-        const element = page.locator(`text=${text}`)
-        if ((await element.count()) > 0) {
-            // Google Meet itself has denied entry
-            console.log(
-                'XXXXXXXXXXXXXXXXXX Google Meet itself has denied entry',
-            )
-            GLOBAL.setError(
-                MeetingEndReason.BotNotAccepted,
-                'Google Meet has denied entry',
-            )
-            return true
-        }
-    }
-
-    // Check for Google Meet timeout texts
-    for (const text of timeoutTextsFromGoogle) {
-        const element = page.locator(`text=${text}`)
-        if ((await element.count()) > 0) {
-            // Google Meet itself has timed out
-            console.log('XXXXXXXXXXXXXXXXXX Google Meet itself has timed out')
-            GLOBAL.setError(
-                MeetingEndReason.TimeoutWaitingToStart,
+    // Define denial patterns with their associated error reasons and log messages
+    // Order matters: check Google Meet specific messages first since they may overlap with user messages
+    const denialPatterns = [
+        {
+            texts: ["You can't join this video call"],
+            reason: MeetingEndReason.BotNotAccepted,
+            logPrefix: 'XXXXXXXXXXXXXXXXXX Google Meet itself has denied entry',
+            errorMessage: 'Google Meet has denied entry',
+        },
+        {
+            texts: ['No one responded to your request to join the call'],
+            reason: MeetingEndReason.TimeoutWaitingToStart,
+            logPrefix: 'Google Meet itself has timed out',
+            errorMessage:
                 'Google Meet has timed out while waiting for the bot to join the meeting',
-            )
-            return true
-        }
-    }
+        },
+        {
+            texts: [
+                'denied',
+                "You've been removed",
+                'we encountered a problem joining',
+                "You can't join",
+                'You left the meeting', // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
+                'Your sign-in credentials might have changed',
+            ],
+            reason: MeetingEndReason.BotNotAccepted,
+            logPrefix: 'XXXXXXXXXXXXXXXXXX User has denied entry',
+            errorMessage: 'User has denied entry',
+        },
+    ]
 
-    // Check for user denied entry texts
-    for (const text of deniedTexts) {
-        const element = page.locator(`text=${text}`)
-        if ((await element.count()) > 0) {
-            // User has denied entry
-            console.log('XXXXXXXXXXXXXXXXXX User has denied entry')
-            GLOBAL.setError(MeetingEndReason.BotNotAccepted)
-            return true
+    for (const pattern of denialPatterns) {
+        for (const text of pattern.texts) {
+            const element = page.locator(`text=${text}`)
+            if ((await element.count()) > 0) {
+                console.log(
+                    `${pattern.logPrefix} - Found text: "${text}"`,
+                )
+                GLOBAL.setError(
+                    pattern.reason,
+                    `${pattern.errorMessage} - Found text: "${text}"`,
+                )
+                return true
+            }
         }
     }
 
