@@ -525,13 +525,31 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
 
 async function clickDismiss(page: Page): Promise<boolean> {
     try {
-        const dismissButton = await page
-            .locator('div[role=button]')
-            .filter({ hasText: 'Dismiss' })
-            .first()
-        if ((await dismissButton.count()) > 0) {
-            await dismissButton.click()
-            return true
+        // Handle various transient modals/prompts that appear in the
+        // waiting room, including the new "Sign in with your Google account"
+        // modal whose primary action button text is "Got it".
+        //
+        // Note: SimpleDialogObserver also handles these, but this serves as a fallback
+        // during the initial join flow before the observer is fully active.
+        const dismissTexts = ['Dismiss', 'Got it']
+
+        for (const text of dismissTexts) {
+            const button = page
+                .locator('button, div[role=button], span[role=button]')
+                .filter({ hasText: text })
+                .first()
+
+            if ((await button.count()) === 0) {
+                continue
+            }
+
+            const isVisible = await button.isVisible().catch(() => false)
+            const isEnabled = await button.isEnabled().catch(() => false)
+
+            if (isVisible && isEnabled) {
+                await button.click()
+                return true
+            }
         }
         return false
     } catch (e) {
