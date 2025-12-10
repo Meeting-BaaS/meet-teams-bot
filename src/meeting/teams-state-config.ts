@@ -9,9 +9,7 @@ export const TEAMS_STATE_CONFIG: StateDetectionConfig = {
     denialPatterns: [
         {
             texts: [
-                'Sorry, but you were denied access to the meeting.',
-                'Someone in the meeting should let you in soon',
-                'Waiting to be admitted',
+                'Sorry, but you were denied access to the meeting.'
             ],
             reason: MeetingEndReason.BotNotAccepted,
             logPrefix: 'XXXXXXXXXXXXXXXXXX Teams has denied entry',
