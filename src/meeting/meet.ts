@@ -390,52 +390,39 @@ async function isInMeeting(page: Page): Promise<boolean> {
             return false
         }
 
-        // Check if we're still in waiting room (means NOT in meeting)
+        // PRIORITY: Check elements that indicate we are in the meeting FIRST
+        // This ensures that if we detect clear meeting indicators, we return true
+        // even if isInWaitingRoom has a false positive
+        const meetingIndicators = [
+            'div[role="region"][aria-label="Call controls"]',
+            '[aria-label*="participant"], [aria-label="Show everyone"]',
+            'button[aria-label*="Chat with everyone"]',
+            '[data-participant-id], [data-self-name]',
+            '[aria-label*="Meeting details"]',
+        ]
+
+        const confirmedIndicators = await checkIndicators(
+            page,
+            meetingIndicators,
+        )
+        console.log(`Meeting presence indicators: ${confirmedIndicators}/5`)
+
+        // If we have clear confirmation we're in the meeting (≥2 indicators),
+        // return true immediately without checking waiting room
+        // This prevents false positives from isInWaitingRoom from blocking us
+        if (confirmedIndicators >= 2) {
+            return true
+        }
+
+        // Only if we don't have clear meeting indicators, check waiting room
+        // This acts as a fallback to avoid false positives
         if (await isInWaitingRoom(page)) {
             return false
         }
 
-        // Check elements that indicate we are in the meeting
-        const indicators = [
-            // La présence des contrôles de réunion
-            await page
-                .locator('div[role="region"][aria-label="Call controls"]')
-                .isVisible()
-                .catch(() => false),
-
-            // La présence du bouton "People" ou du nombre de participants
-            await page
-                .locator(
-                    '[aria-label*="participant"], [aria-label="Show everyone"]',
-                )
-                .isVisible()
-                .catch(() => false),
-
-            // La présence du bouton de chat
-            await page
-                .locator('button[aria-label*="Chat with everyone"]')
-                .isVisible()
-                .catch(() => false),
-
-            // Additional indicators: video grid or participant tiles
-            await page
-                .locator('[data-participant-id], [data-self-name]')
-                .count()
-                .then((c) => c > 0)
-                .catch(() => false),
-
-            // Meeting info or timer
-            await page
-                .locator('[aria-label*="Meeting details"]')
-                .isVisible()
-                .catch(() => false),
-        ]
-
-        const confirmedIndicators = indicators.filter(Boolean).length
-        console.log(`Meeting presence indicators: ${confirmedIndicators}/5`)
-
-        // We consider we are in the meeting if at least 2 indicators are present
-        return confirmedIndicators >= 2
+        // If we have at least 1 indicator but less than 2, still consider we're in meeting
+        // (we just verified we're not in waiting room)
+        return confirmedIndicators >= 1
     } catch (error) {
         console.error('Error checking if in meeting:', error)
         return false
@@ -665,6 +652,35 @@ async function clickWithInnerText(
 }
 
 /**
+ * Generic function to check page indicators
+ * Returns the count of found indicators
+ */
+async function checkIndicators(
+    page: Page,
+    selectors: string[],
+): Promise<number> {
+    let foundCount = 0
+    for (const selector of selectors) {
+        try {
+            const count = await page.locator(selector).count().catch(() => 0)
+            if (count > 0) {
+                const isVisible = await page
+                    .locator(selector)
+                    .first()
+                    .isVisible()
+                    .catch(() => false)
+                if (isVisible) {
+                    foundCount++
+                }
+            }
+        } catch (e) {
+            // Continue checking other indicators
+        }
+    }
+    return foundCount
+}
+
+/**
  * Checks if the bot is in the waiting room (waiting to be admitted)
  */
 async function isInWaitingRoom(page: Page): Promise<boolean> {
@@ -679,27 +695,8 @@ async function isInWaitingRoom(page: Page): Promise<boolean> {
             '[aria-label*="waiting"]',
         ]
 
-        for (const selector of waitingRoomIndicators) {
-            try {
-                const count = await page.locator(selector).count()
-                if (count > 0) {
-                    const isVisible = await page
-                        .locator(selector)
-                        .first()
-                        .isVisible()
-                        .catch(() => false)
-                    if (isVisible) {
-                        console.log(
-                            `Detected waiting room using indicator: ${selector}`,
-                        )
-                        return true
-                    }
-                }
-            } catch (e) {
-                // Continue checking other indicators
-            }
-        }
-        return false
+        const foundCount = await checkIndicators(page, waitingRoomIndicators)
+        return foundCount > 0
     } catch (error) {
         return false
     }
