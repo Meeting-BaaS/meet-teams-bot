@@ -393,35 +393,34 @@ async function isInMeeting(page: Page): Promise<boolean> {
             return false
         }
 
-        // First check if we're in waiting room - if yes, we're definitely not in meeting
+        // Check if we're in waiting room - if yes, we're definitely not in meeting
         if (await isInWaitingRoom(page)) {
             return false
         }
 
         // Check elements that indicate we are in the meeting
-        // Using more specific selectors to avoid false positives
+        // These are specific selectors that only appear in active meetings
         const meetingIndicators = [
-            // Call controls - very specific, only appears in active meeting
             'div[role="region"][aria-label="Call controls"]',
-            // People button in nav - specific to active meeting
             'nav button[aria-label="People"][role="button"]',
             'nav button[aria-label="Show everyone"][role="button"]',
-            // Chat button - specific to active meeting
+            'nav button[data-panel-id="1"][role="button"]',
             'button[aria-label="Chat with everyone"]',
-            // Participant tiles - only in active meeting
             '[data-participant-id]',
             '[data-self-name]',
+            'div[data-participant-id]',
         ]
 
-        const confirmedIndicators = await checkIndicators(
-            page,
-            meetingIndicators,
-        )
-        console.log(`Meeting presence indicators: ${confirmedIndicators}/6`)
+        const visibleIndicators = await checkIndicators(page, meetingIndicators, false)
+        console.log(`Meeting presence indicators: ${visibleIndicators}/${meetingIndicators.length} visible`)
 
-        // Require at least 3 indicators to be more strict and avoid false positives
-        // This ensures we're really in the meeting, not just in waiting room
-        return confirmedIndicators >= 3
+        // Require at least 3 indicators to confirm we are truly in the meeting
+        // This prevents false positives during transition states
+        if (visibleIndicators >= 3) {
+            return true
+        }
+
+        return false
     } catch (error) {
         console.error('Error checking if in meeting:', error)
         return false
@@ -657,19 +656,26 @@ async function clickWithInnerText(
 async function checkIndicators(
     page: Page,
     selectors: string[],
+    checkPresenceOnly: boolean = false,
 ): Promise<number> {
     let foundCount = 0
     for (const selector of selectors) {
         try {
             const count = await page.locator(selector).count().catch(() => 0)
             if (count > 0) {
-                const isVisible = await page
-                    .locator(selector)
-                    .first()
-                    .isVisible()
-                    .catch(() => false)
-                if (isVisible) {
+                if (checkPresenceOnly) {
+                    // Just check presence in DOM, not visibility
+                    // Useful when menus/modals might hide elements
                     foundCount++
+                } else {
+                    const isVisible = await page
+                        .locator(selector)
+                        .first()
+                        .isVisible()
+                        .catch(() => false)
+                    if (isVisible) {
+                        foundCount++
+                    }
                 }
             }
         } catch (e) {
@@ -691,11 +697,18 @@ async function isInWaitingRoom(page: Page): Promise<boolean> {
             'text="Waiting for the host"',
             'text="waiting to be let in"',
             'text="Instead of waiting to be let in"',
+            'text="Please wait until a meeting host brings you into the call"',
             '[aria-label*="waiting"]',
+            '[aria-label*="Please wait until"]',
+            '[aria-label*="brings you into"]',
         ]
 
         const foundCount = await checkIndicators(page, waitingRoomIndicators)
-        return foundCount > 0
+        if (foundCount > 0) {
+            console.log(`Waiting room detected: ${foundCount} indicators found`)
+            return true
+        }
+        return false
     } catch (error) {
         return false
     }

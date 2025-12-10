@@ -273,10 +273,36 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button: "${buttonText}"`,
                     )
-                    await button
-                        .first()
-                        .click({ timeout: timeouts.CLICK_TIMEOUT })
-                    return true
+                    // Try normal click first
+                    try {
+                        await button
+                            .first()
+                            .click({ timeout: timeouts.CLICK_TIMEOUT })
+                        return true
+                    } catch (error) {
+                        // If normal click fails (e.g., intercepted by overlay),
+                        // try force click or JavaScript click
+                        console.info(
+                            `[SimpleDialogObserver] Normal click failed, trying force click for "${buttonText}"`,
+                        )
+                        try {
+                            await button
+                                .first()
+                                .click({ timeout: timeouts.CLICK_TIMEOUT, force: true })
+                            return true
+                        } catch (forceError) {
+                            // Last resort: use JavaScript click
+                            console.info(
+                                `[SimpleDialogObserver] Force click failed, trying JavaScript click for "${buttonText}"`,
+                            )
+                            await button.first().evaluate((el: HTMLElement) => {
+                                if (el instanceof HTMLElement) {
+                                    el.click()
+                                }
+                            })
+                            return true
+                        }
+                    }
                 }
 
                 // Try partial text match
@@ -294,10 +320,26 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button (partial match): "${buttonText}"`,
                     )
-                    await button
-                        .first()
-                        .click({ timeout: timeouts.CLICK_TIMEOUT })
-                    return true
+                    try {
+                        await button
+                            .first()
+                            .click({ timeout: timeouts.CLICK_TIMEOUT })
+                        return true
+                    } catch (error) {
+                        try {
+                            await button
+                                .first()
+                                .click({ timeout: timeouts.CLICK_TIMEOUT, force: true })
+                            return true
+                        } catch (forceError) {
+                            await button.first().evaluate((el: HTMLElement) => {
+                                if (el instanceof HTMLElement) {
+                                    el.click()
+                                }
+                            })
+                            return true
+                        }
+                    }
                 }
 
                 // Try span content (for Material Design buttons)
@@ -313,10 +355,29 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button (span): "${buttonText}"`,
                     )
-                    await button
-                        .first()
-                        .click({ timeout: timeouts.CLICK_TIMEOUT })
-                    return true
+                    // Navigate to parent button element
+                    const parentButton = button.first().locator('xpath=..')
+                    try {
+                        await parentButton.click({
+                            timeout: timeouts.CLICK_TIMEOUT,
+                        })
+                        return true
+                    } catch (error) {
+                        try {
+                            await parentButton.click({
+                                timeout: timeouts.CLICK_TIMEOUT,
+                                force: true,
+                            })
+                            return true
+                        } catch (forceError) {
+                            await parentButton.evaluate((el: HTMLElement) => {
+                                if (el instanceof HTMLElement) {
+                                    el.click()
+                                }
+                            })
+                            return true
+                        }
+                    }
                 }
             } catch (error) {
                 console.warn(
