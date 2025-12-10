@@ -387,9 +387,6 @@ async function findShowEveryOne(
 // New function to check if we are actually in the meeting
 async function isInMeeting(page: Page): Promise<boolean> {
     try {
-        // First dismiss any modal dialogs that might be blocking
-        await dismissModalDialogs(page)
-
         // First check if we have been removed from the meeting
         if (await notAcceptedInMeeting(page)) {
             console.log('Bot has been removed from the meeting')
@@ -671,44 +668,6 @@ async function clickWithInnerText(
 }
 
 /**
- * Dismisses modal dialogs that Google Meet shows (e.g., "Sign in with your Google account")
- */
-async function dismissModalDialogs(page: Page): Promise<void> {
-    try {
-        // Look for common modal dialog patterns
-        const modalSelectors = [
-            // "Got it" button in sign-in modal
-            'button:has-text("Got it")',
-            // Generic dismiss buttons
-            'button[aria-label*="dismiss"]',
-            'button[aria-label*="close"]',
-            // Modal with "Sign in" text
-            '[role="dialog"]:has-text("Sign in with your Google account") button',
-        ]
-
-        for (const selector of modalSelectors) {
-            try {
-                const locator = page.locator(selector).first()
-                const count = await locator.count()
-                if (count > 0) {
-                    const isVisible = await locator.isVisible().catch(() => false)
-                    if (isVisible) {
-                        await locator.click({ timeout: 1000 })
-                        console.log(`Dismissed modal using selector: ${selector}`)
-                        await page.waitForTimeout(200)
-                        return
-                    }
-                }
-            } catch (e) {
-                // Continue to next selector
-            }
-        }
-    } catch (error) {
-        // Silent fail - modals are optional
-    }
-}
-
-/**
  * Checks if the bot is in the waiting room (waiting to be admitted)
  */
 async function isInWaitingRoom(page: Page): Promise<boolean> {
@@ -770,9 +729,6 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
     ]
 
     try {
-        // Dismiss Google Meet modal dialogs first (sign-in prompts, etc.)
-        await dismissModalDialogs(page)
-
         // Press Escape first to close any modal that might be blocking
         await page.keyboard.press('Escape')
         await page.waitForTimeout(100)
