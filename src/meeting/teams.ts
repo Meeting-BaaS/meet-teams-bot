@@ -7,6 +7,11 @@ import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/teamsUrlParser'
 import { sleep } from '../utils/sleep'
+import { createStateDetector } from '../utils/meeting-state-detector'
+import { TEAMS_STATE_CONFIG } from './teams-state-config'
+
+// Create a singleton detector instance for Microsoft Teams
+const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
 
 export class TeamsProvider implements MeetingProviderInterface {
     constructor() {}
@@ -685,18 +690,13 @@ async function isBotNotAccepted(page: Page): Promise<boolean> {
         return true
     }
 
-    const deniedTexts = [
-        'Sorry, but you were denied access to the meeting.',
-        'Someone in the meeting should let you in soon',
-        'Waiting to be admitted',
-    ]
-
-    for (const text of deniedTexts) {
-        const found = await checkPageForText(page, text)
-        if (found) {
-            return true
-        }
+    // Use unified state detector
+    const result = await teamsStateDetector.isDenied(page)
+    if (result.matched) {
+        console.log(`Teams denial detected: "${result.matchedText}"`)
+        return true
     }
+
     return false
 }
 
@@ -831,33 +831,30 @@ async function ensurePageLoaded(page: Page, timeout = 20000): Promise<boolean> {
 // New function to check if we are in the Teams meeting
 async function isInTeamsMeeting(page: Page): Promise<boolean> {
     try {
-        const indicators = [
-            // The React button is a good indicator that we are in the meeting
-            await clickWithInnerText(page, 'button', 'React', 1, false),
+        // First check if denied/not accepted
+        if (await isBotNotAccepted(page)) {
+            return false
+        }
 
-            // Le bouton Raise hand aussi
-            await page
-                .locator('button#raisehands-button:has-text("Raise")')
-                .isVisible(),
+        // Check if Join now button is present (indicates waiting room)
+        const joinNowPresent = await clickWithInnerText(
+            page,
+            'button',
+            'Join now',
+            1,
+            false,
+        )
+        if (joinNowPresent) {
+            return false
+        }
 
-            // La présence du chat
-            await page
-                .locator('button[aria-label*="chat"], button[title*="chat"]')
-                .isVisible(),
-
-            // L'absence des textes de waiting room
-            !(await isBotNotAccepted(page)),
-
-            // The absence of the Join now button (which only exists in the waiting room)
-            !(await clickWithInnerText(page, 'button', 'Join now', 1, false)),
-        ]
-
-        const confirmedIndicators = indicators.filter(Boolean).length
+        // Use unified state detector for in-meeting indicators
+        const result = await teamsStateDetector.isInMeeting(page)
         console.log(
-            `Teams meeting presence indicators: ${confirmedIndicators}/5`,
+            `Teams meeting presence indicators: ${result.count}/${TEAMS_STATE_CONFIG.inMeetingPattern.selectors.length} visible`,
         )
 
-        return confirmedIndicators >= 3
+        return result.matched
     } catch (error) {
         console.error('Error checking if in Teams meeting:', error)
         return false
