@@ -10,12 +10,25 @@ import { BaseState } from './base-state'
 
 export class InCallState extends BaseState {
     async execute(): StateExecuteResult {
+        const startTime = Date.now()
+        console.info(`[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`)
+
         try {
             // Start with global timeout for setup
             await Promise.race([this.setupRecording(), this.createTimeout()])
+
+            const duration = Date.now() - startTime
+            console.info(`[InCallState] Setup completed successfully in ${duration}ms`)
             return this.transition(MeetingStateType.Recording)
         } catch (error) {
-            console.error('Setup recording failed:', error)
+            const duration = Date.now() - startTime
+            console.error(`[InCallState] Setup recording failed after ${duration}ms`)
+            console.error('[InCallState] Error details:', {
+                message: error instanceof Error ? error.message : 'Unknown error',
+                stack: error instanceof Error ? error.stack : undefined,
+                errorType: error?.constructor?.name,
+                errorObject: error,
+            })
             return this.handleError(error as Error)
         }
     }
