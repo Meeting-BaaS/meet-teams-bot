@@ -33,11 +33,12 @@ export class WaitingRoomState extends BaseState {
                 GLOBAL.get().enter_message,
             )
 
-            // Start the dialog observer before opening the page
-            this.startDialogObserver()
-
             // Open the meeting page
             await this.openMeetingPage(meetingLink)
+
+            // Start the dialog observer immediately after page is opened
+            // This ensures it can start monitoring dialogs right away
+            this.startDialogObserver()
 
             // Capture DOM state after meeting page is opened (void to avoid blocking)
             if (this.context.playwrightPage) {
