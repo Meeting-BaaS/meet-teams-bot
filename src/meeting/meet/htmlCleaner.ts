@@ -81,22 +81,22 @@ export class MeetHtmlCleaner {
         // Hide visitor indicator bar
         hideVisitorIndicator()
 
-        // People panel cleanup
-        let root: HTMLDivElement | null = null
-        while (root == null) {
-          root = Array.from(document.querySelectorAll("div")).find((d) => d.innerText === "People")
-            ?.parentElement?.parentElement as HTMLDivElement | null
-          if (root != null) {
-            try {
-              root.parentElement.style.opacity = "0"
-              root.parentElement.parentElement.style.opacity = "0"
-              const rootLeft = Array.from(document.querySelectorAll("div")).find(
-                (d) => d.innerText === "You"
-              ) as HTMLDivElement | null
+        // People panel cleanup (check once, skip if not found)
+        try {
+          const root: HTMLElement | null = Array.from(document.querySelectorAll("div")).find(
+            (d: HTMLElement) => d.innerText === "People"
+          )?.parentElement?.parentElement
+          if (root) {
+            root.parentElement.style.opacity = "0"
+            root.parentElement.parentElement.style.opacity = "0"
+            const rootLeft: HTMLElement | null = Array.from(document.querySelectorAll("div")).find(
+              (d: HTMLElement) => d.innerText === "You"
+            )
+            if (rootLeft) {
               rootLeft.parentElement.parentElement.parentElement.parentElement.style.width = "97vw"
-            } catch (_e) {}
+            }
           }
-        }
+        } catch (_e) {}
 
         if (mode !== "gallery_view") {
           try {
@@ -188,22 +188,22 @@ export class MeetHtmlCleaner {
           })
         } catch (_e) {}
 
-        // People panel cleanup
-        let root: HTMLDivElement | null = null
-        while (root == null) {
-          root = Array.from(document.querySelectorAll("div")).find((d) => d.innerText === "People")
-            ?.parentElement?.parentElement as HTMLDivElement | null
-          if (root != null) {
-            try {
-              root.parentElement.style.opacity = "0"
-              root.parentElement.parentElement.style.opacity = "0"
-              const rootLeft = Array.from(document.querySelectorAll("div")).find(
-                (d) => d.innerText === "You"
-              ) as HTMLDivElement | null
+        // People panel cleanup (check once, skip if not found)
+        try {
+          const root: HTMLElement | null = Array.from(document.querySelectorAll("div")).find(
+            (d: HTMLElement) => d.innerText === "People"
+          )?.parentElement?.parentElement
+          if (root) {
+            root.parentElement.style.opacity = "0"
+            root.parentElement.parentElement.style.opacity = "0"
+            const rootLeft: HTMLElement | null = Array.from(document.querySelectorAll("div")).find(
+              (d) => d.innerText === "You"
+            )
+            if (rootLeft) {
               rootLeft.parentElement.parentElement.parentElement.parentElement.style.width = "97vw"
-            } catch (_e) {}
+            }
           }
-        }
+        } catch (_e) {}
 
         try {
           const moodIcons = Array.from(document.querySelectorAll("i.google-material-icons")).filter(

@@ -51,8 +51,44 @@ export class SimpleDialogObserver {
 
   protected startGlobalDialogObserver() {
     console.info("[SimpleDialogObserver] Starting dialog observer")
-    // Check every 5 seconds
-    this.dialogObserverInterval = setInterval(this.observer, 5000)
+    // Check every 2 seconds for faster modal dismissal during join
+    this.dialogObserverInterval = setInterval(this.observer, 2000)
+  }
+
+  /**
+   * Try multiple click strategies on a locator to handle various edge cases
+   * (normal click → force click → JavaScript click)
+   */
+  private async tryMultipleClickStrategies(
+    locator: Locator,
+    buttonText: string,
+    timeout: number
+  ): Promise<void> {
+    // Try normal click first
+    try {
+      await locator.click({ timeout })
+      return
+    } catch (_error) {
+      // If normal click fails (e.g., intercepted by overlay),
+      // try force click or JavaScript click
+      console.info(
+        `[SimpleDialogObserver] Normal click failed, trying force click for "${buttonText}"`
+      )
+      try {
+        await locator.click({ timeout, force: true })
+        return
+      } catch (_forceError) {
+        // Last resort: use JavaScript click
+        console.info(
+          `[SimpleDialogObserver] Force click failed, trying JavaScript click for "${buttonText}"`
+        )
+        await locator.evaluate((el: HTMLElement) => {
+          if (el instanceof HTMLElement) {
+            el.click()
+          }
+        })
+      }
+    }
   }
 
   protected observer = async (): Promise<void> => {
@@ -236,7 +272,7 @@ export class SimpleDialogObserver {
           (await button.first().isVisible({ timeout: timeouts.VISIBLE_TIMEOUT }))
         ) {
           console.info(`[SimpleDialogObserver] Clicking button: "${buttonText}"`)
-          await button.first().click({ timeout: timeouts.CLICK_TIMEOUT })
+          await this.tryMultipleClickStrategies(button.first(), buttonText, timeouts.CLICK_TIMEOUT)
           return true
         }
 
@@ -249,7 +285,7 @@ export class SimpleDialogObserver {
           (await button.first().isVisible({ timeout: timeouts.VISIBLE_TIMEOUT }))
         ) {
           console.info(`[SimpleDialogObserver] Clicking button (partial match): "${buttonText}"`)
-          await button.first().click({ timeout: timeouts.CLICK_TIMEOUT })
+          await this.tryMultipleClickStrategies(button.first(), buttonText, timeouts.CLICK_TIMEOUT)
           return true
         }
 
@@ -262,7 +298,9 @@ export class SimpleDialogObserver {
           (await button.first().isVisible({ timeout: timeouts.VISIBLE_TIMEOUT }))
         ) {
           console.info(`[SimpleDialogObserver] Clicking button (span): "${buttonText}"`)
-          await button.first().click({ timeout: timeouts.CLICK_TIMEOUT })
+          // Navigate to parent button element
+          const parentButton = button.first().locator("xpath=..")
+          await this.tryMultipleClickStrategies(parentButton, buttonText, timeouts.CLICK_TIMEOUT)
           return true
         }
       } catch (error) {

@@ -4,8 +4,13 @@ import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
+import { createStateDetector } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { closeMeeting } from "./meet/closeMeeting"
+import { MEET_STATE_CONFIG } from "./meet-state-config"
+
+// Create a singleton detector instance for Google Meet
+const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
 
 export class MeetProvider implements MeetingProviderInterface {
   async parseMeetingUrl(meeting_url: string) {
@@ -130,14 +135,22 @@ export class MeetProvider implements MeetingProviderInterface {
 
       // Wait to be in the meeting with regular cancelCheck verification
       console.log("Waiting to confirm meeting join...")
+      let inWaitingRoom = false
       while (true) {
         if (cancelCheck()) {
           GLOBAL.setError(MeetingEndReason.ApiRequest)
           throw new Error("API request to stop recording")
         }
 
-        // Retry clicking join button if it's visible (every 2 seconds)
-        if (Date.now() - lastJoinClickAt >= joinRetryCooldownMs) {
+        // Check if we're in the waiting room
+        const nowInWaitingRoom = await isInWaitingRoom(page)
+        if (nowInWaitingRoom && !inWaitingRoom) {
+          console.log("📋 Bot is in waiting room, waiting for host to admit...")
+          inWaitingRoom = true
+        }
+
+        // Only retry clicking join button if NOT in waiting room
+        if (!inWaitingRoom && Date.now() - lastJoinClickAt >= joinRetryCooldownMs) {
           const retried = await clickJoinCtaIfPresent(page)
           if (retried) {
             lastJoinClickAt = Date.now()
@@ -336,6 +349,15 @@ async function isInMeeting(page: Page): Promise<boolean> {
 
     const confirmedIndicators = indicators.filter(Boolean).length
     console.log(`Meeting presence indicators: ${confirmedIndicators}/3`)
+    // Check if we're in waiting room - if yes, we're definitely not in meeting
+    if (await isInWaitingRoom(page)) {
+      return false
+    }
+
+    // Use unified state detector for meeting presence
+    const result = await meetStateDetector.isInMeeting(page)
+    const selectorCount = MEET_STATE_CONFIG.inMeetingPattern.selectors.length
+    console.log(`Meeting presence indicators: ${result.count}/${selectorCount} visible`)
 
     // We consider we are in the meeting if at least 2 indicators are present
     return confirmedIndicators >= 2
@@ -533,6 +555,22 @@ async function clickWithInnerText(
   )
 
   return false
+}
+
+/**
+ * Checks if the bot is in the waiting room (waiting to be admitted)
+ */
+async function isInWaitingRoom(page: Page): Promise<boolean> {
+  try {
+    const result = await meetStateDetector.isWaitingRoom(page)
+    if (result.matched) {
+      console.log(`Waiting room detected: ${result.count} indicators found`)
+      return true
+    }
+    return false
+  } catch (_error) {
+    return false
+  }
 }
 
 async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
