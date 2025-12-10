@@ -8,6 +8,11 @@ import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
 import { closeMeeting } from './meet/closeMeeting'
+import { createStateDetector } from '../utils/meeting-state-detector'
+import { MEET_STATE_CONFIG } from './meet-state-config'
+
+// Create a singleton detector instance for Google Meet
+const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
 
 export class MeetProvider implements MeetingProviderInterface {
     async parseMeetingUrl(meeting_url: string) {
@@ -398,29 +403,16 @@ async function isInMeeting(page: Page): Promise<boolean> {
             return false
         }
 
-        // Check elements that indicate we are in the meeting
-        // These are specific selectors that only appear in active meetings
-        const meetingIndicators = [
-            'div[role="region"][aria-label="Call controls"]',
-            'nav button[aria-label="People"][role="button"]',
-            'nav button[aria-label="Show everyone"][role="button"]',
-            'nav button[data-panel-id="1"][role="button"]',
-            'button[aria-label="Chat with everyone"]',
-            '[data-participant-id]',
-            '[data-self-name]',
-            'div[data-participant-id]',
-        ]
-
-        const visibleIndicators = await checkIndicators(page, meetingIndicators, false)
-        console.log(`Meeting presence indicators: ${visibleIndicators}/${meetingIndicators.length} visible`)
+        // Use unified state detector for meeting presence
+        const result = await meetStateDetector.isInMeeting(page)
+        const selectorCount = MEET_STATE_CONFIG.inMeetingPattern.selectors.length
+        console.log(
+            `Meeting presence indicators: ${result.count}/${selectorCount} visible`,
+        )
 
         // Require at least 3 indicators to confirm we are truly in the meeting
         // This prevents false positives during transition states
-        if (visibleIndicators >= 3) {
-            return true
-        }
-
-        return false
+        return result.matched
     } catch (error) {
         console.error('Error checking if in meeting:', error)
         return false
@@ -476,54 +468,26 @@ async function sendEntryMessage(
 }
 
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
-    // Define denial patterns with their associated error reasons and log messages
-    // Order matters: check Google Meet specific messages first since they may overlap with user messages
-    const denialPatterns = [
-        {
-            texts: ["You can't join this video call"],
-            reason: MeetingEndReason.BotNotAccepted,
-            logPrefix: 'XXXXXXXXXXXXXXXXXX Google Meet itself has denied entry',
-            errorMessage: 'Google Meet has denied entry',
-        },
-        {
-            texts: ['No one responded to your request to join the call'],
-            reason: MeetingEndReason.TimeoutWaitingToStart,
-            logPrefix: 'Google Meet itself has timed out',
-            errorMessage:
-                'Google Meet has timed out while waiting for the bot to join the meeting',
-        },
-        {
-            texts: [
-                'denied',
-                "You've been removed",
-                'we encountered a problem joining',
-                "You can't join",
-                'You left the meeting', // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
-                'Your sign-in credentials might have changed',
-            ],
-            reason: MeetingEndReason.BotNotAccepted,
-            logPrefix: 'XXXXXXXXXXXXXXXXXX User has denied entry',
-            errorMessage: 'User has denied entry',
-        },
-    ]
-
-    for (const pattern of denialPatterns) {
-        for (const text of pattern.texts) {
-            const element = page.locator(`text=${text}`)
-            if ((await element.count()) > 0) {
-                console.log(
-                    `${pattern.logPrefix} - Found text: "${text}"`,
-                )
-                GLOBAL.setError(
-                    pattern.reason,
-                    `${pattern.errorMessage} - Found text: "${text}"`,
-                )
-                return true
-            }
+    try {
+        const result = await meetStateDetector.isDenied(page)
+        if (result.matched && result.matchedText && result.pattern) {
+            // Pattern is a DenialPattern
+            const denialPattern = result.pattern as any
+            console.log(
+                `${denialPattern.logPrefix} - Found text: "${result.matchedText}"`,
+            )
+            GLOBAL.setError(
+                denialPattern.reason,
+                `${denialPattern.errorMessage} - Found text: "${result.matchedText}"`,
+            )
+            return true
         }
-    }
 
-    return false
+        return false
+    } catch (error) {
+        console.error('Error checking if denied entry:', error)
+        return false
+    }
 }
 
 async function clickDismiss(page: Page): Promise<boolean> {
@@ -696,22 +660,11 @@ async function checkIndicators(
  */
 async function isInWaitingRoom(page: Page): Promise<boolean> {
     try {
-        // Look for waiting room indicators
-        const waitingRoomIndicators = [
-            'text="Asking to join"',
-            'text="Your request to join"',
-            'text="Waiting for the host"',
-            'text="waiting to be let in"',
-            'text="Instead of waiting to be let in"',
-            'text="Please wait until a meeting host brings you into the call"',
-            '[aria-label*="waiting"]',
-            '[aria-label*="Please wait until"]',
-            '[aria-label*="brings you into"]',
-        ]
-
-        const foundCount = await checkIndicators(page, waitingRoomIndicators)
-        if (foundCount > 0) {
-            console.log(`Waiting room detected: ${foundCount} indicators found`)
+        const result = await meetStateDetector.isWaitingRoom(page)
+        if (result.matched) {
+            console.log(
+                `Waiting room detected: ${result.count} indicators found`,
+            )
             return true
         }
         return false
