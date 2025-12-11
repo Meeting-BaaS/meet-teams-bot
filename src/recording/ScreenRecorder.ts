@@ -1134,8 +1134,7 @@ export class ScreenRecorder extends EventEmitter {
                                 audioDuration - silenceStartInRecording
                             const maxTrimSeconds =
                                 GLOBAL.get().automatic_leave.silence_timeout ??
-                                MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS /
-                                    1000 // 10 minutes
+                                MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS // 10 minutes
                             const trimSeconds = Math.min(
                                 Math.max(0, silenceDurationSeconds),
                                 maxTrimSeconds,
@@ -1327,7 +1326,7 @@ export class ScreenRecorder extends EventEmitter {
                     audioDuration - silenceStartInRecording
                 const maxTrimSeconds =
                     GLOBAL.get().automatic_leave.silence_timeout ??
-                    MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS / 1000 // 10 minutes
+                    MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS // 10 minutes
                 silenceTrimSeconds = Math.min(
                     Math.max(0, silenceDurationSeconds),
                     maxTrimSeconds,
