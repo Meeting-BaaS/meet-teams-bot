@@ -322,7 +322,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '4096', // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
+                '4096', // Buffer size for audio capture stability
                 '-i',
                 VIRTUAL_SPEAKER_MONITOR,
 
@@ -361,23 +361,6 @@ export class ScreenRecorder extends EventEmitter {
                 'image2',
                 '-y',
                 screenshotPattern,
-
-                // === OUTPUT 3: STREAMING AUDIO ===
-                '-map',
-                '0:a:0',
-                '-acodec',
-                'pcm_f32le',
-                '-ac',
-                '1',
-                '-ar',
-                this.streamingSampleRate.toString(),
-                '-fflags',
-                'nobuffer',
-                '-flags',
-                'low_delay',
-                '-f',
-                'f32le',
-                'pipe:1',
             )
         } else {
             // Separate audio and video recording
@@ -400,9 +383,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-f',
                 'pulse',
                 '-thread_queue_size',
-                '4096', // Reduced from 16384 for lower streaming latency (balanced: ~0.17s delay vs stability)
-                '-fflags',
-                'nobuffer',
+                '4096', // Buffer size for audio capture stability
                 '-i',
                 VIRTUAL_SPEAKER_MONITOR,
 
@@ -464,23 +445,6 @@ export class ScreenRecorder extends EventEmitter {
                 'image2',
                 '-y',
                 screenshotPattern,
-
-                // === OUTPUT 4: STREAMING AUDIO ===
-                '-map',
-                '1:a:0',
-                '-acodec',
-                'pcm_f32le',
-                '-ac',
-                '1',
-                '-ar',
-                this.streamingSampleRate.toString(),
-                '-fflags',
-                'nobuffer',
-                '-flags',
-                'low_delay',
-                '-f',
-                'f32le',
-                'pipe:1',
             )
         }
 
