@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from "@playwright/test"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
+import { Streaming } from "../streaming"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
 import { formatError } from "../utils/Logger"
@@ -11,6 +12,7 @@ import {
   type SelectorPattern
 } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
+import { enableMeetAudioCapture } from "./meet/audio-capture"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
 
@@ -41,6 +43,12 @@ export class MeetProvider implements MeetingProviderInterface {
         await browserContext.grantPermissions(["microphone", "camera"])
       } else {
         await browserContext.grantPermissions(["camera"])
+      }
+
+      // Enable Web Audio mixing for streaming
+      if (Streaming.instance) {
+        await enableMeetAudioCapture(page)
+        console.log("[Meet] ✅ Web Audio capture enabled for streaming")
       }
 
       console.log(`Navigating to ${link}...`)
