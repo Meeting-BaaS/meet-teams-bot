@@ -45,6 +45,8 @@ export class Streaming {
 
   // Browser audio streaming
   private sourceSampleRate = 48000 // Default, updated by incoming chunks
+  private browserAudioChunksSent = 0
+  private lastBrowserStatsLogTime = 0
 
   // WebSocket connection buffer (for chunks received before WS is ready)
   private connectionBuffer: Float32Array[] = []
@@ -167,28 +169,48 @@ export class Streaming {
     numberOfFrames: number
   }): void {
     if (!this.isInitialized) {
+      console.warn("[Streaming] ⚠️ Received audio chunk but streaming not initialized")
       return
     }
 
     if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+      console.warn(
+        "[Streaming] ⚠️ Received audio chunk but WebSocket not open (state:",
+        this.output_ws?.readyState,
+        ")"
+      )
       return
     }
 
     try {
       const float32Data = new Float32Array(audioChunk.audioData)
 
+      // Log first chunk received
+      if (this.browserAudioChunksSent === 0) {
+        console.log(
+          `🎵 [Streaming] First audio chunk received from browser: ${audioChunk.numberOfFrames} frames @ ${audioChunk.sampleRate} Hz`
+        )
+      }
+
       // Update source sample rate
       if (audioChunk.sampleRate && audioChunk.sampleRate > 0) {
         if (this.sourceSampleRate !== audioChunk.sampleRate) {
-          console.log(`🎵 Web Audio mixer sample rate: ${audioChunk.sampleRate} Hz`)
+          console.log(`🎵 [Streaming] Web Audio mixer sample rate: ${audioChunk.sampleRate} Hz`)
           this.sourceSampleRate = audioChunk.sampleRate
         }
       }
 
       // Send directly - no buffering, no manual mixing!
       this.processAndSendAudioChunk(float32Data)
+
+      // Log stats every 5 seconds
+      const now = Date.now()
+      if (now - this.lastBrowserStatsLogTime > 5000) {
+        console.log(`📊 [Streaming] Sent ${this.browserAudioChunksSent} audio chunks to WebSocket`)
+        this.lastBrowserStatsLogTime = now
+      }
     } catch (error) {
-      console.error("Failed to process mixed audio chunk:", error)
+      console.error("[Streaming] Failed to process mixed audio chunk:", error)
     }
   }
 
