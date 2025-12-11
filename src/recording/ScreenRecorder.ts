@@ -683,12 +683,16 @@ export class ScreenRecorder extends EventEmitter {
             this.ffmpegProcess.stdout?.on('data', (data: Buffer) => {
                 try {
                     if (Streaming.instance) {
-                        const float32Array = new Float32Array(
-                            data.buffer,
-                            data.byteOffset,
-                            data.length / 4,
-                        )
-                        Streaming.instance.processAudioChunk(float32Array)
+                        // ❌ DISABLED: FFmpeg audio streaming disabled
+                        // Now using Web Audio API mixing directly from browser for ultra-low latency
+                        // See audio-capture.ts files for the new streaming approach
+
+                        // const float32Array = new Float32Array(
+                        //     data.buffer,
+                        //     data.byteOffset,
+                        //     data.length / 4,
+                        // )
+                        // Streaming.instance.processAudioChunk(float32Array)
                     }
                 } catch (error) {
                     console.error('Failed to process audio chunk:', error)
