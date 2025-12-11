@@ -172,16 +172,20 @@ export class MeetProvider implements MeetingProviderInterface {
 
                 // Check if we're in the waiting room
                 const nowInWaitingRoom = await isInWaitingRoom(page)
-                if (nowInWaitingRoom && !inWaitingRoom) {
+                const wasInWaitingRoom = inWaitingRoom
+
+                // Detect when we enter the waiting room
+                if (nowInWaitingRoom && !wasInWaitingRoom) {
                     console.log(
                         '📋 Bot is in waiting room, waiting for host to admit...',
                     )
-                    inWaitingRoom = true
+                    // If we re-enter the waiting room, force a fresh page-ready wait
+                    pageReadyAfterWaitingRoom = false
                 }
 
                 // Detect when we leave the waiting room and wait for page to be ready
                 if (
-                    inWaitingRoom &&
+                    wasInWaitingRoom &&
                     !nowInWaitingRoom &&
                     !pageReadyAfterWaitingRoom
                 ) {
@@ -190,11 +194,14 @@ export class MeetProvider implements MeetingProviderInterface {
                     )
                     // Wait for page readyState instead of fixed delay
                     await waitForPageReady(page, {
-                        timeout: 5000,
                         context: 'after leaving waiting room',
                     })
                     pageReadyAfterWaitingRoom = true
                 }
+
+                // Update current waiting room state for the rest of the loop
+                // This ensures the flag reflects the current state, allowing checks to run after admission
+                inWaitingRoom = nowInWaitingRoom
 
                 // Only retry clicking join button if NOT in waiting room
                 if (
