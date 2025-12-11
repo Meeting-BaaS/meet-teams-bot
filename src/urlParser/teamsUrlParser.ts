@@ -84,6 +84,9 @@ export function parseMeetingUrlFromJoinInfos(
 
         console.log('Parsing meeting URL:', meeting_url)
 
+        // Remove accidental shell escaping (backslashes before URL special chars)
+        meeting_url = meeting_url.replace(/\\([?=&])/g, '$1')
+
         // Handle Google redirect URLs
         if (meeting_url.startsWith('https://www.google.com/url')) {
             const url = new URL(meeting_url)
