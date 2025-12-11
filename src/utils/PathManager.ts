@@ -82,6 +82,10 @@ export class PathManager {
         return path.join(this.getBasePath(), 'html_snapshots')
     }
 
+    public getDebugStreamedAudioPath(): string {
+        return path.join(this.getBasePath(), 'debug_streamed_audio.wav')
+    }
+
     public getS3Paths(): { bucketName: string; s3Path: string } {
         const identifier = this.getIdentifier()
         return {
