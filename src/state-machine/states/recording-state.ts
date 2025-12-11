@@ -226,6 +226,9 @@ export class RecordingState extends BaseState {
                         )
                     }
                     this.lastSoundActivity = now
+                    // Reset silence start timestamp when sound is detected
+                    GLOBAL.setLastSilenceStart(null)
+                    GLOBAL.setSoundDetectedInMeeting(true)
                 }
             }
 
@@ -254,9 +257,12 @@ export class RecordingState extends BaseState {
 
             // If it's a timeout checking bot removal, the page is likely frozen/unresponsive
             // This is a strong indicator that the bot was actually removed
-            const errorMessage = error instanceof Error ? error.message : String(error)
+            const errorMessage =
+                error instanceof Error ? error.message : String(error)
             if (errorMessage.includes('Bot removed check timeout')) {
-                console.warn('Bot removal check timed out - treating as bot removal')
+                console.warn(
+                    'Bot removal check timed out - treating as bot removal',
+                )
                 return this.getBotRemovedReason()
             }
 
@@ -322,7 +328,10 @@ export class RecordingState extends BaseState {
 
             console.info('Setting isProcessing to false to end recording loop')
         } catch (error) {
-            console.error('Error during meeting end handling:', formatError(error))
+            console.error(
+                'Error during meeting end handling:',
+                formatError(error),
+            )
         } finally {
             // Always ensure this flag is set to stop the processing loop
             this.isProcessing = false
@@ -341,7 +350,10 @@ export class RecordingState extends BaseState {
                 this.context.playwrightPage,
             )
         } catch (error) {
-            console.error('Error checking if bot was removed:', formatError(error))
+            console.error(
+                'Error checking if bot was removed:',
+                formatError(error),
+            )
             return false
         }
     }
@@ -381,6 +393,9 @@ export class RecordingState extends BaseState {
             // Reset silence timer to start monitoring from now, even though no one joined was detected via UI
             // This is important to ensure that the silence timeout is not triggered too early
             this.lastSoundActivity = now
+            // Reset silence start timestamp when attendees are detected (similar to sound detection)
+            GLOBAL.setLastSilenceStart(null)
+            GLOBAL.setSoundDetectedInMeeting(true)
             console.log(
                 `[noone-joined] Grace period ended (attendees detected via UI: count=${attendeesCount}, firstUserJoined=${firstUserJoined}), enabling silence timeout checks`,
             )
@@ -471,7 +486,10 @@ export class RecordingState extends BaseState {
             )
             await uploadTranscriptTask(currentSpeaker, true, endTimeRelative)
         } catch (error) {
-            console.error('Failed to close final transcript:', formatError(error))
+            console.error(
+                'Failed to close final transcript:',
+                formatError(error),
+            )
             // Don't throw - continue with cleanup even if this fails
         }
     }
@@ -490,6 +508,21 @@ export class RecordingState extends BaseState {
         const silenceTimeoutSeconds =
             GLOBAL.get().automatic_leave.silence_timeout ??
             MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS
+
+        // Set silence start timestamp for trimming if not already set
+        // Only set it when we detect silence (after sound was previously detected)
+        // Use a 1-second threshold to avoid setting it on brief pauses
+        if (
+            GLOBAL.getSoundDetectedInMeeting() &&
+            silenceDurationSeconds >= 1 &&
+            GLOBAL.getLastSilenceStart() === null
+        ) {
+            // Silence started right after the last sound activity
+            GLOBAL.setLastSilenceStart(this.lastSoundActivity)
+            console.log(
+                `[checkNoSpeaker] Silence detected, setting silence start timestamp for trimming`,
+            )
+        }
 
         const shouldEnd = silenceDurationSeconds >= silenceTimeoutSeconds
         if (shouldEnd) {
