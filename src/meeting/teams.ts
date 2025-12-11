@@ -10,7 +10,6 @@ import { sleep } from '../utils/sleep'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { TEAMS_STATE_CONFIG } from './teams-state-config'
 import { formatError } from '../utils/Logger'
-import { Streaming } from '../streaming'
 import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from './teams/audio-capture'
 
 // Create a singleton detector instance for Microsoft Teams
@@ -50,8 +49,8 @@ export class TeamsProvider implements MeetingProviderInterface {
         })
 
         // Enable Web Audio mixing for clean streaming (KISS approach!)
-        // Only enable if streaming is configured
-        if (Streaming.instance) {
+        // Check config directly, not Streaming.instance (which may not be instantiated yet)
+        if (GLOBAL.get().streaming_output) {
             try {
                 await enableTeamsAudioCapture(page)
                 console.log('[Teams] ✅ Web Audio capture enabled for streaming')
@@ -413,7 +412,7 @@ export class TeamsProvider implements MeetingProviderInterface {
         await htmlSnapshot.captureSnapshot(page, 'teams_join_meeting_success')
 
         // Verify audio capture is working (only if streaming is enabled)
-        if (Streaming.instance) {
+        if (GLOBAL.get().streaming_output) {
             try {
                 await verifyTeamsAudioCapture(page)
             } catch (error) {
