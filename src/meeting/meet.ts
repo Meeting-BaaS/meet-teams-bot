@@ -12,7 +12,7 @@ import {
   type SelectorPattern
 } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
-import { enableMeetAudioCapture } from "./meet/audio-capture"
+import { enableMeetAudioCapture, verifyMeetAudioCapture } from "./meet/audio-capture"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
 
@@ -198,6 +198,17 @@ export class MeetProvider implements MeetingProviderInterface {
 
       // Capture DOM state after successfully joining meeting
       await htmlSnapshot.captureSnapshot(page, "meet_join_meeting_success")
+      // Capture DOM state after successfully joining meeting
+      await htmlSnapshot.captureSnapshot(page, "meet_join_meeting_success")
+
+      // Verify audio capture is working post-join (matches Teams behavior)
+      if (Streaming.instance) {
+        try {
+          await verifyMeetAudioCapture(page)
+        } catch (error) {
+          console.error("[Meet] Failed to verify audio capture post-join:", formatError(error))
+        }
+      }
 
       if (GLOBAL.get().entry_message) {
         console.log("Sending entry message...")

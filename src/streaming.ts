@@ -50,7 +50,18 @@ export class Streaming {
 
   // WebSocket connection buffer (for chunks received before WS is ready)
   private connectionBuffer: Float32Array[] = []
+  private readonly MAX_CONNECTION_BUFFER_SIZE: number = 100 // ~4 seconds at 24kHz
   private wsConnectionStartTime = 0
+
+  // WebSocket reconnection with exponential backoff
+  private isReconnecting = false
+  private reconnectAttempts = 0
+  private lastReconnectAttemptTime = 0
+  private reconnectTimeoutId: NodeJS.Timeout | null = null
+  private readonly INITIAL_RECONNECT_DELAY_MS: number = 1000 // 1 second
+  private readonly MAX_RECONNECT_DELAY_MS: number = 60000 // 1 minute
+  private lastWsNotReadyLogTime = 0
+  private readonly WS_NOT_READY_LOG_INTERVAL_MS: number = 10000 // Log at most every 10 seconds
 
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
@@ -181,6 +192,21 @@ export class Streaming {
       )
       return
     }
+    if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+      // Throttle warning logs to avoid spam
+      const now = Date.now()
+      if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
+        console.warn(
+          "[Streaming] ⚠️ WebSocket not ready, discarding audio chunks (state:",
+          this.output_ws?.readyState,
+          ")"
+        )
+        this.lastWsNotReadyLogTime = now
+      }
+      // Trigger reconnection if not already reconnecting
+      this.scheduleReconnect()
+      return
+    }
 
     try {
       const float32Data = new Float32Array(audioChunk.audioData)
@@ -202,6 +228,7 @@ export class Streaming {
 
       // Send directly - no buffering, no manual mixing!
       this.processAndSendAudioChunk(float32Data)
+      this.browserAudioChunksSent++
 
       // Log stats every 5 seconds
       const now = Date.now()
@@ -301,6 +328,10 @@ export class Streaming {
         const connectionTime = Date.now() - this.wsConnectionStartTime
         console.log(`✅ External output WebSocket connected in ${connectionTime}ms`)
 
+        // Reset reconnection state on successful connection
+        this.isReconnecting = false
+        this.reconnectAttempts = 0
+
         if (this.output_ws) {
           const handshake = {
             protocol_version: 1,
@@ -327,6 +358,10 @@ export class Streaming {
 
       this.output_ws.on("close", () => {
         console.log("External output WebSocket closed")
+        // Schedule reconnection on close (if still initialized)
+        if (this.isInitialized) {
+          this.scheduleReconnect()
+        }
       })
 
       // Handle dual channel (input/output same URL)
@@ -393,7 +428,7 @@ export class Streaming {
   /**
    * Simplified stop method - no more extension WebSocket cleanup
    */
-  public stop(): void {
+  public async stop(): Promise<void> {
     if (!this.isInitialized) {
       console.warn("Cannot stop: streaming service not started")
       return
@@ -417,6 +452,14 @@ export class Streaming {
   }
 
   private closeExternalWebSockets(): void {
+    // Cancel any pending reconnection
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId)
+      this.reconnectTimeoutId = null
+    }
+    this.isReconnecting = false
+    this.reconnectAttempts = 0
+
     // Close external output WebSocket
     try {
       if (this.output_ws) {
@@ -720,5 +763,48 @@ export class Streaming {
 
   public getCurrentSoundLevel(): number {
     return this.currentSoundLevel
+  }
+
+  /**
+   * Schedule WebSocket reconnection with exponential backoff
+   */
+  private scheduleReconnect(): void {
+    if (!this.isInitialized || !this.outputUrl) {
+      return
+    }
+
+    if (this.isReconnecting) {
+      return
+    }
+
+    this.isReconnecting = true
+    const now = Date.now()
+
+    // Calculate delay with exponential backoff
+    const delay = Math.min(
+      this.INITIAL_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
+      this.MAX_RECONNECT_DELAY_MS
+    )
+
+    // Throttle reconnection attempts
+    if (now - this.lastReconnectAttemptTime < delay) {
+      this.isReconnecting = false
+      return
+    }
+
+    this.lastReconnectAttemptTime = now
+    this.reconnectAttempts++
+
+    console.log(
+      `🔄 Scheduling WebSocket reconnection attempt ${this.reconnectAttempts} in ${delay}ms`
+    )
+
+    this.reconnectTimeoutId = setTimeout(() => {
+      this.isReconnecting = false
+      if (this.isInitialized && this.outputUrl) {
+        console.log(`🔄 Attempting to reconnect to ${this.outputUrl}`)
+        this.setupExternalOutputWS()
+      }
+    }, delay)
   }
 }

@@ -39,6 +39,10 @@ export async function enableMeetAudioCapture(page: Page): Promise<void> {
                 let mixedStreamProcessor = null
                 let chunksSent = 0
 
+                // Abort controller for cleanup
+                let abortController = null
+                let processorPromise = null
+
                 // Start reading the pre-mixed stream
                 async function startMixedStreamProcessor() {
                     if (mixedStreamProcessor) return // Already started
@@ -59,15 +63,48 @@ export async function enableMeetAudioCapture(page: Page): Promise<void> {
                         const reader = processor.readable.getReader()
                         mixedStreamProcessor = reader
 
+                        // Create abort controller for cancellation
+                        abortController = new AbortController()
+                        const signal = abortController.signal
+
                         console.log('[MeetAudio] 🎵 Started Web Audio mixed stream processor')
 
-                        // Read pre-mixed frames continuously
-                        const processFrames = async () => {
+                        // Read pre-mixed frames continuously with cancellation support
+                        const processFrames = async (signal) => {
+                            let currentFrame = null
+
+                            // Handle abort signal
+                            const onAbort = () => {
+                                console.log('[MeetAudio] 🛑 Abort signal received, cancelling reader...')
+                                reader.cancel().catch(err => {
+                                    console.log('[MeetAudio] Reader cancel error (expected):', err.message || err)
+                                })
+                            }
+                            signal.addEventListener('abort', onAbort)
+
                             try {
                                 while (true) {
+                                    // Check for abort before reading
+                                    if (signal.aborted) {
+                                        console.log('[MeetAudio] 🛑 Processing aborted (pre-read check)')
+                                        break
+                                    }
+
                                     const { done, value: frame } = await reader.read()
-                                    if (done) break
+                                    if (done) {
+                                        console.log('[MeetAudio] 📭 Reader done, stream ended')
+                                        break
+                                    }
+
+                                    // Check for abort after reading
+                                    if (signal.aborted) {
+                                        console.log('[MeetAudio] 🛑 Processing aborted (post-read check)')
+                                        if (frame) frame.close()
+                                        break
+                                    }
+
                                     if (!frame) continue
+                                    currentFrame = frame
 
                                     try {
                                         const numChannels = frame.numberOfChannels
@@ -111,20 +148,74 @@ export async function enableMeetAudioCapture(page: Page): Promise<void> {
                                         }
 
                                         frame.close()
+                                        currentFrame = null
                                     } catch (err) {
                                         console.error('[MeetAudio] Frame processing error:', err)
+                                        if (currentFrame) {
+                                            currentFrame.close()
+                                            currentFrame = null
+                                        }
                                     }
                                 }
                             } catch (err) {
-                                console.error('[MeetAudio] Mixed stream error:', err)
+                                if (signal.aborted) {
+                                    console.log('[MeetAudio] 🛑 Stream read cancelled (abort)')
+                                } else {
+                                    console.error('[MeetAudio] Mixed stream error:', err)
+                                }
+                            } finally {
+                                // Cleanup
+                                signal.removeEventListener('abort', onAbort)
+                                if (currentFrame) {
+                                    try { currentFrame.close() } catch (e) {}
+                                }
+                                try {
+                                    reader.releaseLock()
+                                    console.log('[MeetAudio] 🔓 Reader lock released')
+                                } catch (e) {
+                                    console.log('[MeetAudio] Reader lock release error:', e.message || e)
+                                }
+                                mixedStreamProcessor = null
+                                console.log('[MeetAudio] 🧹 Processor cleanup complete, sent ' + chunksSent + ' total chunks')
                             }
                         }
 
-                        processFrames()
+                        // Start processing and store promise for await on cleanup
+                        processorPromise = processFrames(signal)
                     } catch (e) {
                         console.error('[MeetAudio] Failed to start mixed stream processor:', e)
                     }
                 }
+
+                // Stop the processor gracefully
+                async function stopMixedStreamProcessor() {
+                    if (abortController) {
+                        console.log('[MeetAudio] 🛑 Stopping mixed stream processor...')
+                        abortController.abort()
+                        if (processorPromise) {
+                            await processorPromise
+                        }
+                        abortController = null
+                        processorPromise = null
+                        console.log('[MeetAudio] ✅ Mixed stream processor stopped')
+                    }
+                }
+
+                // Expose stop function globally for cleanup on page unload/navigation
+                window.__meetAudioStop = stopMixedStreamProcessor
+
+                // Auto-cleanup on page unload
+                window.addEventListener('beforeunload', () => {
+                    stopMixedStreamProcessor()
+                })
+
+                // Auto-cleanup on visibility change (page hidden/navigated)
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'hidden') {
+                        console.log('[MeetAudio] Page hidden, stopping processor...')
+                        stopMixedStreamProcessor()
+                    }
+                })
 
                 // Connect a track to the mixer
                 function connectTrackToMixer(track) {
@@ -183,6 +274,22 @@ export async function enableMeetAudioCapture(page: Page): Promise<void> {
         console.log('[MeetAudio] ✅ Web Audio mixer script injected')
     } catch (error) {
         console.error('[MeetAudio] Failed to inject mixer script:', error)
+    }
+}
+
+/**
+ * Stop the audio capture processor gracefully
+ */
+export async function stopMeetAudioCapture(page: Page): Promise<void> {
+    try {
+        await page.evaluate(() => {
+            if (typeof (window as any).__meetAudioStop === 'function') {
+                return (window as any).__meetAudioStop()
+            }
+        })
+        console.log('[MeetAudio] ✅ Audio capture stopped from Node.js')
+    } catch (error) {
+        console.error('[MeetAudio] Failed to stop audio capture:', error)
     }
 }
 
