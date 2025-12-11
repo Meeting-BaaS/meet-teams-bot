@@ -162,6 +162,7 @@ export class MeetProvider implements MeetingProviderInterface {
             // Wait to be in the meeting with regular cancelCheck verification
             console.log('Waiting to confirm meeting join...')
             let inWaitingRoom = false
+            let leftWaitingRoomAt: number | null = null
             while (true) {
                 if (cancelCheck()) {
                     GLOBAL.setError(MeetingEndReason.ApiRequest)
@@ -175,6 +176,14 @@ export class MeetProvider implements MeetingProviderInterface {
                         '📋 Bot is in waiting room, waiting for host to admit...',
                     )
                     inWaitingRoom = true
+                }
+
+                // Detect when we leave the waiting room
+                if (inWaitingRoom && !nowInWaitingRoom && !leftWaitingRoomAt) {
+                    leftWaitingRoomAt = Date.now()
+                    console.log(
+                        '✅ Left waiting room, giving UI 2 seconds to fully render...',
+                    )
                 }
 
                 // Only retry clicking join button if NOT in waiting room
@@ -192,7 +201,13 @@ export class MeetProvider implements MeetingProviderInterface {
                     }
                 }
 
-                if (await isInMeeting(page)) {
+                // After leaving waiting room, give UI time to render before checking
+                const gracePeriodMs = 2000
+                const gracePeriodExpired =
+                    !leftWaitingRoomAt ||
+                    Date.now() - leftWaitingRoomAt >= gracePeriodMs
+
+                if (gracePeriodExpired && (await isInMeeting(page))) {
                     console.log('Successfully confirmed we are in the meeting')
                     onJoinSuccess()
                     break
