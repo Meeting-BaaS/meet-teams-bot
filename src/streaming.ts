@@ -54,10 +54,20 @@ export class Streaming {
     private readonly MAX_CONNECTION_BUFFER_SIZE: number = 100 // ~4 seconds at 24kHz
     private wsConnectionStartTime: number = 0
 
+    // WebSocket reconnection with exponential backoff
+    private isReconnecting: boolean = false
+    private reconnectAttempts: number = 0
+    private lastReconnectAttemptTime: number = 0
+    private reconnectTimeoutId: NodeJS.Timeout | null = null
+    private readonly INITIAL_RECONNECT_DELAY_MS: number = 1000 // 1 second
+    private readonly MAX_RECONNECT_DELAY_MS: number = 60000 // 1 minute
+    private lastWsNotReadyLogTime: number = 0
+    private readonly WS_NOT_READY_LOG_INTERVAL_MS: number = 10000 // Log at most every 10 seconds
+
     // Debug: Save streamed audio to file
     private debugAudioStream: fs.WriteStream | null = null
     private debugAudioBytesWritten: number = 0
-    private readonly debugAudioEnabled: boolean = false
+    private readonly debugAudioEnabled: boolean = process.env.DEBUG_AUDIO === 'true'
 
     constructor(
         input: string | undefined,
@@ -72,9 +82,6 @@ export class Streaming {
         if (sample_rate) {
             this.sample_rate = sample_rate
         }
-
-        // Read debug audio configuration from environment variable
-        ;(this as any).debugAudioEnabled = process.env.DEBUG_AUDIO === 'true'
 
         console.log(
             `🎵 Streaming service initialized with sample rate: ${this.sample_rate} Hz${sample_rate ? ' (from user config)' : ` (default: ${DEFAULT_SAMPLE_RATE} Hz)`}`,
@@ -197,7 +204,14 @@ export class Streaming {
         }
 
         if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
-            console.warn('[Streaming] ⚠️ Received audio chunk but WebSocket not open (state:', this.output_ws?.readyState, ')')
+            // Throttle warning logs to avoid spam
+            const now = Date.now()
+            if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
+                console.warn('[Streaming] ⚠️ WebSocket not ready, discarding audio chunks (state:', this.output_ws?.readyState, ')')
+                this.lastWsNotReadyLogTime = now
+            }
+            // Trigger reconnection if not already reconnecting
+            this.scheduleReconnect()
             return
         }
 
@@ -324,6 +338,10 @@ export class Streaming {
                 const connectionTime = Date.now() - this.wsConnectionStartTime
                 console.log(`✅ External output WebSocket connected in ${connectionTime}ms`)
 
+                // Reset reconnection state on successful connection
+                this.isReconnecting = false
+                this.reconnectAttempts = 0
+
                 if (this.output_ws) {
                     const handshake = {
                         protocol_version: 1,
@@ -346,10 +364,16 @@ export class Streaming {
 
             this.output_ws.on('error', (err: Error) => {
                 console.error('External output WebSocket error:', formatError(err))
+                // Schedule reconnection on error
+                this.scheduleReconnect()
             })
 
             this.output_ws.on('close', () => {
                 console.log('External output WebSocket closed')
+                // Schedule reconnection on close (if still initialized)
+                if (this.isInitialized) {
+                    this.scheduleReconnect()
+                }
             })
 
             // Handle dual channel (input/output same URL)
@@ -388,6 +412,60 @@ export class Streaming {
         }
     }
 
+    /**
+     * Schedule WebSocket reconnection with exponential backoff
+     * Max delay is 1 minute between reconnection attempts
+     */
+    private scheduleReconnect(): void {
+        // Don't reconnect if not initialized or no output URL configured
+        if (!this.isInitialized || !this.outputUrl) {
+            return
+        }
+
+        // Don't schedule if already reconnecting
+        if (this.isReconnecting) {
+            return
+        }
+
+        // Don't reconnect if WebSocket is already open or connecting
+        if (this.output_ws &&
+            (this.output_ws.readyState === WebSocket.OPEN ||
+             this.output_ws.readyState === WebSocket.CONNECTING)) {
+            return
+        }
+
+        this.isReconnecting = true
+        this.reconnectAttempts++
+
+        // Calculate delay with exponential backoff: 1s, 2s, 4s, 8s, ... up to 60s
+        const delay = Math.min(
+            this.INITIAL_RECONNECT_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
+            this.MAX_RECONNECT_DELAY_MS
+        )
+
+        console.log(`🔄 Scheduling WebSocket reconnection attempt ${this.reconnectAttempts} in ${(delay / 1000).toFixed(1)}s`)
+
+        // Clear any existing timeout
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId)
+        }
+
+        this.reconnectTimeoutId = setTimeout(() => {
+            this.reconnectTimeoutId = null
+            this.lastReconnectAttemptTime = Date.now()
+
+            // Check again if we should reconnect
+            if (!this.isInitialized || !this.outputUrl) {
+                this.isReconnecting = false
+                return
+            }
+
+            console.log(`🔌 Attempting WebSocket reconnection (attempt ${this.reconnectAttempts})...`)
+            this.isReconnecting = false // Reset before attempting so setupExternalOutputWS can set it again if needed
+            this.setupExternalOutputWS()
+        }, delay)
+    }
+
     public pause(): void {
         if (!this.isInitialized) {
             console.warn('Cannot pause: streaming service not started')
@@ -422,7 +500,7 @@ export class Streaming {
     /**
      * Simplified stop method - no more extension WebSocket cleanup
      */
-    public stop(): void {
+    public async stop(): Promise<void> {
         if (!this.isInitialized) {
             console.warn('Cannot stop: streaming service not started')
             return
@@ -430,8 +508,8 @@ export class Streaming {
 
         console.log('🛑 Stopping simplified streaming service...')
 
-        // Finalize debug audio file
-        this.finalizeDebugAudioFile()
+        // Finalize debug audio file (wait for WAV header to be written)
+        await this.finalizeDebugAudioFile()
 
         // Close external WebSockets only
         this.closeExternalWebSockets()
@@ -446,6 +524,14 @@ export class Streaming {
     }
 
     private closeExternalWebSockets(): void {
+        // Cancel any pending reconnection
+        if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId)
+            this.reconnectTimeoutId = null
+        }
+        this.isReconnecting = false
+        this.reconnectAttempts = 0
+
         // Close external output WebSocket
         try {
             if (this.output_ws) {
@@ -725,15 +811,20 @@ export class Streaming {
     /**
      * Finalize debug audio file (update WAV header with correct size)
      */
-    private finalizeDebugAudioFile(): void {
+    private async finalizeDebugAudioFile(): Promise<void> {
         if (!this.debugAudioStream) return
 
-        try {
-            const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
-            const bytesWritten = this.debugAudioBytesWritten
-            const sampleRate = this.sample_rate
+        const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
+        const bytesWritten = this.debugAudioBytesWritten
+        const sampleRate = this.sample_rate
+        const stream = this.debugAudioStream
 
-            this.debugAudioStream.end(async () => {
+        // Clear instance state immediately to prevent double-finalization
+        this.debugAudioStream = null
+        this.debugAudioBytesWritten = 0
+
+        await new Promise<void>((resolve, reject) => {
+            stream.end(async () => {
                 let fd: fsPromises.FileHandle | null = null
                 try {
                     // Update WAV header with correct size using async file operations
@@ -742,8 +833,10 @@ export class Streaming {
                     await fd.write(header, 0, 44, 0)
 
                     console.log(`🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`)
+                    resolve()
                 } catch (error) {
                     console.error('Failed to update WAV header:', error)
+                    reject(error)
                 } finally {
                     // Always close the file descriptor
                     if (fd) {
@@ -755,12 +848,7 @@ export class Streaming {
                     }
                 }
             })
-        } catch (error) {
-            console.error('Failed to finalize debug audio file:', error)
-        }
-
-        this.debugAudioStream = null
-        this.debugAudioBytesWritten = 0
+        })
     }
 
     public getCurrentSoundLevel(): number {

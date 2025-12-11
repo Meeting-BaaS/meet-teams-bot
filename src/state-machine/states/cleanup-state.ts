@@ -74,11 +74,11 @@ export class CleanupState extends BaseState {
                 '🧹 Steps 4-6: Running parallel cleanup (streaming + speakers + HTML)',
             )
             await Promise.allSettled([
-                // 4. Stop the streaming (fast, no await needed)
+                // 4. Stop the streaming (waits for debug audio file finalization)
                 (async () => {
                     console.info('🧹 Step 4/7: Stopping streaming service')
                     if (this.context.streamingService) {
-                        this.context.streamingService.stop()
+                        await this.context.streamingService.stop()
                     }
                 })(),
 
