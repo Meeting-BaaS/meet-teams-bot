@@ -237,7 +237,7 @@ export class Streaming {
         this.lastBrowserStatsLogTime = now
       }
     } catch (error) {
-      console.error("[Streaming] Failed to process mixed audio chunk:", error)
+      console.error("[Streaming] Failed to process mixed audio chunk:", formatError(error))
     }
   }
 
@@ -665,7 +665,7 @@ export class Streaming {
       const header = this.createWavHeader(0, this.sample_rate, 1, 16)
       this.debugAudioStream.write(header)
     } catch (error) {
-      console.error("Failed to initialize debug audio file:", error)
+      console.error("Failed to initialize debug audio file:", formatError(error))
       this.debugAudioStream = null
     }
   }
@@ -714,22 +714,27 @@ export class Streaming {
       this.debugAudioStream.write(buffer)
       this.debugAudioBytesWritten += buffer.length
     } catch (error) {
-      console.error("Failed to write debug audio chunk:", error)
+      console.error("Failed to write debug audio chunk:", formatError(error))
     }
   }
 
   /**
    * Finalize debug audio file (update WAV header with correct size)
    */
-  private finalizeDebugAudioFile(): void {
+  private async finalizeDebugAudioFile(): Promise<void> {
     if (!this.debugAudioStream) return
 
-    try {
-      const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
-      const bytesWritten = this.debugAudioBytesWritten
-      const sampleRate = this.sample_rate
+    const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
+    const bytesWritten = this.debugAudioBytesWritten
+    const sampleRate = this.sample_rate
+    const stream = this.debugAudioStream
 
-      this.debugAudioStream.end(async () => {
+    // Clear instance state immediately to prevent double-finalization
+    this.debugAudioStream = null
+    this.debugAudioBytesWritten = 0
+
+    await new Promise<void>((resolve, reject) => {
+      stream.end(async () => {
         let fd: fs.promises.FileHandle | null = null
         try {
           // Update WAV header with correct size using async file operations
@@ -740,25 +745,22 @@ export class Streaming {
           console.log(
             `🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`
           )
+          resolve()
         } catch (error) {
-          console.error("Failed to update WAV header:", error)
+          console.error("Failed to update WAV header:", formatError(error))
+          reject(error)
         } finally {
           // Always close the file descriptor
           if (fd) {
             try {
               await fd.close()
             } catch (closeError) {
-              console.error("Failed to close debug audio file:", closeError)
+              console.error("Failed to close debug audio file:", formatError(closeError))
             }
           }
         }
       })
-    } catch (error) {
-      console.error("Failed to finalize debug audio file:", error)
-    }
-
-    this.debugAudioStream = null
-    this.debugAudioBytesWritten = 0
+    })
   }
 
   public getCurrentSoundLevel(): number {
