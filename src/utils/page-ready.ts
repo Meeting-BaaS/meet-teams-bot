@@ -18,7 +18,9 @@ export interface WaitForPageReadyOptions {
      */
     acceptStates?: ReadyState[]
     /**
-     * Whether to throw on timeout (default: false - returns false instead)
+     * Whether to throw on any failure (timeout, page closed, navigation errors, etc.)
+     * When false (default), returns false and logs warnings instead of throwing
+     * When true, throws errors for all failure types - use for critical operations
      */
     throwOnTimeout?: boolean
     /**
@@ -32,12 +34,15 @@ export interface WaitForPageReadyOptions {
  *
  * @param page - Playwright page instance
  * @param options - Configuration options
- * @returns true if page reached desired state, false if timeout (unless throwOnTimeout is true)
- * @throws Error if throwOnTimeout is true and timeout occurs
+ * @returns true if page reached desired state, false on any failure (unless throwOnTimeout is true)
+ * @throws Error if throwOnTimeout is true and any failure occurs (timeout, page closed, navigation errors, etc.)
  *
  * @example
- * // Wait for page to be complete or interactive (default)
+ * // Wait for page to be complete or interactive (default, returns false on failure)
  * const ready = await waitForPageReady(page)
+ * if (!ready) {
+ *   // Handle gracefully
+ * }
  *
  * @example
  * // Wait only for complete state with custom timeout
@@ -47,7 +52,7 @@ export interface WaitForPageReadyOptions {
  * })
  *
  * @example
- * // Throw on timeout (for critical operations)
+ * // Throw on any failure (for critical operations)
  * await waitForPageReady(page, {
  *   throwOnTimeout: true,
  *   context: 'joining meeting'
@@ -65,6 +70,7 @@ export async function waitForPageReady(
     } = options
 
     // Validate page is still open
+    // Note: throwOnTimeout controls throwing on ALL failures (closed page, timeouts, etc.)
     if (page.isClosed()) {
         const error = new Error(
             `Page is closed${context ? ` (${context})` : ''}`,
@@ -104,6 +110,8 @@ export async function waitForPageReady(
             isTimeout ? 'timeout' : 'failure'
         }${context ? ` (${context})` : ''}`
 
+        // throwOnTimeout controls throwing on ALL failures, not just timeouts
+        // This allows callers to choose between graceful handling vs strict error propagation
         if (throwOnTimeout) {
             // Preserve original error for non-timeout failures to aid debugging
             throw isTimeout
