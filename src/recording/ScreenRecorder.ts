@@ -11,6 +11,7 @@ import { MeetingEndReason } from '../state-machine/types'
 import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { MEETING_CONSTANTS } from '../state-machine/constants'
 import { calculateVideoOffset } from '../utils/CalculVideoOffset'
+import { formatError } from '../utils/Logger'
 import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
 import { sleep } from '../utils/sleep'
@@ -148,7 +149,7 @@ export class ScreenRecorder extends EventEmitter {
                     PathManager.getInstance().getOutputPath() + '.flac'
             }
         } catch (error) {
-            console.error('Failed to generate output paths:', error)
+            console.error('Failed to generate output paths:', formatError(error))
             throw new Error('Failed to generate output paths')
         }
     }
@@ -203,7 +204,7 @@ export class ScreenRecorder extends EventEmitter {
                 isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
             })
         } catch (error) {
-            console.error('Failed to start native recording:', error)
+            console.error('Failed to start native recording:', formatError(error))
             this.isRecording = false
             this.emit('error', { type: 'startError', error })
         }
@@ -288,7 +289,7 @@ export class ScreenRecorder extends EventEmitter {
                 return
             }
         } catch (error) {
-            console.error('❌ FFmpeg audio test failed:', error)
+            console.error('❌ FFmpeg audio test failed:', formatError(error))
         }
 
         throw new Error(
@@ -490,7 +491,7 @@ export class ScreenRecorder extends EventEmitter {
         if (!this.ffmpegProcess) return
 
         this.ffmpegProcess.on('error', (error) => {
-            console.error('FFmpeg error:', error)
+            console.error('FFmpeg error:', formatError(error))
             this.emit('error', error)
         })
 
@@ -695,12 +696,12 @@ export class ScreenRecorder extends EventEmitter {
                         // Streaming.instance.processAudioChunk(float32Array)
                     }
                 } catch (error) {
-                    console.error('Failed to process audio chunk:', error)
+                    console.error('Failed to process audio chunk:', formatError(error))
                     // Don't throw - continue processing other chunks
                 }
             })
         } catch (error) {
-            console.error('Failed to setup streaming audio:', error)
+            console.error('Failed to setup streaming audio:', formatError(error))
         }
     }
 
@@ -812,11 +813,11 @@ export class ScreenRecorder extends EventEmitter {
 
                     console.log(`✅ Chunk uploaded: ${filename}`)
                 } catch (error) {
-                    console.error(`Failed to upload chunk ${filename}:`, error)
+                    console.error(`Failed to upload chunk ${filename}:`, formatError(error))
                 }
             }
         } catch (error) {
-            console.error('Failed to read chunks directory:', error)
+            console.error('Failed to read chunks directory:', formatError(error))
         }
     }
 
@@ -852,7 +853,7 @@ export class ScreenRecorder extends EventEmitter {
                 fs.unlinkSync(this.audioOutputPath)
             }
         } catch (error) {
-            console.error('Failed to upload audio file:', error)
+            console.error('Failed to upload audio file:', formatError(error))
             // Don't throw - continue with video upload
         }
 
@@ -877,7 +878,7 @@ export class ScreenRecorder extends EventEmitter {
                 fs.unlinkSync(this.outputPath)
             }
         } catch (error) {
-            console.error('Failed to upload video file:', error)
+            console.error('Failed to upload video file:', formatError(error))
             // Don't throw - mark as uploaded to allow process completion
         }
 
@@ -1056,11 +1057,11 @@ export class ScreenRecorder extends EventEmitter {
                     await this.uploadToS3()
                     console.log('✅ Upload completed successfully')
                 } catch (error) {
-                    console.error('❌ Upload failed:', error)
+                    console.error('❌ Upload failed:', formatError(error))
                 }
             }
         } catch (error) {
-            console.error('❌ Error during recording processing:', error)
+            console.error('❌ Error during recording processing:', formatError(error))
 
             if (error instanceof Error) {
                 if (

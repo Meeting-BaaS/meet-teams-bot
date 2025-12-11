@@ -242,7 +242,7 @@ export class Streaming {
             }
 
         } catch (error) {
-            console.error('[Streaming] Failed to process mixed audio chunk:', error)
+            console.error('[Streaming] Failed to process mixed audio chunk:', formatError(error))
         }
     }
 
@@ -760,7 +760,7 @@ export class Streaming {
             const header = this.createWavHeader(0, this.sample_rate, 1, 16)
             this.debugAudioStream.write(header)
         } catch (error) {
-            console.error('Failed to initialize debug audio file:', error)
+            console.error('Failed to initialize debug audio file:', formatError(error))
             this.debugAudioStream = null
         }
     }
@@ -804,7 +804,7 @@ export class Streaming {
             this.debugAudioStream.write(buffer)
             this.debugAudioBytesWritten += buffer.length
         } catch (error) {
-            console.error('Failed to write debug audio chunk:', error)
+            console.error('Failed to write debug audio chunk:', formatError(error))
         }
     }
 
@@ -835,7 +835,7 @@ export class Streaming {
                     console.log(`🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`)
                     resolve()
                 } catch (error) {
-                    console.error('Failed to update WAV header:', error)
+                    console.error('Failed to update WAV header:', formatError(error))
                     reject(error)
                 } finally {
                     // Always close the file descriptor
@@ -843,7 +843,7 @@ export class Streaming {
                         try {
                             await fd.close()
                         } catch (closeError) {
-                            console.error('Failed to close debug audio file:', closeError)
+                            console.error('Failed to close debug audio file:', formatError(closeError))
                         }
                     }
                 }
