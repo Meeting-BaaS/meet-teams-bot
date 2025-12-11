@@ -6,6 +6,7 @@ import { GLOBAL } from '../../singleton'
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
+import { formatError } from '../../utils/Logger'
 
 export class CleanupState extends BaseState {
     async execute(): StateExecuteResult {
@@ -26,13 +27,13 @@ export class CleanupState extends BaseState {
                 await Promise.race([cleanupPromise, timeoutPromise])
                 console.info('🧹 Cleanup completed successfully')
             } catch (error) {
-                console.error('🧹 Cleanup failed or timed out:', error)
+                console.error('🧹 Cleanup failed or timed out:', formatError(error))
                 // Continue to Terminated even if cleanup fails
             }
             console.info('🧹 Transitioning to Terminated state')
             return this.transition(MeetingStateType.Terminated) // État final
         } catch (error) {
-            console.error('🧹 Error during cleanup:', error)
+            console.error('🧹 Error during cleanup:', formatError(error))
             // Always transition to Terminated to avoid infinite loops
             console.info('🧹 Forcing transition to Terminated despite error')
             return this.transition(MeetingStateType.Terminated)
@@ -102,7 +103,7 @@ export class CleanupState extends BaseState {
 
             console.info('🧹 All cleanup steps completed')
         } catch (error) {
-            console.error('🧹 Cleanup error:', error)
+            console.error('🧹 Cleanup error:', formatError(error))
             // Continue even if an error occurs
             // Don't re-throw - errors are already handled
             return
@@ -143,7 +144,7 @@ export class CleanupState extends BaseState {
                 // Force cleanup
                 this.context.speakersObserver = null
             } else {
-                console.error('Error stopping speakers observer:', error)
+                console.error('Error stopping speakers observer:', formatError(error))
             }
             // Don't throw as this is non-critical
         }
@@ -179,7 +180,7 @@ export class CleanupState extends BaseState {
                 // Force cleanup
                 this.context.htmlCleaner = undefined
             } else {
-                console.error('Error stopping HTML cleaner:', error)
+                console.error('Error stopping HTML cleaner:', formatError(error))
             }
             // Don't throw as this is non-critical
         }
@@ -195,10 +196,7 @@ export class CleanupState extends BaseState {
                 console.log('ScreenRecorder not recording, nothing to stop')
             }
         } catch (error) {
-            console.error(
-                'Error stopping ScreenRecorder:',
-                error instanceof Error ? error.message : error,
-            )
+            console.error('Error stopping ScreenRecorder:', formatError(error))
 
             // Don't re-throw - errors are already handled
 
@@ -233,7 +231,7 @@ export class CleanupState extends BaseState {
                 this.context.browserContext?.close().catch(() => {}),
             ])
         } catch (error) {
-            console.error('Failed to cleanup browser resources:', error)
+            console.error('Failed to cleanup browser resources:', formatError(error))
         }
     }
 

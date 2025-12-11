@@ -7,6 +7,7 @@ import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
+import { formatError } from '../utils/Logger'
 import { closeMeeting } from './meet/closeMeeting'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { MEET_STATE_CONFIG } from './meet-state-config'
@@ -96,11 +97,7 @@ export class MeetProvider implements MeetingProviderInterface {
 
             return page
         } catch (error) {
-            console.error('openMeetingPage error:', {
-                message: (error as Error).message,
-                stack: (error as Error).stack,
-                name: (error as Error).name,
-            })
+            console.error('openMeetingPage error:', formatError(error))
             throw error
         }
     }
@@ -270,10 +267,7 @@ export class MeetProvider implements MeetingProviderInterface {
                 await findShowEveryOne(page, true, cancelCheck)
             }
         } catch (error) {
-            console.error('Error in joinMeeting:', {
-                message: (error as Error).message,
-                stack: (error as Error).stack,
-            })
+            console.error('Error in joinMeeting:', formatError(error))
             throw error
         }
     }
@@ -888,10 +882,10 @@ async function changeLayout(
         await clickOutsideModal(page)
         return true
     } catch (error) {
-        console.error(`Error in changeLayout attempt ${currentAttempt}:`, {
-            message: (error as Error).message,
-            stack: (error as Error).stack,
-        })
+        console.error(
+            `Error in changeLayout attempt ${currentAttempt}:`,
+            formatError(error),
+        )
 
         const htmlSnapshot = HtmlSnapshotService.getInstance()
         await htmlSnapshot.captureSnapshot(

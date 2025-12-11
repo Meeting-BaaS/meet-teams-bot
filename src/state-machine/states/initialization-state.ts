@@ -9,6 +9,7 @@ import {
     StateExecuteResult,
 } from '../types'
 import { BaseState } from './base-state'
+import { formatError } from '../../utils/Logger'
 
 export class InitializationState extends BaseState {
     async execute(): StateExecuteResult {
@@ -36,7 +37,10 @@ export class InitializationState extends BaseState {
             try {
                 await this.setupBrowser()
             } catch (error) {
-                console.error('Critical error: Browser setup failed:', error)
+                console.error(
+                    'Critical error: Browser setup failed:',
+                    formatError(error),
+                )
                 // Ajouter des détails à l'erreur pour faciliter le diagnostic
                 const enhancedError = new Error(
                     `Browser initialization failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -104,7 +108,10 @@ export class InitializationState extends BaseState {
                 return // Exit the function if successful
             } catch (error) {
                 lastError = error as Error
-                console.error(`Browser setup attempt ${attempt} failed:`, error)
+                console.error(
+                    `Browser setup attempt ${attempt} failed:`,
+                    formatError(error),
+                )
 
                 // Si ce n'est pas la dernière tentative, attendre avant de réessayer
                 if (attempt < maxRetries) {
@@ -118,7 +125,10 @@ export class InitializationState extends BaseState {
         }
 
         // Si on arrive ici, c'est que toutes les tentatives ont échoué
-        console.error('All browser setup attempts failed')
+        console.error(
+            'All browser setup attempts failed',
+            lastError ? formatError(lastError) : {},
+        )
         throw (
             lastError ||
             new Error('Browser setup failed after multiple attempts')
@@ -131,7 +141,7 @@ export class InitializationState extends BaseState {
                 this.context.pathManager = PathManager.getInstance()
             }
         } catch (error) {
-            console.error('Path manager setup failed:', error)
+            console.error('Path manager setup failed:', formatError(error))
             // Create base directories if possible
             try {
                 const fs = require('fs')
@@ -146,7 +156,7 @@ export class InitializationState extends BaseState {
             } catch (fsError) {
                 console.error(
                     'Failed to create fallback log directory:',
-                    fsError,
+                    formatError(fsError),
                 )
             }
             throw error

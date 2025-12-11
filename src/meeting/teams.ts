@@ -9,6 +9,7 @@ import { parseMeetingUrlFromJoinInfos } from '../urlParser/teamsUrlParser'
 import { sleep } from '../utils/sleep'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { TEAMS_STATE_CONFIG } from './teams-state-config'
+import { formatError } from '../utils/Logger'
 
 // Create a singleton detector instance for Microsoft Teams
 const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
@@ -134,7 +135,7 @@ export class TeamsProvider implements MeetingProviderInterface {
 
             return page
         } catch (error) {
-            console.error('Error in openMeetingPage:', error)
+            console.error('Error in openMeetingPage:', formatError(error))
             throw error
         }
     }
@@ -153,7 +154,7 @@ export class TeamsProvider implements MeetingProviderInterface {
         try {
             await ensurePageLoaded(page)
         } catch (error) {
-            console.error('Page load failed:', error)
+            console.error('Page load failed:', formatError(error))
             throw new Error('Page failed to load - retrying')
         }
 
@@ -442,7 +443,7 @@ export class TeamsProvider implements MeetingProviderInterface {
                 }
             }
         } catch (e) {
-            console.error('Error handling "View" or "Speaker" mode:', e)
+            console.error('Error handling "View" or "Speaker" mode:', formatError(e))
         }
     }
 
@@ -510,7 +511,10 @@ export class TeamsProvider implements MeetingProviderInterface {
 
             console.log('Could not find leave button, closing page instead')
         } catch (error) {
-            console.error('Error while trying to leave meeting:', error)
+            console.error(
+                'Error while trying to leave meeting:',
+                formatError(error),
+            )
         }
     }
 }
@@ -588,7 +592,10 @@ async function clickWithInnerText(
             )
         } catch (e) {
             if (i === iterations - 1) {
-                console.error(`Error in clickWithInnerText (last attempt):`, e)
+                console.error(
+                    `Error in clickWithInnerText (last attempt):`,
+                    formatError(e),
+                )
             }
             continueButton = false
         }
@@ -639,7 +646,7 @@ async function typeBotName(
 
             await page.waitForTimeout(500)
         } catch (e) {
-            console.error(`Error typing bot name (attempt ${i + 1}):`, e)
+            console.error(`Error typing bot name (attempt ${i + 1}):`, formatError(e))
         }
     }
     throw new Error('Failed to type bot name')
@@ -650,7 +657,7 @@ async function checkPageForText(page: Page, text: string): Promise<boolean> {
         const content = await page.content()
         return content.includes(text)
     } catch (error) {
-        console.error('Error checking page for text:', error)
+        console.error('Error checking page for text:', formatError(error))
         return false
     }
 }
@@ -684,7 +691,7 @@ async function isRemovedFromTheMeeting(page: Page): Promise<boolean> {
         }
         return false
     } catch (error) {
-        console.error('Error while checking meeting status:', error)
+        console.error('Error while checking meeting status:', formatError(error))
         return false
     }
 }
@@ -716,7 +723,7 @@ async function handlePermissionDialog(page: Page): Promise<void> {
             console.log('No permission dialog found')
         }
     } catch (error) {
-        console.error('Failed to handle permission dialog:', error)
+        console.error('Failed to handle permission dialog:', formatError(error))
     }
 }
 
@@ -756,7 +763,7 @@ async function activateCamera(page: Page): Promise<void> {
             )
         }
     } catch (error) {
-        console.error('Failed to activate camera:', error)
+        console.error('Failed to activate camera:', formatError(error))
     }
 }
 
@@ -802,7 +809,7 @@ async function activateMicrophone(page: Page): Promise<void> {
         // Give Teams a moment to apply the state change
         await sleep(500)
     } catch (error) {
-        console.error('Failed to activate microphone:', error)
+        console.error('Failed to activate microphone:', formatError(error))
     }
 }
 
@@ -817,7 +824,7 @@ async function deactivateMicrophone(page: Page): Promise<void> {
         // Give Teams a moment to apply the state change
         await sleep(500)
     } catch (error) {
-        console.error('Failed to deactivate microphone:', error)
+        console.error('Failed to deactivate microphone:', formatError(error))
     }
 }
 
@@ -828,7 +835,7 @@ async function ensurePageLoaded(page: Page, timeout = 20000): Promise<boolean> {
         })
         return true
     } catch (error) {
-        console.error('Failed to ensure page is loaded:', error)
+        console.error('Failed to ensure page is loaded:', formatError(error))
         throw new Error('RetryableError: Page load timeout')
     }
 }
@@ -861,7 +868,7 @@ async function isInTeamsMeeting(page: Page): Promise<boolean> {
 
         return result.matched
     } catch (error) {
-        console.error('Error checking if in Teams meeting:', error)
+        console.error('Error checking if in Teams meeting:', formatError(error))
         return false
     }
 }

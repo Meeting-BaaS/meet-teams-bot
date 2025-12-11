@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
 import { GLOBAL } from '../singleton'
+import { formatError } from './Logger'
 
 const EFS_MOUNT_POINT = process.env.EFS_MOUNT_POINT || '/mnt/efs'
 
@@ -39,7 +40,7 @@ export class PathManager {
                 await fs.mkdir(p, { recursive: true })
                 console.log(`Created directory: ${p}`)
             } catch (error) {
-                console.error(`Failed to create directory ${p}:`, error)
+                console.error(`Failed to create directory ${p}:`, formatError(error))
                 throw error
             }
         }

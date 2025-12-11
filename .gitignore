@@ -33,3 +33,6 @@ yarn.lock
 # Misc
 .DS_Store
 buildInfo.json
+
+# Backup files
+*.bak

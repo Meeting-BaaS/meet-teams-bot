@@ -4,6 +4,7 @@
  */
 
 import { Page } from 'playwright'
+import { formatError } from './Logger'
 
 interface SyncSignalOptions {
     /** Duration of the sync signal in milliseconds (default: 500) */
@@ -45,7 +46,7 @@ export async function generateSyncSignal(
 
         console.log('✅ Sync signal generated successfully')
     } catch (error) {
-        console.error('❌ Failed to generate sync signal:', error)
+        console.error('❌ Failed to generate sync signal:', formatError(error))
         throw error
     }
 }
@@ -117,7 +118,7 @@ async function generateAudioBeep(
                     `🔊 Audio beep: ${freq}Hz for ${dur}ms at volume ${vol}`,
                 )
             } catch (error) {
-                console.error('Audio beep error:', error)
+                console.error('Audio beep error:', formatError(error))
                 delete (window as any).__syncAudioContext
             }
         },

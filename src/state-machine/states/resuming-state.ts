@@ -4,6 +4,7 @@ import { SpeakerManager } from '../../speaker-manager'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 import { GLOBAL } from '../../singleton'
+import { formatError } from '../../utils/Logger'
 
 export class ResumingState extends BaseState {
     async execute(): StateExecuteResult {
@@ -35,7 +36,7 @@ export class ResumingState extends BaseState {
             // Retourner à l'état Recording
             return this.transition(MeetingStateType.Recording)
         } catch (error) {
-            console.error('Error in resuming state:', error)
+            console.error('Error in resuming state:', formatError(error))
             return this.handleError(error as Error)
         }
     }
@@ -60,7 +61,10 @@ export class ResumingState extends BaseState {
                             speakers,
                         )
                     } catch (error) {
-                        console.error('Error handling speaker update:', error)
+                        console.error(
+                            'Error handling speaker update:',
+                            formatError(error),
+                        )
                     }
                 }
 
@@ -87,7 +91,7 @@ export class ResumingState extends BaseState {
         try {
             await Promise.race([resumePromise(), timeoutPromise])
         } catch (error) {
-            console.error('Error or timeout in resumeRecording:', error)
+            console.error('Error or timeout in resumeRecording:', formatError(error))
             throw error
         }
     }

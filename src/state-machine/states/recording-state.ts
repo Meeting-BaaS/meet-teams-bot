@@ -1,6 +1,7 @@
 import { Events } from '../../events'
 import { Streaming } from '../../streaming'
 import { MEETING_CONSTANTS } from '../constants'
+import { formatError } from '../../utils/Logger'
 
 import {
     MeetingEndReason,
@@ -109,8 +110,7 @@ export class RecordingState extends BaseState {
             )
             return this.transition(MeetingStateType.Cleanup)
         } catch (error) {
-            console.error('❌ Error in recording state:', error)
-            console.error('❌ Error stack:', (error as Error).stack)
+            console.error('❌ Error in recording state:', formatError(error))
             return this.handleError(error as Error)
         }
     }
@@ -138,7 +138,7 @@ export class RecordingState extends BaseState {
 
         // Configure event listeners for screen recorder
         recorder.on('error', async (error) => {
-            console.error('ScreenRecorder error:', error)
+            console.error('ScreenRecorder error:', formatError(error))
 
             // Handle different error shapes safely
             let errorMessage: string
@@ -250,12 +250,11 @@ export class RecordingState extends BaseState {
 
             return { shouldEnd: false }
         } catch (error) {
-            console.error('Error checking end conditions:', error)
-            console.error('Error stack:', (error as Error).stack)
+            console.error('Error checking end conditions:', formatError(error))
 
             // If it's a timeout checking bot removal, the page is likely frozen/unresponsive
             // This is a strong indicator that the bot was actually removed
-            const errorMessage = (error as Error).message || ''
+            const errorMessage = error instanceof Error ? error.message : String(error)
             if (errorMessage.includes('Bot removed check timeout')) {
                 console.warn('Bot removal check timed out - treating as bot removal')
                 return this.getBotRemovedReason()
@@ -323,7 +322,7 @@ export class RecordingState extends BaseState {
 
             console.info('Setting isProcessing to false to end recording loop')
         } catch (error) {
-            console.error('Error during meeting end handling:', error)
+            console.error('Error during meeting end handling:', formatError(error))
         } finally {
             // Always ensure this flag is set to stop the processing loop
             this.isProcessing = false
@@ -342,7 +341,7 @@ export class RecordingState extends BaseState {
                 this.context.playwrightPage,
             )
         } catch (error) {
-            console.error('Error checking if bot was removed:', error)
+            console.error('Error checking if bot was removed:', formatError(error))
             return false
         }
     }
@@ -472,7 +471,7 @@ export class RecordingState extends BaseState {
             )
             await uploadTranscriptTask(currentSpeaker, true, endTimeRelative)
         } catch (error) {
-            console.error('Failed to close final transcript:', error)
+            console.error('Failed to close final transcript:', formatError(error))
             // Don't throw - continue with cleanup even if this fails
         }
     }

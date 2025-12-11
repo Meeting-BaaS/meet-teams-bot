@@ -1,5 +1,6 @@
 import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
+import { formatError } from '../utils/Logger'
 
 interface TeamsUrlComponents {
     meetingId: string
@@ -30,7 +31,7 @@ function convertLightMeetingToStandard(url: URL): string {
 
         return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${conversationId}/${messageId}?context=${encodeURIComponent(JSON.stringify(context))}&anon=true`
     } catch (e) {
-        console.error('🥕❌ Error converting light meeting URL:', e)
+        console.error('🥕❌ Error converting light meeting URL:', formatError(e))
         GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
         throw new Error('Failed to convert Teams light meeting URL')
     }
@@ -67,7 +68,7 @@ function transformTeamsLink(originalLink: string): string {
         // Build the working link format
         return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${threadId}/${timestamp}?context=${context}&anon=true`
     } catch (error) {
-        console.error('Error transforming Teams link:', error)
+        console.error('Error transforming Teams link:', formatError(error))
         return originalLink
     }
 }

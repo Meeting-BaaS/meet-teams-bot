@@ -5,6 +5,7 @@ import { RawData, WebSocket } from 'ws'
 import { SoundContext } from './media_context'
 import { SpeakerData } from './types'
 import { PathManager } from './utils/PathManager'
+import { formatError } from './utils/Logger'
 
 const DEFAULT_SAMPLE_RATE: number = 24_000
 
@@ -130,7 +131,9 @@ export class Streaming {
         // Buffer audio for batch processing (sound level analysis)
         this.audioBuffer.push(audioData)
         if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
-            this.processBatchedAudio().catch(console.error)
+            this.processBatchedAudio().catch((error) =>
+                console.error('Error processing batched audio:', formatError(error)),
+            )
             this.audioBuffer = []
         }
 
@@ -175,7 +178,7 @@ export class Streaming {
             })
 
             this.output_ws.on('error', (err: Error) => {
-                console.error(`External output WebSocket error: ${err}`)
+                console.error('External output WebSocket error:', formatError(err))
             })
 
             this.output_ws.on('close', () => {
@@ -187,7 +190,10 @@ export class Streaming {
                 this.play_incoming_audio_chunks(this.output_ws)
             }
         } catch (error) {
-            console.error(`Failed to setup external output WebSocket: ${error}`)
+            console.error(
+                'Failed to setup external output WebSocket:',
+                formatError(error),
+            )
         }
     }
 
@@ -203,12 +209,15 @@ export class Streaming {
             })
 
             this.input_ws.on('error', (err: Error) => {
-                console.error(`External input WebSocket error: ${err}`)
+                console.error('External input WebSocket error:', formatError(err))
             })
 
             this.play_incoming_audio_chunks(this.input_ws)
         } catch (error) {
-            console.error(`Failed to setup external input WebSocket: ${error}`)
+            console.error(
+                'Failed to setup external input WebSocket:',
+                formatError(error),
+            )
         }
     }
 
@@ -279,7 +288,10 @@ export class Streaming {
                 this.output_ws = null
             }
         } catch (error) {
-            console.error('Error closing external output WebSocket:', error)
+            console.error(
+                'Error closing external output WebSocket:',
+                formatError(error),
+            )
             this.output_ws = null
         }
 
@@ -295,7 +307,10 @@ export class Streaming {
                 this.input_ws = null
             }
         } catch (error) {
-            console.error('Error closing external input WebSocket:', error)
+            console.error(
+                'Error closing external input WebSocket:',
+                formatError(error),
+            )
             this.input_ws = null
         }
     }
@@ -394,7 +409,9 @@ export class Streaming {
             if (message instanceof Buffer) {
                 const uint8Array = new Uint8Array(message)
                 const f32Array = new Float32Array(uint8Array.buffer)
-                this.analyzeSoundLevel(f32Array).catch(console.error)
+                this.analyzeSoundLevel(f32Array).catch((error) =>
+                    console.error('Error analyzing sound level:', formatError(error)),
+                )
 
                 // Forward to external services if needed
                 if (
@@ -452,13 +469,18 @@ export class Streaming {
                         f32Array[i] = s16Array[i] / 32768
                     }
 
-                    this.analyzeSoundLevel(f32Array).catch(console.error)
+                    this.analyzeSoundLevel(f32Array).catch((error) =>
+                        console.error(
+                            'Error analyzing sound level:',
+                            formatError(error),
+                        ),
+                    )
                     const buffer = Buffer.from(f32Array.buffer)
                     stream.push(buffer)
                 } catch (error) {
                     console.error(
                         'Error processing external audio chunk:',
-                        error,
+                        formatError(error),
                     )
                 }
             }
