@@ -8,6 +8,7 @@ import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
 import { formatError } from '../utils/Logger'
+import { waitForPageReady } from '../utils/page-ready'
 import { closeMeeting } from './meet/closeMeeting'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { MEET_STATE_CONFIG } from './meet-state-config'
@@ -60,7 +61,10 @@ export class MeetProvider implements MeetingProviderInterface {
                     page.evaluate(() => document.readyState),
                     new Promise((_, reject) =>
                         setTimeout(
-                            () => reject(new Error('Page freeze timeout after goto')),
+                            () =>
+                                reject(
+                                    new Error('Page freeze timeout after goto'),
+                                ),
                             10000, // 10 seconds timeout to detect freeze
                         ),
                     ),
@@ -159,7 +163,7 @@ export class MeetProvider implements MeetingProviderInterface {
             // Wait to be in the meeting with regular cancelCheck verification
             console.log('Waiting to confirm meeting join...')
             let inWaitingRoom = false
-            let leftWaitingRoomAt: number | null = null
+            let pageReadyAfterWaitingRoom = false
             while (true) {
                 if (cancelCheck()) {
                     GLOBAL.setError(MeetingEndReason.ApiRequest)
@@ -175,12 +179,21 @@ export class MeetProvider implements MeetingProviderInterface {
                     inWaitingRoom = true
                 }
 
-                // Detect when we leave the waiting room
-                if (inWaitingRoom && !nowInWaitingRoom && !leftWaitingRoomAt) {
-                    leftWaitingRoomAt = Date.now()
+                // Detect when we leave the waiting room and wait for page to be ready
+                if (
+                    inWaitingRoom &&
+                    !nowInWaitingRoom &&
+                    !pageReadyAfterWaitingRoom
+                ) {
                     console.log(
-                        '✅ Left waiting room, giving UI 2 seconds to fully render...',
+                        '✅ Left waiting room, waiting for page to be ready...',
                     )
+                    // Wait for page readyState instead of fixed delay
+                    await waitForPageReady(page, {
+                        timeout: 5000,
+                        context: 'after leaving waiting room',
+                    })
+                    pageReadyAfterWaitingRoom = true
                 }
 
                 // Only retry clicking join button if NOT in waiting room
@@ -198,16 +211,17 @@ export class MeetProvider implements MeetingProviderInterface {
                     }
                 }
 
-                // After leaving waiting room, give UI time to render before checking
-                const gracePeriodMs = 2000
-                const gracePeriodExpired =
-                    !leftWaitingRoomAt ||
-                    Date.now() - leftWaitingRoomAt >= gracePeriodMs
-
-                if (gracePeriodExpired && (await isInMeeting(page))) {
-                    console.log('Successfully confirmed we are in the meeting')
-                    onJoinSuccess()
-                    break
+                // Check if we're in the meeting
+                // Only check if we're not currently in waiting room
+                // (If we just left waiting room, pageReadyAfterWaitingRoom ensures page is ready)
+                if (!inWaitingRoom) {
+                    if (await isInMeeting(page)) {
+                        console.log(
+                            'Successfully confirmed we are in the meeting',
+                        )
+                        onJoinSuccess()
+                        break
+                    }
                 }
 
                 if (await notAcceptedInMeeting(page)) {
@@ -406,7 +420,8 @@ async function isInMeeting(page: Page): Promise<boolean> {
 
         // Check for meeting presence indicators FIRST
         const result = await meetStateDetector.isInMeeting(page)
-        const selectorCount = MEET_STATE_CONFIG.inMeetingPattern.selectors.length
+        const selectorCount =
+            MEET_STATE_CONFIG.inMeetingPattern.selectors.length
         console.log(
             `Meeting presence indicators: ${result.count}/${selectorCount} visible`,
         )
@@ -647,7 +662,10 @@ async function checkIndicators(
     let foundCount = 0
     for (const selector of selectors) {
         try {
-            const count = await page.locator(selector).count().catch(() => 0)
+            const count = await page
+                .locator(selector)
+                .count()
+                .catch(() => 0)
             if (count > 0) {
                 if (checkPresenceOnly) {
                     // Just check presence in DOM, not visibility
