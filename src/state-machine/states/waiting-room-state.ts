@@ -4,6 +4,7 @@ import { HtmlSnapshotService } from '../../services/html-snapshot-service'
 import { GLOBAL } from '../../singleton'
 import { Streaming } from '../../streaming'
 import { handleTimingControl } from '../../utils/timing-control'
+import { formatError } from '../../utils/Logger'
 
 import {
     MeetingEndReason,
@@ -69,7 +70,7 @@ export class WaitingRoomState extends BaseState {
             // If everything is fine, move to the InCall state
             return this.transition(MeetingStateType.InCall)
         } catch (error) {
-            console.error('Error in waiting room state:', error)
+            console.error('Error in waiting room state:', formatError(error))
 
             // Handle specific error types based on MeetingEndReason
             const endReason = GLOBAL.getEndReason()
@@ -101,7 +102,7 @@ export class WaitingRoomState extends BaseState {
                 GLOBAL.get().meeting_url,
             )
         } catch (error) {
-            console.error('Failed to parse meeting URL:', error)
+            console.error('Failed to parse meeting URL:', formatError(error))
             GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
             throw new Error('Failed to parse meeting URL')
         }
@@ -122,12 +123,7 @@ export class WaitingRoomState extends BaseState {
                 )
             console.info('Meeting page opened successfully')
         } catch (error) {
-            console.error('Failed to open meeting page:', {
-                error,
-                message:
-                    error instanceof Error ? error.message : 'Unknown error',
-                stack: error instanceof Error ? error.stack : undefined,
-            })
+            console.error('Failed to open meeting page:', formatError(error))
 
             throw new Error(
                 error instanceof Error

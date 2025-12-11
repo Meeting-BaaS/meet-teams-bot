@@ -7,6 +7,7 @@ import { SpeakerManager } from '../../speaker-manager'
 import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
+import { formatError } from '../../utils/Logger'
 
 export class InCallState extends BaseState {
     async execute(): StateExecuteResult {
@@ -22,13 +23,10 @@ export class InCallState extends BaseState {
             return this.transition(MeetingStateType.Recording)
         } catch (error) {
             const duration = Date.now() - startTime
-            console.error(`[InCallState] Setup recording failed after ${duration}ms`)
-            console.error('[InCallState] Error details:', {
-                message: error instanceof Error ? error.message : 'Unknown error',
-                stack: error instanceof Error ? error.stack : undefined,
-                errorType: error?.constructor?.name,
-                errorObject: error,
-            })
+            console.error(
+                `[InCallState] Setup recording failed after ${duration}ms`,
+                formatError(error),
+            )
             return this.handleError(error as Error)
         }
     }
@@ -60,7 +58,7 @@ export class InCallState extends BaseState {
 
             console.info('Recording setup completed successfully')
         } catch (error) {
-            console.error('Failed during recording setup:', error)
+            console.error('Failed during recording setup:', formatError(error))
             throw error
         }
     }
@@ -94,13 +92,15 @@ export class InCallState extends BaseState {
             // Start HTML cleanup first to clean the interface
             await this.startHtmlCleaning()
         } catch (error) {
-            console.error('Error in setupBrowserComponents:', error)
-            console.error('Context state:', {
-                hasPlaywrightPage: !!this.context.playwrightPage,
-                recordingMode: GLOBAL.get().recording_mode,
-                meetingProvider: GLOBAL.get().meetingProvider,
-                botName: GLOBAL.get().bot_name,
-            })
+            console.error(
+                'Error in setupBrowserComponents:',
+                formatError(error, {
+                    hasPlaywrightPage: !!this.context.playwrightPage,
+                    recordingMode: GLOBAL.get().recording_mode,
+                    meetingProvider: GLOBAL.get().meetingProvider,
+                    botName: GLOBAL.get().bot_name,
+                }),
+            )
             throw new Error(`Browser component setup failed: ${error as Error}`)
         }
 
@@ -109,7 +109,10 @@ export class InCallState extends BaseState {
         try {
             await this.startSpeakersObservation()
         } catch (error) {
-            console.error('Failed to start speakers observation:', error)
+            console.error(
+                'Failed to start speakers observation:',
+                formatError(error),
+            )
             // Continue even if speakers observation fails
         }
 
@@ -142,7 +145,7 @@ export class InCallState extends BaseState {
             try {
                 await SpeakerManager.getInstance().handleSpeakerUpdate(speakers)
             } catch (error) {
-                console.error('Error handling speaker update:', error)
+                console.error('Error handling speaker update:', formatError(error))
             }
         }
 
@@ -190,7 +193,7 @@ export class InCallState extends BaseState {
 
             console.log('HTML cleanup started successfully')
         } catch (error) {
-            console.error('Failed to start HTML cleanup:', error)
+            console.error('Failed to start HTML cleanup:', formatError(error))
             // Continue even if HTML cleanup fails - it's not critical
         }
     }

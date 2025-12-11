@@ -1,6 +1,7 @@
 import { Page } from '@playwright/test'
 import { listenPage } from '../../browser/page-logger'
 import { MeetingContext, MeetingStateType, StateExecuteResult } from '../types'
+import { formatError } from '../../utils/Logger'
 
 export abstract class BaseState {
     protected context: MeetingContext
@@ -37,7 +38,7 @@ export abstract class BaseState {
     }
 
     protected async handleError(error: Error): StateExecuteResult {
-        console.error(`Error in state ${this.stateType}:`, error)
+        console.error(`Error in state ${this.stateType}:`, formatError(error))
         return this.transition(MeetingStateType.Error)
     }
 }

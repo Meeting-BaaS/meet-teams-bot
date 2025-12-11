@@ -8,6 +8,7 @@ import {
     setupConsoleLogger,
     setupExitHandler,
     uploadLogsToS3,
+    formatError,
 } from './utils/Logger'
 import { PathManager } from './utils/PathManager'
 
@@ -66,7 +67,7 @@ async function readFromStdin(): Promise<MeetingParams> {
                 PathManager.getInstance().initializePaths()
                 resolve(params)
             } catch (error) {
-                console.error('Failed to parse JSON from stdin:', error)
+                console.error('Failed to parse JSON from stdin:', formatError(error))
                 console.error('Raw data was:', JSON.stringify(data))
                 process.exit(1)
             }
@@ -213,7 +214,7 @@ async function handleFailedRecording(): Promise<void> {
             try {
                 await uploadLogsToS3({})
             } catch (error) {
-                console.error('Failed to upload logs to S3:', error)
+                console.error('Failed to upload logs to S3:', formatError(error))
             }
         }
         console.log('exiting instance')

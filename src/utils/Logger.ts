@@ -5,6 +5,38 @@ import { GLOBAL } from '../singleton'
 import { PathManager } from './PathManager'
 import { s3cp, S3Uploader } from './S3Uploader'
 
+/**
+ * Error information extracted safely with type checking
+ */
+export interface ErrorInfo {
+    error: unknown
+    message: string
+    stack?: string
+    name?: string
+    errorType?: string
+}
+
+/**
+ * Safely extracts error information with type checking and preserves stack traces
+ * @param error - The error object (can be any type)
+ * @param additionalContext - Optional additional context to include
+ * @returns Structured error information with stack trace
+ */
+export function formatError(
+    error: unknown,
+    additionalContext?: Record<string, unknown>,
+): ErrorInfo & Record<string, unknown> {
+    const errorInfo: ErrorInfo = {
+        error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        name: error instanceof Error ? error.name : undefined,
+        errorType: error?.constructor?.name,
+    }
+
+    return { ...errorInfo, ...additionalContext }
+}
+
 // Reference to current bot log file
 let currentBotLogFile: string | null = null
 

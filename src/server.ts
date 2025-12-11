@@ -11,6 +11,7 @@ import { GLOBAL } from './singleton'
 import { MeetingStateMachine } from './state-machine/machine'
 import { MeetingEndReason } from './state-machine/types'
 import { StopRecordParams } from './types'
+import { formatError } from './utils/Logger'
 
 const HOST = '0.0.0.0'
 const PORT = 8080
@@ -116,10 +117,10 @@ export async function server() {
                 message: 'Meeting stopped successfully',
             })
         } catch (error) {
-            console.error('Failed to stop meeting:', error)
+            console.error('Failed to stop meeting:', formatError(error))
             res.status(500).json({
                 error: 'Failed to stop meeting',
-                details: (error as Error).message,
+                details: error instanceof Error ? error.message : 'Unknown error',
             })
         }
     }
