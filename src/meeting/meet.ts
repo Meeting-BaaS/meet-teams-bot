@@ -165,6 +165,7 @@ export class MeetProvider implements MeetingProviderInterface {
             // Wait to be in the meeting with regular cancelCheck verification
             console.log('Waiting to confirm meeting join...')
             let inWaitingRoom = false
+            let leftWaitingRoomAt: number | null = null
             while (true) {
                 if (cancelCheck()) {
                     GLOBAL.setError(MeetingEndReason.ApiRequest)
@@ -178,6 +179,14 @@ export class MeetProvider implements MeetingProviderInterface {
                         '📋 Bot is in waiting room, waiting for host to admit...',
                     )
                     inWaitingRoom = true
+                }
+
+                // Detect when we leave the waiting room
+                if (inWaitingRoom && !nowInWaitingRoom && !leftWaitingRoomAt) {
+                    leftWaitingRoomAt = Date.now()
+                    console.log(
+                        '✅ Left waiting room, giving UI 2 seconds to fully render...',
+                    )
                 }
 
                 // Only retry clicking join button if NOT in waiting room
@@ -195,7 +204,13 @@ export class MeetProvider implements MeetingProviderInterface {
                     }
                 }
 
-                if (await isInMeeting(page)) {
+                // After leaving waiting room, give UI time to render before checking
+                const gracePeriodMs = 2000
+                const gracePeriodExpired =
+                    !leftWaitingRoomAt ||
+                    Date.now() - leftWaitingRoomAt >= gracePeriodMs
+
+                if (gracePeriodExpired && (await isInMeeting(page))) {
                     console.log('Successfully confirmed we are in the meeting')
                     onJoinSuccess()
                     break
@@ -392,27 +407,33 @@ async function findShowEveryOne(
 // New function to check if we are actually in the meeting
 async function isInMeeting(page: Page): Promise<boolean> {
     try {
-        // First check if we have been removed from the meeting
+        // First check if we have been removed from the meeting (highest priority)
         if (await notAcceptedInMeeting(page)) {
             console.log('Bot has been removed from the meeting')
             return false
         }
 
-        // Check if we're in waiting room - if yes, we're definitely not in meeting
-        if (await isInWaitingRoom(page)) {
-            return false
-        }
-
-        // Use unified state detector for meeting presence
+        // Check for meeting presence indicators FIRST
         const result = await meetStateDetector.isInMeeting(page)
         const selectorCount = MEET_STATE_CONFIG.inMeetingPattern.selectors.length
         console.log(
             `Meeting presence indicators: ${result.count}/${selectorCount} visible`,
         )
 
-        // Require at least 3 indicators to confirm we are truly in the meeting
-        // This prevents false positives during transition states
-        return result.matched
+        // If we have strong meeting indicators (threshold met), we're definitely in the meeting
+        // This overrides any stale waiting room DOM elements that might still be present
+        if (result.matched) {
+            return true
+        }
+
+        // Only if meeting indicators are weak/absent, check if we're in waiting room
+        // This prevents false positives from stale waiting room elements after joining
+        if (await isInWaitingRoom(page)) {
+            return false
+        }
+
+        // Not enough meeting indicators and not in waiting room
+        return false
     } catch (error) {
         console.error('Error checking if in meeting:', error)
         return false
@@ -425,9 +446,13 @@ async function sendEntryMessage(
 ): Promise<boolean> {
     console.log('Attempting to send entry message...')
     // First check if we are still in the meeting
-    if (!(await isInMeeting(page))) {
+    const inMeeting = await isInMeeting(page)
+    if (!inMeeting) {
+        // Additional diagnostic logging to help debug false positives
+        const waitingRoom = await isInWaitingRoom(page)
+        const denied = await notAcceptedInMeeting(page)
         console.log(
-            'Bot is no longer in the meeting, cannot send entry message',
+            `Bot is no longer in the meeting, cannot send entry message. Diagnostics: waitingRoom=${waitingRoom}, denied=${denied}`,
         )
         return false
     }
@@ -747,9 +772,13 @@ async function changeLayout(
         }
 
         // First check if we are still in the meeting
-        if (!(await isInMeeting(page))) {
+        const inMeeting = await isInMeeting(page)
+        if (!inMeeting) {
+            // Additional diagnostic logging to help debug false positives
+            const waitingRoom = await isInWaitingRoom(page)
+            const denied = await notAcceptedInMeeting(page)
             console.log(
-                'Bot is no longer in the meeting, stopping layout change',
+                `Bot is no longer in the meeting, stopping layout change. Diagnostics: waitingRoom=${waitingRoom}, denied=${denied}`,
             )
             GLOBAL.setError(
                 MeetingEndReason.BotRemoved,
