@@ -1,7 +1,7 @@
 import { Events } from "../../events"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import { GLOBAL } from "../../singleton"
-
+import { formatError } from "../../utils/Logger"
 import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
 
@@ -20,7 +20,7 @@ export class ErrorState extends BaseState {
       // Move to cleanup
       return this.transition(MeetingStateType.Cleanup)
     } catch (error) {
-      console.error("Error in ErrorState:", error)
+      console.error("Error in ErrorState:", formatError(error))
       // Even if error handling fails, transition to cleanup
       return this.transition(MeetingStateType.Cleanup)
     }
@@ -97,7 +97,7 @@ export class ErrorState extends BaseState {
             await Events.meetingError(new Error(errorMessage || "Unknown error"))
         }
       } catch (eventError) {
-        console.error("Failed to send event notification:", eventError)
+        console.error("Failed to send event notification:", formatError(eventError))
       }
     }
 
@@ -109,7 +109,7 @@ export class ErrorState extends BaseState {
     try {
       await Promise.race([notifyPromise(), timeoutPromise])
     } catch (error) {
-      console.error("Error notification timed out:", error)
+      console.error("Error notification timed out:", formatError(error))
       // Continue even if notification fails
     }
   }

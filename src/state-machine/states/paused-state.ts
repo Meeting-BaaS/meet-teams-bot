@@ -1,6 +1,7 @@
 import { Events } from "../../events"
 
 import { GLOBAL } from "../../singleton"
+import { formatError } from "../../utils/Logger"
 import { MEETING_CONSTANTS } from "../constants"
 import { MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
@@ -55,7 +56,7 @@ export class PausedState extends BaseState {
 
       return this.transition(MeetingStateType.Resuming)
     } catch (error) {
-      console.error("Error in paused state:", error)
+      console.error("Error in paused state:", formatError(error))
       return this.handleError(error as Error)
     }
   }
@@ -86,7 +87,7 @@ export class PausedState extends BaseState {
     try {
       await Promise.race([pausePromise(), timeoutPromise])
     } catch (error) {
-      console.error("Error or timeout in pauseRecording:", error)
+      console.error("Error or timeout in pauseRecording:", formatError(error))
       throw error
     }
   }

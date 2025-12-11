@@ -1,8 +1,10 @@
+import fs from "node:fs"
+import path from "node:path"
 import type { BrowserContext } from "@playwright/test"
 import { generateBranding, playBranding } from "../../branding"
 import { openBrowser } from "../../browser/browser"
 import { GLOBAL } from "../../singleton"
-
+import { formatError } from "../../utils/Logger"
 import { PathManager } from "../../utils/PathManager"
 import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
@@ -30,7 +32,7 @@ export class InitializationState extends BaseState {
       try {
         await this.setupBrowser()
       } catch (error) {
-        console.error("Critical error: Browser setup failed:", error)
+        console.error("Critical error: Browser setup failed:", formatError(error))
         // Ajouter des détails à l'erreur pour faciliter le diagnostic
         const enhancedError = new Error(
           `Browser initialization failed: ${error instanceof Error ? error.message : String(error)}`
@@ -85,7 +87,7 @@ export class InitializationState extends BaseState {
         return // Exit the function if successful
       } catch (error) {
         lastError = error as Error
-        console.error(`Browser setup attempt ${attempt} failed:`, error)
+        console.error(`Browser setup attempt ${attempt} failed:`, formatError(error))
 
         // Si ce n'est pas la dernière tentative, attendre avant de réessayer
         if (attempt < maxRetries) {
@@ -97,7 +99,7 @@ export class InitializationState extends BaseState {
     }
 
     // Si on arrive ici, c'est que toutes les tentatives ont échoué
-    console.error("All browser setup attempts failed")
+    console.error("All browser setup attempts failed:", lastError ? formatError(lastError) : {})
     throw lastError || new Error("Browser setup failed after multiple attempts")
   }
 
@@ -107,16 +109,14 @@ export class InitializationState extends BaseState {
         this.context.pathManager = PathManager.getInstance()
       }
     } catch (error) {
-      console.error("Path manager setup failed:", error)
+      console.error("Path manager setup failed:", formatError(error))
       // Create base directories if possible
       try {
-        const fs = require("fs")
-        const path = require("path")
         const baseDir = path.join(process.cwd(), "logs", GLOBAL.get().bot_uuid)
         fs.mkdirSync(baseDir, { recursive: true })
         console.info("Created fallback log directory:", baseDir)
       } catch (fsError) {
-        console.error("Failed to create fallback log directory:", fsError)
+        console.error("Failed to create fallback log directory:", formatError(fsError))
       }
       throw error
     }

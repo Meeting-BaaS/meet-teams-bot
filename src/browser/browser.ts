@@ -1,5 +1,6 @@
 import { type BrowserContext, chromium } from "@playwright/test"
 import { envVars } from "../config/env-vars"
+import { formatError } from "../utils/Logger"
 
 export async function openBrowser(): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
@@ -81,17 +82,7 @@ export async function openBrowser(): Promise<{ browser: BrowserContext }> {
     console.log("✅ Chromium launched with PulseAudio configuration")
     return { browser: context }
   } catch (error) {
-    console.error("Failed to open browser:", error)
-
-    // Provide more detailed error information
-    if (error instanceof Error) {
-      console.error("Error details:", {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      })
-    }
-
+    console.error("Failed to open browser:", formatError(error))
     throw error
   }
 }

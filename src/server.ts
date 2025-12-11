@@ -3,6 +3,7 @@ import { envVars } from "./config/env-vars"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason } from "./state-machine/types"
 import type { StopRecordParams } from "./types"
+import { formatError } from "./utils/Logger"
 
 const HOST = envVars.HOST
 const PORT = envVars.PORT
@@ -69,10 +70,10 @@ export async function server() {
         message: "Meeting stopped successfully"
       })
     } catch (error) {
-      console.error("Failed to stop meeting:", error)
+      console.error("Failed to stop meeting:", formatError(error))
       return res.status(500).json({
         error: "Failed to stop meeting",
-        details: (error as Error).message
+        details: error instanceof Error ? error.message : "Unknown error"
       })
     }
   }

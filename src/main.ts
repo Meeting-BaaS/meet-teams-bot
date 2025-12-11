@@ -9,6 +9,7 @@ import { MeetingStateMachine } from "./state-machine/machine"
 import { getErrorMessageFromCode } from "./state-machine/types"
 import type { MeetingParams } from "./types"
 import {
+  formatError,
   setupConsoleLogger,
   setupExitHandler,
   uploadLogsToS3,
@@ -47,7 +48,7 @@ async function readFromStdin(): Promise<MeetingParams> {
           process.exit(1)
         }
 
-        console.error("Failed to parse JSON from stdin:", error)
+        console.error("Failed to parse JSON from stdin:", formatError(error))
         process.exit(1)
       }
     })
@@ -70,7 +71,7 @@ async function handleSuccessfulRecording(): Promise<void> {
     await SpeakerManager.finalize()
     console.log("Diarization tracking finalized")
   } catch (error) {
-    console.error("Failed to finalize diarization:", error)
+    console.error("Failed to finalize diarization:", formatError(error))
     // Continue despite error
   }
 
@@ -189,7 +190,7 @@ async function handleFailedRecording(): Promise<void> {
       try {
         await uploadLogsToS3()
       } catch (error) {
-        console.error("Failed to upload logs to S3:", error)
+        console.error("Failed to upload logs to S3:", formatError(error))
       }
     }
     console.log("exiting instance")

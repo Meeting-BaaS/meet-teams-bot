@@ -4,6 +4,7 @@
  */
 
 import type { Page } from "@playwright/test"
+import { formatError } from "./Logger"
 
 // Extend Window interface for sync audio context
 declare global {
@@ -46,7 +47,7 @@ export async function generateSyncSignal(
 
     console.log("✅ Sync signal generated successfully")
   } catch (error) {
-    console.error("❌ Failed to generate sync signal:", error)
+    console.error("❌ Failed to generate sync signal:", formatError(error))
     throw error
   }
 }
@@ -101,7 +102,7 @@ async function generateAudioBeep(
 
         console.log(`🔊 Audio beep: ${freq}Hz for ${dur}ms at volume ${vol}`)
       } catch (error) {
-        console.error("Audio beep error:", error)
+        console.error("Audio beep error:", formatError(error))
         delete window.__syncAudioContext
       }
     },
