@@ -1,7 +1,10 @@
-import { Page } from '@playwright/test'
+import type { Page } from '@playwright/test'
 
-// Default timeout for page ready state
+// Default timeout for page ready state (non-critical operations)
 export const PAGE_READY_TIMEOUT = 5000
+
+// Default timeout for critical page ready checks (operations that must succeed)
+export const CRITICAL_PAGE_READY_TIMEOUT = 20000
 
 export type ReadyState = 'loading' | 'interactive' | 'complete'
 
@@ -81,33 +84,71 @@ export async function waitForPageReady(
             { timeout },
         )
 
+        // Capture the actual readyState reached for more informative logging
+        const finalState = await page.evaluate(
+            () => document.readyState as ReadyState,
+        )
+
         if (context) {
             console.log(
-                `✅ Page ready${context ? ` (${context})` : ''} - readyState: ${acceptStates.join(' or ')}`,
+                `✅ Page ready${context ? ` (${context})` : ''} - readyState: ${finalState}`,
             )
         }
 
         return true
     } catch (error) {
-        const errorMessage = `Page readyState check timeout after ${timeout}ms${context ? ` (${context})` : ''}`
+        // Distinguish timeout errors from other failures (navigation, closure, etc.)
+        const isTimeout =
+            error instanceof Error && error.name === 'TimeoutError'
+        const baseMessage = `Page readyState check ${
+            isTimeout ? 'timeout' : 'failure'
+        }${context ? ` (${context})` : ''}`
 
         if (throwOnTimeout) {
-            throw new Error(errorMessage)
+            // Preserve original error for non-timeout failures to aid debugging
+            throw isTimeout
+                ? new Error(`${baseMessage} after ${timeout}ms`)
+                : error
         }
 
-        console.warn(errorMessage)
+        console.warn(
+            isTimeout
+                ? `${baseMessage} after ${timeout}ms`
+                : `${baseMessage}: ${String(error)}`,
+        )
         return false
     }
+}
+
+export interface EnsurePageReadyOptions {
+    /**
+     * Timeout in milliseconds (default: CRITICAL_PAGE_READY_TIMEOUT)
+     */
+    timeout?: number
+    /**
+     * Optional context string for logging
+     */
+    context?: string
 }
 
 /**
  * Convenience function to wait for page to be complete (strict check)
  * Throws on timeout - use for critical operations
+ *
+ * @example
+ * // Use default timeout
+ * await ensurePageReady(page, { context: 'loading meeting page' })
+ *
+ * @example
+ * // Custom timeout
+ * await ensurePageReady(page, { timeout: 30000, context: 'critical operation' })
  */
 export async function ensurePageReady(
     page: Page,
-    timeout: number = 20000,
-    context?: string,
+    {
+        timeout = CRITICAL_PAGE_READY_TIMEOUT,
+        context,
+    }: EnsurePageReadyOptions = {},
 ): Promise<void> {
     await waitForPageReady(page, {
         acceptStates: ['complete'],
