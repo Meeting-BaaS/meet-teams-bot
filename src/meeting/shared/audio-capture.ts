@@ -52,6 +52,9 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                 let abortController = null
                 let processorPromise = null
 
+                // Placeholder for periodic scanning cleanup (set when enablePeriodicScanning is true)
+                let stopPeriodicScanningFn = null
+
                 // Start reading the pre-mixed stream
                 async function startMixedStreamProcessor() {
                     if (mixedStreamProcessor) return // Already started
@@ -198,6 +201,11 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                 // Stop the processor gracefully
                 async function stopMixedStreamProcessor() {
+                    // Stop periodic scanning first (if enabled)
+                    if (stopPeriodicScanningFn) {
+                        stopPeriodicScanningFn()
+                    }
+
                     if (abortController) {
                         console.log('${logPrefix} Stopping mixed stream processor...')
                         abortController.abort()
@@ -279,6 +287,10 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     // Teams needs periodic scanning as connections may be created at different times
                     const scannedTracks = new Set()
 
+                    // Store timer IDs for cleanup to prevent memory leaks
+                    let periodicScanIntervalId = null
+                    const scanTimeoutIds = []
+
                     function scanForTracks() {
                         let foundTracks = 0
                         let newTracks = 0
@@ -307,11 +319,25 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         }
                     }
 
+                    // Stop periodic scanning and clear all timers
+                    function stopPeriodicScanning() {
+                        if (periodicScanIntervalId !== null) {
+                            clearInterval(periodicScanIntervalId)
+                            periodicScanIntervalId = null
+                        }
+                        scanTimeoutIds.forEach(id => clearTimeout(id))
+                        scanTimeoutIds.length = 0
+                        console.log('${logPrefix} Periodic scanning stopped')
+                    }
+
+                    // Register cleanup function for stopMixedStreamProcessor to call
+                    stopPeriodicScanningFn = stopPeriodicScanning
+
                     // Scan multiple times during meeting join
-                    setTimeout(scanForTracks, 2000)
-                    setTimeout(scanForTracks, 5000)
-                    setTimeout(scanForTracks, 10000)
-                    setInterval(scanForTracks, 30000)
+                    scanTimeoutIds.push(setTimeout(scanForTracks, 2000))
+                    scanTimeoutIds.push(setTimeout(scanForTracks, 5000))
+                    scanTimeoutIds.push(setTimeout(scanForTracks, 10000))
+                    periodicScanIntervalId = setInterval(scanForTracks, 30000)
                     ` : ''}
 
                     console.log('${logPrefix} RTCPeerConnection intercepted')
@@ -337,20 +363,31 @@ export function createAudioCapture(config: AudioCaptureConfig) {
          */
         enable: async (page: Page): Promise<void> => {
             // Expose callback function for audio chunks
-            await page.exposeFunction(callbackName, async (audioChunk: {
-                audioData: number[]
-                sampleRate: number
-                timestamp: number
-                numberOfFrames: number
-            }) => {
-                if (Streaming.instance) {
-                    try {
-                        Streaming.instance.processMixedAudioChunk(audioChunk)
-                    } catch (error) {
-                        console.error(`${logPrefix} Failed to process mixed audio chunk:`, formatError(error))
+            // Guard against duplicate registration (may be called multiple times)
+            try {
+                await page.exposeFunction(callbackName, async (audioChunk: {
+                    audioData: number[]
+                    sampleRate: number
+                    timestamp: number
+                    numberOfFrames: number
+                }) => {
+                    if (Streaming.instance) {
+                        try {
+                            Streaming.instance.processMixedAudioChunk(audioChunk)
+                        } catch (error) {
+                            console.error(`${logPrefix} Failed to process mixed audio chunk:`, formatError(error))
+                        }
                     }
+                })
+            } catch (error) {
+                // Ignore duplicate registration error (function already exposed)
+                const errorMessage = error instanceof Error ? error.message : String(error)
+                if (errorMessage.includes('has been already registered')) {
+                    console.log(`${logPrefix} Callback ${callbackName} already registered, skipping`)
+                } else {
+                    throw error
                 }
-            })
+            }
 
             // Inject the audio capture script
             const script = generateAudioCaptureScript(config)
