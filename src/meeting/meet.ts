@@ -46,7 +46,8 @@ export class MeetProvider implements MeetingProviderInterface {
       }
 
       // Enable Web Audio mixing for streaming
-      if (Streaming.instance) {
+      // Check config directly, not Streaming.instance (which may not be instantiated yet)
+      if (GLOBAL.get().streaming_output) {
         await enableMeetAudioCapture(page)
         console.log("[Meet] ✅ Web Audio capture enabled for streaming")
       }
@@ -202,7 +203,7 @@ export class MeetProvider implements MeetingProviderInterface {
       await htmlSnapshot.captureSnapshot(page, "meet_join_meeting_success")
 
       // Verify audio capture is working post-join (matches Teams behavior)
-      if (Streaming.instance) {
+      if (GLOBAL.get().streaming_output) {
         try {
           await verifyMeetAudioCapture(page)
         } catch (error) {
