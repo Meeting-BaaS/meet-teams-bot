@@ -1,10 +1,13 @@
 import { Page } from '@playwright/test'
 
+// Default timeout for page ready state
+export const PAGE_READY_TIMEOUT = 5000
+
 export type ReadyState = 'loading' | 'interactive' | 'complete'
 
 export interface WaitForPageReadyOptions {
     /**
-     * Timeout in milliseconds (default: 5000)
+     * Timeout in milliseconds (default: PAGE_READY_TIMEOUT)
      */
     timeout?: number
     /**
@@ -52,7 +55,7 @@ export async function waitForPageReady(
     options: WaitForPageReadyOptions = {},
 ): Promise<boolean> {
     const {
-        timeout = 5000,
+        timeout = PAGE_READY_TIMEOUT,
         acceptStates = ['complete', 'interactive'],
         throwOnTimeout = false,
         context,
