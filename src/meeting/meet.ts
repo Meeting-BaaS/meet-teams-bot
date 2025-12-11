@@ -4,7 +4,11 @@ import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
-import { createStateDetector } from "../utils/meeting-state-detector"
+import {
+  createStateDetector,
+  type DenialPattern,
+  type SelectorPattern
+} from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
@@ -136,6 +140,7 @@ export class MeetProvider implements MeetingProviderInterface {
       // Wait to be in the meeting with regular cancelCheck verification
       console.log("Waiting to confirm meeting join...")
       let inWaitingRoom = false
+      let leftWaitingRoomAt: number | null = null
       while (true) {
         if (cancelCheck()) {
           GLOBAL.setError(MeetingEndReason.ApiRequest)
@@ -149,6 +154,12 @@ export class MeetProvider implements MeetingProviderInterface {
           inWaitingRoom = true
         }
 
+        // Detect when we leave the waiting room
+        if (inWaitingRoom && !nowInWaitingRoom && !leftWaitingRoomAt) {
+          leftWaitingRoomAt = Date.now()
+          console.log("✅ Left waiting room, giving UI 2 seconds to fully render...")
+        }
+
         // Only retry clicking join button if NOT in waiting room
         if (!inWaitingRoom && Date.now() - lastJoinClickAt >= joinRetryCooldownMs) {
           const retried = await clickJoinCtaIfPresent(page)
@@ -159,7 +170,12 @@ export class MeetProvider implements MeetingProviderInterface {
           }
         }
 
-        if (await isInMeeting(page)) {
+        // After leaving waiting room, give UI time to render before checking
+        const gracePeriodMs = 2000
+        const gracePeriodExpired =
+          !leftWaitingRoomAt || Date.now() - leftWaitingRoomAt >= gracePeriodMs
+
+        if (gracePeriodExpired && (await isInMeeting(page))) {
           console.log("Successfully confirmed we are in the meeting")
           onJoinSuccess()
           break
@@ -329,38 +345,31 @@ async function findShowEveryOne(page: Page, click: boolean, cancelCheck: () => b
 // New function to check if we are actually in the meeting
 async function isInMeeting(page: Page): Promise<boolean> {
   try {
-    // First check if we have been removed from the meeting
+    // First check if we have been removed from the meeting (highest priority)
     if (await notAcceptedInMeeting(page)) {
       console.log("Bot has been removed from the meeting")
       return false
     }
 
-    // Check elements that indicate we are in the meeting
-    const indicators = [
-      // La présence des contrôles de réunion
-      await page.locator('div[role="region"][aria-label="Call controls"]').isVisible(),
-
-      // La présence du bouton "People" ou du nombre de participants
-      await page.locator('[aria-label*="participant"], [aria-label="Show everyone"]').isVisible(),
-
-      // La présence du bouton de chat
-      await page.locator('button[aria-label*="Chat with everyone"]').isVisible()
-    ]
-
-    const confirmedIndicators = indicators.filter(Boolean).length
-    console.log(`Meeting presence indicators: ${confirmedIndicators}/3`)
-    // Check if we're in waiting room - if yes, we're definitely not in meeting
-    if (await isInWaitingRoom(page)) {
-      return false
-    }
-
-    // Use unified state detector for meeting presence
+    // Check for meeting presence indicators FIRST
     const result = await meetStateDetector.isInMeeting(page)
     const selectorCount = MEET_STATE_CONFIG.inMeetingPattern.selectors.length
     console.log(`Meeting presence indicators: ${result.count}/${selectorCount} visible`)
 
-    // We consider we are in the meeting if at least 2 indicators are present
-    return confirmedIndicators >= 2
+    // If we have strong meeting indicators (threshold met), we're definitely in the meeting
+    // This overrides any stale waiting room DOM elements that might still be present
+    if (result.matched) {
+      return true
+    }
+
+    // Only if meeting indicators are weak/absent, check if we're in waiting room
+    // This prevents false positives from stale waiting room elements after joining
+    if (await isInWaitingRoom(page)) {
+      return false
+    }
+
+    // Not enough meeting indicators and not in waiting room
+    return false
   } catch (error) {
     console.error("Error checking if in meeting:", error)
     return false
@@ -370,8 +379,14 @@ async function isInMeeting(page: Page): Promise<boolean> {
 async function sendEntryMessage(page: Page, enterMessage: string): Promise<boolean> {
   console.log("Attempting to send entry message...")
   // First check if we are still in the meeting
-  if (!(await isInMeeting(page))) {
-    console.log("Bot is no longer in the meeting, cannot send entry message")
+  const inMeeting = await isInMeeting(page)
+  if (!inMeeting) {
+    // Additional diagnostic logging to help debug false positives
+    const waitingRoom = await isInWaitingRoom(page)
+    const denied = await notAcceptedInMeeting(page)
+    console.log(
+      `Bot is no longer in the meeting, cannot send entry message. Diagnostics: waitingRoom=${waitingRoom}, denied=${denied}`
+    )
     return false
   }
 
@@ -411,70 +426,53 @@ async function sendEntryMessage(page: Page, enterMessage: string): Promise<boole
 }
 
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
-  // Generic user-denied entry texts
-  const deniedTexts = [
-    "denied",
-    "You've been removed",
-    "we encountered a problem joining",
-    "You can't join",
-    "You left the meeting", // Happens if the bot first entered in the waiting room of the meeting (not the entry page) and then it was denied entry
-    "Your sign-in credentials might have changed"
-  ]
-
-  // Google Meet itself has denied entry
-  const googleMeetDeniedTexts = ["You can't join this video call"]
-
-  // Google Meet has its own timeout which would deny entry into the meeting after ~10 minutes
-  const timeoutTextsFromGoogle = ["No one responded to your request to join the call"]
-
-  // Check for Google Meet denied texts first since the message overlaps with the user denied entry message
-  for (const text of googleMeetDeniedTexts) {
-    const element = page.locator(`text=${text}`)
-    if ((await element.count()) > 0) {
-      // Google Meet itself has denied entry
-      console.log("XXXXXXXXXXXXXXXXXX Google Meet itself has denied entry")
-      GLOBAL.setError(MeetingEndReason.BotNotAccepted, "Google Meet has denied entry")
-      return true
-    }
-  }
-
-  // Check for Google Meet timeout texts
-  for (const text of timeoutTextsFromGoogle) {
-    const element = page.locator(`text=${text}`)
-    if ((await element.count()) > 0) {
-      // Google Meet itself has timed out
-      console.log("XXXXXXXXXXXXXXXXXX Google Meet itself has timed out")
+  try {
+    const result = await meetStateDetector.isDenied(page)
+    if (result.matched && result.matchedText && result.pattern) {
+      // Pattern is a DenialPattern
+      const denialPattern = result.pattern as DenialPattern | SelectorPattern
+      console.log(`${denialPattern.logPrefix} - Found text: "${result.matchedText}"`)
       GLOBAL.setError(
-        MeetingEndReason.TimeoutWaitingToStart,
-        "Google Meet has timed out while waiting for the bot to join the meeting"
+        denialPattern.reason,
+        `${denialPattern.errorMessage} - Found text: "${result.matchedText}"`
       )
       return true
     }
-  }
 
-  // Check for user denied entry texts
-  for (const text of deniedTexts) {
-    const element = page.locator(`text=${text}`)
-    if ((await element.count()) > 0) {
-      // User has denied entry
-      console.log("XXXXXXXXXXXXXXXXXX User has denied entry")
-      GLOBAL.setError(MeetingEndReason.BotNotAccepted)
-      return true
-    }
+    return false
+  } catch (error) {
+    console.error("Error checking if denied entry:", error)
+    return false
   }
-
-  return false
 }
 
 async function clickDismiss(page: Page): Promise<boolean> {
   try {
-    const dismissButton = await page
-      .locator("div[role=button]")
-      .filter({ hasText: "Dismiss" })
-      .first()
-    if ((await dismissButton.count()) > 0) {
-      await dismissButton.click()
-      return true
+    // Handle various transient modals/prompts that appear in the
+    // waiting room, including the new "Sign in with your Google account"
+    // modal whose primary action button text is "Got it".
+    //
+    // Note: SimpleDialogObserver also handles these, but this serves as a fallback
+    // during the initial join flow before the observer is fully active.
+    const dismissTexts = ["Dismiss", "Got it"]
+
+    for (const text of dismissTexts) {
+      const button = page
+        .locator("button, div[role=button], span[role=button]")
+        .filter({ hasText: text })
+        .first()
+
+      if ((await button.count()) === 0) {
+        continue
+      }
+
+      const isVisible = await button.isVisible().catch(() => false)
+      const isEnabled = await button.isEnabled().catch(() => false)
+
+      if (isVisible && isEnabled) {
+        await button.click()
+        return true
+      }
     }
     return false
   } catch (e) {
@@ -550,7 +548,7 @@ async function clickWithInnerText(
   console.log(
     "All visible text on page:",
     await page.evaluate(() => {
-      return document.body.innerText.slice(0, 1000) + "..."
+      return `${document.body.innerText.slice(0, 1000)}...`
     })
   )
 
@@ -633,8 +631,14 @@ async function changeLayout(page: Page, currentAttempt = 1, maxAttempts = 3): Pr
     }
 
     // First check if we are still in the meeting
-    if (!(await isInMeeting(page))) {
-      console.log("Bot is no longer in the meeting, stopping layout change")
+    const inMeeting = await isInMeeting(page)
+    if (!inMeeting) {
+      // Additional diagnostic logging to help debug false positives
+      const waitingRoom = await isInWaitingRoom(page)
+      const denied = await notAcceptedInMeeting(page)
+      console.log(
+        `Bot is no longer in the meeting, stopping layout change. Diagnostics: waitingRoom=${waitingRoom}, denied=${denied}`
+      )
       GLOBAL.setError(MeetingEndReason.BotRemoved, "Bot removed during layout change")
       return false
     }

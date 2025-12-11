@@ -19,6 +19,10 @@ export type SelectorPattern = {
   selectors: string[]
   threshold: number
   checkVisibility?: boolean
+  // This is not used for selector patterns
+  reason?: never
+  logPrefix?: never
+  errorMessage?: never
 }
 
 export type StateDetectionConfig = {
