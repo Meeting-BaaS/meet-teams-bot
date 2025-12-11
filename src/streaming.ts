@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { promises as fsPromises } from 'fs'
 import { Readable } from 'stream'
 import { RawData, WebSocket } from 'ws'
 
@@ -43,6 +44,21 @@ export class Streaming {
     private lastStatsLogTime: number = 0
     private readonly STATS_LOG_INTERVAL_MS: number = 15000
 
+    // Browser audio streaming
+    private sourceSampleRate: number = 48000 // Default, updated by incoming chunks
+    private browserAudioChunksSent: number = 0
+    private lastBrowserStatsLogTime: number = 0
+
+    // WebSocket connection buffer (for chunks received before WS is ready)
+    private connectionBuffer: Float32Array[] = []
+    private readonly MAX_CONNECTION_BUFFER_SIZE: number = 100 // ~4 seconds at 24kHz
+    private wsConnectionStartTime: number = 0
+
+    // Debug: Save streamed audio to file
+    private debugAudioStream: fs.WriteStream | null = null
+    private debugAudioBytesWritten: number = 0
+    private readonly debugAudioEnabled: boolean = false
+
     constructor(
         input: string | undefined,
         output: string | undefined,
@@ -57,9 +73,15 @@ export class Streaming {
             this.sample_rate = sample_rate
         }
 
+        // Read debug audio configuration from environment variable
+        ;(this as any).debugAudioEnabled = process.env.DEBUG_AUDIO === 'true'
+
         console.log(
             `🎵 Streaming service initialized with sample rate: ${this.sample_rate} Hz${sample_rate ? ' (from user config)' : ` (default: ${DEFAULT_SAMPLE_RATE} Hz)`}`,
         )
+        if (this.debugAudioEnabled) {
+            console.log('🐛 Debug audio file recording enabled (DEBUG_AUDIO=true)')
+        }
 
         this.audioPacketsReceived = 0
 
@@ -137,8 +159,10 @@ export class Streaming {
             this.audioBuffer = []
         }
 
-        // Forward to external output service if connected
-        this.forwardToExternalService(audioData)
+        // ❌ DISABLED: FFmpeg streaming disabled - now using browser WebRTC pipeline
+        // Browser WebRTC provides <50ms latency vs FFmpeg's ~200-500ms
+        // See processMixedAudioChunk() for the active streaming pipeline
+        // this.forwardToExternalService(audioData)
     }
 
     /**
@@ -158,22 +182,151 @@ export class Streaming {
     }
 
     /**
+     * 🚀 STREAMING: Process pre-mixed audio from Web Audio API
+     * KISS approach: Browser mixes automatically, we just forward it!
+     */
+    public processMixedAudioChunk(audioChunk: {
+        audioData: number[]
+        sampleRate: number
+        timestamp: number
+        numberOfFrames: number
+    }): void {
+        if (!this.isInitialized) {
+            return
+        }
+
+        if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+            return
+        }
+
+        try {
+            const float32Data = new Float32Array(audioChunk.audioData)
+
+            // Update source sample rate
+            if (audioChunk.sampleRate && audioChunk.sampleRate > 0) {
+                if (this.sourceSampleRate !== audioChunk.sampleRate) {
+                    console.log(`🎵 Web Audio mixer sample rate: ${audioChunk.sampleRate} Hz`)
+                    this.sourceSampleRate = audioChunk.sampleRate
+                }
+            }
+
+            // Send directly - no buffering, no manual mixing!
+            this.processAndSendAudioChunk(float32Data)
+
+        } catch (error) {
+            console.error('Failed to process mixed audio chunk:', error)
+        }
+    }
+
+    /**
+     * Process and send a single audio chunk immediately
+     */
+    private processAndSendAudioChunk(audioData: Float32Array): void {
+        // Simple clipping protection
+        const normalized = new Float32Array(audioData.length)
+        for (let i = 0; i < audioData.length; i++) {
+            normalized[i] = Math.max(-1, Math.min(1, audioData[i]))
+        }
+
+        // Resample if needed (e.g. 48kHz -> 16kHz)
+        const sourceRate = this.sourceSampleRate
+        const targetRate = this.sample_rate
+        let finalBuffer = normalized
+
+        if (sourceRate !== targetRate) {
+            const ratio = sourceRate / targetRate
+            const newLength = Math.round(normalized.length / ratio)
+            const resampled = new Float32Array(newLength)
+
+            for (let i = 0; i < newLength; i++) {
+                const sourceIndex = i * ratio
+                const index = Math.floor(sourceIndex)
+                const decimal = sourceIndex - index
+
+                // Linear interpolation
+                const p0 = normalized[index] || 0
+                const p1 = normalized[index + 1] || p0
+                resampled[i] = p0 + (p1 - p0) * decimal
+            }
+            finalBuffer = resampled
+        }
+
+        // Convert to Int16 for WebSocket transmission
+        const s16Array = new Int16Array(finalBuffer.length)
+        for (let i = 0; i < finalBuffer.length; i++) {
+            s16Array[i] = Math.round(
+                Math.max(-32768, Math.min(32767, finalBuffer[i] * 32768)),
+            )
+        }
+
+        // Send to WebSocket
+        if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
+            this.output_ws.send(s16Array.buffer)
+            this.browserAudioChunksSent++
+
+            // Write to debug file
+            this.writeDebugAudioChunk(s16Array)
+        }
+    }
+
+    /**
+     * Flush the connection buffer (send all buffered chunks)
+     */
+    private flushConnectionBuffer(): void {
+        if (this.connectionBuffer.length === 0) {
+            return
+        }
+
+        const bufferSize = this.connectionBuffer.length
+        console.log(
+            `📤 Flushing connection buffer: ${bufferSize} chunks (~${(bufferSize * 0.04).toFixed(2)}s of audio)`,
+        )
+
+        for (const chunk of this.connectionBuffer) {
+            const s16Array = new Int16Array(chunk.length)
+            for (let i = 0; i < chunk.length; i++) {
+                s16Array[i] = Math.round(
+                    Math.max(-32768, Math.min(32767, chunk[i] * 32768)),
+                )
+            }
+            if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
+                this.output_ws.send(s16Array.buffer)
+            }
+        }
+
+        this.connectionBuffer = []
+    }
+
+    /**
      * Setup external output WebSocket (for external services)
      */
     private setupExternalOutputWS(): void {
         try {
+            console.log(`🔌 Connecting to external output WebSocket: ${this.outputUrl}`)
             this.output_ws = new WebSocket(this.outputUrl!)
+            this.wsConnectionStartTime = Date.now()
 
             this.output_ws.on('open', () => {
+                const connectionTime = Date.now() - this.wsConnectionStartTime
+                console.log(`✅ External output WebSocket connected in ${connectionTime}ms`)
+
                 if (this.output_ws) {
-                    this.output_ws.send(
-                        JSON.stringify({
-                            protocol_version: 1,
-                            bot_id: this.botId,
-                            offset: 0.0,
-                        }),
-                    )
-                    console.log('✅ External output WebSocket connected')
+                    const handshake = {
+                        protocol_version: 1,
+                        bot_id: this.botId,
+                        offset: 0.0,
+                        sample_rate: this.sample_rate,
+                    }
+                    console.log(`🤝 Sending handshake to ${this.outputUrl}: ${JSON.stringify(handshake)}`)
+                    this.output_ws.send(JSON.stringify(handshake))
+
+                    // Flush any buffered audio chunks
+                    this.flushConnectionBuffer()
+
+                    // Initialize debug audio file if enabled
+                    if (this.debugAudioEnabled) {
+                        this.initDebugAudioFile()
+                    }
                 }
             })
 
@@ -262,6 +415,9 @@ export class Streaming {
         }
 
         console.log('🛑 Stopping simplified streaming service...')
+
+        // Finalize debug audio file
+        this.finalizeDebugAudioFile()
 
         // Close external WebSockets only
         this.closeExternalWebSockets()
@@ -487,6 +643,110 @@ export class Streaming {
         })
 
         return stream
+    }
+
+    /**
+     * Initialize debug audio file for saving streamed audio
+     */
+    private initDebugAudioFile(): void {
+        try {
+            const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
+            console.log(`🎤 Debug: Saving streamed audio to ${debugPath}`)
+
+            this.debugAudioStream = fs.createWriteStream(debugPath)
+            this.debugAudioBytesWritten = 0
+
+            // Write WAV header (will be updated with correct size when closing)
+            const header = this.createWavHeader(0, this.sample_rate, 1, 16)
+            this.debugAudioStream.write(header)
+        } catch (error) {
+            console.error('Failed to initialize debug audio file:', error)
+            this.debugAudioStream = null
+        }
+    }
+
+    /**
+     * Create WAV header
+     */
+    private createWavHeader(dataSize: number, sampleRate: number, channels: number, bitsPerSample: number): Buffer {
+        const header = Buffer.alloc(44)
+
+        // RIFF header
+        header.write('RIFF', 0)
+        header.writeUInt32LE(36 + dataSize, 4) // File size - 8
+        header.write('WAVE', 8)
+
+        // fmt chunk
+        header.write('fmt ', 12)
+        header.writeUInt32LE(16, 16) // fmt chunk size
+        header.writeUInt16LE(1, 20) // Audio format (1 = PCM)
+        header.writeUInt16LE(channels, 22)
+        header.writeUInt32LE(sampleRate, 24)
+        header.writeUInt32LE(sampleRate * channels * bitsPerSample / 8, 28) // Byte rate
+        header.writeUInt16LE(channels * bitsPerSample / 8, 32) // Block align
+        header.writeUInt16LE(bitsPerSample, 34)
+
+        // data chunk
+        header.write('data', 36)
+        header.writeUInt32LE(dataSize, 40)
+
+        return header
+    }
+
+    /**
+     * Write audio chunk to debug file
+     */
+    private writeDebugAudioChunk(audioData: Int16Array): void {
+        if (!this.debugAudioStream) return
+
+        try {
+            const buffer = Buffer.from(audioData.buffer)
+            this.debugAudioStream.write(buffer)
+            this.debugAudioBytesWritten += buffer.length
+        } catch (error) {
+            console.error('Failed to write debug audio chunk:', error)
+        }
+    }
+
+    /**
+     * Finalize debug audio file (update WAV header with correct size)
+     */
+    private finalizeDebugAudioFile(): void {
+        if (!this.debugAudioStream) return
+
+        try {
+            const debugPath = PathManager.getInstance().getDebugStreamedAudioPath()
+            const bytesWritten = this.debugAudioBytesWritten
+            const sampleRate = this.sample_rate
+
+            this.debugAudioStream.end(async () => {
+                let fd: fsPromises.FileHandle | null = null
+                try {
+                    // Update WAV header with correct size using async file operations
+                    fd = await fsPromises.open(debugPath, 'r+')
+                    const header = this.createWavHeader(bytesWritten, sampleRate, 1, 16)
+                    await fd.write(header, 0, 44, 0)
+
+                    console.log(`🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`)
+                } catch (error) {
+                    console.error('Failed to update WAV header:', error)
+                } finally {
+                    // Always close the file descriptor
+                    if (fd) {
+                        try {
+                            await fd.close()
+                        } catch (closeError) {
+                            console.error('Failed to close debug audio file:', closeError)
+                        }
+                    }
+                }
+            })
+        } catch (error) {
+            console.error('Failed to finalize debug audio file:', error)
+        }
+
+        this.debugAudioStream = null
+        this.debugAudioBytesWritten = 0
     }
 
     public getCurrentSoundLevel(): number {
