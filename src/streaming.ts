@@ -50,7 +50,6 @@ export class Streaming {
 
   // WebSocket connection buffer (for chunks received before WS is ready)
   private connectionBuffer: Float32Array[] = []
-  private readonly MAX_CONNECTION_BUFFER_SIZE: number = 100 // ~4 seconds at 24kHz
   private wsConnectionStartTime = 0
 
   // WebSocket reconnection with exponential backoff
