@@ -37,6 +37,7 @@ export async function enableTeamsAudioCapture(page: Page): Promise<void> {
                 const mixerDestination = audioCtx.createMediaStreamDestination()
                 const mixedAudioSources = new Map()
                 let mixedStreamProcessor = null
+                let chunksSent = 0
 
                 // Start reading the pre-mixed stream
                 async function startMixedStreamProcessor() {
@@ -97,6 +98,16 @@ export async function enableTeamsAudioCapture(page: Page): Promise<void> {
                                                 timestamp: frame.timestamp,
                                                 numberOfFrames: numSamples,
                                             })
+                                            chunksSent++
+                                            if (chunksSent === 1) {
+                                                console.log('[TeamsAudio] ✅ First audio chunk sent to Node.js')
+                                            } else if (chunksSent % 100 === 0) {
+                                                console.log('[TeamsAudio] 📊 Sent ' + chunksSent + ' chunks to Node.js')
+                                            }
+                                        } else {
+                                            if (chunksSent === 0) {
+                                                console.error('[TeamsAudio] ⚠️ window.onTeamsMixedAudioChunk not available!')
+                                            }
                                         }
 
                                         frame.close()
