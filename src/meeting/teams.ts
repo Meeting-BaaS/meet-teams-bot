@@ -414,7 +414,11 @@ export class TeamsProvider implements MeetingProviderInterface {
 
         // Verify audio capture is working (only if streaming is enabled)
         if (Streaming.instance) {
-            await verifyTeamsAudioCapture(page)
+            try {
+                await verifyTeamsAudioCapture(page)
+            } catch (error) {
+                console.error('[Teams] Failed to verify audio capture post-join:', formatError(error))
+            }
         }
 
         // Check for "Continue without audio or video" that might appear AFTER joining (light interface)
