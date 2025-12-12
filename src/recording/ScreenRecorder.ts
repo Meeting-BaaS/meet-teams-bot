@@ -7,17 +7,16 @@ import { envVars } from "../config/env-vars"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
-import { Streaming } from "../streaming"
 import { calculateVideoOffset } from "../utils/CalculVideoOffset"
 import { formatError } from "../utils/Logger"
 import { PathManager } from "../utils/PathManager"
 import { S3Uploader } from "../utils/S3Uploader"
 import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
+import { SoundLevelMonitor } from "../utils/sound-level-monitor"
 
 const TRANSCRIPTION_CHUNK_DURATION = 7200 // Increased from 3600 to 7200, i.e. 2 hours because Gladia can now accept a 135 minutes long audio file
 const GRACE_PERIOD_SECONDS = 3
-const DEFAULT_STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = "192k" // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
@@ -111,7 +110,7 @@ export class ScreenRecorder extends EventEmitter {
   private meetingStartTime = 0
   private gracePeriodActive = false
   private rawAudioPath = ""
-  private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
+  private soundMonitorRemainder: Buffer = Buffer.alloc(0)
 
   constructor(config: Partial<ScreenRecordingConfig> = {}) {
     super()
@@ -146,10 +145,6 @@ export class ScreenRecorder extends EventEmitter {
       throw new Error("Recording is already in progress")
     }
 
-    this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency
-      ? GLOBAL.get().streaming_audio_frequency
-      : DEFAULT_STREAMING_SAMPLE_RATE
-
     // Capture DOM state before starting screen recording (void to avoid blocking)
     const htmlSnapshot = HtmlSnapshotService.getInstance()
     void htmlSnapshot.captureSnapshot(page, "screen_recording_start")
@@ -171,7 +166,7 @@ export class ScreenRecorder extends EventEmitter {
       this.gracePeriodActive = false
       this.logMemoryUsage("Starting recording")
       this.setupProcessMonitoring()
-      this.setupStreamingAudio()
+      this.setupSoundLevelMonitoring()
       this.setupFileSizeMonitoring()
 
       await sleep(FLASH_SCREEN_SLEEP_TIME)
@@ -326,7 +321,22 @@ export class ScreenRecorder extends EventEmitter {
         "-f",
         "image2",
         "-y",
-        screenshotPattern
+        screenshotPattern,
+
+        // === OUTPUT 3: SOUND LEVEL MONITORING (stdout) ===
+        // This output is CRITICAL for automatic leave detection
+        // It feeds the SoundLevelMonitor which is independent of streaming
+        "-map",
+        "0:a:0",
+        "-acodec",
+        "pcm_f32le", // Float32 for easy processing
+        "-ac",
+        "1", // Mono
+        "-ar",
+        "24000", // 24kHz is sufficient for sound level analysis
+        "-f",
+        "f32le", // Raw float32 format
+        "pipe:1" // stdout
       )
     } else {
       // Separate audio and video recording
@@ -414,22 +424,20 @@ export class ScreenRecorder extends EventEmitter {
         "-y",
         screenshotPattern,
 
-        // === OUTPUT 4: STREAMING AUDIO ===
+        // === OUTPUT 4: SOUND LEVEL MONITORING (stdout) ===
+        // This output is CRITICAL for automatic leave detection
+        // It feeds the SoundLevelMonitor which is independent of streaming
         "-map",
         "1:a:0",
         "-acodec",
-        "pcm_f32le",
+        "pcm_f32le", // Float32 for easy processing
         "-ac",
-        "1",
+        "1", // Mono
         "-ar",
-        this.streamingSampleRate.toString(),
-        "-fflags",
-        "nobuffer",
-        "-flags",
-        "low_delay",
+        "24000", // 24kHz is sufficient for sound level analysis
         "-f",
-        "f32le",
-        "pipe:1"
+        "f32le", // Raw float32 format
+        "pipe:1" // stdout
       )
     }
 
@@ -600,30 +608,55 @@ export class ScreenRecorder extends EventEmitter {
     }, errorWindowMs)
   }
 
-  private setupStreamingAudio(): void {
-    if (!Streaming.instance || !this.ffmpegProcess) return
+  /**
+   * Setup sound level monitoring from FFmpeg stdout
+   * This is CRITICAL for automatic leave detection (silence timeout, noone_joined_timeout)
+   * Completely independent of streaming functionality
+   */
+  private setupSoundLevelMonitoring(): void {
+    if (!this.ffmpegProcess) return
+
+    const monitor = SoundLevelMonitor.getInstance()
+    monitor.start()
 
     try {
-      this.ffmpegProcess.stdout?.on("data", (_data: Buffer) => {
+      this.ffmpegProcess.stdout?.on("data", (data: Buffer) => {
         try {
-          if (Streaming.instance) {
-            // ❌ DISABLED: FFmpeg audio streaming disabled
-            // Now using Web Audio API mixing directly from browser for ultra-low latency
-            // See audio-capture.ts files for the new streaming approach
-            // const float32Array = new Float32Array(
-            //     data.buffer,
-            //     data.byteOffset,
-            //     data.length / 4,
-            // )
-            // Streaming.instance.processAudioChunk(float32Array)
+          // Handle chunk boundaries: Float32 frames can split across data events
+          // Concatenate with any remainder from previous chunk
+          let buf: Buffer
+          if (this.soundMonitorRemainder.length > 0) {
+            buf = Buffer.concat([this.soundMonitorRemainder, data])
+          } else {
+            buf = data
           }
+
+          // Only process aligned bytes (divisible by 4 for Float32)
+          const alignedLen = buf.length - (buf.length % 4)
+          if (alignedLen === 0) {
+            // Not enough data yet, save for next chunk
+            this.soundMonitorRemainder = buf
+            return
+          }
+
+          // Save unaligned remainder for next chunk
+          this.soundMonitorRemainder = buf.subarray(alignedLen) as Buffer
+
+          // Create Float32Array view and copy to avoid retaining pooled buffers
+          const view = new Float32Array(buf.buffer, buf.byteOffset, alignedLen / 4)
+          const float32Array = new Float32Array(view) // Copy to standalone array
+
+          // Feed to sound level monitor (always active, critical for automatic leave)
+          monitor.processAudioChunk(float32Array)
         } catch (error) {
-          console.error("Failed to process audio chunk:", formatError(error))
+          console.error("[SoundLevelMonitor] Failed to process audio chunk:", formatError(error))
           // Don't throw - continue processing other chunks
         }
       })
+
+      console.log("✅ Sound level monitoring enabled (FFmpeg stdout → automatic leave detection)")
     } catch (error) {
-      console.error("Failed to setup streaming audio:", formatError(error))
+      console.error("[SoundLevelMonitor] Failed to setup monitoring:", formatError(error))
     }
   }
 

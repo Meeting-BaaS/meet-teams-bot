@@ -10,8 +10,18 @@ import { PathManager } from "./utils/PathManager"
 const DEFAULT_SAMPLE_RATE: number = 24_000
 
 /**
- * Simplified Streaming class - Chrome Extension WebSocket logic removed
- * Now uses direct audio processing via processAudioChunk() from ScreenRecorder
+ * Streaming class for real-time audio output to external services
+ *
+ * IMPORTANT: This is now an OPTIONAL feature, completely independent of:
+ * - Sound level monitoring (handled by SoundLevelMonitor)
+ * - Automatic leave detection (uses SoundLevelMonitor)
+ * - Recording (handled by ScreenRecorder)
+ *
+ * Audio sources:
+ * - Browser Web Audio API (processMixedAudioChunk) - ultra-low latency streaming
+ * - External WebSocket input (for bidirectional audio)
+ *
+ * Note: processAudioChunk() is deprecated and no longer used for streaming
  */
 export class Streaming {
   public static instance: Streaming | null = null
@@ -31,18 +41,6 @@ export class Streaming {
   private isPaused = false
   private pausedChunks: RawData[] = []
 
-  // Audio level monitoring with performance optimizations
-  private currentSoundLevel = 0
-  private lastSoundLogTime_ms = 0
-  private readonly SOUND_LOG_INTERVAL_MS: number = 5000
-  private audioBuffer: Float32Array[] = [] // Buffer for batch processing
-  private readonly AUDIO_BUFFER_SIZE: number = 12
-
-  // Statistics tracking
-  private audioPacketsReceived = 0
-  private lastStatsLogTime = 0
-  private readonly STATS_LOG_INTERVAL_MS: number = 15000
-
   // Browser audio streaming
   private sourceSampleRate = 48000 // Default, updated by incoming chunks
   private browserAudioChunksSent = 0
@@ -55,7 +53,6 @@ export class Streaming {
   // WebSocket reconnection with exponential backoff
   private isReconnecting = false
   private reconnectAttempts = 0
-  private lastReconnectAttemptTime = 0
   private reconnectTimeoutId: NodeJS.Timeout | null = null
   private readonly INITIAL_RECONNECT_DELAY_MS: number = 1000 // 1 second
   private readonly MAX_RECONNECT_DELAY_MS: number = 60000 // 1 minute
@@ -87,8 +84,6 @@ export class Streaming {
     if (this.debugAudioEnabled) {
       console.log("🐛 Debug audio file recording enabled (DEBUG_AUDIO=true)")
     }
-
-    this.audioPacketsReceived = 0
 
     this.start()
 
@@ -124,51 +119,6 @@ export class Streaming {
   }
 
   /**
-   * ⭐ MAIN METHOD: Process audio chunk directly from ScreenRecorder
-   * This replaces the old Chrome Extension WebSocket approach
-   */
-  public processAudioChunk(audioData: Float32Array): void {
-    if (!this.isInitialized) {
-      return
-    }
-
-    // Increment packet counter for stats
-    this.audioPacketsReceived++
-
-    // Log stats periodically
-    const now = Date.now()
-    if (now - this.lastStatsLogTime >= this.STATS_LOG_INTERVAL_MS) {
-      const packetsInInterval = this.audioPacketsReceived
-      console.log(
-        `🎵 Direct audio packets processed: ${packetsInInterval} in last ${this.STATS_LOG_INTERVAL_MS}ms`
-      )
-      this.audioPacketsReceived = 0
-      this.lastStatsLogTime = now
-    }
-
-    if (this.isPaused) {
-      // If paused, store chunks for later processing
-      const buffer = Buffer.from(audioData.buffer)
-      this.pausedChunks.push(buffer)
-      return
-    }
-
-    // Buffer audio for batch processing (sound level analysis)
-    this.audioBuffer.push(audioData)
-    if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
-      this.processBatchedAudio().catch((error) =>
-        console.error("Error processing batched audio:", formatError(error))
-      )
-      this.audioBuffer = []
-    }
-
-    // ❌ DISABLED: FFmpeg streaming disabled - now using browser WebRTC pipeline
-    // Browser WebRTC provides <50ms latency vs FFmpeg's ~200-500ms
-    // See processMixedAudioChunk() for the active streaming pipeline
-    // this.forwardToExternalService(audioData)
-  }
-
-  /**
    * 🚀 STREAMING: Process pre-mixed audio from Web Audio API
    * KISS approach: Browser mixes automatically, we just forward it!
    */
@@ -183,14 +133,6 @@ export class Streaming {
       return
     }
 
-    if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
-      console.warn(
-        "[Streaming] ⚠️ Received audio chunk but WebSocket not open (state:",
-        this.output_ws?.readyState,
-        ")"
-      )
-      return
-    }
     if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
       // Throttle warning logs to avoid spam
       const now = Date.now()
@@ -227,7 +169,6 @@ export class Streaming {
 
       // Send directly - no buffering, no manual mixing!
       this.processAndSendAudioChunk(float32Data)
-      this.browserAudioChunksSent++
 
       // Log stats every 5 seconds
       const now = Date.now()
@@ -282,6 +223,7 @@ export class Streaming {
     // Send to WebSocket
     if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
       this.output_ws.send(s16Array.buffer)
+      this.browserAudioChunksSent++
 
       // Write to debug file
       this.writeDebugAudioChunk(s16Array)
@@ -353,6 +295,8 @@ export class Streaming {
 
       this.output_ws.on("error", (err: Error) => {
         console.error("External output WebSocket error:", formatError(err))
+        // Schedule reconnection on error
+        this.scheduleReconnect()
       })
 
       this.output_ws.on("close", () => {
@@ -391,6 +335,63 @@ export class Streaming {
     } catch (error) {
       console.error("Failed to setup external input WebSocket:", formatError(error))
     }
+  }
+
+  /**
+   * Schedule WebSocket reconnection with exponential backoff
+   * Max delay is 1 minute between reconnection attempts
+   */
+  private scheduleReconnect(): void {
+    // Don't reconnect if not initialized or no output URL configured
+    if (!this.isInitialized || !this.outputUrl) {
+      return
+    }
+
+    // Don't schedule if already reconnecting
+    if (this.isReconnecting) {
+      return
+    }
+
+    // Don't reconnect if WebSocket is already open or connecting
+    if (
+      this.output_ws &&
+      (this.output_ws.readyState === WebSocket.OPEN ||
+        this.output_ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return
+    }
+
+    this.isReconnecting = true
+    this.reconnectAttempts++
+
+    // Calculate delay with exponential backoff: 1s, 2s, 4s, 8s, ... up to 60s
+    const delay = Math.min(
+      this.INITIAL_RECONNECT_DELAY_MS * 2 ** (this.reconnectAttempts - 1),
+      this.MAX_RECONNECT_DELAY_MS
+    )
+
+    console.log(
+      `🔄 Scheduling WebSocket reconnection attempt ${this.reconnectAttempts} in ${(delay / 1000).toFixed(1)}s`
+    )
+
+    // Clear any existing timeout
+    if (this.reconnectTimeoutId) {
+      clearTimeout(this.reconnectTimeoutId)
+    }
+
+    this.reconnectTimeoutId = setTimeout(() => {
+      this.reconnectTimeoutId = null
+
+      // Check again if we should reconnect
+      if (!this.isInitialized || !this.outputUrl) {
+        this.isReconnecting = false
+        return
+      }
+
+      console.log(`🔌 Attempting WebSocket reconnection (attempt ${this.reconnectAttempts})...`)
+      this.isReconnecting = false // Reset before attempting so setupExternalOutputWS can set it again if needed
+      this.setupExternalOutputWS()
+    }, delay)
   }
 
   public pause(): void {
@@ -435,8 +436,8 @@ export class Streaming {
 
     console.log("🛑 Stopping simplified streaming service...")
 
-    // Finalize debug audio file
-    this.finalizeDebugAudioFile()
+    // Finalize debug audio file (wait for WAV header to be written)
+    await this.finalizeDebugAudioFile()
 
     // Close external WebSockets only
     this.closeExternalWebSockets()
@@ -506,74 +507,6 @@ export class Streaming {
     }
   }
 
-  /**
-   * Process batched audio data for sound level analysis
-   */
-  private async processBatchedAudio(): Promise<void> {
-    if (this.audioBuffer.length === 0) return
-
-    // Combine all audio buffers into one for analysis
-    const totalLength = this.audioBuffer.reduce((sum, buffer) => sum + buffer.length, 0)
-    const combinedBuffer = new Float32Array(totalLength)
-
-    let offset = 0
-    for (const buffer of this.audioBuffer) {
-      combinedBuffer.set(buffer, offset)
-      offset += buffer.length
-    }
-
-    // Analyze the combined buffer
-    await this.analyzeSoundLevel(combinedBuffer)
-  }
-
-  /**
-   * Audio level analysis (unchanged)
-   */
-  private async analyzeSoundLevel(audioData: Float32Array): Promise<void> {
-    // Apply adaptive sampling to reduce computational load
-    const sampleRate = audioData.length > 2000 ? 16 : 8
-    const sampledLength = Math.floor(audioData.length / sampleRate)
-
-    // Skip analysis for very small buffers
-    if (sampledLength < 10) {
-      return
-    }
-
-    let sum = 0
-
-    // Calculate RMS (Root Mean Square)
-    for (let i = 0; i < sampledLength; i++) {
-      const value = audioData[i * sampleRate]
-      sum += value * value
-    }
-
-    const rms = Math.sqrt(sum / sampledLength)
-
-    // Calculate normalized sound level
-    let normalizedLevel = 0
-    if (rms > 0.005) {
-      normalizedLevel = Math.min(100, rms * 300)
-    }
-
-    // Update current level for real-time monitoring
-    this.currentSoundLevel = normalizedLevel
-
-    // Throttled file logging
-    const now = Date.now()
-    if (now - this.lastSoundLogTime_ms >= this.SOUND_LOG_INTERVAL_MS) {
-      const timestamp = new Date(now).toISOString()
-      const logEntry = `${timestamp},${normalizedLevel.toFixed(0)}\n`
-
-      try {
-        const soundLogPath = PathManager.getInstance().getSoundLogPath()
-        fs.promises.appendFile(soundLogPath, logEntry).catch(() => {})
-        this.lastSoundLogTime_ms = now
-      } catch (_error) {
-        // Silently handle file errors
-      }
-    }
-  }
-
   private processPausedChunks(): void {
     if (this.pausedChunks.length === 0) {
       return
@@ -583,9 +516,8 @@ export class Streaming {
       if (message instanceof Buffer) {
         const uint8Array = new Uint8Array(message)
         const f32Array = new Float32Array(uint8Array.buffer)
-        this.analyzeSoundLevel(f32Array).catch((error) =>
-          console.error("Error analyzing sound level:", formatError(error))
-        )
+
+        // Note: Sound level analysis removed (now in SoundLevelMonitor)
 
         // Forward to external services if needed
         if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
@@ -635,9 +567,8 @@ export class Streaming {
             f32Array[i] = s16Array[i] / 32768
           }
 
-          this.analyzeSoundLevel(f32Array).catch((error) =>
-            console.error("Error analyzing sound level:", formatError(error))
-          )
+          // Note: Sound level analysis removed (now in SoundLevelMonitor)
+          // External audio injection still works for bidirectional streaming
           const buffer = Buffer.from(f32Array.buffer)
           stream.push(buffer)
         } catch (error) {
@@ -739,7 +670,7 @@ export class Streaming {
           // Update WAV header with correct size using async file operations
           fd = await fs.promises.open(debugPath, "r+")
           const header = this.createWavHeader(bytesWritten, sampleRate, 1, 16)
-          await fd.write(header, 0, 44, 0)
+          await fd.write(new Uint8Array(header), 0, 44, 0)
 
           console.log(
             `🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`
@@ -760,52 +691,5 @@ export class Streaming {
         }
       })
     })
-  }
-
-  public getCurrentSoundLevel(): number {
-    return this.currentSoundLevel
-  }
-
-  /**
-   * Schedule WebSocket reconnection with exponential backoff
-   */
-  private scheduleReconnect(): void {
-    if (!this.isInitialized || !this.outputUrl) {
-      return
-    }
-
-    if (this.isReconnecting) {
-      return
-    }
-
-    this.isReconnecting = true
-    const now = Date.now()
-
-    // Calculate delay with exponential backoff
-    const delay = Math.min(
-      this.INITIAL_RECONNECT_DELAY_MS * 2 ** this.reconnectAttempts,
-      this.MAX_RECONNECT_DELAY_MS
-    )
-
-    // Throttle reconnection attempts
-    if (now - this.lastReconnectAttemptTime < delay) {
-      this.isReconnecting = false
-      return
-    }
-
-    this.lastReconnectAttemptTime = now
-    this.reconnectAttempts++
-
-    console.log(
-      `🔄 Scheduling WebSocket reconnection attempt ${this.reconnectAttempts} in ${delay}ms`
-    )
-
-    this.reconnectTimeoutId = setTimeout(() => {
-      this.isReconnecting = false
-      if (this.isInitialized && this.outputUrl) {
-        console.log(`🔄 Attempting to reconnect to ${this.outputUrl}`)
-        this.setupExternalOutputWS()
-      }
-    }, delay)
   }
 }
