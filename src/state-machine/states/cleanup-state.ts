@@ -7,6 +7,7 @@ import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
+import { SoundLevelMonitor } from '../../utils/sound-level-monitor'
 
 export class CleanupState extends BaseState {
     async execute(): StateExecuteResult {
@@ -71,33 +72,40 @@ export class CleanupState extends BaseState {
 
             // 🚀 PARALLEL CLEANUP: Independent steps that can run simultaneously
             console.info(
-                '🧹 Steps 4-6: Running parallel cleanup (streaming + speakers + HTML)',
+                '🧹 Steps 4-7: Running parallel cleanup (streaming + sound monitor + speakers + HTML)',
             )
             await Promise.allSettled([
                 // 4. Stop the streaming (waits for debug audio file finalization)
                 (async () => {
-                    console.info('🧹 Step 4/7: Stopping streaming service')
+                    console.info('🧹 Step 4/8: Stopping streaming service')
                     if (this.context.streamingService) {
                         await this.context.streamingService.stop()
                     }
                 })(),
 
-                // 5. Stop speakers observer (with 3s timeout)
+                // 5. Stop sound level monitor (critical for automatic leave)
                 (async () => {
-                    console.info('🧹 Step 5/7: Stopping speakers observer')
+                    console.info('🧹 Step 5/8: Stopping sound level monitor')
+                    // Use stopIfStarted to avoid instantiating if never used
+                    SoundLevelMonitor.stopIfStarted()
+                })(),
+
+                // 6. Stop speakers observer (with 3s timeout)
+                (async () => {
+                    console.info('🧹 Step 6/8: Stopping speakers observer')
                     await this.stopSpeakersObserver()
                 })(),
 
-                // 6. Stop HTML cleaner (with 3s timeout)
+                // 7. Stop HTML cleaner (with 3s timeout)
                 (async () => {
-                    console.info('🧹 Step 6/7: Stopping HTML cleaner')
+                    console.info('🧹 Step 7/8: Stopping HTML cleaner')
                     await this.stopHtmlCleaner()
                 })(),
             ])
 
             console.info('🧹 Parallel cleanup completed')
 
-            console.info('🧹 Step 7/7: Cleaning up browser resources')
+            console.info('🧹 Step 8/8: Cleaning up browser resources')
             // 8. Clean up browser resources (must be sequential after others)
             await this.cleanupBrowserResources()
 
