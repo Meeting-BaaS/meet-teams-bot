@@ -3,6 +3,7 @@ import { PathManager } from './PathManager'
 import { formatError } from './Logger'
 
 const RMS_THRESHOLD = 0.005 // 0.5%
+const RMS_TO_LEVEL_SCALE = 300
 
 /**
  * Independent sound level monitor for automatic leave conditions
@@ -141,7 +142,7 @@ export class SoundLevelMonitor {
         // Calculate normalized sound level
         let normalizedLevel = 0
         if (rms > RMS_THRESHOLD) {
-            normalizedLevel = Math.min(100, rms * 300)
+            normalizedLevel = Math.min(100, rms * RMS_TO_LEVEL_SCALE)
         }
 
         // Update current level for real-time monitoring
@@ -153,13 +154,10 @@ export class SoundLevelMonitor {
             const timestamp = new Date(now).toISOString()
             const logEntry = `${timestamp},${normalizedLevel.toFixed(0)}\n`
 
-            try {
-                const soundLogPath = PathManager.getInstance().getSoundLogPath()
-                await fs.promises.appendFile(soundLogPath, logEntry).catch(() => {})
-                this.lastSoundLogTime = now
-            } catch (error) {
-                // Silently handle file errors
-            }
+            const soundLogPath = PathManager.getInstance().getSoundLogPath()
+            // Silently handle file errors
+            await fs.promises.appendFile(soundLogPath, logEntry).catch(() => {})
+            this.lastSoundLogTime = now
         }
     }
 
