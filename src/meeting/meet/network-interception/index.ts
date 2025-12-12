@@ -1,7 +1,7 @@
 // Network-based speaker observation for Google Meet
 // Main exports and Node.js setup
 
-import * as fs from 'fs'
+import * as path from 'path'
 import { Page } from '@playwright/test'
 import { browserInterceptionLogic } from './browser-bundle'
 import { PROTO_SCHEMA } from './schema'
@@ -33,65 +33,50 @@ export async function enableNetworkInterception(
         return false
     }
 
-    // Load required dependencies (protobufjs and pako)
-    let libs = ''
+    // Load heavy dependencies (protobufjs + pako) from pre-built bundle file
+    // This avoids massive inline string concatenation (~250KB)
     try {
-        libs += fs.readFileSync(
-            require.resolve('protobufjs/dist/protobuf.min.js'),
-            'utf8',
-        )
+        const bundlePath = path.resolve(__dirname, 'bundle/network-interceptor-libs.bundle.js')
+        await page.addInitScript({ path: bundlePath })
+        console.log('[NetworkInterceptor] ✅ Libraries bundle loaded from file')
     } catch (error) {
         console.error(
-            '[NetworkInterceptor] ❌ Failed to load protobufjs dependency:',
+            '[NetworkInterceptor] ❌ Failed to load libraries bundle:',
             error,
-        )
-        console.error(
-            'Attempted path:',
-            require.resolve('protobufjs/dist/protobuf.min.js'),
         )
         console.error('Stack:', (error as Error).stack)
         return false
     }
 
-    try {
-        libs += fs.readFileSync(
-            require.resolve('pako/dist/pako.min.js'),
-            'utf8',
-        )
-    } catch (error) {
-        console.error(
-            '[NetworkInterceptor] ❌ Failed to load pako dependency:',
-            error,
-        )
-        console.error('Attempted path:', require.resolve('pako/dist/pako.min.js'))
-        console.error('Stack:', (error as Error).stack)
-        return false
-    }
-
+    // Inject browser logic (much smaller now ~30KB)
+    // This remains inline so it can receive PROTO_SCHEMA dynamically
     const script = `
         (function() {
             try {
                 window.__networkInterceptorMain = true;
-                ${libs}
-                if (typeof window !== 'undefined') {
-                    window.protobuf = window.protobuf || window.protobufjs;
-                    window.pako = window.pako;
-                }
-                if (!window.protobuf || !window.pako) return;
 
+                // Dependencies (protobuf + pako) are already loaded from bundle file
+                if (!window.protobuf || !window.pako) {
+                    console.error('[NetworkInterceptor] Dependencies not loaded');
+                    return;
+                }
+
+                // Execute browser interception logic with schema
                 (${browserInterceptionLogic.toString()})(${JSON.stringify(PROTO_SCHEMA)});
-            } catch (e) { console.error(e); }
+            } catch (e) {
+                console.error('[NetworkInterceptor] Initialization error:', e);
+            }
         })();
     `
 
-    // Inject the main network interception script
+    // Inject the browser logic script (small, dynamic)
     try {
         await page.addInitScript(script)
-        console.log('[NetworkInterceptor] ✅ Network interception script injected')
+        console.log('[NetworkInterceptor] ✅ Browser logic injected')
         return true
     } catch (error) {
         console.error(
-            '[NetworkInterceptor] ❌ Failed to inject network interception script:',
+            '[NetworkInterceptor] ❌ Failed to inject browser logic:',
             error,
         )
         console.error('Error details:', {
@@ -99,10 +84,6 @@ export async function enableNetworkInterception(
             message: (error as Error).message,
             stack: (error as Error).stack,
         })
-        console.error(
-            'Script snippet (first 200 chars):',
-            script.substring(0, 200),
-        )
         // Return false to allow graceful degradation
         return false
     }
