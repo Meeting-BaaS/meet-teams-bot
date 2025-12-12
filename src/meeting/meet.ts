@@ -70,7 +70,7 @@ export class MeetProvider implements MeetingProviderInterface {
             }
 
             // Attach a Node-side function to the page that allows updating the callback
-            // NOTE: This is different from window._updateNetworkCallback (in-page)
+            // This is stored on the page object (Node-side, not in-page)
             ;(page as any)._setNodeNetworkCallback = async (
                 callback: (payload: any) => void,
             ) => {

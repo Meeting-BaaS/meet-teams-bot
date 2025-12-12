@@ -992,9 +992,23 @@ export function browserInterceptionLogic(schema: any[]) {
                                 )
                             }
                         }
-                    } catch { }
+                    } catch (decodeError) {
+                        // Log decode/base64 failures (no PII, just error type)
+                        const errorMsg = decodeError instanceof Error ? decodeError.message : 'Unknown decode error'
+                        console.error('[NetworkInterceptor] Failed to decode fetch response:', {
+                            url: typeof url === 'string' ? url.substring(0, 100) : '[non-string]',
+                            error: errorMsg
+                        })
+                    }
                 }
-            } catch { }
+            } catch (fetchError) {
+                // Log fetch/runtime errors (no response body or PII)
+                const errorMsg = fetchError instanceof Error ? fetchError.message : 'Unknown fetch error'
+                console.error('[NetworkInterceptor] Fetch override error:', {
+                    url: typeof url === 'string' ? url.substring(0, 100) : '[non-string]',
+                    error: errorMsg
+                })
+            }
             return response
         }
     } catch (e: any) {
