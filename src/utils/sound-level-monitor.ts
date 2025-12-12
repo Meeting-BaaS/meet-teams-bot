@@ -166,12 +166,5 @@ export class SoundLevelMonitor {
     public getCurrentSoundLevel(): number {
         return this.currentSoundLevel
     }
-
-    public reset(): void {
-        this.currentSoundLevel = 0
-        this.audioBuffer = []
-        this.isActive = false
-        SoundLevelMonitor.instance = null
-    }
 }
 
