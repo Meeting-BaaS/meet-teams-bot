@@ -54,8 +54,9 @@ async function checkIndicators(
   page: Page,
   selectors: string[],
   checkVisibility = false
-): Promise<number> {
+): Promise<{ count: number; matched: string[] }> {
   let foundCount = 0
+  const matchedSelectors: string[] = []
   for (const selector of selectors) {
     try {
       const count = await page
@@ -67,6 +68,7 @@ async function checkIndicators(
           // Just check presence in DOM, not visibility
           // Useful when menus/modals might hide elements
           foundCount++
+          matchedSelectors.push(selector)
         } else {
           const isVisible = await page
             .locator(selector)
@@ -75,6 +77,7 @@ async function checkIndicators(
             .catch(() => false)
           if (isVisible) {
             foundCount++
+            matchedSelectors.push(selector)
           }
         }
       }
@@ -82,7 +85,7 @@ async function checkIndicators(
       // Continue checking other indicators
     }
   }
-  return foundCount
+  return { count: foundCount, matched: matchedSelectors }
 }
 
 /**
@@ -120,16 +123,24 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
 
       try {
         const pattern = config.waitingRoomPattern
-        const count = await checkIndicators(
+        const result = await checkIndicators(
           page,
           pattern.selectors,
           pattern.checkVisibility ?? false
         )
 
+        const matched = result.count >= pattern.threshold
+        if (matched) {
+          console.log(
+            `[${config.providerName}] Waiting room threshold met: ${result.count}/${pattern.threshold} - Matched selectors:`,
+            result.matched
+          )
+        }
+
         return {
           state: "waiting_room",
-          matched: count >= pattern.threshold,
-          count,
+          matched,
+          count: result.count,
           pattern
         }
       } catch (error) {
@@ -141,16 +152,24 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
     isInMeeting: async (page) => {
       try {
         const pattern = config.inMeetingPattern
-        const count = await checkIndicators(
+        const result = await checkIndicators(
           page,
           pattern.selectors,
           pattern.checkVisibility ?? false
         )
 
+        const matched = result.count >= pattern.threshold
+        if (matched) {
+          console.log(
+            `[${config.providerName}] In-meeting threshold met: ${result.count}/${pattern.threshold} - Matched selectors:`,
+            result.matched
+          )
+        }
+
         return {
           state: "in_meeting",
-          matched: count >= pattern.threshold,
-          count,
+          matched,
+          count: result.count,
           pattern
         }
       } catch (error) {

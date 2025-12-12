@@ -181,10 +181,15 @@ export class MeetProvider implements MeetingProviderInterface {
         const gracePeriodExpired =
           !leftWaitingRoomAt || Date.now() - leftWaitingRoomAt >= gracePeriodMs
 
-        if (gracePeriodExpired && (await isInMeeting(page))) {
-          console.log("Successfully confirmed we are in the meeting")
-          onJoinSuccess()
-          break
+        if (gracePeriodExpired) {
+          const inMeeting = await isInMeeting(page)
+          if (inMeeting) {
+            console.log(
+              `✅ Successfully confirmed we are in the meeting (grace period: ${!leftWaitingRoomAt ? "not in waiting room" : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`
+            )
+            onJoinSuccess()
+            break
+          }
         }
 
         if (await notAcceptedInMeeting(page)) {
@@ -368,17 +373,22 @@ async function isInMeeting(page: Page): Promise<boolean> {
     // Check for meeting presence indicators FIRST
     const result = await meetStateDetector.isInMeeting(page)
     const selectorCount = MEET_STATE_CONFIG.inMeetingPattern.selectors.length
-    console.log(`Meeting presence indicators: ${result.count}/${selectorCount} visible`)
+    const threshold = MEET_STATE_CONFIG.inMeetingPattern.threshold
+    console.log(
+      `Meeting presence indicators: ${result.count}/${selectorCount} visible (threshold: ${threshold}, matched: ${result.matched})`
+    )
 
     // If we have strong meeting indicators (threshold met), we're definitely in the meeting
     // This overrides any stale waiting room DOM elements that might still be present
     if (result.matched) {
+      console.log(`✓ Threshold reached: ${result.count} >= ${threshold} - Confirming in meeting`)
       return true
     }
 
     // Only if meeting indicators are weak/absent, check if we're in waiting room
     // This prevents false positives from stale waiting room elements after joining
     if (await isInWaitingRoom(page)) {
+      console.log("✗ Threshold not met but in waiting room - Not in meeting yet")
       return false
     }
 
