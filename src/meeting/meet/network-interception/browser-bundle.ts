@@ -2,6 +2,16 @@
 
 export function browserInterceptionLogic(schema: any[]) {
     try {
+        // Guard against duplicate initialization to prevent:
+        // - Stacking RTCPeerConnection/fetch overrides
+        // - Leaking intervals
+        // - Multiple event listeners
+        if ((window as any).__networkInterceptorInitialized) {
+            console.warn('[NetworkInterceptor] ⚠️ Already initialized, skipping duplicate initialization')
+            return
+        }
+        ;(window as any).__networkInterceptorInitialized = true
+
         console.error('[NetworkInterceptor] ✅ Activated')
 
         // ===== HELPER FUNCTIONS (inlined from utils.ts) =====
