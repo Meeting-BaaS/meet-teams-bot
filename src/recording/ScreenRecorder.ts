@@ -687,10 +687,9 @@ export class ScreenRecorder extends EventEmitter {
                     // Concatenate with any remainder from previous chunk
                     let buf: Buffer
                     if (this.soundMonitorRemainder.length > 0) {
-                        // @ts-expect-error - TypeScript incorrectly flags Buffer[] as incompatible with Uint8Array[]
-                        // due to iterator type differences in @types/node definitions. Buffer extends Uint8Array
+                        // Due to iterator type differences in @types/node definitions. Buffer extends Uint8Array
                         // at runtime and Buffer.concat() handles this correctly. This is a known TypeScript issue.
-                        buf = Buffer.concat([this.soundMonitorRemainder, data])
+                        buf = Buffer.concat([this.soundMonitorRemainder as unknown as Uint8Array, data as unknown as Uint8Array])
                     } else {
                         buf = data
                     }
