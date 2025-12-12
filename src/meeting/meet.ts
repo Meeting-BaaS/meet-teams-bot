@@ -69,11 +69,12 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
-            // Attach a function to the page that allows updating the callback
-            ;(page as any)._updateNetworkCallback = async (
+            // Attach a Node-side function to the page that allows updating the callback
+            // NOTE: This is different from window._updateNetworkCallback (in-page)
+            ;(page as any)._setNodeNetworkCallback = async (
                 callback: (payload: any) => void,
             ) => {
-                console.log('[Meet] 🔧 Updating network callback')
+                console.log('[Meet] 🔧 Updating network callback (Node-side)')
                 speakerCallback = callback
 
                 // Trigger a manual broadcast to send current state immediately
@@ -111,11 +112,11 @@ export class MeetProvider implements MeetingProviderInterface {
                 await browserContext.grantPermissions(['camera'])
             }
 
-            // Enable Web Audio mixer for streaming (separate from speaker detection)
-            if (GLOBAL.get().streaming_output) {
-                await enableMeetAudioCapture(page)
-                console.log('[Meet] ✅ Web Audio mixer enabled for streaming')
-            }
+            // ALWAYS enable centralized audio track layer (mandatory)
+            // Mixing is only enabled if streaming is on
+            const enableMixing = !!GLOBAL.get().streaming_output
+            await enableMeetAudioCapture(page, enableMixing)
+            console.log(`[Meet] ✅ Centralized audio track layer enabled (mixing: ${enableMixing})`)
 
             console.log(`Navigating to ${link}...`)
             await page.goto(link, {
