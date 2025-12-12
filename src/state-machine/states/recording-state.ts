@@ -123,7 +123,7 @@ export class RecordingState extends BaseState {
         console.info('Context state:', {
             hasPathManager: !!this.context.pathManager,
             hasStreamingService: !!this.context.streamingService,
-            isSoundLevelMonitorActive: !!SoundLevelMonitor.getInstance(),
+            isSoundLevelMonitorActive: SoundLevelMonitor.peekInstance()?.getIsActive() ?? false,
         })
 
         // Configure listeners
