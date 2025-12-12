@@ -45,12 +45,19 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
     return `
         (function() {
             try {
+                // Idempotency guard: Check if already initialized
+                if (window.__audioTrackLayer) {
+                    console.log('${logPrefix} ⚠️ Audio track layer already initialized, skipping duplicate initialization')
+                    return
+                }
+
                 console.log('${logPrefix} Initializing centralized audio track layer...')
 
-                // Create AudioContext
+                // Create AudioContext (or reuse if exists)
                 const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
 
                 // Track event subscribers (other systems can register here)
+                // This array persists because window.__audioTrackLayer keeps the reference
                 const trackSubscribers = []
 
                 ${enableMixing ? `
