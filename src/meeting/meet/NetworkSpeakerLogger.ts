@@ -54,10 +54,10 @@ export class NetworkSpeakerLogger {
         if ((this.page as any)._setNodeNetworkCallback) {
             console.log(
                 '[NetworkSpeakerLogger] Registering callback with network interceptor',
-            )
-                ; (this.page as any)._setNodeNetworkCallback((payload: any) => {
-                    this.handleNetworkPayload(payload)
-                })
+            );
+            (this.page as any)._setNodeNetworkCallback((payload: any) => {
+                this.handleNetworkPayload(payload)
+            })
             console.log('[NetworkSpeakerLogger] ✅ Callback registered')
         } else {
             console.warn(
@@ -172,7 +172,10 @@ export class NetworkSpeakerLogger {
 
     private async writeLogToFile(speakers: EnhancedSpeakerData[]): Promise<void> {
         try {
-            // Write metadata for new participants (with PII)
+            // Batch all log entries into a single write operation
+            const logLines: string[] = []
+
+            // Collect metadata for new participants (with PII)
             for (const speaker of speakers) {
                 if (!this.writtenMetadata.has(speaker.id)) {
                     const metadata = {
@@ -183,12 +186,12 @@ export class NetworkSpeakerLogger {
                         displayName: speaker.displayName,
                         profilePicture: speaker.profilePicture
                     }
-                    await fs.appendFile(this.logFilePath, `${JSON.stringify(metadata)}\n`)
+                    logLines.push(JSON.stringify(metadata))
                     this.writtenMetadata.add(speaker.id)
                 }
             }
 
-            // Write activity log (without PII)
+            // Add activity log (without PII)
             const activityLog = {
                 type: 'activity',
                 timestamp: Date.now(),
@@ -198,7 +201,12 @@ export class NetworkSpeakerLogger {
                     isSpeaking: s.isSpeaking
                 }))
             }
-            await fs.appendFile(this.logFilePath, `${JSON.stringify(activityLog)}\n`)
+            logLines.push(JSON.stringify(activityLog))
+
+            // Single batched write operation
+            if (logLines.length > 0) {
+                await fs.appendFile(this.logFilePath, logLines.join('\n') + '\n')
+            }
         } catch (error) {
             console.error(
                 '[NetworkSpeakerLogger] Cannot append network speaker log file:',

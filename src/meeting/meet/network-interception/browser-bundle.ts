@@ -12,7 +12,13 @@ export function browserInterceptionLogic(schema: any[]) {
         }
         ;(window as any).__networkInterceptorInitialized = true
 
+        // Feature flag: Proactive datachannel creation
+        // Set to false by default - Google Meet creates 'meet_messages' channel itself
+        // Only enable if passive listener fails to receive the channel
+        const ENABLE_PROACTIVE_MEET_CHANNEL = false
+
         console.error('[NetworkInterceptor] ✅ Activated')
+        console.error(`[NetworkInterceptor] Proactive channel creation: ${ENABLE_PROACTIVE_MEET_CHANNEL ? 'enabled' : 'disabled'}`)
 
         // ===== HELPER FUNCTIONS (inlined from utils.ts) =====
 
@@ -656,6 +662,10 @@ export function browserInterceptionLogic(schema: any[]) {
             const OriginalPC = (window as any).RTCPeerConnection
                 ; (window as any).RTCPeerConnection = function (...args: any[]) {
                     const pc = new OriginalPC(...args)
+
+                    // Track whether we've attempted proactive creation for this PC instance
+                    let hasAttemptedProactiveCreation = false
+
                     // Only handle dataChannel - tracks are handled by centralized layer
                     pc.addEventListener('datachannel', (event: any) => {
                         const label = event.channel.label
@@ -742,35 +752,61 @@ export function browserInterceptionLogic(schema: any[]) {
                         })
                     })
 
-                    // Create meet_messages channel for chat functionality
-                    setTimeout(() => {
-                        try {
-                            const meetMessagesChannel = pc.createDataChannel(
-                                'meet_messages',
-                                { ordered: true },
-                            )
+                    // Proactive channel creation (disabled by default)
+                    // Google Meet typically creates the 'meet_messages' channel itself
+                    // Only enable if passive listener doesn't receive the channel
+                    if (ENABLE_PROACTIVE_MEET_CHANNEL) {
+                        setTimeout(() => {
+                            // Guard: Only attempt once per PC instance
+                            if (hasAttemptedProactiveCreation) {
+                                console.warn('[NetworkInterceptor] ⚠️ Proactive creation already attempted for this PC')
+                                return
+                            }
+                            hasAttemptedProactiveCreation = true
 
-                            meetMessagesChannel.addEventListener('open', () => {
-                                meetMessagesDataChannel = meetMessagesChannel
-                                console.error(
-                                    '[NetworkInterceptor] ✅ Chat channel ready',
+                            // Guard: Check if channel already exists (received via passive listener)
+                            if (allDataChannels.has('meet_messages')) {
+                                console.error('[NetworkInterceptor] ℹ️ meet_messages channel already exists (passive), skipping proactive creation')
+                                return
+                            }
+
+                            // Guard: Check if we already have a working channel reference
+                            if (meetMessagesDataChannel) {
+                                console.error('[NetworkInterceptor] ℹ️ meet_messages channel already set, skipping proactive creation')
+                                return
+                            }
+
+                            try {
+                                console.error('[NetworkInterceptor] 🔨 Proactively creating meet_messages channel...')
+                                const meetMessagesChannel = pc.createDataChannel(
+                                    'meet_messages',
+                                    { ordered: true },
                                 )
-                            })
 
-                            meetMessagesChannel.addEventListener('close', () => {
-                                if (
-                                    meetMessagesDataChannel === meetMessagesChannel
-                                ) {
-                                    meetMessagesDataChannel = null
-                                }
-                            })
-                        } catch (e) {
-                            console.error(
-                                '[NetworkInterceptor] ❌ Failed to create chat channel:',
-                                e,
-                            )
-                        }
-                    }, 100)
+                                meetMessagesChannel.addEventListener('open', () => {
+                                    meetMessagesDataChannel = meetMessagesChannel
+                                    console.error(
+                                        '[NetworkInterceptor] ✅ Proactive chat channel ready',
+                                    )
+                                })
+
+                                meetMessagesChannel.addEventListener('close', () => {
+                                    if (
+                                        meetMessagesDataChannel === meetMessagesChannel
+                                    ) {
+                                        meetMessagesDataChannel = null
+                                    }
+                                })
+                            } catch (e) {
+                                console.error(
+                                    '[NetworkInterceptor] ❌ Failed to create proactive chat channel:',
+                                    e,
+                                )
+                            }
+                        }, 100)
+                    } else {
+                        console.error('[NetworkInterceptor] ℹ️ Proactive channel creation disabled, relying on passive listener')
+                    }
 
                     return pc
                 }
