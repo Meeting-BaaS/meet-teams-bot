@@ -12,9 +12,11 @@ import { closeMeeting } from './meet/closeMeeting'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { MEET_STATE_CONFIG } from './meet-state-config'
 import {
-    enableMeetAudioCapture,
-    verifyMeetAudioCapture,
-} from './meet/audio-capture'
+    enableNetworkInterception,
+    sendChatMessage,
+} from './meet/network-interception'
+import { listenPage } from '../browser/page-logger'
+import { enableMeetAudioCapture } from './meet/audio-capture'
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
@@ -43,6 +45,65 @@ export class MeetProvider implements MeetingProviderInterface {
             console.log('Creating new page in existing context...')
             const page = await browserContext.newPage()
 
+            // Set up page logger IMMEDIATELY so we can see logs from injected scripts
+            listenPage(page)
+            console.log('[Meet] Page logger set up')
+
+            // Set up network interception IMMEDIATELY after page creation, before ANY navigation
+            // This ensures the script is injected before the page loads
+            console.log('[Meet] Setting up network interception before page load...')
+
+            // Store a reference to the callback that can be updated later
+            let speakerCallback: ((payload: any) => void) | null = null
+
+            // Create a wrapper function that will always use the current callback
+            const networkCallbackWrapper = (payload: any) => {
+                // Call the current callback if it exists
+                if (speakerCallback) {
+                    speakerCallback(payload)
+                } else {
+                    // Only log when callback is missing (expected before NetworkSpeakerLogger starts)
+                    console.log(
+                        `[Meet] Network data received (no callback set yet): ${payload.users?.length || 0} users`,
+                    )
+                }
+            }
+
+            // Attach a function to the page that allows updating the callback
+            ;(page as any)._updateNetworkCallback = async (
+                callback: (payload: any) => void,
+            ) => {
+                console.log('[Meet] 🔧 Updating network callback')
+                speakerCallback = callback
+
+                // Trigger a manual broadcast to send current state immediately
+                try {
+                    console.log('[Meet] 🔔 Triggering manual broadcast...')
+                    await page.evaluate(() => {
+                        if ((window as any).triggerNetworkBroadcast) {
+                            ;(window as any).triggerNetworkBroadcast()
+                        }
+                    })
+                    console.log('[Meet] ✅ Manual broadcast triggered')
+                } catch (e) {
+                    console.error('[Meet] ⚠️ Failed to trigger manual broadcast:', e)
+                }
+            }
+
+            // Enable network interception for speaker detection
+            const networkInterceptionEnabled = await enableNetworkInterception(
+                page,
+                networkCallbackWrapper,
+            )
+
+            if (!networkInterceptionEnabled) {
+                console.error(
+                    '[Meet] ❌ Failed to enable network interception - falling back to UI-based features',
+                )
+            } else {
+                console.log('[Meet] ✅ Network interception configured successfully')
+            }
+
             // Set permissions based on streaming_input
             if (streaming_input) {
                 await browserContext.grantPermissions(['microphone', 'camera'])
@@ -50,11 +111,10 @@ export class MeetProvider implements MeetingProviderInterface {
                 await browserContext.grantPermissions(['camera'])
             }
 
-            // Enable Web Audio mixing for streaming
-            // Check config directly, not Streaming.instance (which may not be instantiated yet)
+            // Enable Web Audio mixer for streaming (separate from speaker detection)
             if (GLOBAL.get().streaming_output) {
                 await enableMeetAudioCapture(page)
-                console.log('[Meet] ✅ Web Audio capture enabled for streaming')
+                console.log('[Meet] ✅ Web Audio mixer enabled for streaming')
             }
 
             console.log(`Navigating to ${link}...`)
@@ -245,17 +305,8 @@ export class MeetProvider implements MeetingProviderInterface {
                 'meet_join_meeting_success',
             )
 
-            // Verify audio capture is working post-join (matches Teams behavior)
-            if (GLOBAL.get().streaming_output) {
-                try {
-                    await verifyMeetAudioCapture(page)
-                } catch (error) {
-                    console.error(
-                        '[Meet] Failed to verify audio capture post-join:',
-                        formatError(error),
-                    )
-                }
-            }
+            // Network interception verification happens automatically during setup
+            // No separate verification needed here
 
             if (GLOBAL.get().enter_message) {
                 console.log('Sending entry message...')
@@ -487,7 +538,8 @@ async function sendEntryMessage(
     page: Page,
     enterMessage: string,
 ): Promise<boolean> {
-    console.log('Attempting to send entry message...')
+    console.log('Attempting to send entry message via network API...')
+
     // First check if we are still in the meeting
     const inMeeting = await isInMeeting(page)
     if (!inMeeting) {
@@ -500,13 +552,24 @@ async function sendEntryMessage(
         return false
     }
 
-    // truncate the message as meet only allows 516 characters
+    // Truncate the message as meet only allows 516 characters
     enterMessage = enterMessage.substring(0, 500)
+
+    // Try network API first
+    const success = await sendChatMessage(page, enterMessage)
+    if (success) {
+        console.log('✅ Entry message sent via network API')
+        return true
+    }
+
+    console.warn('⚠️ Network API failed, falling back to UI-based message sending...')
+
+    // Fallback: Try UI-based approach
     try {
         await page.click('button[aria-label="Chat with everyone"]')
         await page.waitForSelector(
             'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
-            { state: 'visible' },
+            { state: 'visible', timeout: 5000 },
         )
 
         // Check again if we are still in the meeting
@@ -523,14 +586,15 @@ async function sendEntryMessage(
         const sendButton = page.locator('button:has(i:text("send"))')
         if ((await sendButton.count()) > 0) {
             await sendButton.click()
-            console.log('Clicked on send button')
+            console.log('✅ Clicked on send button (UI fallback)')
             await page.click('button[aria-label="Chat with everyone"]')
             return true
         }
-        console.log('Send button not found')
+
+        console.log('❌ Send button not found in UI fallback')
         return false
     } catch (error) {
-        console.error('Failed to send entry message:', error)
+        console.error('❌ Failed to send entry message via UI fallback:', error)
         return false
     }
 }
