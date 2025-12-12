@@ -131,6 +131,17 @@ export class WaitingRoomState extends BaseState {
                     meetingLink,
                     GLOBAL.get().streaming_input,
                 )
+
+            // Store network interception capability in context (Google Meet only)
+            // This flag is used to skip network-based operations when they're not available
+            if ((this.context.playwrightPage as any)._networkInterceptionEnabled !== undefined) {
+                this.context.networkInterceptionEnabled =
+                    (this.context.playwrightPage as any)._networkInterceptionEnabled
+                console.info(
+                    `Network interception capability: ${this.context.networkInterceptionEnabled ? 'enabled' : 'disabled'}`
+                )
+            }
+
             console.info('Meeting page opened successfully')
         } catch (error) {
             console.error('Failed to open meeting page:', formatError(error))

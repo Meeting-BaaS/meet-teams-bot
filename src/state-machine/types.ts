@@ -118,6 +118,11 @@ export interface MeetingContext {
 
     // Dialog observer
     dialogObserver?: SimpleDialogObserver
+
+    // Network interception capability (Google Meet only)
+    // Indicates if network-based features (speaker detection, chat) are available
+    // Falls back to UI-based methods when false
+    networkInterceptionEnabled?: boolean
 }
 
 export interface StateTransition {

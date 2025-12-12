@@ -97,6 +97,9 @@ export class MeetProvider implements MeetingProviderInterface {
                 networkCallbackWrapper,
             )
 
+            // Store the capability flag on the page for later access
+            ;(page as any)._networkInterceptionEnabled = networkInterceptionEnabled
+
             if (!networkInterceptionEnabled) {
                 console.error(
                     '[Meet] ❌ Failed to enable network interception - falling back to UI-based features',
@@ -539,8 +542,6 @@ async function sendEntryMessage(
     page: Page,
     enterMessage: string,
 ): Promise<boolean> {
-    console.log('Attempting to send entry message via network API...')
-
     // First check if we are still in the meeting
     const inMeeting = await isInMeeting(page)
     if (!inMeeting) {
@@ -556,16 +557,24 @@ async function sendEntryMessage(
     // Truncate the message as meet only allows 516 characters
     enterMessage = enterMessage.substring(0, 500)
 
-    // Try network API first
-    const success = await sendChatMessage(page, enterMessage)
-    if (success) {
-        console.log('✅ Entry message sent via network API')
-        return true
+    // Check if network interception is available before attempting network API
+    const networkInterceptionEnabled = (page as any)._networkInterceptionEnabled
+
+    // Only attempt network API if interception was successfully set up
+    // Even when enabled, it can still fail at runtime, so we always need the UI fallback
+    if (networkInterceptionEnabled) {
+        console.log('Attempting to send entry message via network API...')
+        const success = await sendChatMessage(page, enterMessage)
+        if (success) {
+            console.log('✅ Entry message sent via network API')
+            return true
+        }
+        console.warn('⚠️ Network API failed, falling back to UI-based message sending...')
+    } else {
+        console.log('⚠️ Network interception not available, skipping network API and using UI-based message sending...')
     }
 
-    console.warn('⚠️ Network API failed, falling back to UI-based message sending...')
-
-    // Fallback: Try UI-based approach
+    // Fallback: Try UI-based approach (always needed as safety net)
     try {
         await page.click('button[aria-label="Chat with everyone"]')
         await page.waitForSelector(
