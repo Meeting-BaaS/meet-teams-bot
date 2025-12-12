@@ -373,6 +373,7 @@ export function browserInterceptionLogic(schema: any[]) {
             receiver: RTCRtpReceiver,
             receiverManager: any,
             userManager: any,
+            abortSignal: AbortSignal,
         ): Promise<boolean> {
             let reader: ReadableStreamDefaultReader<any> | null = null
             try {
@@ -395,6 +396,12 @@ export function browserInterceptionLogic(schema: any[]) {
                 const processFrames = async () => {
                     try {
                         while (true) {
+                            // Check abort signal before each iteration
+                            if (abortSignal.aborted) {
+                                console.error(`[NetworkInterceptor] 🛑 Audio processing aborted for track: ${track.id}`)
+                                break
+                            }
+
                             const { done, value: frame } = await reader.read()
                             if (done) break
                             if (!frame) continue
@@ -480,8 +487,10 @@ export function browserInterceptionLogic(schema: any[]) {
                 console.error(
                     `[NetworkInterceptor] 🎬 Audio Frame Processing Started: ${track.id}`,
                 )
-                // Start background processing
-                processFrames()
+                // Start background processing (fire-and-forget but with proper cleanup via AbortController)
+                processFrames().catch((err) => {
+                    console.error(`[NetworkInterceptor] Background processing error for ${track.id}:`, err)
+                })
                 return true
             } catch (e) {
                 console.error(
@@ -513,9 +522,8 @@ export function browserInterceptionLogic(schema: any[]) {
                 console.error(
                     `[NetworkInterceptor] 🎤 Web Audio Monitoring: ${track.id}`,
                 )
-                track.onended = () => {
-                    activeAudioTracks.delete(track.id)
-                }
+                // Note: track.onended is already set in monitorTrack to handle AbortController cleanup
+                // Don't override it here to avoid losing the abort cleanup logic
             } catch (e) {
                 console.error('[NetworkInterceptor] Web Audio Setup Error:', e)
             }
@@ -529,14 +537,39 @@ export function browserInterceptionLogic(schema: any[]) {
             audioCtx: AudioContext,
             activeAudioTracks: Map<string, { analyser: AnalyserNode; receiver?: RTCRtpReceiver }>,
         ): void {
-            if (activeAudioTracks.has(track.id)) return
+            if (activeAudioTracks.has(track.id)) {
+                console.error(`[NetworkInterceptor] Track ${track.id} already being monitored`)
+                return
+            }
+
             try {
+                // Abort any existing processing for this track (in case of replacement)
+                const existingController = trackAbortControllers.get(track.id)
+                if (existingController) {
+                    console.error(`[NetworkInterceptor] 🛑 Aborting existing processing for track: ${track.id}`)
+                    existingController.abort()
+                    trackAbortControllers.delete(track.id)
+                }
+
+                // Create new AbortController for this track
+                const abortController = new AbortController()
+                trackAbortControllers.set(track.id, abortController)
+
+                // Clean up AbortController when track ends
+                track.onended = () => {
+                    console.error(`[NetworkInterceptor] 🎬 Track ended: ${track.id}`)
+                    abortController.abort()
+                    trackAbortControllers.delete(track.id)
+                    activeAudioTracks.delete(track.id)
+                }
+
                 linkReceiverToTrack(receiverManager, receiver, track.id)
                 processAudioFrames(
                     track,
                     receiver,
                     receiverManager,
                     userManager,
+                    abortController.signal,
                 )
                     .then((success) => {
                         if (!success) {
@@ -569,6 +602,9 @@ export function browserInterceptionLogic(schema: any[]) {
         const allDataChannels = new Map<string, any>()
         // Track current speaking state per device ID
         const speakingState = new Map<string, boolean>()
+        // Track AbortControllers for audio processing loops (one per track)
+        // Allows cancelling background processing when tracks end or are replaced
+        const trackAbortControllers = new Map<string, AbortController>()
 
         setupRTCRtpReceiverInterceptor((receiver, contributingSources) => {
             updateContributingSources(
