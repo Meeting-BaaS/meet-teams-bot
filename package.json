@@ -39,6 +39,7 @@
         "prettier": "3.3.3",
         "rimraf": "~3.0.2",
         "ts-jest": "^29.2.5",
+        "ts-node": "^10.9.2",
         "ts-node-dev": "^2.0.0",
         "ts-unused-exports": "^11.0.1",
         "typescript": "^5.4",
@@ -47,7 +48,8 @@
     "scripts": {
         "start": "node build/src/main.js",
         "clean": "rimraf coverage build tmp",
-        "build": "echo '{\"buildDate\": \"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'\"}' > src/buildInfo.json && ./node_modules/typescript/bin/tsc --skipLibCheck -p tsconfig.release.json",
+        "build:bundle": "ts-node src/meeting/meet/network-interception/build-bundle.ts",
+        "build": "npm run build:bundle && echo '{\"buildDate\": \"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'\"}' > src/buildInfo.json && ./node_modules/typescript/bin/tsc --skipLibCheck -p tsconfig.release.json",
         "watch": "./node_modules/typescript/bin/tsc --skipLibCheck -w -p tsconfig.release.json",
         "watch-dev": "PROFILE=DEV ts-node-dev --respawn --transpile-only src/main.ts -p tsconfig.release.json",
         "format": "prettier --log-level warn --write \"src/**/*.{jsx,js,ts}\"",
