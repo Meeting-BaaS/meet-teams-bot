@@ -70,6 +70,8 @@ export type MeetingParams = {
         waiting_room_timeout: number
         // The number of seconds after which the bot will automatically leave the call, if it has joined the meeting but no other participant has joined.
         noone_joined_timeout: number
+        // The number of seconds after which the bot will automatically leave the call, if no speaker is detected (through Audio and UI).
+        silence_timeout: number
         // The number of seconds after which the bot will automatically leave the call, if there were other participants in the call who have all left.
         // everyone_left_timeout?: number
         // The number of seconds after which the bot will automatically leave the call, if it has joined the call but not started recording.
@@ -78,7 +80,6 @@ export type MeetingParams = {
         // in_call_recording_timeout?: number
         // The number of seconds after which the bot will automatically leave the call, if it does not detect sound or relevant UI elements coming in from the meeting (i.e. there is no one).
         // recording_permission_denied_timeout?: number
-        silence_timeout: number
     }
     mp4_s3_path: string
     // ----------------- TODO -------------------- SECTION RAJOUTEE
@@ -109,4 +110,13 @@ export type SpeakerData = {
     timestamp: number
     isSpeaking: boolean
 }
+
+// Enhanced speaker data with PII from network interception
+export type EnhancedSpeakerData = SpeakerData & {
+    fullName?: string
+    displayName?: string
+    profilePicture?: string
+    // deviceId?: string  // Could be useful for detecting merged speakers
+}
+
 export type MeetingProvider = 'Meet' | 'Teams' | 'Zoom'

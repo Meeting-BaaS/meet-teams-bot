@@ -1,5 +1,6 @@
 import { Events } from '../../events'
 import { HtmlCleaner } from '../../meeting/htmlCleaner'
+import { NetworkSpeakerLogger } from '../../meeting/meet/NetworkSpeakerLogger'
 import { SpeakersObserver } from '../../meeting/speakersObserver'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
@@ -167,6 +168,29 @@ export class InCallState extends BaseState {
                 error,
             )
             throw error
+        }
+
+        // ===== NETWORK-BASED SPEAKER DETECTION (LOGGING ONLY - MEET ONLY) =====
+        // Detects speakers via WebRTC network interception (Google Meet only)
+        // Logs to network_speaker_detection.log for debugging/comparison with UI-based detection
+        // This is SECONDARY - the primary speaker detection is UI-based above
+        if (GLOBAL.get().meetingProvider === 'Meet') {
+            try {
+                const networkLogger = new NetworkSpeakerLogger(
+                    this.context.playwrightPage,
+                    GLOBAL.get().bot_name,
+                    // onSpeakersChange, // ← Uncomment to broadcast network data to API instead of UI detection
+                )
+                await networkLogger.start()
+
+                // Store the logger in context for cleanup later
+                this.context.networkSpeakerLogger = networkLogger
+
+                console.log('✅ Network speaker logger started (logging to network_speaker_detection.log)')
+            } catch (error) {
+                console.error('Failed to start network speaker logger:', error)
+                // Continue even if network logger fails - it's just for debugging
+            }
         }
     }
 
