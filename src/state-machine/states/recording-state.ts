@@ -28,6 +28,7 @@ export class RecordingState extends BaseState {
     private isProcessing: boolean = true
     private readonly CHECK_INTERVAL = 250
     private lastSoundActivity: number = Date.now()
+    private lastSoundActivityLogTime: number = 0
     private lastNoOneJoinedPeriodLog: number = 0
     private hasNoOneJoinedPeriodEnded: boolean = false
 
@@ -208,8 +209,14 @@ export class RecordingState extends BaseState {
             }
 
             // Check for sound activity first - if detected, mark it and reset silence timers
-            // Uses SoundLevelMonitor which is always active (independent of streaming)
+            // Uses SoundLevelMonitor (independent of streaming)
             const monitor = SoundLevelMonitor.getInstance()
+            
+            // Warn if monitor is not active (shouldn't happen, but good to catch)
+            if (!monitor.getIsActive()) {
+                console.warn('[checkEndConditions] SoundLevelMonitor is not active - sound level detection may not work')
+            }
+            
             const currentSoundLevel = monitor.getCurrentSoundLevel()
             
             if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
@@ -220,12 +227,16 @@ export class RecordingState extends BaseState {
                         `[checkEndConditions] First sound detected (${currentSoundLevel.toFixed(2)}), ending noone_joined_timeout grace period and enabling silence monitoring`,
                     )
                 }
-                // Only log once per 2 seconds to avoid spam
-                if (now - this.lastSoundActivity >= 2000) {
+                
+                // Only log once per 2 seconds to avoid spam (separate from silence timer)
+                if (now - this.lastSoundActivityLogTime >= 2000) {
                     console.log(
                         `[checkEndConditions] Sound activity detected (${currentSoundLevel.toFixed(2)}), resetting lastSoundActivity silence timer`,
                     )
+                    this.lastSoundActivityLogTime = now
                 }
+                
+                // Reset the silence timer (this is the critical timer for automatic leave)
                 this.lastSoundActivity = now
             }
 

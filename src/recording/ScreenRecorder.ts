@@ -123,6 +123,7 @@ export class ScreenRecorder extends EventEmitter {
     private gracePeriodActive: boolean = false
     private rawAudioPath: string = ''
     private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
+    private soundMonitorRemainder: Buffer = Buffer.alloc(0)
 
     constructor(config: Partial<ScreenRecordingConfig> = {}) {
         super()
@@ -682,12 +683,36 @@ export class ScreenRecorder extends EventEmitter {
         try {
             this.ffmpegProcess.stdout?.on('data', (data: Buffer) => {
                 try {
-                    // Convert buffer to Float32Array
-                    const float32Array = new Float32Array(
-                        data.buffer,
-                        data.byteOffset,
-                        data.length / 4,
+                    // Handle chunk boundaries: Float32 frames can split across data events
+                    // Concatenate with any remainder from previous chunk
+                    let buf: Buffer
+                    if (this.soundMonitorRemainder.length > 0) {
+                        // @ts-expect-error - TypeScript incorrectly flags Buffer[] as incompatible with Uint8Array[]
+                        // due to iterator type differences in @types/node definitions. Buffer extends Uint8Array
+                        // at runtime and Buffer.concat() handles this correctly. This is a known TypeScript issue.
+                        buf = Buffer.concat([this.soundMonitorRemainder, data])
+                    } else {
+                        buf = data
+                    }
+
+                    // Only process aligned bytes (divisible by 4 for Float32)
+                    const alignedLen = buf.length - (buf.length % 4)
+                    if (alignedLen === 0) {
+                        // Not enough data yet, save for next chunk
+                        this.soundMonitorRemainder = buf
+                        return
+                    }
+
+                    // Save unaligned remainder for next chunk
+                    this.soundMonitorRemainder = buf.subarray(alignedLen) as Buffer
+
+                    // Create Float32Array view and copy to avoid retaining pooled buffers
+                    const view = new Float32Array(
+                        buf.buffer,
+                        buf.byteOffset,
+                        alignedLen / 4,
                     )
+                    const float32Array = new Float32Array(view) // Copy to standalone array
 
                     // Feed to sound level monitor (always active, critical for automatic leave)
                     monitor.processAudioChunk(float32Array)

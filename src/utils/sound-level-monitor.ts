@@ -31,6 +31,24 @@ export class SoundLevelMonitor {
         return SoundLevelMonitor.instance
     }
 
+    /**
+     * Check if an instance exists without creating one
+     * Useful for cleanup to avoid side effects
+     */
+    public static peekInstance(): SoundLevelMonitor | null {
+        return SoundLevelMonitor.instance
+    }
+
+    /**
+     * Stop the monitor if it exists, without creating an instance
+     * Safe to call during cleanup even if monitor was never started
+     */
+    public static stopIfStarted(): void {
+        if (SoundLevelMonitor.instance) {
+            SoundLevelMonitor.instance.stop()
+        }
+    }
+
     public start(): void {
         this.isActive = true
         this.currentSoundLevel = 0
@@ -42,8 +60,17 @@ export class SoundLevelMonitor {
 
     public stop(): void {
         this.isActive = false
+        this.currentSoundLevel = 0 // Reset to avoid stale readings
         this.audioBuffer = []
         console.log('🎵 Sound level monitor stopped')
+    }
+
+    /**
+     * Check if the monitor is currently active
+     * Useful for determining if sound level readings are valid
+     */
+    public getIsActive(): boolean {
+        return this.isActive
     }
 
     /**
@@ -58,28 +85,31 @@ export class SoundLevelMonitor {
         // Buffer audio for batch processing
         this.audioBuffer.push(audioData)
         if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
-            this.processBatchedAudio().catch((error) =>
+            // Snapshot the batch before async processing to avoid race conditions
+            const batch = this.audioBuffer
+            this.audioBuffer = []
+            
+            this.processBatchedAudio(batch).catch((error) =>
                 console.error(
                     '[SoundLevelMonitor] Error processing batched audio:',
                     formatError(error),
                 ),
             )
-            this.audioBuffer = []
         }
     }
 
-    private async processBatchedAudio(): Promise<void> {
-        if (this.audioBuffer.length === 0) return
+    private async processBatchedAudio(batch: Float32Array[]): Promise<void> {
+        if (batch.length === 0) return
 
         // Combine all audio buffers into one for analysis
-        const totalLength = this.audioBuffer.reduce(
+        const totalLength = batch.reduce(
             (sum, buffer) => sum + buffer.length,
             0,
         )
         const combinedBuffer = new Float32Array(totalLength)
 
         let offset = 0
-        for (const buffer of this.audioBuffer) {
+        for (const buffer of batch) {
             combinedBuffer.set(buffer, offset)
             offset += buffer.length
         }

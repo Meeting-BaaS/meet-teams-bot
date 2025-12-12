@@ -86,8 +86,8 @@ export class CleanupState extends BaseState {
                 // 5. Stop sound level monitor (critical for automatic leave)
                 (async () => {
                     console.info('🧹 Step 5/8: Stopping sound level monitor')
-                    const monitor = SoundLevelMonitor.getInstance()
-                    monitor.stop()
+                    // Use stopIfStarted to avoid instantiating if never used
+                    SoundLevelMonitor.stopIfStarted()
                 })(),
 
                 // 6. Stop speakers observer (with 3s timeout)
