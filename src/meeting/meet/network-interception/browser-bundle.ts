@@ -610,29 +610,43 @@ export function browserInterceptionLogic(schema: any[]) {
         const messageDecoders = createDecoders(schema)
         console.error('[NetworkInterceptor] ✅ Protobuf decoders ready')
 
-        const audioCtx = new ((window as any).AudioContext ||
-            (window as any).webkitAudioContext)()
+        // Get AudioContext from centralized layer (or create fallback)
+        const audioCtx = (window as any).__audioTrackLayer?.audioCtx ||
+            new ((window as any).AudioContext || (window as any).webkitAudioContext)()
+
         const activeAudioTracks = new Map<
             string,
             { analyser: AnalyserNode; ssrc?: string; receiver?: RTCRtpReceiver }
         >()
 
+        // SUBSCRIBE to centralized audio track layer
+        const audioTrackLayer = (window as any).__audioTrackLayer
+        if (audioTrackLayer && typeof audioTrackLayer.subscribe === 'function') {
+            console.error('[NetworkInterceptor] 🔌 Subscribing to centralized audio track layer')
+            audioTrackLayer.subscribe({
+                onTrack: (track: any, receiver: any, pc: any) => {
+                    console.error(`[NetworkInterceptor] 🎵 Received track from centralized layer: ${track.id}`)
+                    monitorTrack(
+                        track,
+                        receiver,
+                        receiverManager,
+                        userManager,
+                        audioCtx,
+                        activeAudioTracks,
+                    )
+                }
+            })
+        } else {
+            console.error('[NetworkInterceptor] ⚠️ WARNING: Centralized audio track layer not found!')
+            console.error('[NetworkInterceptor] ⚠️ Speaker detection will not work. Ensure audio-capture is enabled first.')
+        }
+
+        // Intercept RTCPeerConnection for datachannel only (track handling now centralized)
         if (typeof (window as any).RTCPeerConnection !== 'undefined') {
             const OriginalPC = (window as any).RTCPeerConnection
                 ; (window as any).RTCPeerConnection = function (...args: any[]) {
                     const pc = new OriginalPC(...args)
-                    pc.addEventListener('track', (event: any) => {
-                        if (event.track.kind === 'audio') {
-                            monitorTrack(
-                                event.track,
-                                event.receiver,
-                                receiverManager,
-                                userManager,
-                                audioCtx,
-                                activeAudioTracks,
-                            )
-                        }
-                    })
+                    // Only handle dataChannel - tracks are handled by centralized layer
                     pc.addEventListener('datachannel', (event: any) => {
                         const label = event.channel.label
                         allDataChannels.set(label, event.channel)

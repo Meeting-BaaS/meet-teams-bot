@@ -1,5 +1,6 @@
-// Shared Web Audio mixing for Meet and Teams
-// Factory approach to eliminate code duplication
+// Centralized audio track connection layer for Meet and Teams
+// This is the SINGLE point where RTCPeerConnection is intercepted
+// Other systems (network-interception, etc.) subscribe to track events via hooks
 
 import { Page } from '@playwright/test'
 import { Streaming } from '../../streaming'
@@ -12,41 +13,52 @@ export interface AudioCaptureConfig {
     stopFunctionName: string
     // Teams needs periodic scanning, Meet doesn't
     enablePeriodicScanning?: boolean
+    // Optional: Enable audio mixing for streaming
+    enableMixing?: boolean
 }
 
 const MEET_CONFIG: AudioCaptureConfig = {
     provider: 'Meet',
     callbackName: 'onMeetMixedAudioChunk',
-    logPrefix: '[MeetAudio]',
+    logPrefix: '[AudioCapture-Meet]',
     stopFunctionName: '__meetAudioStop',
     enablePeriodicScanning: false,
+    enableMixing: false, // Will be set dynamically based on streaming config
 }
 
 const TEAMS_CONFIG: AudioCaptureConfig = {
     provider: 'Teams',
     callbackName: 'onTeamsMixedAudioChunk',
-    logPrefix: '[TeamsAudio]',
+    logPrefix: '[AudioCapture-Teams]',
     stopFunctionName: '__teamsAudioStop',
     enablePeriodicScanning: true,
+    enableMixing: true, // Teams always needs mixing
 }
 
 /**
  * Generate the browser-side audio capture script
+ * This is the CENTRALIZED track connection layer
  */
 function generateAudioCaptureScript(config: AudioCaptureConfig): string {
-    const { callbackName, logPrefix, stopFunctionName, enablePeriodicScanning } = config
+    const { callbackName, logPrefix, stopFunctionName, enablePeriodicScanning, enableMixing } = config
 
     return `
         (function() {
             try {
-                console.log('${logPrefix} Initializing Web Audio mixer...')
+                console.log('${logPrefix} Initializing centralized audio track layer...')
 
-                // Create AudioContext for mixing
+                // Create AudioContext
                 const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+
+                // Track event subscribers (other systems can register here)
+                const trackSubscribers = []
+
+                ${enableMixing ? `
+                // Audio mixer (only if streaming enabled)
                 const mixerDestination = audioCtx.createMediaStreamDestination()
                 const mixedAudioSources = new Map()
                 let mixedStreamProcessor = null
-                let chunksSent = 0
+                let chunksSent = 0` : '// Audio mixer disabled (no streaming)'}
 
                 // Abort controller for cleanup
                 let abortController = null
@@ -234,7 +246,8 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     }
                 })
 
-                // Connect a track to the mixer
+                ${enableMixing ? `
+                // Connect a track to the mixer (only if mixing enabled)
                 function connectTrackToMixer(track) {
                     if (mixedAudioSources.has(track.id)) return // Already connected
 
@@ -263,9 +276,36 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     } catch (e) {
                         console.error('${logPrefix} Failed to connect track to mixer:', e)
                     }
+                }` : ''}
+
+                // CENTRALIZED track notification - notify all subscribers
+                function notifyTrackConnected(track, receiver, pc) {
+                    console.log('${logPrefix} 🎵 Audio track detected:', track.id)
+
+                    // Notify all registered subscribers (e.g., network-interception)
+                    trackSubscribers.forEach(subscriber => {
+                        try {
+                            subscriber.onTrack(track, receiver, pc)
+                        } catch (e) {
+                            console.error('${logPrefix} Track subscriber error:', e)
+                        }
+                    })
+
+                    ${enableMixing ? `
+                    // Connect to mixer if enabled
+                    connectTrackToMixer(track)` : ''}
                 }
 
-                // Intercept RTCPeerConnection to capture audio tracks
+                // Expose subscription API for other systems
+                window.__audioTrackLayer = {
+                    subscribe: (callbacks) => {
+                        trackSubscribers.push(callbacks)
+                        console.log('${logPrefix} ✅ Track subscriber registered')
+                    },
+                    audioCtx: audioCtx
+                }
+
+                // Intercept RTCPeerConnection to capture audio tracks (SINGLE POINT)
                 if (typeof window.RTCPeerConnection !== 'undefined') {
                     const OriginalPC = window.RTCPeerConnection
                     ${enablePeriodicScanning ? 'const allPeerConnections = []' : ''}
@@ -276,8 +316,8 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                         pc.addEventListener('track', (event) => {
                             if (event.track.kind === 'audio') {
-                                console.log('${logPrefix} Audio track detected:', event.track.id)
-                                connectTrackToMixer(event.track)
+                                // CENTRALIZED: Notify all systems about this track
+                                notifyTrackConnected(event.track, event.receiver, pc)
                             }
                         })
                         return pc
@@ -302,8 +342,8 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                     if (receiver.track && receiver.track.kind === 'audio') {
                                         foundTracks++
                                         if (!scannedTracks.has(receiver.track.id)) {
-                                            console.log('${logPrefix} Found audio track from PC[' + index + ']:', receiver.track.id)
-                                            connectTrackToMixer(receiver.track)
+                                            // CENTRALIZED: Notify all systems
+                                            notifyTrackConnected(receiver.track, receiver, pc)
                                             scannedTracks.add(receiver.track.id)
                                             newTracks++
                                         }
@@ -360,8 +400,13 @@ export function createAudioCapture(config: AudioCaptureConfig) {
     return {
         /**
          * Enable audio capture for this provider
+         * @param enableMixing - Optional: override config to enable/disable mixing
          */
-        enable: async (page: Page): Promise<void> => {
+        enable: async (page: Page, enableMixing?: boolean): Promise<void> => {
+            // Override mixing config if specified
+            const finalConfig = enableMixing !== undefined
+                ? { ...config, enableMixing }
+                : config
             // Expose callback function for audio chunks
             // Guard against duplicate registration (may be called multiple times)
             try {
@@ -390,12 +435,12 @@ export function createAudioCapture(config: AudioCaptureConfig) {
             }
 
             // Inject the audio capture script
-            const script = generateAudioCaptureScript(config)
+            const script = generateAudioCaptureScript(finalConfig)
             try {
                 await page.addInitScript(script)
-                console.log(`${logPrefix} Web Audio mixer script injected`)
+                console.log(`${logPrefix} Centralized audio track layer injected (mixing: ${finalConfig.enableMixing})`)
             } catch (error) {
-                console.error(`${logPrefix} Failed to inject mixer script:`, formatError(error))
+                console.error(`${logPrefix} Failed to inject audio track layer:`, formatError(error))
             }
         },
 

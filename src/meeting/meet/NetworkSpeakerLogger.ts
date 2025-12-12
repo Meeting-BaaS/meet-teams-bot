@@ -2,7 +2,7 @@ import { Page } from '@playwright/test'
 import * as fs from 'fs/promises'
 import { EnhancedSpeakerData } from '../../types'
 import { PathManager } from '../../utils/PathManager'
-import { generateStableUserId } from '../../utils/speaker-id'
+import { generateStableUserId, createSequentialIdManager } from '../../utils/speaker-id'
 
 /**
  * NetworkSpeakerLogger
@@ -17,9 +17,8 @@ export class NetworkSpeakerLogger {
     private isActive: boolean = false
     private previousSpeakerState: Map<string, boolean> = new Map()
     private logFilePath: string
-    // Persistent mapping from hash-based stable ID to sequential numeric ID
-    private stableIdToSequentialId: Map<string, number> = new Map()
-    private nextSequentialId: number = 1
+    // Sequential ID manager (reuses shared implementation from speaker-id.ts)
+    private sequentialIdManager = createSequentialIdManager()
     // Track which participant IDs have had metadata written
     private writtenMetadata: Set<number> = new Set()
     private onSpeakersChange?: (speakers: EnhancedSpeakerData[]) => void
@@ -40,11 +39,7 @@ export class NetworkSpeakerLogger {
      * This ensures speakers keep the same numeric ID across rejoins.
      */
     private getSequentialId(stableId: string): number {
-        if (!this.stableIdToSequentialId.has(stableId)) {
-            this.stableIdToSequentialId.set(stableId, this.nextSequentialId)
-            this.nextSequentialId++
-        }
-        return this.stableIdToSequentialId.get(stableId)!
+        return this.sequentialIdManager.getSequentialId(stableId)
     }
 
     async start(): Promise<void> {
@@ -55,18 +50,18 @@ export class NetworkSpeakerLogger {
 
         console.log('[NetworkSpeakerLogger] Starting network speaker logging...')
 
-        // Register our callback with the existing network interceptor
-        if ((this.page as any)._updateNetworkCallback) {
+        // Register our callback with the Node-side network callback setter
+        if ((this.page as any)._setNodeNetworkCallback) {
             console.log(
                 '[NetworkSpeakerLogger] Registering callback with network interceptor',
             )
-                ; (this.page as any)._updateNetworkCallback((payload: any) => {
+                ; (this.page as any)._setNodeNetworkCallback((payload: any) => {
                     this.handleNetworkPayload(payload)
                 })
             console.log('[NetworkSpeakerLogger] ✅ Callback registered')
         } else {
             console.warn(
-                '[NetworkSpeakerLogger] Network callback updater not found - network interception may not be set up',
+                '[NetworkSpeakerLogger] Network callback setter not found - network interception may not be set up',
             )
         }
 
