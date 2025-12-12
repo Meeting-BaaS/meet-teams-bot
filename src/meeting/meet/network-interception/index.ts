@@ -20,17 +20,13 @@ export async function enableNetworkInterception(
     }) => void,
 ): Promise<boolean> {
     try {
+        // Expose the Node-side callback function that the browser can call
+        // The actual callback update mechanism is handled via _setNodeNetworkCallback
+        // which directly calls window.triggerNetworkBroadcast() in the browser
         await page.exposeFunction('onNetworkSpeakerUpdate', onSpeakersChange)
-
-        await page.addInitScript(() => {
-            ;(window as any)._updateNetworkCallback = () => {
-                if ((window as any).triggerNetworkBroadcast)
-                    (window as any).triggerNetworkBroadcast()
-            }
-        })
     } catch (error) {
         console.error(
-            '[NetworkInterceptor] Failed to expose function or add callback script:',
+            '[NetworkInterceptor] Failed to expose function:',
             error,
         )
         console.error('Stack:', (error as Error).stack)
