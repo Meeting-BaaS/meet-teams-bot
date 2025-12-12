@@ -106,7 +106,10 @@ export class WaitingRoomState extends BaseState {
     }
 
     try {
-      return await this.context.provider.parseMeetingUrl(GLOBAL.get().meeting_url)
+      const meetingInfo = await this.context.provider.parseMeetingUrl(GLOBAL.get().meeting_url)
+      // Store the transformed meeting URL in GLOBAL for later use (e.g., in API calls)
+      GLOBAL.setTransformedMeetingUrl(meetingInfo.meetingId)
+      return meetingInfo
     } catch (error) {
       console.error("Failed to parse meeting URL:", formatError(error))
       GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
