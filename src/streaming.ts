@@ -11,8 +11,18 @@ import { formatError } from './utils/Logger'
 const DEFAULT_SAMPLE_RATE: number = 24_000
 
 /**
- * Simplified Streaming class - Chrome Extension WebSocket logic removed
- * Now uses direct audio processing via processAudioChunk() from ScreenRecorder
+ * Streaming class for real-time audio output to external services
+ * 
+ * IMPORTANT: This is now an OPTIONAL feature, completely independent of:
+ * - Sound level monitoring (handled by SoundLevelMonitor)
+ * - Automatic leave detection (uses SoundLevelMonitor)
+ * - Recording (handled by ScreenRecorder)
+ * 
+ * Audio sources:
+ * - Browser Web Audio API (processMixedAudioChunk) - ultra-low latency streaming
+ * - External WebSocket input (for bidirectional audio)
+ * 
+ * Note: processAudioChunk() is deprecated and no longer used for streaming
  */
 export class Streaming {
     public static instance: Streaming | null = null
@@ -32,17 +42,6 @@ export class Streaming {
     private isPaused: boolean = false
     private pausedChunks: RawData[] = []
 
-    // Audio level monitoring with performance optimizations
-    private currentSoundLevel: number = 0
-    private lastSoundLogTime_ms: number = 0
-    private readonly SOUND_LOG_INTERVAL_MS: number = 5000
-    private audioBuffer: Float32Array[] = [] // Buffer for batch processing
-    private readonly AUDIO_BUFFER_SIZE: number = 12
-
-    // Statistics tracking
-    private audioPacketsReceived: number = 0
-    private lastStatsLogTime: number = 0
-    private readonly STATS_LOG_INTERVAL_MS: number = 15000
 
     // Browser audio streaming
     private sourceSampleRate: number = 48000 // Default, updated by incoming chunks
@@ -90,8 +89,6 @@ export class Streaming {
             console.log('🐛 Debug audio file recording enabled (DEBUG_AUDIO=true)')
         }
 
-        this.audioPacketsReceived = 0
-
         this.start()
 
         Streaming.instance = this
@@ -127,66 +124,6 @@ export class Streaming {
         console.log('✅ Streaming service ready for direct audio processing')
     }
 
-    /**
-     * ⭐ MAIN METHOD: Process audio chunk directly from ScreenRecorder
-     * This replaces the old Chrome Extension WebSocket approach
-     */
-    public processAudioChunk(audioData: Float32Array): void {
-        if (!this.isInitialized) {
-            return
-        }
-
-        // Increment packet counter for stats
-        this.audioPacketsReceived++
-
-        // Log stats periodically
-        const now = Date.now()
-        if (now - this.lastStatsLogTime >= this.STATS_LOG_INTERVAL_MS) {
-            const packetsInInterval = this.audioPacketsReceived
-            console.log(
-                `🎵 Direct audio packets processed: ${packetsInInterval} in last ${this.STATS_LOG_INTERVAL_MS}ms`,
-            )
-            this.audioPacketsReceived = 0
-            this.lastStatsLogTime = now
-        }
-
-        if (this.isPaused) {
-            // If paused, store chunks for later processing
-            const buffer = Buffer.from(audioData.buffer)
-            this.pausedChunks.push(buffer)
-            return
-        }
-
-        // Buffer audio for batch processing (sound level analysis)
-        this.audioBuffer.push(audioData)
-        if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
-            this.processBatchedAudio().catch((error) =>
-                console.error('Error processing batched audio:', formatError(error)),
-            )
-            this.audioBuffer = []
-        }
-
-        // ❌ DISABLED: FFmpeg streaming disabled - now using browser WebRTC pipeline
-        // Browser WebRTC provides <50ms latency vs FFmpeg's ~200-500ms
-        // See processMixedAudioChunk() for the active streaming pipeline
-        // this.forwardToExternalService(audioData)
-    }
-
-    /**
-     * Forward audio to external services (if any)
-     */
-    private forwardToExternalService(audioData: Float32Array): void {
-        if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
-            // Convert f32Array to s16Array for external services
-            const s16Array = new Int16Array(audioData.length)
-            for (let i = 0; i < audioData.length; i++) {
-                s16Array[i] = Math.round(
-                    Math.max(-32768, Math.min(32767, audioData[i] * 32768)),
-                )
-            }
-            this.output_ws.send(s16Array.buffer)
-        }
-    }
 
     /**
      * 🚀 STREAMING: Process pre-mixed audio from Web Audio API
@@ -585,77 +522,6 @@ export class Streaming {
         }
     }
 
-    /**
-     * Process batched audio data for sound level analysis
-     */
-    private async processBatchedAudio(): Promise<void> {
-        if (this.audioBuffer.length === 0) return
-
-        // Combine all audio buffers into one for analysis
-        const totalLength = this.audioBuffer.reduce(
-            (sum, buffer) => sum + buffer.length,
-            0,
-        )
-        const combinedBuffer = new Float32Array(totalLength)
-
-        let offset = 0
-        for (const buffer of this.audioBuffer) {
-            combinedBuffer.set(buffer, offset)
-            offset += buffer.length
-        }
-
-        // Analyze the combined buffer
-        await this.analyzeSoundLevel(combinedBuffer)
-    }
-
-    /**
-     * Audio level analysis (unchanged)
-     */
-    private async analyzeSoundLevel(audioData: Float32Array): Promise<void> {
-        // Apply adaptive sampling to reduce computational load
-        const sampleRate = audioData.length > 2000 ? 16 : 8
-        const sampledLength = Math.floor(audioData.length / sampleRate)
-
-        // Skip analysis for very small buffers
-        if (sampledLength < 10) {
-            return
-        }
-
-        let sum = 0
-
-        // Calculate RMS (Root Mean Square)
-        for (let i = 0; i < sampledLength; i++) {
-            const value = audioData[i * sampleRate]
-            sum += value * value
-        }
-
-        const rms = Math.sqrt(sum / sampledLength)
-
-        // Calculate normalized sound level
-        let normalizedLevel = 0
-        if (rms > 0.005) {
-            normalizedLevel = Math.min(100, rms * 300)
-        }
-
-        // Update current level for real-time monitoring
-        this.currentSoundLevel = normalizedLevel
-
-        // Throttled file logging
-        const now = Date.now()
-        if (now - this.lastSoundLogTime_ms >= this.SOUND_LOG_INTERVAL_MS) {
-            const timestamp = new Date(now).toISOString()
-            const logEntry = `${timestamp},${normalizedLevel.toFixed(0)}\n`
-
-            try {
-                const soundLogPath = PathManager.getInstance().getSoundLogPath()
-                fs.promises.appendFile(soundLogPath, logEntry).catch(() => {})
-                this.lastSoundLogTime_ms = now
-            } catch (error) {
-                // Silently handle file errors
-            }
-        }
-    }
-
     private processPausedChunks(): void {
         if (this.pausedChunks.length === 0) {
             return
@@ -665,9 +531,8 @@ export class Streaming {
             if (message instanceof Buffer) {
                 const uint8Array = new Uint8Array(message)
                 const f32Array = new Float32Array(uint8Array.buffer)
-                this.analyzeSoundLevel(f32Array).catch((error) =>
-                    console.error('Error analyzing sound level:', formatError(error)),
-                )
+                
+                // Note: Sound level analysis removed (now in SoundLevelMonitor)
 
                 // Forward to external services if needed
                 if (
@@ -725,12 +590,8 @@ export class Streaming {
                         f32Array[i] = s16Array[i] / 32768
                     }
 
-                    this.analyzeSoundLevel(f32Array).catch((error) =>
-                        console.error(
-                            'Error analyzing sound level:',
-                            formatError(error),
-                        ),
-                    )
+                    // Note: Sound level analysis removed (now in SoundLevelMonitor)
+                    // External audio injection still works for bidirectional streaming
                     const buffer = Buffer.from(f32Array.buffer)
                     stream.push(buffer)
                 } catch (error) {
@@ -830,7 +691,7 @@ export class Streaming {
                     // Update WAV header with correct size using async file operations
                     fd = await fsPromises.open(debugPath, 'r+')
                     const header = this.createWavHeader(bytesWritten, sampleRate, 1, 16)
-                    await fd.write(header, 0, 44, 0)
+                    await fd.write(new Uint8Array(header), 0, 44, 0)
 
                     console.log(`🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`)
                     resolve()
@@ -851,7 +712,4 @@ export class Streaming {
         })
     }
 
-    public getCurrentSoundLevel(): number {
-        return this.currentSoundLevel
-    }
 }

@@ -15,6 +15,7 @@ import { PathManager } from '../utils/PathManager'
 import { S3Uploader } from '../utils/S3Uploader'
 import { sleep } from '../utils/sleep'
 import { generateSyncSignal } from '../utils/SyncSignal'
+import { SoundLevelMonitor } from '../utils/sound-level-monitor'
 
 const TRANSCRIPTION_CHUNK_DURATION = 3600
 const GRACE_PERIOD_SECONDS = 3
@@ -182,7 +183,7 @@ export class ScreenRecorder extends EventEmitter {
             this.gracePeriodActive = false
             this.logMemoryUsage('Starting recording')
             this.setupProcessMonitoring()
-            this.setupStreamingAudio()
+            this.setupSoundLevelMonitoring()
             this.setupFileSizeMonitoring()
 
             await sleep(FLASH_SCREEN_SLEEP_TIME)
@@ -357,6 +358,21 @@ export class ScreenRecorder extends EventEmitter {
                 'image2',
                 '-y',
                 screenshotPattern,
+
+                // === OUTPUT 3: SOUND LEVEL MONITORING (stdout) ===
+                // This output is CRITICAL for automatic leave detection
+                // It feeds the SoundLevelMonitor which is independent of streaming
+                '-map',
+                '0:a:0',
+                '-acodec',
+                'pcm_f32le', // Float32 for easy processing
+                '-ac',
+                '1', // Mono
+                '-ar',
+                '24000', // 24kHz is sufficient for sound level analysis
+                '-f',
+                'f32le', // Raw float32 format
+                'pipe:1', // stdout
             )
         } else {
             // Separate audio and video recording
@@ -443,6 +459,21 @@ export class ScreenRecorder extends EventEmitter {
                 'image2',
                 '-y',
                 screenshotPattern,
+
+                // === OUTPUT 4: SOUND LEVEL MONITORING (stdout) ===
+                // This output is CRITICAL for automatic leave detection
+                // It feeds the SoundLevelMonitor which is independent of streaming
+                '-map',
+                '1:a:0',
+                '-acodec',
+                'pcm_f32le', // Float32 for easy processing
+                '-ac',
+                '1', // Mono
+                '-ar',
+                '24000', // 24kHz is sufficient for sound level analysis
+                '-f',
+                'f32le', // Raw float32 format
+                'pipe:1', // stdout
             )
         }
 
@@ -637,31 +668,46 @@ export class ScreenRecorder extends EventEmitter {
         }, errorWindowMs)
     }
 
-    private setupStreamingAudio(): void {
-        if (!Streaming.instance || !this.ffmpegProcess) return
+    /**
+     * Setup sound level monitoring from FFmpeg stdout
+     * This is CRITICAL for automatic leave detection (silence timeout, noone_joined_timeout)
+     * Completely independent of streaming functionality
+     */
+    private setupSoundLevelMonitoring(): void {
+        if (!this.ffmpegProcess) return
+
+        const monitor = SoundLevelMonitor.getInstance()
+        monitor.start()
 
         try {
             this.ffmpegProcess.stdout?.on('data', (data: Buffer) => {
                 try {
-                    if (Streaming.instance) {
-                        // ❌ DISABLED: FFmpeg audio streaming disabled
-                        // Now using Web Audio API mixing directly from browser for ultra-low latency
-                        // See audio-capture.ts files for the new streaming approach
+                    // Convert buffer to Float32Array
+                    const float32Array = new Float32Array(
+                        data.buffer,
+                        data.byteOffset,
+                        data.length / 4,
+                    )
 
-                        // const float32Array = new Float32Array(
-                        //     data.buffer,
-                        //     data.byteOffset,
-                        //     data.length / 4,
-                        // )
-                        // Streaming.instance.processAudioChunk(float32Array)
-                    }
+                    // Feed to sound level monitor (always active, critical for automatic leave)
+                    monitor.processAudioChunk(float32Array)
                 } catch (error) {
-                    console.error('Failed to process audio chunk:', formatError(error))
+                    console.error(
+                        '[SoundLevelMonitor] Failed to process audio chunk:',
+                        formatError(error),
+                    )
                     // Don't throw - continue processing other chunks
                 }
             })
+
+            console.log(
+                '✅ Sound level monitoring enabled (FFmpeg stdout → automatic leave detection)',
+            )
         } catch (error) {
-            console.error('Failed to setup streaming audio:', formatError(error))
+            console.error(
+                '[SoundLevelMonitor] Failed to setup monitoring:',
+                formatError(error),
+            )
         }
     }
 

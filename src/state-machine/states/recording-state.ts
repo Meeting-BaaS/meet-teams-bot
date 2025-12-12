@@ -1,5 +1,4 @@
 import { Events } from '../../events'
-import { Streaming } from '../../streaming'
 import { MEETING_CONSTANTS } from '../constants'
 import { formatError } from '../../utils/Logger'
 
@@ -20,6 +19,7 @@ import { SpeakerManager } from '../../speaker-manager'
 import { uploadTranscriptTask } from '../../uploadTranscripts'
 import { MeetingStateMachine } from '../machine'
 import { sleep } from '../../utils/sleep'
+import { SoundLevelMonitor } from '../../utils/sound-level-monitor'
 
 // Sound level threshold for considering activity (0-100)
 const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
@@ -122,7 +122,7 @@ export class RecordingState extends BaseState {
         console.info('Context state:', {
             hasPathManager: !!this.context.pathManager,
             hasStreamingService: !!this.context.streamingService,
-            isStreamingInstanceAvailable: !!Streaming.instance,
+            isSoundLevelMonitorActive: !!SoundLevelMonitor.getInstance(),
         })
 
         // Configure listeners
@@ -208,25 +208,25 @@ export class RecordingState extends BaseState {
             }
 
             // Check for sound activity first - if detected, mark it and reset silence timers
-            if (Streaming.instance) {
-                const currentSoundLevel =
-                    Streaming.instance.getCurrentSoundLevel()
-                if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
-                    // Mark that sound has been detected (ends noone_joined grace period)
-                    if (!this.hasNoOneJoinedPeriodEnded) {
-                        this.hasNoOneJoinedPeriodEnded = true
-                        console.log(
-                            `[checkEndConditions] First sound detected (${currentSoundLevel.toFixed(2)}), ending noone_joined_timeout grace period and enabling silence monitoring`,
-                        )
-                    }
-                    // Only log once per 2 seconds to avoid spam
-                    if (now - this.lastSoundActivity >= 2000) {
-                        console.log(
-                            `[checkEndConditions] Sound activity detected (${currentSoundLevel.toFixed(2)}), resetting lastSoundActivity silence timer`,
-                        )
-                    }
-                    this.lastSoundActivity = now
+            // Uses SoundLevelMonitor which is always active (independent of streaming)
+            const monitor = SoundLevelMonitor.getInstance()
+            const currentSoundLevel = monitor.getCurrentSoundLevel()
+            
+            if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+                // Mark that sound has been detected (ends noone_joined grace period)
+                if (!this.hasNoOneJoinedPeriodEnded) {
+                    this.hasNoOneJoinedPeriodEnded = true
+                    console.log(
+                        `[checkEndConditions] First sound detected (${currentSoundLevel.toFixed(2)}), ending noone_joined_timeout grace period and enabling silence monitoring`,
+                    )
                 }
+                // Only log once per 2 seconds to avoid spam
+                if (now - this.lastSoundActivity >= 2000) {
+                    console.log(
+                        `[checkEndConditions] Sound activity detected (${currentSoundLevel.toFixed(2)}), resetting lastSoundActivity silence timer`,
+                    )
+                }
+                this.lastSoundActivity = now
             }
 
             // Check if we're still in the noone_joined_period
