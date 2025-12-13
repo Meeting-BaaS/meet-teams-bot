@@ -1,6 +1,7 @@
 import { SoundContext, VideoContext } from "../../media_context"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
+import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
 import { MEETING_CONSTANTS } from "../constants"
@@ -39,60 +40,64 @@ export class CleanupState extends BaseState {
   private async performCleanup(): Promise<void> {
     try {
       // 1. Stop the dialog observer
-      console.info("🧹 Step 1/7: Stopping dialog observer. It would not block the cleanup")
+      console.info("🧹 Step 1/8: Stopping dialog observer. It would not block the cleanup")
       try {
         this.stopDialogObserver()
       } catch (error) {
         console.warn("🧹 Dialog observer stop failed, continuing cleanup:", error)
       }
 
-      // 🎬 PRIORITY 2: Stop video recording immediately to avoid data loss
-      console.info("🧹 Step 2/7: Stopping ScreenRecorder (PRIORITY)")
+      // 2. Finalize diarization BEFORE stopping ScreenRecorder (which uploads files)
+      console.info("🧹 Step 2/8: Finalizing diarization tracking")
+      await this.finalizeDiarization()
+
+      // 🎬 PRIORITY 3: Stop video recording immediately to avoid data loss
+      console.info("🧹 Step 3/8: Stopping ScreenRecorder (PRIORITY)")
       await this.stopScreenRecorder()
 
-      // 3. Capture final DOM state before cleanup
+      // 4. Capture final DOM state before cleanup
       if (this.context.playwrightPage) {
-        console.info("🧹 Step 3/7: Capturing final DOM state")
+        console.info("🧹 Step 4/8: Capturing final DOM state")
         const htmlSnapshot = HtmlSnapshotService.getInstance()
         await htmlSnapshot.captureSnapshot(this.context.playwrightPage, "cleanup_final_dom_state")
       }
 
       // 🚀 PARALLEL CLEANUP: Independent steps that can run simultaneously
       console.info(
-        "🧹 Steps 4-7: Running parallel cleanup (streaming + sound monitor + speakers + HTML)"
+        "🧹 Steps 5-8: Running parallel cleanup (streaming + sound monitor + speakers + HTML)"
       )
       await Promise.allSettled([
-        // 4. Stop the streaming (waits for debug audio file finalization)
+        // 5. Stop the streaming (waits for debug audio file finalization)
         (async () => {
-          console.info("🧹 Step 4/8: Stopping streaming service")
+          console.info("🧹 Step 5/8: Stopping streaming service")
           if (this.context.streamingService) {
             await this.context.streamingService.stop()
           }
         })(),
 
-        // 5. Stop sound level monitor (critical for automatic leave)
+        // 6. Stop sound level monitor (critical for automatic leave)
         (async () => {
-          console.info("🧹 Step 5/8: Stopping sound level monitor")
+          console.info("🧹 Step 6/8: Stopping sound level monitor")
           // Use stopIfStarted to avoid instantiating if never used
           SoundLevelMonitor.stopIfStarted()
         })(),
 
-        // 6. Stop speakers observer (with 3s timeout)
+        // 7. Stop speakers observer (with 3s timeout)
         (async () => {
-          console.info("🧹 Step 6/8: Stopping speakers observer")
+          console.info("🧹 Step 7/8: Stopping speakers observer")
           await this.stopSpeakersObserver()
         })(),
 
-        // 7. Stop HTML cleaner (with 3s timeout)
+        // 8. Stop HTML cleaner (with 3s timeout)
         (async () => {
-          console.info("🧹 Step 7/8: Stopping HTML cleaner")
+          console.info("🧹 Step 8/8: Stopping HTML cleaner")
           await this.stopHtmlCleaner()
         })()
       ])
 
       console.info("🧹 Parallel cleanup completed")
 
-      console.info("🧹 Step 8/8: Cleaning up browser resources")
+      console.info("🧹 Step 9/9: Cleaning up browser resources")
       // 8. Clean up browser resources (must be sequential after others)
       await this.cleanupBrowserResources()
 
@@ -164,6 +169,16 @@ export class CleanupState extends BaseState {
         console.error("Error stopping HTML cleaner:", formatError(error))
       }
       // Don't throw as this is non-critical
+    }
+  }
+
+  private async finalizeDiarization(): Promise<void> {
+    try {
+      await SpeakerManager.finalize()
+      console.log("Diarization tracking finalized successfully")
+    } catch (error) {
+      console.error("Failed to finalize diarization:", formatError(error))
+      // Don't throw - continue cleanup even if diarization finalization fails
     }
   }
 

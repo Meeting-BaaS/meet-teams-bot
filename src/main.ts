@@ -66,15 +66,6 @@ async function handleSuccessfulRecording(): Promise<void> {
     `Recording ended normally with reason: ${MeetingStateMachine.instance.getEndReason()}`
   )
 
-  // Finalize diarization tracking (writes final segment to file)
-  try {
-    await SpeakerManager.finalize()
-    console.log("Diarization tracking finalized")
-  } catch (error) {
-    console.error("Failed to finalize diarization:", formatError(error))
-    // Continue despite error
-  }
-
   // Send success webhook - Waits for completion to ensure status history order is correct
   await Events.recordingSucceeded()
 
