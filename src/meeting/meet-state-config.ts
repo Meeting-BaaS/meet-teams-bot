@@ -60,7 +60,7 @@ export const MEET_STATE_CONFIG: StateDetectionConfig = {
             '[data-self-name]',
             'div[data-participant-id]',
         ],
-        threshold: 3,
+        threshold: 4, // Increased from 3 to 4 to require chat button (prevents false positives in waiting room)
         checkVisibility: true, // Check DOM presence only, not visibility - helps with fast admissions
     },
 }
