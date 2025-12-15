@@ -394,14 +394,19 @@ export function browserInterceptionLogic(schema: any[]) {
                 reader = processor.readable.getReader()
 
                 const processFrames = async () => {
+                    let abortListener: (() => void) | null = null
                     try {
-                        while (true) {
-                            // Check abort signal before each iteration
-                            if (abortSignal.aborted) {
-                                console.error(`[NetworkInterceptor] 🛑 Audio processing aborted for track: ${track.id}`)
-                                break
+                        // Register abort listener to cancel pending reads
+                        abortListener = () => {
+                            if (reader) {
+                                reader.cancel().catch((err) => {
+                                    console.error('[NetworkInterceptor] Error cancelling reader on abort:', err)
+                                })
                             }
+                        }
+                        abortSignal.addEventListener('abort', abortListener)
 
+                        while (!abortSignal.aborted) {
                             const { done, value: frame } = await reader.read()
                             if (done) break
                             if (!frame) continue
@@ -459,17 +464,31 @@ export function browserInterceptionLogic(schema: any[]) {
                                 if (frame) frame.close()
                             }
                         }
+
+                        if (abortSignal.aborted) {
+                            console.error(`[NetworkInterceptor] 🛑 Audio processing aborted for track: ${track.id}`)
+                        }
                     } catch (readError) {
-                        console.error(
-                            '[NetworkInterceptor] Reader Error:',
-                            readError,
-                        )
+                        // Handle errors from reader.read() including cancellation
+                        if (!abortSignal.aborted) {
+                            console.error(
+                                '[NetworkInterceptor] Reader Error:',
+                                readError,
+                            )
+                        }
                     } finally {
+                        // Remove abort listener
+                        if (abortListener) {
+                            abortSignal.removeEventListener('abort', abortListener)
+                        }
+
                         if (reader) {
                             try {
                                 await reader.cancel()
                                 reader.releaseLock()
-                            } catch { }
+                            } catch (err) {
+                                console.error('[NetworkInterceptor] Error during reader cleanup:', err)
+                            }
                         }
                     }
                 }

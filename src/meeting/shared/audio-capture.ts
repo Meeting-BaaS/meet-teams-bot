@@ -45,20 +45,34 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
     return `
         (function() {
             try {
-                // Idempotency guard: Check if already initialized
-                if (window.__audioTrackLayer) {
-                    console.log('${logPrefix} ⚠️ Audio track layer already initialized, skipping duplicate initialization')
+                // Idempotent initialization: Reuse existing window.__audioTrackLayer if present
+                if (!window.__audioTrackLayer) {
+                    console.log('${logPrefix} Initializing centralized audio track layer...')
+
+                    // Create AudioContext
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+
+                    // Create window.__audioTrackLayer with subscribers array
+                    window.__audioTrackLayer = {
+                        subscribers: [],
+                        subscribe: (callbacks) => {
+                            window.__audioTrackLayer.subscribers.push(callbacks)
+                            console.log('${logPrefix} ✅ Track subscriber registered')
+                        },
+                        audioCtx: audioCtx
+                    }
+                } else if (window.__audioTrackLayer && !window.__audioTrackLayer.subscribers) {
+                    // Handle legacy structure: add subscribers array if missing
+                    window.__audioTrackLayer.subscribers = []
+                    console.log('${logPrefix} ⚠️ Upgraded existing audio track layer with subscribers array')
+                } else {
+                    console.log('${logPrefix} ⚠️ Audio track layer already initialized, reusing existing instance')
                     return
                 }
 
-                console.log('${logPrefix} Initializing centralized audio track layer...')
-
-                // Create AudioContext (or reuse if exists)
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
-
-                // Track event subscribers (other systems can register here)
-                // This array persists because window.__audioTrackLayer keeps the reference
-                const trackSubscribers = []
+                // Reference the persistent subscribers array
+                const trackSubscribers = window.__audioTrackLayer.subscribers
+                const audioCtx = window.__audioTrackLayer.audioCtx
 
                 ${enableMixing ? `
                 // Audio mixer (only if streaming enabled)
@@ -114,13 +128,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                             signal.addEventListener('abort', onAbort)
 
                             try {
-                                while (true) {
-                                    // Check for abort before reading
-                                    if (signal.aborted) {
-                                        console.log('${logPrefix} Processing aborted (pre-read check)')
-                                        break
-                                    }
-
+                                while (!signal.aborted) {
                                     const { done, value: frame } = await reader.read()
                                     if (done) {
                                         console.log('${logPrefix} Reader done, stream ended')
@@ -303,14 +311,8 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     connectTrackToMixer(track)` : ''}
                 }
 
-                // Expose subscription API for other systems
-                window.__audioTrackLayer = {
-                    subscribe: (callbacks) => {
-                        trackSubscribers.push(callbacks)
-                        console.log('${logPrefix} ✅ Track subscriber registered')
-                    },
-                    audioCtx: audioCtx
-                }
+                // window.__audioTrackLayer is already set up at the top of this script
+                // Subscribers can call window.__audioTrackLayer.subscribe() to register
 
                 // Intercept RTCPeerConnection to capture audio tracks (SINGLE POINT)
                 if (typeof window.RTCPeerConnection !== 'undefined') {
