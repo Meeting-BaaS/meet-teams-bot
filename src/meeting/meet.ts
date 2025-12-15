@@ -487,36 +487,28 @@ async function isInMeeting(page: Page): Promise<boolean> {
             return false
         }
 
-        // Check for meeting presence indicators FIRST
-        const result = await meetStateDetector.isInMeeting(page)
-        const selectorCount = MEET_STATE_CONFIG.inMeetingPattern.selectors.length
-        const threshold = MEET_STATE_CONFIG.inMeetingPattern.threshold
-        console.log(
-            `Meeting presence indicators: ${result.count}/${selectorCount} visible (threshold: ${threshold}, matched: ${result.matched})`,
-        )
+        // PRIMARY: Network participant count
+        const networkStatus = await page.evaluate(() => {
+            if (typeof (window as any).__isNetworkInMeeting === 'function') {
+                return (window as any).__isNetworkInMeeting()
+            }
+            return { inMeeting: false, userCount: 0 }
+        })
 
-        // If we have strong meeting indicators (threshold met), we're definitely in the meeting
-        // This overrides any stale waiting room DOM elements that might still be present
-        if (result.matched) {
-            console.log(
-                `✓ Threshold reached: ${result.count} >= ${threshold} - Confirming in meeting`,
-            )
+        if (networkStatus.inMeeting) {
+            console.log(`✅ In meeting: ${networkStatus.userCount} participants (network)`)
             return true
         }
 
-        // Only if meeting indicators are weak/absent, check if we're in waiting room
-        // This prevents false positives from stale waiting room elements after joining
-        if (await isInWaitingRoom(page)) {
-            console.log(
-                `✗ Threshold not met but in waiting room - Not in meeting yet`,
-            )
-            return false
+        // FALLBACK: UI threshold
+        const result = await meetStateDetector.isInMeeting(page)
+        if (result.matched) {
+            console.log(`✅ In meeting: UI fallback (${result.count} indicators)`)
+            return true
         }
 
-        // Not enough meeting indicators and not in waiting room
-        console.log(
-            `✗ Threshold not met and not in waiting room - Not in meeting yet`,
-        )
+        const inWaitingRoom = await isInWaitingRoom(page)
+        console.log(`✗ Not in meeting: ${networkStatus.userCount} participants, ${result.count} UI indicators${inWaitingRoom ? ', in waiting room' : ''}`)
         return false
     } catch (error) {
         console.error('Error checking if in meeting:', error)

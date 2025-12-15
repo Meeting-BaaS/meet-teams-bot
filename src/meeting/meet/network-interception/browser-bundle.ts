@@ -676,6 +676,12 @@ export function browserInterceptionLogic(schema: any[]) {
             }
         }
 
+        // Check if in meeting based on network participant count
+        ;(window as any).__isNetworkInMeeting = () => {
+            const users = filterActiveUsers(getAllUsers(userManager))
+            return { inMeeting: users.length > 0, userCount: users.length }
+        }
+
             ; (window as any).triggerNetworkBroadcast = broadcastCurrentState
 
         const messageDecoders = createDecoders(schema)
