@@ -156,8 +156,23 @@ export class SimpleDialogObserver {
 
         try {
             // Google Meet specific modal patterns
+            // IMPORTANT: Order matters! More specific patterns must come before generic ones
+            // to avoid misidentification (e.g., transcription modal matching camera_permission)
             const modalPatterns = [
-                // Transcription/notes modal
+                // Recording/transcription modals - MUST come first (they may contain "camera"/"microphone" text)
+                {
+                    name: 'recording_notification',
+                    selector:
+                        'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
+                    buttonTexts: ['Join now'],
+                },
+                {
+                    name: 'transcribe_notification',
+                    selector:
+                        'div[role="dialog"]:has-text("video call is being transcribed"):has(button)',
+                    buttonTexts: ['Join now'],
+                },
+                // Gemini/notes modal
                 {
                     name: 'gemini_notification',
                     selector:
@@ -170,13 +185,6 @@ export class SimpleDialogObserver {
                     selector:
                         'div[role="dialog"]:has-text("Others may see"):has(button)',
                     buttonTexts: ['Got it', 'OK', 'Dismiss', 'Close'],
-                },
-                // Camera/microphone permission modals
-                {
-                    name: 'camera_permission',
-                    selector:
-                        'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
-                    buttonTexts: ['Allow', 'Block', 'Got it', 'OK'],
                 },
                 // Video privacy modals
                 {
@@ -192,24 +200,19 @@ export class SimpleDialogObserver {
                         'div[role="dialog"]:has-text("background"):has(button), div[role="dialog"]:has-text("feed"):has(button)',
                     buttonTexts: ['Got it', 'OK', 'Dismiss'],
                 },
-                // Recording notification modal
+                // Camera/microphone permission modals - after specific modals to avoid false positives
                 {
-                    name: 'recording_notification',
+                    name: 'camera_permission',
                     selector:
-                        'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
-                    buttonTexts: ['Join now'],
-                },
-                {
-                    name: 'transcribe_notification',
-                    selector:
-                      'div[role="dialog"]:has-text("This video call is being transcribed"):has(button)',
-                    buttonTexts: ['Join now'],
+                        'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
+                    buttonTexts: ['Allow', 'Block', 'Got it', 'OK', 'Join now'],
                 },
                 // Generic dismiss modals (fallback)
                 {
                     name: 'generic_dismiss',
                     selector: 'div[role="dialog"]:has(button)',
                     buttonTexts: [
+                        'Join now',
                         'Got it',
                         'OK',
                         'Dismiss',
