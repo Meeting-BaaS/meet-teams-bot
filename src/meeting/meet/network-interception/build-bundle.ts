@@ -72,7 +72,9 @@ function buildLibrariesBundle() {
 `
 
         // Write bundle
-        const outputPath = path.resolve(__dirname, 'bundle/network-interceptor-libs.bundle.js')
+        const outputDir = path.resolve(__dirname, 'bundle')
+        fs.mkdirSync(outputDir, { recursive: true })
+        const outputPath = path.join(outputDir, 'network-interceptor-libs.bundle.js')
         fs.writeFileSync(outputPath, bundle, 'utf8')
 
         const stats = fs.statSync(outputPath)
