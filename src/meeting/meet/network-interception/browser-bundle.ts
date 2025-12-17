@@ -428,6 +428,14 @@ export function browserInterceptionLogic(schema: any[]) {
                                         )
                                         const loudestSpeaker = usersWithAudioLevels[0]
 
+                                        // DEBUG: Log speaker detection (visible with --debug flag)
+                                        console.error('[NetworkInterceptor] DEBUG: Speaker analysis -',
+                                            'contributingSources:', contributingSources.length,
+                                            'usersWithAudio:', usersWithAudioLevels.length,
+                                            'loudestSpeaker:', loudestSpeaker?.user?.deviceId || 'none',
+                                            'audioLevel:', loudestSpeaker?.audioLevel || 0
+                                        )
+
                                         if (loudestSpeaker?.user) {
                                             // Update speaking state - clear previous and set current speaker
                                             speakingState.clear()
