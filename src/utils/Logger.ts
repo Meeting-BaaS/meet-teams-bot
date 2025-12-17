@@ -207,6 +207,10 @@ export async function uploadLogsToS3(options: {
         const speakerLogPath = pathManager.getSpeakerLogPath()
         const s3SpeakerLogPath = `${logPath}/speaker_separation.log`
 
+        // Network speaker detection log file
+        const networkSpeakerLogPath = pathManager.getNetworkSpeakerLogPath()
+        const s3NetworkSpeakerLogPath = `${logPath}/network_speaker_detection.log`
+
         // Screenshots directory
         const screenshotsPath = pathManager.getScreenshotsPath()
         const s3ScreenshotsPath = `${logPath}/screenshots`
@@ -218,6 +222,7 @@ export async function uploadLogsToS3(options: {
         console.log('Looking for internal log files at:', {
             soundLogPath,
             speakerLogPath,
+            networkSpeakerLogPath,
             screenshotsPath,
             htmlSnapshotsPath,
         })
@@ -240,6 +245,18 @@ export async function uploadLogsToS3(options: {
             console.log(
                 'No speaker separation log file found at path:',
                 speakerLogPath,
+            )
+        }
+
+        // Upload network speaker detection log file
+        if (fs.existsSync(networkSpeakerLogPath)) {
+            logger.info(`Uploading network speaker detection logs to S3...`)
+            await s3cp(networkSpeakerLogPath, s3NetworkSpeakerLogPath)
+            logger.info(`Network speaker detection logs uploaded to S3`)
+        } else {
+            console.log(
+                'No network speaker detection log file found at path:',
+                networkSpeakerLogPath,
             )
         }
 
