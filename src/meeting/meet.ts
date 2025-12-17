@@ -91,6 +91,20 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
+            // Set permissions based on streaming_input
+            if (streaming_input) {
+                await browserContext.grantPermissions(['microphone', 'camera'])
+            } else {
+                await browserContext.grantPermissions(['camera'])
+            }
+
+            // ALWAYS enable centralized audio track layer (mandatory)
+            // Mixing is only enabled if streaming is on
+            // IMPORTANT: This must be called BEFORE enableNetworkInterception so the network interceptor can subscribe to it
+            const enableMixing = !!GLOBAL.get().streaming_output
+            await enableMeetAudioCapture(page, enableMixing)
+            console.log(`[Meet] ✅ Centralized audio track layer enabled (mixing: ${enableMixing})`)
+
             // Enable network interception for speaker detection
             const networkInterceptionEnabled = await enableNetworkInterception(
                 page,
@@ -107,19 +121,6 @@ export class MeetProvider implements MeetingProviderInterface {
             } else {
                 console.log('[Meet] ✅ Network interception configured successfully')
             }
-
-            // Set permissions based on streaming_input
-            if (streaming_input) {
-                await browserContext.grantPermissions(['microphone', 'camera'])
-            } else {
-                await browserContext.grantPermissions(['camera'])
-            }
-
-            // ALWAYS enable centralized audio track layer (mandatory)
-            // Mixing is only enabled if streaming is on
-            const enableMixing = !!GLOBAL.get().streaming_output
-            await enableMeetAudioCapture(page, enableMixing)
-            console.log(`[Meet] ✅ Centralized audio track layer enabled (mixing: ${enableMixing})`)
 
             console.log(`Navigating to ${link}...`)
             await page.goto(link, {
