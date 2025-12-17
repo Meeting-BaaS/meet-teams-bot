@@ -69,8 +69,9 @@ export class MeetProvider implements MeetingProviderInterface {
                 }
             }
 
-            // Attach a Node-side function to the page that allows updating the callback
-            // This is stored on the page object (Node-side, not in-page)
+            // Allows updating the Node-side callback that receives browser events
+            // Used by NetworkSpeakerLogger to register its handleNetworkPayload method
+            // Flow: browser-bundle.ts → window.onNetworkSpeakerUpdate → this callback
             ;(page as any)._setNodeNetworkCallback = async (
                 callback: (payload: any) => void,
             ) => {

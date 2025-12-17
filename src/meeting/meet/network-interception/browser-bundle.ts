@@ -361,6 +361,8 @@ export function browserInterceptionLogic(schema: any[]) {
             const filteredUsers = filterActiveUsers(allUsers)
             const users = buildUserStateList(filteredUsers, speakingDeviceId, audioLevel)
 
+            // Calls the Node-side callback exposed via Playwright's exposeFunction (see network-interception/index.ts)
+            // This crosses the browser/Node boundary → triggers NetworkSpeakerLogger.handleNetworkPayload
             ;(window as any).onNetworkSpeakerUpdate({
                 users,
                 timestamp: Date.now(),

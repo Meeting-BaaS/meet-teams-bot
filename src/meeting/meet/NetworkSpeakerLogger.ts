@@ -22,6 +22,9 @@ export class NetworkSpeakerLogger {
     // Track which participant IDs have had metadata written
     private writtenMetadata: Set<number> = new Set()
     private onSpeakersChange?: (speakers: EnhancedSpeakerData[]) => void
+    // Throttle console logging (file writes still happen on every change)
+    private lastConsoleLogTime: number = 0
+    private static readonly CONSOLE_LOG_INTERVAL_MS = 2000
 
     constructor(
         page: Page,
@@ -50,7 +53,8 @@ export class NetworkSpeakerLogger {
 
         console.log('[NetworkSpeakerLogger] Starting network speaker logging...')
 
-        // Register our callback with the Node-side network callback setter
+        // Register our callback to receive speaker updates from browser-bundle.ts
+        // Flow: browser-bundle.ts → window.onNetworkSpeakerUpdate → meet.ts callback → here
         if ((this.page as any)._setNodeNetworkCallback) {
             console.log(
                 '[NetworkSpeakerLogger] Registering callback with network interceptor',
@@ -117,7 +121,13 @@ export class NetworkSpeakerLogger {
 
                 // Log only on changes (including initial state)
                 if (hasChange) {
-                    this.logSpeakersTable(speakers)
+                    // Throttle console logging to reduce noise
+                    const now = Date.now()
+                    if (now - this.lastConsoleLogTime >= NetworkSpeakerLogger.CONSOLE_LOG_INTERVAL_MS) {
+                        this.logSpeakersTable(speakers)
+                        this.lastConsoleLogTime = now
+                    }
+                    // File writes still happen on every change
                     this.writeLogToFile(speakers).catch((err) => {
                         console.error(
                             '[NetworkSpeakerLogger] Failed to write log to file:',
