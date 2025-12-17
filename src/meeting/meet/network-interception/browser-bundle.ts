@@ -437,27 +437,31 @@ export function browserInterceptionLogic(schema: any[]) {
                                         )
 
                                         if (loudestSpeaker?.user) {
-                                            // Update speaking state - clear previous and set current speaker
-                                            speakingState.clear()
-                                            speakingState.set(loudestSpeaker.user.deviceId, true)
-
-                                            // Broadcast with current speaker
-                                            broadcastSpeakerUpdate(
-                                                userManager,
-                                                loudestSpeaker.user.deviceId,
-                                                loudestSpeaker.audioLevel,
-                                                'audio',
-                                            )
+                                            const currentSpeakerId = loudestSpeaker.user.deviceId
+                                            // Only broadcast if speaker changed
+                                            if (currentSpeakerId !== lastBroadcastedSpeakerId) {
+                                                lastBroadcastedSpeakerId = currentSpeakerId
+                                                speakingState.clear()
+                                                speakingState.set(currentSpeakerId, true)
+                                                broadcastSpeakerUpdate(
+                                                    userManager,
+                                                    currentSpeakerId,
+                                                    loudestSpeaker.audioLevel,
+                                                    'audio',
+                                                )
+                                            }
                                         } else {
-                                            // No speaker with meaningful audio - clear speaking state
-                                            if (speakingState.size > 0) {
+                                            // No speaker with meaningful audio - broadcast silence only if changed
+                                            if (lastBroadcastedSpeakerId !== null) {
+                                                lastBroadcastedSpeakerId = null
                                                 speakingState.clear()
                                                 broadcastSpeakerUpdate(userManager, null, 0, 'audio')
                                             }
                                         }
                                     } else {
-                                        // No contributing sources - clear speaking state if set
-                                        if (speakingState.size > 0) {
+                                        // No contributing sources - broadcast silence only if changed
+                                        if (lastBroadcastedSpeakerId !== null) {
+                                            lastBroadcastedSpeakerId = null
                                             speakingState.clear()
                                             broadcastSpeakerUpdate(userManager, null, 0, 'audio')
                                         }
@@ -630,6 +634,8 @@ export function browserInterceptionLogic(schema: any[]) {
         const allDataChannels = new Map<string, any>()
         // Track current speaking state per device ID
         const speakingState = new Map<string, boolean>()
+        // Track last broadcasted speaker to avoid duplicate broadcasts
+        let lastBroadcastedSpeakerId: string | null = null
         // Track AbortControllers for audio processing loops (one per track)
         // Allows cancelling background processing when tracks end or are replaced
         const trackAbortControllers = new Map<string, AbortController>()
