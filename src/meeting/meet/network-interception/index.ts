@@ -20,9 +20,9 @@ export async function enableNetworkInterception(
     }) => void,
 ): Promise<boolean> {
     try {
-        // Expose the Node-side callback function that the browser can call
-        // The actual callback update mechanism is handled via _setNodeNetworkCallback
-        // which directly calls window.triggerNetworkBroadcast() in the browser
+        // Expose the Node-side callback to the browser via Playwright's exposeFunction
+        // When browser-bundle.ts calls window.onNetworkSpeakerUpdate(), it crosses to Node-side
+        // The callback can be updated later via _setNodeNetworkCallback (see meet.ts)
         await page.exposeFunction('onNetworkSpeakerUpdate', onSpeakersChange)
     } catch (error) {
         console.error(
