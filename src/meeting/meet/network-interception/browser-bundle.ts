@@ -451,6 +451,7 @@ export function browserInterceptionLogic(schema: any[]) {
                                         // No contributing sources - clear speaking state if set
                                         if (speakingState.size > 0) {
                                             speakingState.clear()
+                                            broadcastSpeakerUpdate(userManager, null, 0, 'audio')
                                         }
                                     }
                                 }
