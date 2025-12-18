@@ -12,14 +12,14 @@
         "playwright"
     ],
     "engines": {
-        "node": ">= 18.0.0 <=20"
+        "node": ">= 18.0.0 <=22"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.873.0",
         "@aws-sdk/lib-storage": "^3.873.0",
         "@playwright/test": "^1.53.0",
         "async": "^3.2.6",
-        "axios": "0.21.1",
+        "axios": "^1.7.9",
         "express": "4.17.1",
         "retry-axios": "^2.5.0",
         "tslib": "^2.8.1",
