@@ -127,6 +127,7 @@ export class Events {
                 method: 'POST',
                 url: this.webhookUrl,
                 timeout: 5000,
+                maxRedirects: 0, // Prevent 301/302 from converting POST to GET
                 headers: {
                     'User-Agent': 'meetingbaas/1.0',
                     'x-meeting-baas-api-key': this.apiKey,
