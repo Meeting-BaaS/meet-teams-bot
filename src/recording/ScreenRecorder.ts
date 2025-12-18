@@ -1236,6 +1236,9 @@ export class ScreenRecorder extends EventEmitter {
             `   Time diff: ${(this.meetingStartTime - this.recordingStartTime - FLASH_SCREEN_SLEEP_TIME) / 1000}s`,
         )
 
+        // Write start time header to network speaker log for diarization alignment
+        await this.writeNetworkSpeakerStartTime(this.meetingStartTime)
+
         // 4. Calculate audio padding needed (can be negative for trimming)
         const audioPadding =
             syncResult.videoTimestamp - syncResult.audioTimestamp
@@ -1617,6 +1620,31 @@ file '${absoluteInputPath}'`
         ]
         const result = await this.runFFprobe(args)
         return parseFloat(result.trim())
+    }
+
+    /**
+     * Prepends the meeting start time to the network speaker log file for diarization alignment.
+     */
+    private async writeNetworkSpeakerStartTime(meetingStartTime: number): Promise<void> {
+        try {
+            const logPath = PathManager.getInstance().getNetworkSpeakerLogPath()
+
+            if (!fs.existsSync(logPath)) {
+                console.log('[ScreenRecorder] Network speaker log file not found, skipping start time header')
+                return
+            }
+
+            const existingContent = fs.readFileSync(logPath, 'utf-8')
+            const startTimeHeader = JSON.stringify({
+                type: 'start_time',
+                meetingStartTime: meetingStartTime,
+            })
+
+            fs.writeFileSync(logPath, startTimeHeader + '\n' + existingContent)
+            console.log(`[ScreenRecorder] Wrote start time header to network speaker log: ${meetingStartTime}`)
+        } catch (error) {
+            console.error('[ScreenRecorder] Failed to write network speaker start time:', formatError(error))
+        }
     }
 
     private async cleanupTempFiles(filePaths: string[]): Promise<void> {
