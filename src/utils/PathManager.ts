@@ -70,6 +70,10 @@ export class PathManager {
         return path.join(this.getBasePath(), 'network_speaker_detection.log')
     }
 
+    public getNetworkSpeakerMetadataPath(): string {
+        return path.join(this.getBasePath(), 'network_speaker_metadata.log')
+    }
+
     public getSoundLogPath(): string {
         return path.join(this.getBasePath(), 'sound_levels.log')
     }

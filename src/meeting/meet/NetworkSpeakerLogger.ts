@@ -17,6 +17,7 @@ export class NetworkSpeakerLogger {
     private isActive: boolean = false
     private previousSpeakerState: Map<string, boolean> = new Map()
     private logFilePath: string
+    private metadataFilePath: string
     // Sequential ID manager (reuses shared implementation from speaker-id.ts)
     private sequentialIdManager = createSequentialIdManager()
     // Track which participant IDs have had metadata written
@@ -24,7 +25,7 @@ export class NetworkSpeakerLogger {
     private onSpeakersChange?: (speakers: EnhancedSpeakerData[]) => void
     // Throttle console logging (file writes still happen on every change)
     private lastConsoleLogTime: number = 0
-    private static readonly CONSOLE_LOG_INTERVAL_MS = 2000
+    private static readonly CONSOLE_LOG_INTERVAL_MS = 1000
 
     constructor(
         page: Page,
@@ -34,6 +35,7 @@ export class NetworkSpeakerLogger {
         this.page = page
         this.botName = botName
         this.logFilePath = PathManager.getInstance().getNetworkSpeakerLogPath()
+        this.metadataFilePath = PathManager.getInstance().getNetworkSpeakerMetadataPath()
         this.onSpeakersChange = onSpeakersChange
     }
 
@@ -86,6 +88,9 @@ export class NetworkSpeakerLogger {
                     (s: any) => !s.isCurrentUser && s.name !== this.botName,
                 )
 
+                // Debug: Log the raw isSpeaking values to find the bug
+                //console.log('[NetworkSpeakerLogger] DEBUG raw isSpeaking values:', filteredUsers.map((s: any) => ({ name: s.name, isSpeaking: s.isSpeaking, type: typeof s.isSpeaking })))
+
                 // Convert network speakers to EnhancedSpeakerData format with PII
                 const speakers: EnhancedSpeakerData[] = filteredUsers.map((s: any) => {
                     const stableId = generateStableUserId(s.fullName || s.name || 'Unknown', s.profilePicture)
@@ -94,7 +99,7 @@ export class NetworkSpeakerLogger {
                         name: s.name || 'Unknown',
                         id: sequentialId,
                         timestamp: payload.timestamp || Date.now(),
-                        isSpeaking: s.isSpeaking || false,
+                        isSpeaking: s.isSpeaking === true,
                         // PII fields
                         fullName: s.fullName,
                         displayName: s.displayName,
@@ -182,10 +187,10 @@ export class NetworkSpeakerLogger {
 
     private async writeLogToFile(speakers: EnhancedSpeakerData[]): Promise<void> {
         try {
-            // Batch all log entries into a single write operation
-            const logLines: string[] = []
+            const writePromises: Promise<void>[] = []
 
             // Collect metadata for new participants (with PII)
+            const metadataLines: string[] = []
             for (const speaker of speakers) {
                 if (!this.writtenMetadata.has(speaker.id)) {
                     const metadata = {
@@ -196,27 +201,25 @@ export class NetworkSpeakerLogger {
                         displayName: speaker.displayName,
                         profilePicture: speaker.profilePicture
                     }
-                    logLines.push(JSON.stringify(metadata))
+                    metadataLines.push(JSON.stringify(metadata))
                     this.writtenMetadata.add(speaker.id)
                 }
             }
-
-            // Add activity log (without PII)
-            const activityLog = {
-                type: 'activity',
-                timestamp: Date.now(),
-                users: speakers.map(s => ({
-                    id: s.id,
-                    name: s.name,
-                    isSpeaking: s.isSpeaking
-                }))
+            if (metadataLines.length > 0) {
+                writePromises.push(fs.appendFile(this.metadataFilePath, metadataLines.join('\n') + '\n'))
             }
-            logLines.push(JSON.stringify(activityLog))
 
-            // Single batched write operation
-            if (logLines.length > 0) {
-                await fs.appendFile(this.logFilePath, logLines.join('\n') + '\n')
-            }
+            // Prepare activity log (same format as speaker_separation.log)
+            const activityLog = speakers.map(s => ({
+                name: s.name,
+                id: s.id,
+                timestamp: s.timestamp,
+                isSpeaking: s.isSpeaking
+            }))
+            writePromises.push(fs.appendFile(this.logFilePath, JSON.stringify(activityLog) + '\n'))
+
+            // Write both files in parallel
+            await Promise.all(writePromises)
         } catch (error) {
             console.error(
                 '[NetworkSpeakerLogger] Cannot append network speaker log file:',
