@@ -22,8 +22,8 @@ export class Api {
         axios.defaults.baseURL = GLOBAL.get().remote.api_server_baseurl
         axios.defaults.withCredentials = true
         if (!GLOBAL.isServerless() && GLOBAL.get().user_token) {
-            axios.defaults.headers.common['Authorization'] =
-                GLOBAL.get().user_token
+            // axios v1.x: use headers directly instead of deprecated headers.common
+            axios.defaults.headers['Authorization'] = GLOBAL.get().user_token
         }
         axios.defaults.raxConfig = {
             instance: axios,
