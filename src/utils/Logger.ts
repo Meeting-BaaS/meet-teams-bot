@@ -211,6 +211,10 @@ export async function uploadLogsToS3(options: {
         const networkSpeakerLogPath = pathManager.getNetworkSpeakerLogPath()
         const s3NetworkSpeakerLogPath = `${logPath}/network_speaker_detection.log`
 
+        // Network speaker metadata file (PII - separate from activity logs)
+        const networkSpeakerMetadataPath = pathManager.getNetworkSpeakerMetadataPath()
+        const s3NetworkSpeakerMetadataPath = `${logPath}/network_speaker_metadata.log`
+
         // Screenshots directory
         const screenshotsPath = pathManager.getScreenshotsPath()
         const s3ScreenshotsPath = `${logPath}/screenshots`
@@ -223,6 +227,7 @@ export async function uploadLogsToS3(options: {
             soundLogPath,
             speakerLogPath,
             networkSpeakerLogPath,
+            networkSpeakerMetadataPath,
             screenshotsPath,
             htmlSnapshotsPath,
         })
@@ -257,6 +262,18 @@ export async function uploadLogsToS3(options: {
             console.log(
                 'No network speaker detection log file found at path:',
                 networkSpeakerLogPath,
+            )
+        }
+
+        // Upload network speaker metadata file
+        if (fs.existsSync(networkSpeakerMetadataPath)) {
+            logger.info(`Uploading network speaker metadata to S3...`)
+            await s3cp(networkSpeakerMetadataPath, s3NetworkSpeakerMetadataPath)
+            logger.info(`Network speaker metadata uploaded to S3`)
+        } else {
+            console.log(
+                'No network speaker metadata file found at path:',
+                networkSpeakerMetadataPath,
             )
         }
 
