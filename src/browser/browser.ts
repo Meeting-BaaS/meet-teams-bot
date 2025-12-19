@@ -1,5 +1,13 @@
-import { BrowserContext, chromium } from '@playwright/test'
+import { BrowserContext } from '@playwright/test'
+import { chromium } from 'playwright-extra'
+import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 import { formatError } from '../utils/Logger'
+
+// Apply stealth plugin to chromium - this handles most anti-detection automatically
+// Including: navigator.webdriver, plugins, languages, WebGL, etc.
+const stealth = StealthPlugin()
+chromium.use(stealth)
+console.log('🎭 Stealth plugin loaded with evasions:', stealth.enabledEvasions)
 
 export async function openBrowser(
     slowMo: boolean = false,
@@ -9,6 +17,8 @@ export async function openBrowser(
     const resolution = process.env.RESOLUTION || '720'
     const { width, height } =
         resolution === '1080' ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
+
+    console.log(`🎭 Stealth mode: viewport=${width}x${height}`)
 
     try {
         console.log('Launching persistent context with exact extension args...')
@@ -22,12 +32,20 @@ export async function openBrowser(
             viewport: { width, height },
             executablePath: chromePath,
             locale: 'en-US', // Set locale for Playwright context
+            // Note: userAgent is now handled by stealth plugin
             args: [
                 // Security configurations
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--lang=en-US', // Force English language with region code
                 '--accept-lang=en-US,en', // Accept English for HTTP requests
+
+                // ========================================
+                // STEALTH PLUGIN HANDLES MOST ANTI-DETECTION
+                // Keep minimal args to avoid conflicts
+                // ========================================
+                '--disable-dev-shm-usage', // Avoid /dev/shm issues in containers
+                `--window-size=${width},${height}`, // Match viewport to window size
 
                 // ========================================
                 // AUDIO CONFIGURATION FOR PULSEAUDIO
@@ -46,7 +64,6 @@ export async function openBrowser(
                 '--force-webrtc-ip-handling-policy=default', // Better WebRTC handling
 
                 // Performance and resource management optimizations
-                '--disable-blink-features=AutomationControlled',
                 '--disable-background-timer-throttling',
                 '--enable-features=SharedArrayBuffer',
                 '--memory-pressure-off', // Disable memory pressure handling for consistent performance
@@ -64,9 +81,6 @@ export async function openBrowser(
                 // Certificate and security optimizations for meeting platforms
                 '--ignore-certificate-errors',
                 '--allow-insecure-localhost',
-                '--disable-blink-features=TrustedDOMTypes',
-                '--disable-features=TrustedScriptTypes',
-                '--disable-features=TrustedHTML',
 
                 // Additional audio debugging (remove in production)
                 '--enable-logging=stderr',
