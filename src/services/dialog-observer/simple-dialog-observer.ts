@@ -159,6 +159,14 @@ export class SimpleDialogObserver {
             // IMPORTANT: Order matters! More specific patterns must come before generic ones
             // to avoid misidentification (e.g., transcription modal matching camera_permission)
             const modalPatterns = [
+                // People hover dialog (new UI Dec 2025) - dismiss with Escape
+                {
+                    name: 'people_hover_dialog',
+                    selector:
+                        'div[role="dialog"][aria-label*="people in the call" i]:has-text("People")',
+                    buttonTexts: [], // No buttons to click, just dismiss with Escape
+                    exitByEscape: true,
+                },
                 // Recording/transcription modals - MUST come first (they may contain "camera"/"microphone" text)
                 {
                     name: 'recording_notification',

@@ -674,9 +674,6 @@ export class MeetSpeakersObserver {
                                                 `[Meet-Browser] Reopening People panel with: ${selector}`,
                                             )
                                             button.click()
-                                            // Blur the button to dismiss any hover tooltip/dialog
-                                            // In the new UI, there's a hover card which stays in view for as long as the button is focused
-                                            button.blur()
                                             break
                                         }
                                     }
@@ -861,9 +858,6 @@ export class MeetSpeakersObserver {
                             `[Meet-Browser] Found people button with selector: ${selector}`,
                         )
                         button.click()
-                        // Blur the button to dismiss any hover tooltip/dialog
-                        // In the new UI, there's a hover card which stays in view for as long as the button is focused
-                        button.blur()
 
                         // Wait a bit and check if panel opened
                         setTimeout(() => {
