@@ -41,9 +41,15 @@ export class MeetProvider implements MeetingProviderInterface {
         streaming_input: string | undefined,
         attempts: number = 0,
     ): Promise<Page> {
-        try {
-            console.log('Creating new page in existing context...')
-            const page = await browserContext.newPage()
+        const MAX_BLOCK_RETRIES = 3
+
+        for (let blockRetry = 0; blockRetry <= MAX_BLOCK_RETRIES; blockRetry++) {
+            // Track if we see a 403 on ResolveMeetingSpace (server-side bot detection)
+            let wasBlocked = false
+
+            try {
+                console.log(`Creating new page in existing context... (block retry ${blockRetry}/${MAX_BLOCK_RETRIES})`)
+                const page = await browserContext.newPage()
 
             // Set up page logger IMMEDIATELY so we can see logs from injected scripts
             listenPage(page)
@@ -123,12 +129,67 @@ export class MeetProvider implements MeetingProviderInterface {
                 console.log('[Meet] ✅ Network interception configured successfully')
             }
 
+            // Log network requests/responses to understand server-side detection
+            let firstRequestLogged = false
+            page.on('request', (request) => {
+                const url = request.url()
+                if (url.includes('meet.google.com') && !firstRequestLogged) {
+                    firstRequestLogged = true
+                    const headers = request.headers()
+                    console.log(`[Network] REQUEST to ${url.substring(0, 80)}`)
+                    console.log(`[Network] User-Agent: ${headers['user-agent']?.substring(0, 100)}`)
+                    console.log(`[Network] Accept-Language: ${headers['accept-language']}`)
+                    console.log(`[Network] Sec-Ch-Ua: ${headers['sec-ch-ua']}`)
+                }
+            })
+
+            page.on('response', async (response) => {
+                const url = response.url()
+                if (url.includes('meet.google.com') && !url.includes('.js') && !url.includes('.css')) {
+                    const status = response.status()
+                    const headers = response.headers()
+                    console.log(`[Network] ${status} ${url.substring(0, 100)}`)
+                    if (headers['x-frame-options'] || headers['x-content-type-options']) {
+                        console.log(`[Network] Security headers present`)
+                    }
+                    // Log any redirect or error responses
+                    if (status >= 300) {
+                        console.log(`[Network] Response headers:`, JSON.stringify(headers, null, 2))
+                    }
+                    // Detect server-side bot blocking (403 on key API calls)
+                    if (status === 403 && (url.includes('ResolveMeetingSpace') || url.includes('ResolveTransientMeeting'))) {
+                        console.log(`🚫 [Network] Bot detected! 403 on ${url.substring(0, 80)}`)
+                        wasBlocked = true
+                    }
+                }
+            })
+
             console.log(`Navigating to ${link}...`)
             await page.goto(link, {
                 waitUntil: 'networkidle',
                 timeout: 30000,
             })
             console.log('Navigation completed')
+
+            // Check for "You can't join" text (UI-side bot detection)
+            const pageText = await page.evaluate(() => document.body.innerText || '').catch(() => '')
+            const blockedByUI = pageText.includes("You can't join this video call") || pageText.includes("You can't join")
+
+            if (wasBlocked || blockedByUI) {
+                console.log(`🚫 Bot detection triggered (API 403: ${wasBlocked}, UI block: ${blockedByUI})`)
+
+                if (blockRetry < MAX_BLOCK_RETRIES) {
+                    // Close this page and retry with exponential backoff
+                    const waitTime = Math.min(1000 * Math.pow(2, blockRetry), 8000) // 1s, 2s, 4s, 8s max
+                    console.log(`🔄 Retrying in ${waitTime}ms... (attempt ${blockRetry + 1}/${MAX_BLOCK_RETRIES})`)
+                    await page.close()
+                    await sleep(waitTime)
+                    continue // Try again with fresh page
+                } else {
+                    console.log(`❌ Max retries (${MAX_BLOCK_RETRIES}) exceeded - bot detection persists`)
+                    // Fall through to let normal flow handle the block message
+                }
+            }
 
             // Check for page freeze after goto (same as Teams)
             let pageFrozen = false
@@ -170,10 +231,23 @@ export class MeetProvider implements MeetingProviderInterface {
             }
 
             return page
-        } catch (error) {
-            console.error('openMeetingPage error:', formatError(error))
-            throw error
+            } catch (error) {
+                console.error(`openMeetingPage error (block retry ${blockRetry}):`, formatError(error))
+
+                // If we have retries left and it looks like a navigation error, retry
+                if (blockRetry < MAX_BLOCK_RETRIES) {
+                    const waitTime = Math.min(1000 * Math.pow(2, blockRetry), 8000)
+                    console.log(`🔄 Error during page load, retrying in ${waitTime}ms... (attempt ${blockRetry + 1}/${MAX_BLOCK_RETRIES})`)
+                    await sleep(waitTime)
+                    continue
+                }
+
+                throw error
+            }
         }
+
+        // This should never be reached, but TypeScript needs it
+        throw new Error('Failed to open meeting page after all retries')
     }
 
     async joinMeeting(

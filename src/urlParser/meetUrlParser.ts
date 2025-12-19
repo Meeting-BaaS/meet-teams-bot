@@ -37,8 +37,15 @@ export async function parseMeetingUrlFromJoinInfos(
         }
 
         // Reconstruct the URL in standard format
+        // Strip authuser param - it implies a logged-in account and may trigger detection
         const [, meetCode, queryParams = ''] = match
-        const standardUrl = `https://meet.google.com/${meetCode}${queryParams}`
+        let cleanQueryParams = queryParams
+        if (cleanQueryParams) {
+            const params = new URLSearchParams(cleanQueryParams.replace('?', ''))
+            params.delete('authuser') // Remove authuser param
+            cleanQueryParams = params.toString() ? `?${params.toString()}` : ''
+        }
+        const standardUrl = `https://meet.google.com/${meetCode}${cleanQueryParams}`
 
         return {
             meetingId: standardUrl,

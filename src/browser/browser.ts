@@ -1,13 +1,9 @@
-import { BrowserContext } from '@playwright/test'
-import { chromium } from 'playwright-extra'
-import StealthPlugin from 'puppeteer-extra-plugin-stealth'
+import { chromium, BrowserContext } from 'rebrowser-playwright'
 import { formatError } from '../utils/Logger'
 
-// Apply stealth plugin to chromium - this handles most anti-detection automatically
-// Including: navigator.webdriver, plugins, languages, WebGL, etc.
-const stealth = StealthPlugin()
-chromium.use(stealth)
-console.log('🎭 Stealth plugin loaded with evasions:', stealth.enabledEvasions)
+// rebrowser-playwright has anti-detection patches built-in
+// It patches the Runtime.enable leak that Cloudflare/DataDome use to detect automation
+console.log('🎭 Using rebrowser-playwright with anti-detection patches')
 
 export async function openBrowser(
     slowMo: boolean = false,
@@ -18,7 +14,7 @@ export async function openBrowser(
     const { width, height } =
         resolution === '1080' ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
 
-    console.log(`🎭 Stealth mode: viewport=${width}x${height}`)
+    console.log(`🎭 rebrowser-playwright mode: viewport=${width}x${height}`)
 
     try {
         console.log('Launching persistent context with exact extension args...')
@@ -43,8 +39,8 @@ export async function openBrowser(
             headless: false,
             viewport: { width, height },
             executablePath: chromePath,
-            locale: 'en-US', // Set locale for Playwright context
-            // Note: userAgent is now handled by stealth plugin
+            locale: 'en-US',
+            // Let rebrowser-playwright handle user agent and headers naturally
             args: [
                 // Security configurations
                 '--no-sandbox',
@@ -60,6 +56,9 @@ export async function openBrowser(
                 '--disable-gpu', // Avoid WebGL fingerprinting
                 '--use-fake-device-for-media-stream', // Chrome's built-in fake camera/mic (looks more legitimate)
                 '--use-fake-ui-for-media-stream', // Auto-grant media permissions without prompts
+                '--disable-blink-features=AutomationControlled', // Remove navigator.webdriver=true
+                '--disable-infobars', // Hide "Chrome is being controlled" infobar
+                '--disable-extensions', // Prevent extension fingerprinting
 
                 // ========================================
                 // AUDIO CONFIGURATION FOR PULSEAUDIO
@@ -109,7 +108,7 @@ export async function openBrowser(
             timeout: 120000,
         })
 
-        console.log('✅ Chromium launched with PulseAudio configuration')
+        console.log('✅ Chromium launched with rebrowser-playwright')
 
         // Optional: Inject Google cookies from environment variable
         // Set GOOGLE_COOKIES as JSON array: [{"name":"...", "value":"...", "domain":".google.com", ...}]
