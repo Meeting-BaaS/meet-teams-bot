@@ -393,6 +393,13 @@ async function findShowEveryOne(
                 try {
                     await buttons.first().click()
                     console.log('Successfully clicked People button')
+                    
+                    // Dismiss the hover dialog (new UI Dec 2025+)
+                    // The new badge-style People button shows a hover dialog that needs to be dismissed
+                    // Click on the page body to move focus away from the button
+                    await page.waitForTimeout(100) // Wait for dialog to appear
+                    await page.click('body', { position: { x: 10, y: 10 }, force: true })
+                    console.log('Clicked body to dismiss People hover dialog')
                 } catch (e) {
                     console.log('Failed to click People button:', e)
                     showEveryOneFound = false
