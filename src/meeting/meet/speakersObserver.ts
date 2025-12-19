@@ -639,7 +639,7 @@ export class MeetSpeakersObserver {
                                         "button[aria-label*='people' i]",
                                         "button[aria-label*='participants' i]",
                                         // NEW UI selectors (Dec 2025+) - Badge/hover tray style
-                                        "div[role='button'][aria-haspopup='dialog']", // New UI People button
+                                        "div[role='button'][aria-haspopup='dialog']", // New UI People button (needs text check)
                                     ]
 
                                     for (const selector of possibleSelectors) {
@@ -650,6 +650,26 @@ export class MeetSpeakersObserver {
                                             button &&
                                             button.offsetParent !== null
                                         ) {
+                                            // For the generic dialog button selector, verify it contains "People" text
+                                            if (
+                                                selector.includes(
+                                                    'aria-haspopup',
+                                                )
+                                            ) {
+                                                console.log(
+                                                    `[Meet-Browser] Found dialog button with text: "${button.textContent?.trim()}"`,
+                                                )
+                                                if (
+                                                    !button.textContent
+                                                        ?.toLowerCase()
+                                                        .includes('people')
+                                                ) {
+                                                    console.log(
+                                                        '[Meet-Browser] Skipping - not the People button',
+                                                    )
+                                                    continue // Skip if not the People button
+                                                }
+                                            }
                                             console.log(
                                                 `[Meet-Browser] Reopening People panel with: ${selector}`,
                                             )
@@ -808,8 +828,8 @@ export class MeetSpeakersObserver {
                     "button[aria-label*='participants' i]",
                     "button[title*='people' i]",
                     "button[title*='participants' i]",
-                    // NEW UI selectors (Dec 2025+)
-                    "div[role='button'][aria-haspopup='dialog']", // New badge/hover tray style button
+                    // NEW UI selectors (Dec 2025+) - Badge/hover tray style
+                    "div[role='button'][aria-haspopup='dialog']", // New UI People button (needs text check)
                 ]
 
                 for (const selector of possibleSelectors) {
@@ -817,6 +837,22 @@ export class MeetSpeakersObserver {
                         selector,
                     ) as HTMLElement
                     if (button && button.offsetParent !== null) {
+                        // For the generic dialog button selector, verify it contains "People" text
+                        if (selector.includes('aria-haspopup')) {
+                            console.log(
+                                `[Meet-Browser] Found dialog button with text: "${button.textContent?.trim()}"`,
+                            )
+                            if (
+                                !button.textContent
+                                    ?.toLowerCase()
+                                    .includes('people')
+                            ) {
+                                console.log(
+                                    '[Meet-Browser] Skipping - not the People button',
+                                )
+                                continue // Skip if not the People button
+                            }
+                        }
                         // Check if visible
                         console.log(
                             `[Meet-Browser] Found people button with selector: ${selector}`,
