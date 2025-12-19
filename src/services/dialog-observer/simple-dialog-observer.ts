@@ -151,50 +151,59 @@ export class SimpleDialogObserver {
         {
           name: "recording_notification",
           selector: 'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
-          buttonTexts: ["Join now"]
+          buttonTexts: ["Join now"],
+          exitByEscape: false
         },
         {
           name: "transcribe_notification",
           selector: 'div[role="dialog"]:has-text("video call is being transcribed"):has(button)',
-          buttonTexts: ["Join now"]
+          buttonTexts: ["Join now"],
+          exitByEscape: false
         },
         // Gemini/notes modal
         {
           name: "gemini_notification",
           selector: 'div[role="dialog"]:has-text("Gemini"):has-text("taking notes"):has(button)',
-          buttonTexts: ["Join now"]
+          buttonTexts: ["Join now"],
+          exitByEscape: false
         },
         // Privacy/notification modals
         {
           name: "privacy_notification",
           selector: 'div[role="dialog"]:has-text("Others may see"):has(button)',
-          buttonTexts: ["Got it", "OK", "Dismiss", "Close"]
+          buttonTexts: ["Got it", "OK", "Dismiss", "Close"],
+          exitByEscape: false
         },
         // Video privacy modals
         {
           name: "video_privacy",
           selector: 'div[role="dialog"]:has-text("video differently"):has(button)',
-          buttonTexts: ["Got it", "OK", "Continue"]
+          buttonTexts: ["Got it", "OK", "Continue"],
+          exitByEscape: false
         },
         // Background/feed modals
         {
           name: "background_feed",
           selector:
             'div[role="dialog"]:has-text("background"):has(button), div[role="dialog"]:has-text("feed"):has(button)',
-          buttonTexts: ["Got it", "OK", "Dismiss"]
+          buttonTexts: ["Got it", "OK", "Dismiss"],
+          exitByEscape: false
         },
         // Camera/microphone permission modals - after specific modals to avoid false positives
+        // These can be dismissed with Escape key if buttons are not found
         {
           name: "camera_permission",
           selector:
             'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
-          buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now"]
+          buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now"],
+          exitByEscape: true
         },
         // Generic dismiss modals (fallback)
         {
           name: "generic_dismiss",
           selector: 'div[role="dialog"]:has(button)',
-          buttonTexts: ["Join now", "Got it", "OK", "Dismiss", "Close", "Continue"]
+          buttonTexts: ["Join now", "Got it", "OK", "Dismiss", "Close", "Continue"],
+          exitByEscape: false
         }
       ]
 
@@ -219,7 +228,15 @@ export class SimpleDialogObserver {
           )
 
           // Try to dismiss the modal by clicking appropriate buttons
-          const dismissed = await this.tryDismissModal(modal, pattern.buttonTexts, timeouts)
+          let dismissed = await this.tryDismissModal(modal, pattern.buttonTexts, timeouts)
+
+          // If button click didn't work and exitByEscape is enabled, try Escape key
+          if (!dismissed && pattern.exitByEscape) {
+            console.info(
+              `[SimpleDialogObserver] Button click failed for ${pattern.name}, trying Escape key`
+            )
+            dismissed = await this.tryDismissWithEscape(page)
+          }
 
           if (dismissed) {
             await page.waitForTimeout(timeouts.PAGE_TIMEOUT)
@@ -250,6 +267,20 @@ export class SimpleDialogObserver {
         dismissed: false,
         modalType: "detection_error"
       }
+    }
+  }
+
+  /**
+   * Try to dismiss a modal by pressing the Escape key
+   */
+  private async tryDismissWithEscape(page: Page): Promise<boolean> {
+    try {
+      await page.keyboard.press("Escape")
+      console.info("[SimpleDialogObserver] Pressed Escape key to dismiss modal")
+      return true
+    } catch (error) {
+      console.warn(`[SimpleDialogObserver] Error pressing Escape key: ${error}`)
+      return false
     }
   }
 
