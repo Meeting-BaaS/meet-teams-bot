@@ -482,14 +482,17 @@ export class MeetSpeakersObserver {
                 const participantsList = document.querySelector("[aria-label='Participants']")
                 if (!participantsList) {
                   console.warn("[Meet-Browser] People panel closed! Trying to reopen...")
-                  // Try to reopen the panel
+                  // Try to reopen the panel with both OLD and NEW UI selectors
                   const possibleSelectors = [
+                    // OLD UI selectors (pre-Dec 2025)
                     "[aria-label='Show everyone']",
                     "[aria-label='People']",
                     "[data-tooltip='Show everyone']",
                     "[data-tooltip='People']",
                     "button[aria-label*='people' i]",
-                    "button[aria-label*='participants' i]"
+                    "button[aria-label*='participants' i]",
+                    // NEW UI selectors (Dec 2025+) - Badge/hover tray style
+                    "div[role='button'][aria-haspopup='dialog']" // New UI People button
                   ]
 
                   for (const selector of possibleSelectors) {
@@ -622,8 +625,9 @@ export class MeetSpeakersObserver {
 
         console.log("[Meet-Browser] People panel not open, trying to open it...")
 
-        // Try multiple selectors for the people button
+        // Try multiple selectors for the people button (OLD + NEW UI)
         const possibleSelectors = [
+          // OLD UI selectors (pre-Dec 2025)
           "[aria-label='Show everyone']",
           "[aria-label='People']",
           "[data-tooltip='Show everyone']",
@@ -631,7 +635,9 @@ export class MeetSpeakersObserver {
           "button[aria-label*='people' i]",
           "button[aria-label*='participants' i]",
           "button[title*='people' i]",
-          "button[title*='participants' i]"
+          "button[title*='participants' i]",
+          // NEW UI selectors (Dec 2025+)
+          "div[role='button'][aria-haspopup='dialog']" // New badge/hover tray style button
         ]
 
         for (const selector of possibleSelectors) {

@@ -312,12 +312,15 @@ async function findShowEveryOne(page: Page, click: boolean, cancelCheck: () => b
         console.log("Successfully confirmed we are in the meeting")
       }
 
-      // Chercher le bouton People comme avant
+      // Search for People button with multiple selectors (OLD + NEW Meet UI)
       const buttons = page.locator(
         [
+          // OLD UI selectors (pre-Dec 2025)
           'nav button[aria-label="People"][role="button"]',
           'nav button[aria-label="Show everyone"][role="button"]',
-          'nav button[data-panel-id="1"][role="button"]'
+          'nav button[data-panel-id="1"][role="button"]',
+          // NEW UI selectors (Dec 2025+) - Badge/hover tray style People button
+          'div[role="button"][aria-haspopup="dialog"]:has(span:text("People"))'
         ].join(", ")
       )
 
