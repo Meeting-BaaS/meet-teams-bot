@@ -186,6 +186,19 @@ export class MeetProvider implements MeetingProviderInterface {
             const htmlSnapshot = HtmlSnapshotService.getInstance()
             await htmlSnapshot.captureSnapshot(page, 'meet_join_meeting_start')
 
+            // Wait for Google's "Getting ready..." phase to complete
+            // Google does server-side bot detection during this phase
+            console.log('⏳ Waiting for page to be ready (up to 10s)...')
+            try {
+                await page.waitForFunction(
+                    () => !document.body.innerText.includes('Getting ready'),
+                    { timeout: 10000 }
+                )
+                console.log('✅ Page ready')
+            } catch {
+                console.log('⚠️ Timeout waiting for "Getting ready" to disappear, continuing...')
+            }
+
             await clickDismiss(page)
             await sleep(300)
 

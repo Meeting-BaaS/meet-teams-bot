@@ -27,7 +27,19 @@ export async function openBrowser(
         const chromePath = process.env.CHROME_PATH || '/usr/bin/google-chrome'
         console.log(`🔍 Using Chrome path: ${chromePath}`)
 
-        const context = await chromium.launchPersistentContext('', {
+        // Use a persistent profile directory - real users have browser history/cookies
+        // Options:
+        //   1. Set CHROME_PROFILE_DIR to your real Chrome profile (e.g., ~/.config/google-chrome/Default)
+        //   2. Set CHROME_PROFILE_DIR to a directory where you've manually signed into Google
+        //   3. Leave empty for fresh profile (will likely be detected as bot)
+        const profileDir = process.env.CHROME_PROFILE_DIR || ''
+        if (profileDir) {
+            console.log(`🎭 Using persistent profile: ${profileDir}`)
+        } else {
+            console.log(`⚠️ No CHROME_PROFILE_DIR set - using fresh profile (may be detected as bot)`)
+        }
+
+        const context = await chromium.launchPersistentContext(profileDir, {
             headless: false,
             viewport: { width, height },
             executablePath: chromePath,
@@ -41,11 +53,13 @@ export async function openBrowser(
                 '--accept-lang=en-US,en', // Accept English for HTTP requests
 
                 // ========================================
-                // STEALTH PLUGIN HANDLES MOST ANTI-DETECTION
-                // Keep minimal args to avoid conflicts
+                // ANTI-DETECTION (from attendee-labs approach)
                 // ========================================
                 '--disable-dev-shm-usage', // Avoid /dev/shm issues in containers
                 `--window-size=${width},${height}`, // Match viewport to window size
+                '--disable-gpu', // Avoid WebGL fingerprinting
+                '--use-fake-device-for-media-stream', // Chrome's built-in fake camera/mic (looks more legitimate)
+                '--use-fake-ui-for-media-stream', // Auto-grant media permissions without prompts
 
                 // ========================================
                 // AUDIO CONFIGURATION FOR PULSEAUDIO
@@ -96,6 +110,20 @@ export async function openBrowser(
         })
 
         console.log('✅ Chromium launched with PulseAudio configuration')
+
+        // Optional: Inject Google cookies from environment variable
+        // Set GOOGLE_COOKIES as JSON array: [{"name":"...", "value":"...", "domain":".google.com", ...}]
+        const cookiesJson = process.env.GOOGLE_COOKIES
+        if (cookiesJson) {
+            try {
+                const cookies = JSON.parse(cookiesJson)
+                await context.addCookies(cookies)
+                console.log(`🍪 Injected ${cookies.length} cookies from GOOGLE_COOKIES`)
+            } catch (e) {
+                console.error('❌ Failed to parse/inject GOOGLE_COOKIES:', e)
+            }
+        }
+
         return { browser: context }
     } catch (error) {
         console.error('Failed to open browser:', formatError(error))
