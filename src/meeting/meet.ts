@@ -548,6 +548,13 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
                 denialPattern.reason,
                 `${denialPattern.errorMessage} - Found text: "${result.matchedText}"`,
             )
+            
+            // NEW: Set retry flag for specific Google Meet anti-bot error
+            if (result.matchedText === "You can't join this video call") {
+                GLOBAL.setShouldRetry(true)
+                console.log('🔄 Google Meet anti-bot detection - marking for retry')
+            }
+            
             return true
         }
 

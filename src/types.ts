@@ -96,6 +96,8 @@ export type MeetingParams = {
     secret?: string
     start_time?: number
     exit_time?: number
+    // Number of retry attempts (0 = first, max 2)
+    retry_count?: number
 }
 
 export type StopRecordParams = {

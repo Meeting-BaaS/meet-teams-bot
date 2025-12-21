@@ -12,6 +12,7 @@ class Global {
     private lastSilenceStart: number | null = null // Timestamp when silence started (ms)
     private soundDetectedInMeeting: boolean = false // True if sound was detected during meeting
     private recordingStartTime: number = 0 // Timestamp when FFmpeg recording started (ms)
+    private shouldRetry: boolean = false // Retry flag
     public constructor() {}
 
     /**
@@ -198,6 +199,25 @@ class Global {
 
     public getRecordingStartTime(): number {
         return this.recordingStartTime
+    }
+
+    // Retry flag methods
+    public setShouldRetry(value: boolean): void {
+        this.shouldRetry = value
+        if (value) {
+            console.log('🔄 Marking error as retryable')
+        }
+    }
+
+    public getShouldRetry(): boolean {
+        return this.shouldRetry
+    }
+
+    public getRetryCount(): number {
+        if (this.meetingParams === null) {
+            return 0
+        }
+        return this.meetingParams.retry_count ?? 0
     }
 }
 
