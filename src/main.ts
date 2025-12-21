@@ -16,6 +16,7 @@ import {
     buildRetryMessage,
     requeueToSQS,
     formatRetryErrorMessage,
+    MAX_RETRY_COUNT,
 } from './utils/retry-handler'
 
 import { getErrorMessageFromCode } from './state-machine/types'
@@ -114,7 +115,7 @@ async function handleFailedRecording(): Promise<void> {
     console.log(`Recording failed with reason: ${endReason || 'Unknown'}`)
     console.log(`Error message: ${originalErrorMessage || 'None'}`)
     console.log(`Should retry: ${GLOBAL.getShouldRetry()}`)
-    console.log(`Current retry count: ${currentRetryCount}/${2}`)
+    console.log(`Current retry count: ${currentRetryCount}/${MAX_RETRY_COUNT}`)
 
     // Early return for serverless mode - no SQS retry available
     if (GLOBAL.isServerless()) {
@@ -134,7 +135,7 @@ async function handleFailedRecording(): Promise<void> {
 
     if (shouldRetry) {
         console.log(
-            `🔄 Error marked as retryable - attempting retry ${currentRetryCount + 1}/${2}`
+            `🔄 Error marked as retryable - attempting retry ${currentRetryCount + 1}/${MAX_RETRY_COUNT}`
         )
 
         try {
@@ -165,7 +166,7 @@ async function handleFailedRecording(): Promise<void> {
     } else {
         if (GLOBAL.getShouldRetry()) {
             console.log(
-                `🚫 Maximum retry attempts reached (${currentRetryCount}/${2}) - reporting failure`
+                `🚫 Maximum retry attempts reached (${currentRetryCount}/${MAX_RETRY_COUNT}) - reporting failure`
             )
         } else {
             console.log(`🚫 Error not retryable - reporting failure immediately`)

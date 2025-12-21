@@ -1,7 +1,7 @@
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import { GLOBAL } from '../singleton'
 
-const MAX_RETRY_COUNT = 2
+export const MAX_RETRY_COUNT = 2
 
 /**
  * Creates SQS client with same credential logic as smart-rabbit
@@ -63,6 +63,7 @@ export function buildRetryMessage(): any {
         enter_message: params.enter_message ?? null,
         bots_webhook_url: params.bots_webhook_url ?? '',
         bot_uuid: params.bot_uuid,
+        // Zoom-specific fields excluded from retry - not used by recording server
         zoom_access_token_url: null,
         speech_to_text_provider: params.speech_to_text_provider ?? null,
         speech_to_text_api_key: params.speech_to_text_api_key ?? null,
@@ -74,6 +75,7 @@ export function buildRetryMessage(): any {
         automatic_leave: params.automatic_leave ?? null,
         mp4_s3_path: params.mp4_s3_path,
         secret: params.secret ?? '',
+        // Zoom SDK credentials excluded from retry - not used by recording server
         zoom_sdk_id: null,
         zoom_sdk_pwd: null,
         transcription_custom_parameters: null,
