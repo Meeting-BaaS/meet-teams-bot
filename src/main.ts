@@ -17,6 +17,13 @@ import {
 } from "./utils/Logger"
 import { BotMessageSchema } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
+import {
+  buildRetryMessage,
+  formatRetryErrorMessage,
+  MAX_RETRY_COUNT,
+  requeueToSQS,
+  shouldAttemptRetry
+} from "./utils/retry-handler"
 
 // Setup console logger first to ensure proper formatting
 setupConsoleLogger()
@@ -86,21 +93,68 @@ async function handleSuccessfulRecording(): Promise<void> {
 async function handleFailedRecording(): Promise<void> {
   console.error("Recording did not complete successfully")
 
-  // Log the end reason for debugging
   const endReason = GLOBAL.getEndReason()
-  console.log(`Recording failed with reason: ${endReason || "Unknown"}`)
+  const originalErrorMessage = GLOBAL.getErrorMessage()
+  const currentRetryCount = GLOBAL.getRetryCount()
 
-  // Send failure webhook to user before sending to backend
+  console.log(`Recording failed with reason: ${endReason || "Unknown"}`)
+  console.log(`Error message: ${originalErrorMessage || "None"}`)
+  console.log(`Should retry: ${GLOBAL.getShouldRetry()}`)
+  console.log(`Current retry count: ${currentRetryCount}/${MAX_RETRY_COUNT}`)
+
+  // Early return for serverless mode - no SQS retry available
+  if (GLOBAL.isServerless()) {
+    console.log("🚫 Serverless mode - skipping retry logic")
+    return
+  }
+
+  // Check if we should retry instead of failing permanently
+  const shouldRetry = shouldAttemptRetry(currentRetryCount)
+
+  if (shouldRetry) {
+    console.log(
+      `🔄 Error marked as retryable - attempting retry ${currentRetryCount + 1}/${MAX_RETRY_COUNT}`
+    )
+
+    try {
+      // Build and send retry message to SQS
+      const retryMessage = buildRetryMessage()
+      await requeueToSQS(retryMessage)
+
+      // Send webhook with retry indication
+      const retryErrorMessage = formatRetryErrorMessage(
+        originalErrorMessage || "Recording failed",
+        currentRetryCount
+      )
+      await Events.recordingFailed(retryErrorMessage)
+
+      console.log("✅ Job requeued successfully - exiting without calling backend")
+      // Exit cleanly - new pod will handle retry
+      return
+    } catch (error) {
+      console.error("❌ Failed to requeue message:", formatError(error))
+      console.log("⚠️ Falling back to normal failure flow")
+      // Fall through to normal failure handling
+    }
+  } else {
+    if (GLOBAL.getShouldRetry()) {
+      console.log(
+        `🚫 Maximum retry attempts reached (${currentRetryCount}/${MAX_RETRY_COUNT}) - reporting failure`
+      )
+    } else {
+      console.log("🚫 Error not retryable - reporting failure immediately")
+    }
+  }
+
+  // Normal failure handling (original code)
   const errorMessage =
-    (GLOBAL.hasError() && GLOBAL.getErrorMessage()) ||
+    originalErrorMessage ||
     (endReason ? getErrorMessageFromCode(endReason) : "Recording did not complete successfully")
 
-  // Send failure webhook - Waits for completion to ensure status history order is correct
   await Events.recordingFailed(errorMessage)
 
   console.log("📤 Sending error to backend")
 
-  // Notify backend of recording failure (function deduces errorCode and message automatically)
   if (!GLOBAL.isServerless() && Api.instance) {
     await Api.instance.notifyRecordingFailure()
   }
@@ -156,26 +210,10 @@ async function handleFailedRecording(): Promise<void> {
     }
   } catch (error) {
     // Handle explicit errors from state machine
-    console.error("Meeting failed:", error instanceof Error ? error.message : error)
+    console.error("Meeting failed:", formatError(error))
 
-    // Use global error if available, otherwise fallback to error message
-    const errorMessage = GLOBAL.hasError()
-      ? GLOBAL.getErrorMessage() || "Unknown error"
-      : error instanceof Error
-        ? error.message
-        : "Recording failed to complete"
-
-    // Send failure webhook to user before sending to backend
-    await Events.recordingFailed(errorMessage)
-
-    console.log(`📤 Sending error to backend: ${errorMessage}`)
-
-    // Notify backend of recording failure
-    if (!GLOBAL.isServerless() && Api.instance) {
-      await Api.instance.notifyRecordingFailure()
-    }
-
-    console.log("✅ Error sent to backend successfully")
+    // Delegate to handleFailedRecording which includes retry logic
+    await handleFailedRecording()
   } finally {
     if (!GLOBAL.isServerless()) {
       try {
