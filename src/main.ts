@@ -259,24 +259,8 @@ async function handleFailedRecording(): Promise<void> {
             error instanceof Error ? error.message : error,
         )
 
-        // Use global error if available, otherwise fallback to error message
-        const errorMessage = GLOBAL.hasError()
-            ? GLOBAL.getErrorMessage() || 'Unknown error'
-            : error instanceof Error
-              ? error.message
-              : 'Recording failed to complete'
-
-        // Send failure webhook to user before sending to backend
-        await Events.recordingFailed(errorMessage)
-
-        console.log(`📤 Sending error to backend: ${errorMessage}`)
-
-        // Notify backend of recording failure
-        if (!GLOBAL.isServerless() && Api.instance) {
-            await Api.instance.notifyRecordingFailure()
-        }
-
-        console.log(`✅ Error sent to backend successfully`)
+        // Delegate to handleFailedRecording which includes retry logic
+        await handleFailedRecording()
     } finally {
         if (!GLOBAL.isServerless()) {
             try {
