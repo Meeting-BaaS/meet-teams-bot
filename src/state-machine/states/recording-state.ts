@@ -11,6 +11,9 @@ import { BaseState } from "./base-state"
 // Sound level threshold for considering activity (0-100)
 const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
 
+// Timeout for bot removal check - must be >= inner timeout in provider.findEndMeeting (20s for Teams)
+const BOT_REMOVAL_CHECK_TIMEOUT_MS = 25000
+
 export class RecordingState extends BaseState {
   private isProcessing = true
   private readonly CHECK_INTERVAL = 250
@@ -167,7 +170,10 @@ export class RecordingState extends BaseState {
       const botRemovedResult = await Promise.race([
         this.checkBotRemoved(),
         new Promise<boolean>((_, reject) =>
-          setTimeout(() => reject(new Error("Bot removed check timeout")), 10000)
+          setTimeout(
+            () => reject(new Error("Bot removed check timeout")),
+            BOT_REMOVAL_CHECK_TIMEOUT_MS
+          )
         )
       ])
 
@@ -235,11 +241,23 @@ export class RecordingState extends BaseState {
     } catch (error) {
       console.error("Error checking end conditions:", formatError(error))
 
-      // If it's a timeout checking bot removal, the page is likely frozen/unresponsive
-      // This is a strong indicator that the bot was actually removed
+      // If it's a timeout checking bot removal, verify with secondary check
       const errorMessage = error instanceof Error ? error.message : String(error)
       if (errorMessage.includes("Bot removed check timeout")) {
-        console.warn("Bot removal check timed out - treating as bot removal")
+        // Secondary check: if we've received speaker callbacks recently,
+        // the page is still responsive - don't treat as bot removal
+        const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
+
+        if (lastCallbackTime && Date.now() - lastCallbackTime < BOT_REMOVAL_CHECK_TIMEOUT_MS) {
+          console.warn(
+            `Bot removal check timed out, but received speaker callback ${Date.now() - lastCallbackTime}ms ago - page still responsive, not treating as bot removal`
+          )
+          return { shouldEnd: false }
+        }
+
+        console.warn(
+          "Bot removal check timed out and no recent speaker callbacks - treating as bot removal"
+        )
         return this.getBotRemovedReason()
       }
 
