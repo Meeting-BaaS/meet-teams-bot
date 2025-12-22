@@ -14,8 +14,17 @@ export class SpeakerManager {
     private currentSpeaker: SpeakerData | null = null
     private readonly PAUSE_BETWEEN_SENTENCES = 1000 // 1 second
     private lastSpeakerTime: number | null = null
+    private lastCallbackTime: number | null = null // Track when we last received ANY callback
 
     private constructor() {}
+
+    /**
+     * Get the last time we received a speaker callback (regardless of speaking state)
+     * Used to verify the page is still responsive before declaring bot removal
+     */
+    public getLastCallbackTime(): number | null {
+        return this.lastCallbackTime
+    }
 
     public static getInstance(): SpeakerManager {
         if (!SpeakerManager.instance) {
@@ -34,6 +43,9 @@ export class SpeakerManager {
 
     public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
         try {
+            // Track when we received this callback (for bot removal detection)
+            this.lastCallbackTime = Date.now()
+
             // Send the speaker state to the streaming service only if RECORDING is enabled
             if (Streaming.instance) {
                 Streaming.instance.send_speaker_state(speakers)
