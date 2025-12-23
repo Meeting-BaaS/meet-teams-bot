@@ -1,6 +1,7 @@
 import { Events } from "../../events"
 import { type AudioWarningEvent, ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
+import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
 import { sleep } from "../../utils/sleep"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
