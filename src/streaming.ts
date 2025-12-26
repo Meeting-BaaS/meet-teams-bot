@@ -3,7 +3,9 @@ import { Readable } from "node:stream"
 import { type RawData, WebSocket } from "ws"
 
 import { SoundContext } from "./media_context"
+import { StreamingTranscription } from "./streaming-transcription"
 import type { SpeakerData } from "./types"
+import type { StreamingTranscriptionConfig } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
 
 const DEFAULT_SAMPLE_RATE: number = 24_000
@@ -11,6 +13,7 @@ const DEFAULT_SAMPLE_RATE: number = 24_000
 /**
  * Simplified Streaming class - Chrome Extension WebSocket logic removed
  * Now uses direct audio processing via processAudioChunk() from ScreenRecorder
+ * Supports real-time transcription via VoiceRouter SDK
  */
 export class Streaming {
   public static instance: Streaming | null = null
@@ -24,6 +27,10 @@ export class Streaming {
   private inputUrl: string | undefined
   private outputUrl: string | undefined
   private botId: string
+
+  // Real-time transcription
+  private streamingTranscription: StreamingTranscription | null = null
+  private transcriptionConfig: StreamingTranscriptionConfig | null = null
 
   // Streaming state management
   private isInitialized = false
@@ -46,11 +53,13 @@ export class Streaming {
     input: string | undefined,
     output: string | undefined,
     sample_rate: number | undefined,
-    bot_id: string
+    bot_id: string,
+    transcriptionConfig?: StreamingTranscriptionConfig | null
   ) {
     this.inputUrl = input
     this.outputUrl = output
     this.botId = bot_id
+    this.transcriptionConfig = transcriptionConfig ?? null
 
     if (sample_rate) {
       this.sample_rate = sample_rate
@@ -85,10 +94,37 @@ export class Streaming {
       this.setupExternalInputWS()
     }
 
+    // Setup real-time transcription if configured
+    if (this.transcriptionConfig) {
+      this.setupStreamingTranscription()
+    }
+
     this.isInitialized = true
     this.isPaused = false
 
     console.log("✅ Streaming service ready for direct audio processing")
+  }
+
+  /**
+   * Setup real-time transcription streaming via VoiceRouter SDK
+   */
+  private setupStreamingTranscription(): void {
+    if (!this.transcriptionConfig) return
+
+    try {
+      this.streamingTranscription = new StreamingTranscription(
+        this.transcriptionConfig,
+        this.botId
+      )
+
+      // Start transcription asynchronously
+      this.streamingTranscription.start().catch((error) => {
+        console.error("Failed to start streaming transcription:", error)
+        this.streamingTranscription = null
+      })
+    } catch (error) {
+      console.error("Failed to create StreamingTranscription:", error)
+    }
   }
 
   /**
@@ -130,6 +166,18 @@ export class Streaming {
 
     // Forward to external output service if connected
     this.forwardToExternalService(audioData)
+
+    // Forward to real-time transcription if configured
+    this.forwardToTranscription(audioData)
+  }
+
+  /**
+   * Forward audio to real-time transcription service
+   */
+  private forwardToTranscription(audioData: Float32Array): void {
+    if (this.streamingTranscription?.isActive()) {
+      this.streamingTranscription.processAudioChunk(audioData)
+    }
   }
 
   /**
@@ -245,6 +293,14 @@ export class Streaming {
     }
 
     console.log("🛑 Stopping simplified streaming service...")
+
+    // Stop streaming transcription if active
+    if (this.streamingTranscription) {
+      this.streamingTranscription.stop().catch((error) => {
+        console.error("Error stopping streaming transcription:", error)
+      })
+      this.streamingTranscription = null
+    }
 
     // Close external WebSockets only
     this.closeExternalWebSockets()
