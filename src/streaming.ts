@@ -4,7 +4,8 @@ import { Readable } from 'stream'
 import { RawData, WebSocket } from 'ws'
 
 import { SoundContext } from './media_context'
-import { SpeakerData } from './types'
+import { StreamingTranscription } from './streaming-transcription'
+import { SpeakerData, StreamingTranscriptionConfig } from './types'
 import { PathManager } from './utils/PathManager'
 import { formatError } from './utils/Logger'
 
@@ -36,6 +37,10 @@ export class Streaming {
     private inputUrl: string | undefined
     private outputUrl: string | undefined
     private botId: string
+
+    // Real-time transcription
+    private streamingTranscription: StreamingTranscription | null = null
+    private transcriptionConfig: StreamingTranscriptionConfig | null = null
 
     // Streaming state management
     private isInitialized: boolean = false
@@ -73,10 +78,12 @@ export class Streaming {
         output: string | undefined,
         sample_rate: number | undefined,
         bot_id: string,
+        transcriptionConfig?: StreamingTranscriptionConfig | null,
     ) {
         this.inputUrl = input
         this.outputUrl = output
         this.botId = bot_id
+        this.transcriptionConfig = transcriptionConfig ?? null
 
         if (sample_rate) {
             this.sample_rate = sample_rate
@@ -87,6 +94,9 @@ export class Streaming {
         )
         if (this.debugAudioEnabled) {
             console.log('🐛 Debug audio file recording enabled (DEBUG_AUDIO=true)')
+        }
+        if (this.transcriptionConfig) {
+            console.log(`🎙️ Real-time transcription enabled with provider: ${this.transcriptionConfig.provider}`)
         }
 
         this.start()
@@ -118,10 +128,36 @@ export class Streaming {
             this.setupExternalInputWS()
         }
 
+        // Setup real-time transcription if configured
+        if (this.transcriptionConfig) {
+            this.setupStreamingTranscription()
+        }
+
         this.isInitialized = true
         this.isPaused = false
 
         console.log('✅ Streaming service ready for direct audio processing')
+    }
+
+    /**
+     * Setup real-time transcription streaming via VoiceRouter SDK
+     */
+    private setupStreamingTranscription(): void {
+        if (!this.transcriptionConfig) return
+
+        try {
+            this.streamingTranscription = new StreamingTranscription(
+                this.transcriptionConfig,
+                this.botId,
+            )
+
+            this.streamingTranscription.start().catch((error) => {
+                console.error('[Streaming] Failed to start transcription:', formatError(error))
+                this.streamingTranscription = null
+            })
+        } catch (error) {
+            console.error('[Streaming] Failed to create StreamingTranscription:', formatError(error))
+        }
     }
 
 
@@ -231,6 +267,11 @@ export class Streaming {
 
             // Write to debug file
             this.writeDebugAudioChunk(s16Array)
+        }
+
+        // Forward to real-time transcription if configured
+        if (this.streamingTranscription?.isActive()) {
+            this.streamingTranscription.processAudioChunk(s16Array)
         }
     }
 
@@ -444,6 +485,12 @@ export class Streaming {
         }
 
         console.log('🛑 Stopping simplified streaming service...')
+
+        // Stop streaming transcription if active
+        if (this.streamingTranscription) {
+            await this.streamingTranscription.stop()
+            this.streamingTranscription = null
+        }
 
         // Finalize debug audio file (wait for WAV header to be written)
         await this.finalizeDebugAudioFile()

@@ -2,6 +2,28 @@ import { BrowserContext, Page } from '@playwright/test'
 
 type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod'
 
+// Providers that support real-time streaming transcription
+export type StreamingTranscriptionProvider = 'gladia' | 'deepgram' | 'assemblyai'
+
+// Real-time streaming transcription configuration
+export interface StreamingTranscriptionConfig {
+    output_url: string
+    provider: StreamingTranscriptionProvider
+    api_key?: string | null
+    encoding?: string
+    sample_rate?: string
+    options?: {
+        interim_results?: boolean
+        language?: string | null
+        diarization?: boolean
+        word_timestamps?: boolean
+        punctuation?: boolean
+        profanity_filter?: boolean
+        custom_vocabulary?: string[] | null
+        endpointing_ms?: number | null
+    } | null
+}
+
 // Support both PascalCase and snake_case for recording_mode
 export type RecordingMode =
     | 'speaker_view'
@@ -59,6 +81,7 @@ export type MeetingParams = {
     streaming_input?: string
     streaming_output?: string
     streaming_audio_frequency?: number
+    streaming_transcription?: StreamingTranscriptionConfig | null
     bot_uuid: string
     enter_message?: string
     bots_api_key: string
