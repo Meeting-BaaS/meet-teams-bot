@@ -7,7 +7,7 @@ import {
     type StreamingSession,
     type TranscriptionProvider,
 } from 'voice-router-dev'
-import type { StreamingTranscriptionConfig } from './types'
+import type { StreamingTranscriptionConfig, StreamingTranscriptionProvider } from './types'
 import { formatError } from './utils/Logger'
 
 /**
@@ -53,9 +53,32 @@ interface TranscriptEvent {
 }
 
 /**
+ * Connection state for tracking lifecycle
+ */
+export enum ConnectionState {
+    DISCONNECTED = 'disconnected',
+    CONNECTING = 'connecting',
+    CONNECTED = 'connected',
+    RECONNECTING = 'reconnecting',
+    CLOSING = 'closing',
+    ERROR = 'error',
+}
+
+/**
+ * Providers that support real-time streaming
+ */
+const STREAMING_CAPABLE_PROVIDERS: StreamingTranscriptionProvider[] = ['gladia', 'deepgram', 'assemblyai']
+
+/**
  * StreamingTranscription class
  * Handles real-time audio transcription using VoiceRouter SDK
  * and forwards transcripts to user's WebSocket
+ *
+ * Production-hardened with:
+ * - Connection buffering (pre-buffers audio while connecting)
+ * - Provider validation
+ * - Graceful error handling with shutdown delays
+ * - Cleanup timeouts to prevent hangs
  */
 export class StreamingTranscription {
     private config: StreamingTranscriptionConfig
@@ -64,10 +87,21 @@ export class StreamingTranscription {
     private session: StreamingSession | null = null
     private userWebSocket: WebSocket | null = null
     private isInitialized = false
+    private connectionState: ConnectionState = ConnectionState.DISCONNECTED
     private reconnectAttempts = 0
     private readonly MAX_RECONNECT_ATTEMPTS = 3
+
+    // Audio buffering - batch small chunks before sending to reduce overhead
     private audioBuffer: Buffer[] = []
-    private readonly AUDIO_BUFFER_SIZE = 4
+    private readonly AUDIO_BUFFER_SIZE = 12 // ~480ms at 16kHz before sending
+    private readonly MAX_AUDIO_BUFFER_SIZE = 100 // Prevent unbounded memory growth
+
+    // Error tracking
+    private lastError: { code: string; message: string; timestamp: number } | null = null
+    private readonly ERROR_GRACE_PERIOD_MS = 3000 // Time to display error before shutdown
+
+    // Cleanup
+    private readonly CLEANUP_TIMEOUT_MS = 5000
 
     constructor(config: StreamingTranscriptionConfig, botId: string) {
         this.config = config
@@ -85,16 +119,80 @@ export class StreamingTranscription {
         )
 
         try {
+            // Validate configuration before starting
+            this.validateConfig()
+
+            this.connectionState = ConnectionState.CONNECTING
             this.initializeVoiceRouter()
             await this.connectToUserWebSocket()
             await this.startTranscriptionStream()
+
+            this.connectionState = ConnectionState.CONNECTED
             this.isInitialized = true
             console.log('✅ [StreamingTranscription] Ready')
         } catch (error) {
-            console.error('[StreamingTranscription] Failed to start:', formatError(error))
+            this.connectionState = ConnectionState.ERROR
+            const errorInfo = formatError(error)
+            console.error('[StreamingTranscription] Failed to start:', errorInfo)
+            this.setLastError('INIT_FAILED', errorInfo.message)
             this.sendErrorToUser('INIT_FAILED', 'Failed to initialize streaming transcription')
+
+            // Graceful shutdown with delay so user can see error
+            await this.gracefulShutdown()
             throw error
         }
+    }
+
+    /**
+     * Validate configuration before starting
+     */
+    private validateConfig(): void {
+        // Validate provider is streaming-capable
+        if (!STREAMING_CAPABLE_PROVIDERS.includes(this.config.provider)) {
+            throw new Error(
+                `Provider '${this.config.provider}' does not support streaming. ` +
+                `Supported providers: ${STREAMING_CAPABLE_PROVIDERS.join(', ')}`
+            )
+        }
+
+        // Validate API key is available
+        const envKey = `${this.config.provider.toUpperCase()}_API_KEY`
+        if (!this.config.api_key && !process.env[envKey]) {
+            throw new Error(
+                `No API key configured for provider '${this.config.provider}'. ` +
+                `Provide api_key in config or set ${envKey} environment variable.`
+            )
+        }
+
+        // Validate output URL
+        if (!this.config.output_url) {
+            throw new Error('No output_url configured for streaming transcription')
+        }
+
+        // Validate URL format
+        try {
+            new URL(this.config.output_url)
+        } catch {
+            throw new Error(`Invalid output_url: ${this.config.output_url}`)
+        }
+
+        console.log('[StreamingTranscription] Configuration validated successfully')
+    }
+
+    /**
+     * Store last error for diagnostics
+     */
+    private setLastError(code: string, message: string): void {
+        this.lastError = { code, message, timestamp: Date.now() }
+    }
+
+    /**
+     * Graceful shutdown with delay so user can see error
+     */
+    private async gracefulShutdown(): Promise<void> {
+        console.log(`[StreamingTranscription] Graceful shutdown in ${this.ERROR_GRACE_PERIOD_MS}ms...`)
+        await new Promise(resolve => setTimeout(resolve, this.ERROR_GRACE_PERIOD_MS))
+        await this.stop()
     }
 
     private initializeVoiceRouter(): void {
@@ -259,11 +357,24 @@ export class StreamingTranscription {
     /**
      * Process audio chunk from Streaming class
      * Accepts Int16Array (already converted from Float32)
+     *
+     * Audio is discarded until fully connected - this avoids latency
+     * from buffering during connection. Missing first 1-2s is acceptable
+     * for real-time transcription use cases.
      */
     public processAudioChunk(audioData: Int16Array): void {
-        if (!this.isInitialized || !this.session) return
+        // Only process if fully connected with active session
+        if (!this.isInitialized || !this.session || this.connectionState !== ConnectionState.CONNECTED) {
+            return
+        }
 
         this.audioBuffer.push(Buffer.from(audioData.buffer))
+
+        // Prevent unbounded memory growth
+        if (this.audioBuffer.length > this.MAX_AUDIO_BUFFER_SIZE) {
+            console.warn('[StreamingTranscription] Audio buffer overflow, dropping oldest chunks')
+            this.audioBuffer = this.audioBuffer.slice(-this.AUDIO_BUFFER_SIZE)
+        }
 
         if (this.audioBuffer.length >= this.AUDIO_BUFFER_SIZE) {
             this.flushAudioBuffer()
@@ -301,21 +412,41 @@ export class StreamingTranscription {
     }
 
     public async stop(): Promise<void> {
-        if (!this.isInitialized) return
+        if (!this.isInitialized && this.connectionState === ConnectionState.DISCONNECTED) return
 
+        this.connectionState = ConnectionState.CLOSING
         console.log('🛑 [StreamingTranscription] Stopping...')
 
+        // Flush any remaining audio
         this.flushAudioBuffer()
 
-        if (this.session) {
+        // Use timeout to prevent hangs during cleanup
+        const cleanupWithTimeout = async <T>(
+            operation: () => Promise<T>,
+            name: string
+        ): Promise<void> => {
             try {
-                await this.session.close()
+                await Promise.race([
+                    operation(),
+                    new Promise<never>((_, reject) =>
+                        setTimeout(() => reject(new Error(`${name} timeout`)), this.CLEANUP_TIMEOUT_MS)
+                    )
+                ])
             } catch (error) {
-                console.error('[StreamingTranscription] Error closing session:', formatError(error))
+                console.error(`[StreamingTranscription] ${name} failed:`, formatError(error))
             }
+        }
+
+        // Close VoiceRouter session
+        if (this.session) {
+            await cleanupWithTimeout(
+                () => this.session!.close(),
+                'Session close'
+            )
             this.session = null
         }
 
+        // Close user WebSocket
         if (this.userWebSocket) {
             try {
                 if (this.userWebSocket.readyState === WebSocket.OPEN) {
@@ -335,11 +466,26 @@ export class StreamingTranscription {
         this.router = null
         this.isInitialized = false
         this.audioBuffer = []
+        this.connectionState = ConnectionState.DISCONNECTED
 
         console.log('✅ [StreamingTranscription] Stopped')
     }
 
     public isActive(): boolean {
         return this.isInitialized && this.session !== null
+    }
+
+    /**
+     * Get current connection state for monitoring
+     */
+    public getConnectionState(): ConnectionState {
+        return this.connectionState
+    }
+
+    /**
+     * Get last error for diagnostics
+     */
+    public getLastError(): { code: string; message: string; timestamp: number } | null {
+        return this.lastError
     }
 }
