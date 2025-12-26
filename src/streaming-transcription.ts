@@ -255,7 +255,7 @@ export class StreamingTranscription {
                     if (this.userWebSocket?.readyState !== WebSocket.OPEN) {
                         reject(new Error('WebSocket connection timeout'))
                     }
-                }, 10000)
+                }, this.config.websocket_timeout_ms || 10000)
             } catch (error) {
                 reject(error)
             }
@@ -268,7 +268,9 @@ export class StreamingTranscription {
             console.log(
                 `[StreamingTranscription] Reconnecting (${this.reconnectAttempts}/${this.MAX_RECONNECT_ATTEMPTS})`,
             )
-            await new Promise((resolve) => setTimeout(resolve, 1000 * this.reconnectAttempts))
+            // Exponential backoff: 1s, 2s, 4s, capped at 60s
+            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 60000)
+            await new Promise((resolve) => setTimeout(resolve, delay))
             try {
                 await this.connectToUserWebSocket()
                 this.reconnectAttempts = 0
@@ -285,7 +287,7 @@ export class StreamingTranscription {
 
         const options = this.config.options
         const encoding = this.config.encoding || 'linear16'
-        const sampleRate = parseInt(this.config.sample_rate || '16000', 10)
+        const sampleRate = this.config.sample_rate || 16000
 
         const streamingOptions = {
             encoding,
@@ -393,11 +395,16 @@ export class StreamingTranscription {
     }
 
     private sendToUser(event: TranscriptEvent): void {
+        // Only send if WebSocket is fully open
         if (this.userWebSocket?.readyState === WebSocket.OPEN) {
             try {
                 this.userWebSocket.send(JSON.stringify(event))
             } catch (error) {
-                console.error('[StreamingTranscription] Failed to send to user:', formatError(error))
+                // Only log errors if not closing - avoids noise during graceful shutdown
+                if (this.userWebSocket.readyState !== WebSocket.CLOSING &&
+                    this.userWebSocket.readyState !== WebSocket.CLOSED) {
+                    console.error('[StreamingTranscription] Failed to send to user:', formatError(error))
+                }
             }
         }
     }

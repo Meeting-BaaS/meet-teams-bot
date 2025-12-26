@@ -11,7 +11,8 @@ export interface StreamingTranscriptionConfig {
     provider: StreamingTranscriptionProvider
     api_key?: string | null
     encoding?: string
-    sample_rate?: string
+    sample_rate?: number
+    websocket_timeout_ms?: number
     options?: {
         interim_results?: boolean
         language?: string | null

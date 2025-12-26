@@ -151,7 +151,9 @@ export class Streaming {
                 this.botId,
             )
 
-            this.streamingTranscription.start().catch((error) => {
+            // Start asynchronously but don't block the main flow
+            // The isActive() guard in processAndSendAudioChunk protects against race conditions
+            void this.streamingTranscription.start().catch((error) => {
                 console.error('[Streaming] Failed to start transcription:', formatError(error))
                 this.streamingTranscription = null
             })
