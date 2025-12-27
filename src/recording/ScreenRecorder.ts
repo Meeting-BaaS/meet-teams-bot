@@ -1254,6 +1254,10 @@ export class ScreenRecorder extends EventEmitter {
     // 1. Calculate sync offset (using your existing calculation)
     const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath)
     console.log(`🎯 Calculated sync offset: ${syncResult.offsetSeconds.toFixed(3)}s`)
+
+    // 3. Write network speaker start time header (for diarization alignment)
+    await this.writeNetworkSpeakerStartTime(this.meetingStartTime)
+
     const hasMeetingStartTime = this.meetingStartTime > 0
 
     // 2. Check if meetingStartTime is properly set - if not, bot was not accepted
@@ -1630,6 +1634,33 @@ file '${absoluteInputPath}'`
     //         console.log(`🗑️ Cleaned up: ${path.basename(filePath)}`)
     //     }
     // }
+  }
+
+  /**
+   * Write the meeting start time header to the network speaker log file.
+   * This allows post-processing tools to align network-detected speaker activity
+   * with the actual meeting timeline for diarization purposes.
+   */
+  private async writeNetworkSpeakerStartTime(meetingStartTime: number): Promise<void> {
+    try {
+      const logPath = PathManager.getInstance().getNetworkSpeakerLogPath()
+
+      if (!fs.existsSync(logPath)) {
+        console.log("[ScreenRecorder] Network speaker log file not found, skipping start time header")
+        return
+      }
+
+      const existingContent = fs.readFileSync(logPath, "utf-8")
+      const startTimeHeader = JSON.stringify({
+        type: "start_time",
+        meetingStartTime: meetingStartTime
+      })
+
+      fs.writeFileSync(logPath, startTimeHeader + "\n" + existingContent)
+      console.log(`[ScreenRecorder] Wrote start time header to network speaker log: ${meetingStartTime}`)
+    } catch (error) {
+      console.error("[ScreenRecorder] Failed to write network speaker start time:", formatError(error))
+    }
   }
 
   private async runFFmpeg(

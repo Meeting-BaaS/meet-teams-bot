@@ -115,6 +115,9 @@ export interface MeetingContext {
 
   // Dialog observer
   dialogObserver?: SimpleDialogObserver
+
+  // Network speaker logger (Meet only - for debugging/comparison with UI-based detection)
+  networkSpeakerLogger?: import("../meeting/meet/NetworkSpeakerLogger").NetworkSpeakerLogger
 }
 
 export interface StateTransition {
