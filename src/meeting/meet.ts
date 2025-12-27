@@ -15,6 +15,8 @@ import { sleep } from "../utils/sleep"
 import { enableMeetAudioCapture, verifyMeetAudioCapture } from "./meet/audio-capture"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
+import { enableNetworkInterception } from "./meet/network-interception"
+import { listenPage } from "../browser/page-logger"
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
@@ -43,6 +45,51 @@ export class MeetProvider implements MeetingProviderInterface {
       console.log("Creating new page in existing context...")
       const page = await browserContext.newPage()
 
+      // Set up page logger IMMEDIATELY so we can see logs from injected scripts
+      listenPage(page)
+      console.log("[Meet] Page logger set up")
+
+      // Set up network interception IMMEDIATELY after page creation, before ANY navigation
+      // This ensures the script is injected before the page loads
+      console.log("[Meet] Setting up network interception before page load...")
+
+      // Store a reference to the callback that can be updated later
+      let speakerCallback: ((payload: any) => void) | null = null
+
+      // Create a wrapper function that will always use the current callback
+      const networkCallbackWrapper = (payload: any) => {
+        // Call the current callback if it exists
+        if (speakerCallback) {
+          speakerCallback(payload)
+        } else {
+          // Only log when callback is missing (expected before NetworkSpeakerLogger starts)
+          console.log(
+            `[Meet] Network data received (no callback set yet): ${payload.users?.length || 0} users`
+          )
+        }
+      }
+
+      // Allows updating the Node-side callback that receives browser events
+      // Used by NetworkSpeakerLogger to register its handleNetworkPayload method
+      // Flow: browser-bundle.ts → window.onNetworkSpeakerUpdate → this callback
+      ;(page as any)._setNodeNetworkCallback = async (callback: (payload: any) => void) => {
+        console.log("[Meet] 🔧 Updating network callback (Node-side)")
+        speakerCallback = callback
+
+        // Trigger a manual broadcast to send current state immediately
+        try {
+          console.log("[Meet] 🔔 Triggering manual broadcast...")
+          await page.evaluate(() => {
+            if ((window as any).triggerNetworkBroadcast) {
+              ;(window as any).triggerNetworkBroadcast()
+            }
+          })
+          console.log("[Meet] ✅ Manual broadcast triggered")
+        } catch (e) {
+          console.error("[Meet] ⚠️ Failed to trigger manual broadcast:", e)
+        }
+      }
+
       // Set permissions based on streaming_input
       if (streaming_input) {
         await browserContext.grantPermissions(["microphone", "camera"])
@@ -52,9 +99,23 @@ export class MeetProvider implements MeetingProviderInterface {
 
       // Enable Web Audio mixing for streaming or transcription
       // Check config directly, not Streaming.instance (which may not be instantiated yet)
-      if (GLOBAL.get().streaming_output || GLOBAL.get().streaming_transcription) {
-        await enableMeetAudioCapture(page, true)
-        console.log("[Meet] ✅ Web Audio capture enabled for streaming/transcription")
+      // IMPORTANT: This must be called BEFORE enableNetworkInterception so the network interceptor can subscribe to it
+      const enableMixing = !!(GLOBAL.get().streaming_output || GLOBAL.get().streaming_transcription)
+      await enableMeetAudioCapture(page, enableMixing)
+      console.log(`[Meet] ✅ Centralized audio track layer enabled (mixing: ${enableMixing})`)
+
+      // Enable network interception for speaker detection
+      const networkInterceptionEnabled = await enableNetworkInterception(page, networkCallbackWrapper)
+
+      // Store the capability flag on the page for later access
+      ;(page as any)._networkInterceptionEnabled = networkInterceptionEnabled
+
+      if (!networkInterceptionEnabled) {
+        console.error(
+          "[Meet] ❌ Failed to enable network interception - falling back to UI-based features"
+        )
+      } else {
+        console.log("[Meet] ✅ Network interception configured successfully")
       }
 
       console.log(`Navigating to ${link}...`)
