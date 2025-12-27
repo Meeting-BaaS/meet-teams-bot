@@ -380,7 +380,7 @@ run_with_config() {
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
@@ -495,7 +495,7 @@ run_with_config_and_overrides() {
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
@@ -607,7 +607,7 @@ run_with_json() {
         $docker_args \
         -e RECORDING="$recording_mode" \
         $debug_env \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)"
     
     print_success "Bot execution completed"
@@ -869,7 +869,7 @@ test_api_request() {
     echo "$processed_config" | docker run -i \
         -p $main_port:8080 \
         -e RECORDING=true \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)" 2>&1 | tee "$log_file" &
     
     local docker_pid=$!
