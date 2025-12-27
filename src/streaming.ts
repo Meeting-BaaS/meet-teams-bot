@@ -178,15 +178,21 @@ export class Streaming {
             return
         }
 
-        if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+        // Check if we have any destination for audio (either output_ws or transcription)
+        const hasOutputWs = this.output_ws && this.output_ws.readyState === WebSocket.OPEN
+        const hasTranscription = this.streamingTranscription?.isActive()
+
+        if (!hasOutputWs && !hasTranscription) {
             // Throttle warning logs to avoid spam
             const now = Date.now()
             if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
-                console.warn('[Streaming] ⚠️ WebSocket not ready, discarding audio chunks (state:', this.output_ws?.readyState, ')')
+                console.warn('[Streaming] ⚠️ No audio destination ready')
                 this.lastWsNotReadyLogTime = now
             }
-            // Trigger reconnection if not already reconnecting
-            this.scheduleReconnect()
+            // Trigger reconnection if output URL is configured but not connected
+            if (this.outputUrl) {
+                this.scheduleReconnect()
+            }
             return
         }
 

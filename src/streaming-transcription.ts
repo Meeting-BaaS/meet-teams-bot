@@ -119,12 +119,15 @@ export class StreamingTranscription {
         )
 
         try {
-            // Validate configuration before starting
+            this.connectionState = ConnectionState.CONNECTING
+
+            // Connect to user WebSocket first so we can send errors
+            await this.connectToUserWebSocket()
+
+            // Validate configuration after WebSocket is connected
             this.validateConfig()
 
-            this.connectionState = ConnectionState.CONNECTING
             this.initializeVoiceRouter()
-            await this.connectToUserWebSocket()
             await this.startTranscriptionStream()
 
             this.connectionState = ConnectionState.CONNECTED
@@ -135,7 +138,8 @@ export class StreamingTranscription {
             const errorInfo = formatError(error)
             console.error('[StreamingTranscription] Failed to start:', errorInfo)
             this.setLastError('INIT_FAILED', errorInfo.message)
-            this.sendErrorToUser('INIT_FAILED', 'Failed to initialize streaming transcription')
+            // Send the actual error message to user so they know what went wrong
+            this.sendErrorToUser('INIT_FAILED', errorInfo.message)
 
             // Graceful shutdown with delay so user can see error
             await this.gracefulShutdown()

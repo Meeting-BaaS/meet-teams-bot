@@ -32,13 +32,14 @@ export class WaitingRoomState extends BaseState {
 
       // Initialize streaming service BEFORE opening meeting page
       // so that Teams/Meet can detect it and enable audio capture
-      // Only initialize if streaming_output is configured (off by default)
-      if (GLOBAL.get().streaming_output) {
+      // Initialize if streaming_output OR streaming_transcription is configured
+      if (GLOBAL.get().streaming_output || GLOBAL.get().streaming_transcription) {
         this.context.streamingService = new Streaming(
           GLOBAL.get().streaming_input,
           GLOBAL.get().streaming_output,
           GLOBAL.get().streaming_audio_frequency,
-          GLOBAL.get().bot_uuid
+          GLOBAL.get().bot_uuid,
+          GLOBAL.get().streaming_transcription
         )
       }
 

@@ -6,9 +6,10 @@ import { teamsAudioCapture } from '../shared/audio-capture'
 
 /**
  * Enable Web Audio mixing for Teams
+ * @param enableMixing - Whether to enable audio mixing for streaming (default: false)
  */
-export async function enableTeamsAudioCapture(page: Page): Promise<void> {
-    return teamsAudioCapture.enable(page)
+export async function enableTeamsAudioCapture(page: Page, enableMixing?: boolean): Promise<void> {
+    return teamsAudioCapture.enable(page, enableMixing)
 }
 
 /**

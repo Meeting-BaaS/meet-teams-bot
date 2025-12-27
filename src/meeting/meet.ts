@@ -50,11 +50,11 @@ export class MeetProvider implements MeetingProviderInterface {
         await browserContext.grantPermissions(["camera"])
       }
 
-      // Enable Web Audio mixing for streaming
+      // Enable Web Audio mixing for streaming or transcription
       // Check config directly, not Streaming.instance (which may not be instantiated yet)
-      if (GLOBAL.get().streaming_output) {
-        await enableMeetAudioCapture(page)
-        console.log("[Meet] ✅ Web Audio capture enabled for streaming")
+      if (GLOBAL.get().streaming_output || GLOBAL.get().streaming_transcription) {
+        await enableMeetAudioCapture(page, true)
+        console.log("[Meet] ✅ Web Audio capture enabled for streaming/transcription")
       }
 
       console.log(`Navigating to ${link}...`)
