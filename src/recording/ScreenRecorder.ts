@@ -1255,9 +1255,6 @@ export class ScreenRecorder extends EventEmitter {
     const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath)
     console.log(`🎯 Calculated sync offset: ${syncResult.offsetSeconds.toFixed(3)}s`)
 
-    // 3. Write network speaker start time header (for diarization alignment)
-    await this.writeNetworkSpeakerStartTime(this.meetingStartTime)
-
     const hasMeetingStartTime = this.meetingStartTime > 0
 
     // 2. Check if meetingStartTime is properly set - if not, bot was not accepted
@@ -1283,7 +1280,10 @@ export class ScreenRecorder extends EventEmitter {
       }
     }
 
-    // 3. Calculate final trim points using meeting timing
+    // 3. Write network speaker start time header (for diarization alignment)
+    await this.writeNetworkSpeakerStartTime(this.meetingStartTime)
+
+    // 4. Calculate final trim points using meeting timing
     const calcOffsetVideo =
       syncResult.videoTimestamp +
       (this.meetingStartTime - this.recordingStartTime - FLASH_SCREEN_SLEEP_TIME) / 1000
@@ -1645,18 +1645,20 @@ file '${absoluteInputPath}'`
     try {
       const logPath = PathManager.getInstance().getNetworkSpeakerLogPath()
 
-      if (!fs.existsSync(logPath)) {
+      try {
+        await fs.promises.access(logPath)
+      } catch {
         console.log("[ScreenRecorder] Network speaker log file not found, skipping start time header")
         return
       }
 
-      const existingContent = fs.readFileSync(logPath, "utf-8")
+      const existingContent = await fs.promises.readFile(logPath, "utf-8")
       const startTimeHeader = JSON.stringify({
         type: "start_time",
         meetingStartTime: meetingStartTime
       })
 
-      fs.writeFileSync(logPath, startTimeHeader + "\n" + existingContent)
+      await fs.promises.writeFile(logPath, startTimeHeader + "\n" + existingContent)
       console.log(`[ScreenRecorder] Wrote start time header to network speaker log: ${meetingStartTime}`)
     } catch (error) {
       console.error("[ScreenRecorder] Failed to write network speaker start time:", formatError(error))

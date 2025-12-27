@@ -94,6 +94,16 @@ export async function sendChatMessage(
     page: Page,
     message: string,
 ): Promise<boolean> {
+    // Basic validation
+    if (!message || message.length === 0) {
+        console.error('[NetworkInterceptor] Cannot send empty message')
+        return false
+    }
+    if (message.length > 10000) {
+        console.error('[NetworkInterceptor] Message too long (max 10000 chars)')
+        return false
+    }
+
     try {
         console.log('[NetworkInterceptor] Sending chat message via network...')
 

@@ -1,5 +1,37 @@
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs'
 import { GLOBAL } from '../singleton'
+import type { MeetingParams } from '../types'
+
+/**
+ * Message format for SQS retry queue
+ * Extends MeetingParams with retry_count for tracking retry attempts
+ */
+export type RetryMessage = Pick<
+    MeetingParams,
+    | 'bot_id'
+    | 'bot_uuid'
+    | 'bot_name'
+    | 'meeting_url'
+    | 'transformed_meeting_url'
+    | 'meeting_platform'
+    | 'bot_image'
+    | 'entry_message'
+    | 'recording_mode'
+    | 'extra'
+    | 'data_retention_days'
+    | 'streaming_input'
+    | 'streaming_output'
+    | 'streaming_audio_frequency'
+    | 'start_time'
+    | 'exit_time'
+    | 'waiting_room_timeout'
+    | 'no_one_joined_timeout'
+    | 'silence_timeout'
+    | 'speech_to_text_provider'
+    | 'streaming_transcription'
+> & {
+    retry_count: number
+}
 
 export const MAX_RETRY_COUNT = 2
 
@@ -50,7 +82,7 @@ export function shouldAttemptRetry(currentRetryCount: number): boolean {
  * Builds SQS message for retry with incremented retry_count
  * Uses v2 BotMessageSchema format
  */
-export function buildRetryMessage(): any {
+export function buildRetryMessage(): RetryMessage {
     const params = GLOBAL.get()
     const currentRetryCount = GLOBAL.getRetryCount()
 
@@ -87,6 +119,9 @@ export function buildRetryMessage(): any {
         // Transcription
         speech_to_text_provider: params.speech_to_text_provider ?? 'none',
 
+        // Streaming transcription
+        streaming_transcription: params.streaming_transcription ?? null,
+
         // Increment retry count
         retry_count: currentRetryCount + 1
     }
@@ -96,7 +131,7 @@ export function buildRetryMessage(): any {
  * Sends retry message to SQS queue
  * Uses SQS_QUEUE_URL from container environment (already available)
  */
-export async function requeueToSQS(message: any): Promise<void> {
+export async function requeueToSQS(message: RetryMessage): Promise<void> {
     const queueUrl = process.env.SQS_QUEUE_URL
     if (!queueUrl) {
         throw new Error('SQS_QUEUE_URL environment variable not set')

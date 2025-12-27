@@ -33,8 +33,10 @@ export type NetworkPayload = {
 // --- Browser Manager Types ---
 
 export type ReceiverManager = {
-    receiverMap: Map<any, any>
-    receiverToTrackMap: Map<any, any>
+    /** Maps RTCRtpReceiver to contributing sources array */
+    receiverMap: Map<RTCRtpReceiver, RTCRtpContributingSource[]>
+    /** Maps RTCRtpReceiver to track ID */
+    receiverToTrackMap: Map<RTCRtpReceiver, string>
 }
 
 // Raw device output from protobuf (before processing)

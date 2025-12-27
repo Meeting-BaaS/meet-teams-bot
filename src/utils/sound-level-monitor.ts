@@ -120,9 +120,9 @@ export class SoundLevelMonitor {
     }
 
     private async analyzeSoundLevel(audioData: Float32Array): Promise<void> {
-        // Apply adaptive sampling to reduce computational load
-        const sampleRate = audioData.length > 2000 ? 16 : 8
-        const sampledLength = Math.floor(audioData.length / sampleRate)
+        // Apply adaptive downsampling to reduce computational load
+        const samplingStride = audioData.length > 2000 ? 16 : 8
+        const sampledLength = Math.floor(audioData.length / samplingStride)
 
         // Skip analysis for very small buffers
         if (sampledLength < 10) {
@@ -133,7 +133,7 @@ export class SoundLevelMonitor {
 
         // Calculate RMS (Root Mean Square)
         for (let i = 0; i < sampledLength; i++) {
-            const value = audioData[i * sampleRate]
+            const value = audioData[i * samplingStride]
             sum += value * value
         }
 

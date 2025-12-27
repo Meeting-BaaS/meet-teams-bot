@@ -116,7 +116,7 @@ export class NetworkSpeakerLogger {
                 // Check for changes in speaking status
                 const hasChange = speakers.some((speaker) => {
                     const previousState = this.previousSpeakerState.get(
-                        speaker.name,
+                        String(speaker.id),
                     )
                     return (
                         previousState === undefined ||
@@ -143,7 +143,7 @@ export class NetworkSpeakerLogger {
 
                 // Update state for all speakers
                 speakers.forEach((speaker) => {
-                    this.previousSpeakerState.set(speaker.name, speaker.isSpeaking)
+                    this.previousSpeakerState.set(String(speaker.id), speaker.isSpeaking)
                 })
             }
         } catch (error) {
@@ -191,6 +191,7 @@ export class NetworkSpeakerLogger {
 
             // Collect metadata for new participants (with PII)
             const metadataLines: string[] = []
+            const newIds: number[] = []
             for (const speaker of speakers) {
                 if (!this.writtenMetadata.has(speaker.id)) {
                     const metadata = {
@@ -202,11 +203,14 @@ export class NetworkSpeakerLogger {
                         profilePicture: speaker.profilePicture
                     }
                     metadataLines.push(JSON.stringify(metadata))
-                    this.writtenMetadata.add(speaker.id)
+                    newIds.push(speaker.id)
                 }
             }
             if (metadataLines.length > 0) {
-                writePromises.push(fs.appendFile(this.metadataFilePath, metadataLines.join('\n') + '\n'))
+                writePromises.push(
+                    fs.appendFile(this.metadataFilePath, metadataLines.join('\n') + '\n')
+                        .then(() => newIds.forEach(id => this.writtenMetadata.add(id)))
+                )
             }
 
             // Prepare activity log (same format as speaker_separation.log)

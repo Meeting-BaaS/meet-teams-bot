@@ -47,7 +47,7 @@ export const MEET_STATE_CONFIG: StateDetectionConfig = {
             '[aria-label*="brings you into"]',
         ],
         threshold: 1,
-        checkVisibility: false,
+        skipVisibilityCheck: false,
     },
     inMeetingPattern: {
         selectors: [
@@ -61,6 +61,6 @@ export const MEET_STATE_CONFIG: StateDetectionConfig = {
             'div[data-participant-id]',
         ],
         threshold: 4, // Increased from 3 to 4 to require chat button (prevents false positives in waiting room)
-        checkVisibility: true, // Check DOM presence only, not visibility - helps with fast admissions
+        skipVisibilityCheck: true, // Check DOM presence only, not visibility - helps with fast admissions
     },
 }

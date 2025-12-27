@@ -33,6 +33,8 @@ export class SpeakerManager {
         if (instance.currentSpeaker) {
             instance.currentSpeaker.isSpeaking = false
         }
+        // Clear singleton for clean state on next use
+        SpeakerManager.instance = null
         console.log('[SpeakerManager] Finalized successfully')
     }
 
@@ -211,16 +213,17 @@ export class SpeakerManager {
             const activeSpeaker = speakers.find(
                 (speaker) => speaker.name === this.currentSpeaker!.name,
             )
-            if (this.currentSpeaker!.isSpeaking === false) {
+            if (!activeSpeaker || !this.currentSpeaker) return
+            if (this.currentSpeaker.isSpeaking === false) {
                 if (
-                    activeSpeaker!.timestamp >=
-                    this.currentSpeaker!.timestamp +
+                    activeSpeaker.timestamp >=
+                    this.currentSpeaker.timestamp +
                         this.PAUSE_BETWEEN_SENTENCES
                 ) {
-                    console.log(`[SpeakerManager] Speaker resumed after pause (multi): ${activeSpeaker!.name}`)
+                    console.log(`[SpeakerManager] Speaker resumed after pause (multi): ${activeSpeaker.name}`)
                 }
             }
-            this.currentSpeaker = activeSpeaker!
+            this.currentSpeaker = activeSpeaker
         } else {
             const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
             if (activeSpeaker) {

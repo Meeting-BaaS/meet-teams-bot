@@ -165,7 +165,7 @@ export class InCallState extends BaseState {
         // Store the logger in context for cleanup later
         this.context.networkSpeakerLogger = networkLogger
 
-        console.log("✅ Network speaker logger started (logging to network_speaker_detection.log)")
+        console.log("✅ Network speaker logger started (logging to network_speaker_activity.log)")
       } catch (error) {
         console.error("Failed to start network speaker logger:", error)
         // Continue even if network logger fails - it's just for debugging

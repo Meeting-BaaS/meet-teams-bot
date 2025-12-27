@@ -33,6 +33,6 @@ export const TEAMS_STATE_CONFIG: StateDetectionConfig = {
             'button[id*="hangup"]',
         ],
         threshold: 3,
-        checkVisibility: false,
+        skipVisibilityCheck: false,
     },
 }

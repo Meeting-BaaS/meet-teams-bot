@@ -268,6 +268,11 @@ export class StreamingTranscription {
 
                 setTimeout(() => {
                     if (this.userWebSocket?.readyState !== WebSocket.OPEN) {
+                        // Close the pending WebSocket to prevent resource leak
+                        if (this.userWebSocket) {
+                            this.userWebSocket.close()
+                            this.userWebSocket = null
+                        }
                         reject(new Error('WebSocket connection timeout'))
                     }
                 }, this.config.websocket_timeout_ms || 10000)
@@ -291,7 +296,13 @@ export class StreamingTranscription {
                 this.reconnectAttempts = 0
             } catch (error) {
                 console.error('[StreamingTranscription] Reconnection failed:', formatError(error))
+                // Recursively try again if attempts remain
+                await this.handleUserWebSocketClose()
             }
+        } else {
+            console.error('[StreamingTranscription] Max reconnection attempts reached, giving up')
+            this.connectionState = ConnectionState.ERROR
+            this.setLastError('MAX_RECONNECT', 'Maximum reconnection attempts exceeded')
         }
     }
 
@@ -385,7 +396,7 @@ export class StreamingTranscription {
             return
         }
 
-        this.audioBuffer.push(Buffer.from(audioData.buffer))
+        this.audioBuffer.push(Buffer.from(audioData.buffer, audioData.byteOffset, audioData.byteLength))
 
         // Prevent unbounded memory growth
         if (this.audioBuffer.length > this.MAX_AUDIO_BUFFER_SIZE) {

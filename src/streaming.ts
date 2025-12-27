@@ -291,7 +291,11 @@ export class Streaming {
 
     // Forward to streaming transcription if configured
     if (this.streamingTranscription) {
-      this.streamingTranscription.processAudioChunk(s16Array)
+      try {
+        this.streamingTranscription.processAudioChunk(s16Array)
+      } catch (error) {
+        console.error("[Streaming] Failed to forward to transcription:", formatError(error))
+      }
     }
   }
 

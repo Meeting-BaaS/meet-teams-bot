@@ -40,23 +40,35 @@ export class MeetSpeakersObserver {
         await this.ensurePeoplePanelOpen()
 
         // Expose callback function to the page
-        await this.page.exposeFunction(
-            'meetSpeakersChanged',
-            async (speakers: SpeakerData[]) => {
-                try {
-                    console.log(
-                        `[Meet] 🗣️ CALLBACK RECEIVED: ${speakers.length} speakers from browser`,
-                    )
-                    this.onSpeakersChange(speakers)
-                    // console.log(`[Meet] ✅ onSpeakersChange callback completed`)
-                } catch (error) {
-                    console.error(
-                        '[Meet] ❌ Error in speakers callback:',
-                        error,
-                    )
-                }
-            },
-        )
+        try {
+            await this.page.exposeFunction(
+                'meetSpeakersChanged',
+                async (speakers: SpeakerData[]) => {
+                    try {
+                        console.log(
+                            `[Meet] 🗣️ CALLBACK RECEIVED: ${speakers.length} speakers from browser`,
+                        )
+                        this.onSpeakersChange(speakers)
+                        // console.log(`[Meet] ✅ onSpeakersChange callback completed`)
+                    } catch (error) {
+                        console.error(
+                            '[Meet] ❌ Error in speakers callback:',
+                            error,
+                        )
+                    }
+                },
+            )
+        } catch (error) {
+            const errorMessage =
+                error instanceof Error ? error.message : String(error)
+            if (errorMessage.includes('has been already registered')) {
+                console.log(
+                    '[Meet] meetSpeakersChanged callback already registered, skipping',
+                )
+            } else {
+                throw error
+            }
+        }
 
         // Inject EXACT SAME LOGIC as extension but via Playwright
         await this.page.evaluate(
@@ -82,7 +94,7 @@ export class MeetSpeakersObserver {
                 // EXACT SAME freeze detection variables as extension
                 let lastValidSpeakers: SpeakerData[] = []
                 let lastValidSpeakerCheck = Date.now()
-                const FREEZE_TIMEOUT_MS = 30000 // 30 seconds
+                const SPEAKER_DATA_STALE_TIMEOUT_MS = 30000 // 30 seconds - how long before speaker data is considered stale
 
                 // EXACT SAME getSpeakerRootToObserve as extension
                 async function getSpeakerRootToObserve(
@@ -217,11 +229,11 @@ export class MeetSpeakersObserver {
                     timestamp: number,
                 ): SpeakerData[] {
                     try {
-                        // Check if the page is frozen
+                        // Check if speaker data is stale (page may be frozen)
                         const currentTime = Date.now()
                         if (
                             currentTime - lastValidSpeakerCheck >
-                            FREEZE_TIMEOUT_MS
+                            SPEAKER_DATA_STALE_TIMEOUT_MS
                         ) {
                             return []
                         }
@@ -858,31 +870,23 @@ export class MeetSpeakersObserver {
                             `[Meet-Browser] Found people button with selector: ${selector}`,
                         )
                         button.click()
-
-                        // Wait a bit and check if panel opened
-                        setTimeout(() => {
-                            const checkPanel = document.querySelector(
-                                "[aria-label='Participants']",
-                            )
-                            if (checkPanel) {
-                                console.log(
-                                    '[Meet-Browser] ✅ People panel opened successfully',
-                                )
-                            } else {
-                                console.warn(
-                                    '[Meet-Browser] People panel still not visible after click',
-                                )
-                            }
-                        }, 1000)
-
-                        return
+                        return true
                     }
                 }
 
-                console.warn(
-                    '[Meet-Browser] Could not find people button to open panel',
-                )
+                return false
             })
+
+            if (clicked) {
+                try {
+                    await this.page.waitForSelector("[aria-label='Participants']", { timeout: 3000 })
+                    console.log('[Meet] ✅ People panel confirmed open')
+                } catch {
+                    console.warn('[Meet] People panel may not have opened')
+                }
+            } else {
+                console.warn('[Meet] Could not find people button to open panel')
+            }
         } catch (error) {
             console.warn('[Meet] Failed to ensure people panel is open:', error)
         }

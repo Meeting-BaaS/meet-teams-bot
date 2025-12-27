@@ -1000,12 +1000,22 @@ export function browserInterceptionLogic(schema: any[]) {
             }
         }
 
-        setInterval(() => {
+        // Store interval/timeout IDs for cleanup
+        const broadcastIntervalId = setInterval(() => {
             broadcastCurrentState()
         }, 5000)
-        setTimeout(() => {
+        const initialBroadcastTimeoutId = setTimeout(() => {
             broadcastCurrentState()
         }, 2000)
+
+        // Expose cleanup function for proper resource management
+        ;(window as any).__networkInterceptorCleanup = () => {
+            clearInterval(broadcastIntervalId)
+            clearTimeout(initialBroadcastTimeoutId)
+            trackAbortControllers.forEach((controller) => controller.abort())
+            trackAbortControllers.clear()
+            console.error('[NetworkInterceptor] 🧹 Cleaned up')
+        }
 
         const originalFetch = window.fetch
         window.fetch = async function (...args) {

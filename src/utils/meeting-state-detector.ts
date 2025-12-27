@@ -18,7 +18,7 @@ export type DenialPattern = {
 export type SelectorPattern = {
     selectors: string[]
     threshold: number
-    checkVisibility?: boolean
+    skipVisibilityCheck?: boolean
 }
 
 export type StateDetectionConfig = {
@@ -49,7 +49,7 @@ export type MeetingStateDetector = {
 async function checkIndicators(
     page: Page,
     selectors: string[],
-    checkVisibility: boolean = false,
+    skipVisibilityCheck: boolean = false,
 ): Promise<{ count: number; matched: string[] }> {
     let foundCount = 0
     const matchedSelectors: string[] = []
@@ -57,7 +57,7 @@ async function checkIndicators(
         try {
             const count = await page.locator(selector).count().catch(() => 0)
             if (count > 0) {
-                if (checkVisibility) {
+                if (skipVisibilityCheck) {
                     // Just check presence in DOM, not visibility
                     // Useful when menus/modals might hide elements
                     foundCount++
@@ -124,7 +124,7 @@ export const createStateDetector = (
                 const result = await checkIndicators(
                     page,
                     pattern.selectors,
-                    pattern.checkVisibility ?? false,
+                    pattern.skipVisibilityCheck ?? false,
                 )
 
                 const matched = result.count >= pattern.threshold
@@ -156,7 +156,7 @@ export const createStateDetector = (
                 const result = await checkIndicators(
                     page,
                     pattern.selectors,
-                    pattern.checkVisibility ?? false,
+                    pattern.skipVisibilityCheck ?? false,
                 )
 
                 const matched = result.count >= pattern.threshold
