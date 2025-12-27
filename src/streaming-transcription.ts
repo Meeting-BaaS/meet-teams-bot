@@ -4,6 +4,7 @@ import {
     GladiaAdapter,
     DeepgramAdapter,
     AssemblyAIAdapter,
+    StreamingSupportedSampleRateEnum,
     type StreamingSession,
     type TranscriptionProvider,
 } from 'voice-router-dev'
@@ -178,6 +179,16 @@ export class StreamingTranscription {
             new URL(this.config.output_url)
         } catch {
             throw new Error(`Invalid output_url: ${this.config.output_url}`)
+        }
+
+        // Validate sample rate against provider requirements
+        const sampleRate = this.config.sample_rate || 16000
+        const supportedRates = Object.values(StreamingSupportedSampleRateEnum) as number[]
+        if (!supportedRates.includes(sampleRate)) {
+            throw new Error(
+                `Sample rate ${sampleRate} Hz is not supported. ` +
+                `Supported rates: ${supportedRates.join(', ')} Hz`
+            )
         }
 
         console.log('[StreamingTranscription] Configuration validated successfully')
