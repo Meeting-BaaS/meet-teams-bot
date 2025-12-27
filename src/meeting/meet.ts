@@ -19,6 +19,11 @@ import { MEET_STATE_CONFIG } from "./meet-state-config"
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
 
+// Type guard to narrow DenialPattern | SelectorPattern to DenialPattern
+function isDenialPattern(pattern: DenialPattern | SelectorPattern): pattern is DenialPattern {
+  return "texts" in pattern
+}
+
 export class MeetProvider implements MeetingProviderInterface {
   async parseMeetingUrl(meeting_url: string) {
     return parseMeetingUrlFromJoinInfos(meeting_url)
@@ -462,9 +467,9 @@ async function sendEntryMessage(page: Page, enterMessage: string): Promise<boole
 async function notAcceptedInMeeting(page: Page): Promise<boolean> {
   try {
     const result = await meetStateDetector.isDenied(page)
-    if (result.matched && result.matchedText && result.pattern) {
+    if (result.matched && result.matchedText && result.pattern && isDenialPattern(result.pattern)) {
       // Pattern is a DenialPattern
-      const denialPattern = result.pattern as DenialPattern | SelectorPattern
+      const denialPattern = result.pattern
       console.log(`${denialPattern.logPrefix} - Found text: "${result.matchedText}"`)
       GLOBAL.setError(
         denialPattern.reason,

@@ -6,7 +6,6 @@ import { Streaming } from './streaming'
 import { enablePrintPageLogs } from './browser/page-logger'
 import { ParticipantState } from './state-machine/types'
 import { SpeakerData } from './types'
-import { uploadTranscriptTask } from './uploadTranscripts'
 import { PathManager } from './utils/PathManager'
 
 export class SpeakerManager {
@@ -17,6 +16,25 @@ export class SpeakerManager {
     private lastCallbackTime: number | null = null // Track when we last received ANY callback
 
     private constructor() {}
+
+    /**
+     * Finalize speaker tracking and write final state to diarization log
+     * Called during cleanup before upload
+     */
+    public static async finalize(): Promise<void> {
+        const instance = SpeakerManager.instance
+        if (!instance) {
+            console.log('[SpeakerManager] No instance to finalize')
+            return
+        }
+
+        console.log('[SpeakerManager] Finalizing diarization tracking...')
+        // Reset current speaker state
+        if (instance.currentSpeaker) {
+            instance.currentSpeaker.isSpeaking = false
+        }
+        console.log('[SpeakerManager] Finalized successfully')
+    }
 
     /**
      * Get the last time we received a speaker callback (regardless of speaking state)
@@ -166,15 +184,15 @@ export class SpeakerManager {
         if (!activeSpeaker) return
 
         if (activeSpeaker.name !== this.currentSpeaker?.name) {
-            // Changement de speaker
-            await uploadTranscriptTask(activeSpeaker, false)
+            // Speaker changed - track for diarization
+            console.log(`[SpeakerManager] Speaker changed to: ${activeSpeaker.name}`)
         } else if (this.currentSpeaker.isSpeaking === false) {
             // The speaker has started speaking again after a pause
             if (
                 activeSpeaker.timestamp >=
                 this.currentSpeaker.timestamp + this.PAUSE_BETWEEN_SENTENCES
             ) {
-                await uploadTranscriptTask(activeSpeaker, false)
+                console.log(`[SpeakerManager] Speaker resumed after pause: ${activeSpeaker.name}`)
             }
         }
         this.currentSpeaker = activeSpeaker
@@ -195,18 +213,20 @@ export class SpeakerManager {
             )
             if (this.currentSpeaker!.isSpeaking === false) {
                 if (
-                    activeSpeaker.timestamp >=
+                    activeSpeaker!.timestamp >=
                     this.currentSpeaker!.timestamp +
                         this.PAUSE_BETWEEN_SENTENCES
                 ) {
-                    await uploadTranscriptTask(activeSpeaker, false)
+                    console.log(`[SpeakerManager] Speaker resumed after pause (multi): ${activeSpeaker!.name}`)
                 }
             }
-            this.currentSpeaker = activeSpeaker
+            this.currentSpeaker = activeSpeaker!
         } else {
             const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
-            await uploadTranscriptTask(activeSpeaker, false)
-            this.currentSpeaker = activeSpeaker
+            if (activeSpeaker) {
+                console.log(`[SpeakerManager] Speaker changed (multi) to: ${activeSpeaker.name}`)
+                this.currentSpeaker = activeSpeaker
+            }
         }
     }
 }

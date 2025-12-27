@@ -400,11 +400,8 @@ export class StreamingTranscription {
             try {
                 this.userWebSocket.send(JSON.stringify(event))
             } catch (error) {
-                // Only log errors if not closing - avoids noise during graceful shutdown
-                if (this.userWebSocket.readyState !== WebSocket.CLOSING &&
-                    this.userWebSocket.readyState !== WebSocket.CLOSED) {
-                    console.error('[StreamingTranscription] Failed to send to user:', formatError(error))
-                }
+                // Log send failures - typically happens during connection state transitions
+                console.error('[StreamingTranscription] Failed to send to user:', formatError(error))
             }
         }
     }

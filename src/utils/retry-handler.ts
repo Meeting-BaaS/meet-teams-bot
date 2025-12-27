@@ -48,44 +48,45 @@ export function shouldAttemptRetry(currentRetryCount: number): boolean {
 
 /**
  * Builds SQS message for retry with incremented retry_count
+ * Uses v2 BotMessageSchema format
  */
 export function buildRetryMessage(): any {
     const params = GLOBAL.get()
     const currentRetryCount = GLOBAL.getRetryCount()
-    
+
     return {
-        meeting_url: params.meeting_url,
-        user_id: params.user_id ?? null,
-        session_id: params.session_id ?? null,
-        user_token: params.user_token,
-        bots_api_key: params.bots_api_key,
-        bot_name: params.bot_name,
-        enter_message: params.enter_message ?? null,
-        bots_webhook_url: params.bots_webhook_url ?? '',
+        // Core identifiers
+        bot_id: params.bot_id,
         bot_uuid: params.bot_uuid,
-        // Zoom-specific fields excluded from retry - not used by recording server
-        zoom_access_token_url: null,
-        speech_to_text_provider: params.speech_to_text_provider ?? null,
-        speech_to_text_api_key: params.speech_to_text_api_key ?? null,
-        custom_branding_bot_path: params.custom_branding_bot_path ?? null,
+        bot_name: params.bot_name,
+
+        // Meeting details
+        meeting_url: params.meeting_url,
+        transformed_meeting_url: params.transformed_meeting_url ?? null,
+        meeting_platform: params.meeting_platform,
+
+        // Bot configuration
+        bot_image: params.bot_image ?? null,
+        entry_message: params.entry_message ?? null,
+        recording_mode: params.recording_mode,
+        extra: params.extra ?? null,
+        data_retention_days: params.data_retention_days,
+
+        // Streaming
         streaming_input: params.streaming_input ?? null,
         streaming_output: params.streaming_output ?? null,
-        streaming_audio_frequency: params.streaming_audio_frequency ?? null,
-        recording_mode: params.recording_mode,
-        automatic_leave: params.automatic_leave ?? null,
-        mp4_s3_path: params.mp4_s3_path,
-        secret: params.secret ?? '',
-        // Zoom SDK credentials excluded from retry - not used by recording server
-        zoom_sdk_id: null,
-        zoom_sdk_pwd: null,
-        transcription_custom_parameters: null,
-        extra: params.extra ?? null,
-        start_time: params.start_time ?? null,
-        event: params.event ?? null,
-        environ: params.environ,
-        aws_s3_temporary_audio_bucket: params.aws_s3_temporary_audio_bucket,
-        remote: params.remote,
-        
+        streaming_audio_frequency: params.streaming_audio_frequency ?? 24000,
+
+        // Timeouts
+        start_time: params.start_time ?? 0,
+        exit_time: params.exit_time ?? 0,
+        waiting_room_timeout: params.waiting_room_timeout ?? 600,
+        no_one_joined_timeout: params.no_one_joined_timeout ?? 600,
+        silence_timeout: params.silence_timeout ?? 600,
+
+        // Transcription
+        speech_to_text_provider: params.speech_to_text_provider ?? 'none',
+
         // Increment retry count
         retry_count: currentRetryCount + 1
     }

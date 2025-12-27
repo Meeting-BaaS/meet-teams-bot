@@ -66,3 +66,41 @@ export type ArtifactKey = {
   errorCode: ArtifactErrorCode | null
   errorMessage: string | null
 }
+
+// Streaming transcription types
+// Re-export TranscriptionProvider from voice-router-dev for use in other modules
+export type { TranscriptionProvider } from "voice-router-dev"
+
+// Subset of providers that support real-time streaming
+export type StreamingTranscriptionProvider = "gladia" | "deepgram" | "assemblyai"
+
+export type StreamingTranscriptionOptions = {
+  language?: string
+  interim_results?: boolean
+  diarization?: boolean
+  word_timestamps?: boolean
+  punctuation?: boolean
+  profanity_filter?: boolean
+  custom_vocabulary?: string[]
+  endpointing_ms?: number
+}
+
+export type StreamingTranscriptionConfig = {
+  provider: StreamingTranscriptionProvider
+  api_key?: string
+  output_url: string
+  websocket_timeout_ms?: number
+  encoding?: string
+  sample_rate?: number
+  options?: StreamingTranscriptionOptions
+}
+
+// Enhanced speaker data for network-level detection
+export type EnhancedSpeakerData = SpeakerData & {
+  odaId?: string
+  participantId?: string
+  displayName?: string
+  fullName?: string
+  profilePicture?: string
+  isNetworkDetected?: boolean
+}
