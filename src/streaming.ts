@@ -95,7 +95,8 @@ export class Streaming {
       console.log(`🎙️ Real-time transcription enabled with provider: ${this.transcriptionConfig.provider}`)
     }
 
-    this.start()
+    // Don't auto-start - wait until we're actually in the meeting
+    // Transcription providers (Deepgram, etc.) will timeout if no audio arrives quickly
 
     Streaming.instance = this
   }
@@ -103,6 +104,8 @@ export class Streaming {
   /**
    * Simplified start method - only handles external services
    * No more Chrome Extension WebSocket server !
+   * Note: Transcription is NOT started here - call startTranscription() separately
+   * after joining the meeting to avoid provider timeouts.
    */
   public start(): void {
     if (this.isInitialized) {
@@ -122,15 +125,33 @@ export class Streaming {
       this.setupExternalInputWS()
     }
 
-    // Setup real-time transcription if configured (async, don't block)
-    this.setupStreamingTranscription().catch((error) => {
-      console.error("Failed to setup streaming transcription:", formatError(error))
-    })
+    // Note: Transcription is started separately via startTranscription()
+    // to avoid provider timeouts while waiting to join the meeting
 
     this.isInitialized = true
     this.isPaused = false
 
     console.log("✅ Streaming service ready for direct audio processing")
+  }
+
+  /**
+   * Start real-time transcription.
+   * Call this AFTER joining the meeting to avoid provider timeouts.
+   */
+  public startTranscription(): void {
+    if (!this.transcriptionConfig) {
+      return
+    }
+
+    if (this.streamingTranscription) {
+      console.warn("Streaming transcription already started")
+      return
+    }
+
+    console.log("🎙️ Starting streaming transcription (in-meeting)")
+    this.setupStreamingTranscription().catch((error) => {
+      console.error("Failed to setup streaming transcription:", formatError(error))
+    })
   }
 
   /**

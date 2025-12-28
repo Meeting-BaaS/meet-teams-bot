@@ -48,6 +48,12 @@ export class InCallState extends BaseState {
       // Initialize services
       await this.initializeServices()
 
+      // Start transcription NOW that we're in the meeting
+      // (delayed from WaitingRoomState to avoid provider timeouts)
+      if (this.context.streamingService) {
+        this.context.streamingService.startTranscription()
+      }
+
       // Clean HTML and start observation
       await this.setupBrowserComponents()
 

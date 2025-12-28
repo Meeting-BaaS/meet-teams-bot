@@ -342,6 +342,9 @@ export class StreamingTranscription {
             },
             onClose: (code?: number, reason?: string) => {
                 console.log(`[StreamingTranscription] VoiceRouter closed: ${code} - ${reason}`)
+                // Stop audio processing immediately
+                this.session = null
+                this.connectionState = ConnectionState.DISCONNECTED
                 this.sendToUser({
                     type: 'closed',
                     session_id: this.botId,
