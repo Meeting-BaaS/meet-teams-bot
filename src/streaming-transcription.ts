@@ -318,6 +318,7 @@ export class StreamingTranscription {
         const streamingOptions = {
             encoding,
             sampleRate,
+            ...(this.config.model && { model: this.config.model }),
             ...(options?.language && { language: options.language }),
             interimResults: options?.interim_results ?? true,
             ...(options?.diarization && { diarization: true }),

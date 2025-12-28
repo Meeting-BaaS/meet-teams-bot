@@ -92,6 +92,7 @@ export type StreamingTranscriptionConfig = {
   websocket_timeout_ms?: number
   encoding?: string
   sample_rate?: number
+  model?: string // Provider-specific model (e.g., 'nova-2' for Deepgram multilingual)
   options?: StreamingTranscriptionOptions
 }
 
