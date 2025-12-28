@@ -270,6 +270,14 @@ export async function uploadLogsToS3(): Promise<void> {
     const speakerLogPath = pathManager.getSpeakerLogPath()
     const s3SpeakerLogPath = `${logPath}/speaker_separation.log`
 
+    // Network speaker detection log file
+    const networkSpeakerLogPath = pathManager.getNetworkSpeakerLogPath()
+    const s3NetworkSpeakerLogPath = `${logPath}/network_speaker_activity.log`
+
+    // Network speaker metadata file (PII - separate from activity logs)
+    const networkSpeakerMetadataPath = pathManager.getNetworkSpeakerMetadataPath()
+    const s3NetworkSpeakerMetadataPath = `${logPath}/network_speaker_metadata.json`
+
     // HTML snapshots directory
     const htmlSnapshotsPath = pathManager.getHtmlSnapshotsPath()
     const s3HtmlSnapshotsPath = `${logPath}/html_snapshots`
@@ -277,6 +285,8 @@ export async function uploadLogsToS3(): Promise<void> {
     console.log("Looking for internal log files at:", {
       soundLogPath,
       speakerLogPath,
+      networkSpeakerLogPath,
+      networkSpeakerMetadataPath,
       htmlSnapshotsPath
     })
 
@@ -296,6 +306,24 @@ export async function uploadLogsToS3(): Promise<void> {
       logger.info("Speaker separation logs uploaded to S3")
     } else {
       console.log("No speaker separation log file found at path:", speakerLogPath)
+    }
+
+    // Upload network speaker detection log file
+    if (fs.existsSync(networkSpeakerLogPath)) {
+      logger.info("Uploading network speaker detection logs to S3...")
+      await s3cp(networkSpeakerLogPath, s3NetworkSpeakerLogPath)
+      logger.info("Network speaker detection logs uploaded to S3")
+    } else {
+      console.log("No network speaker detection log file found at path:", networkSpeakerLogPath)
+    }
+
+    // Upload network speaker metadata file
+    if (fs.existsSync(networkSpeakerMetadataPath)) {
+      logger.info("Uploading network speaker metadata to S3...")
+      await s3cp(networkSpeakerMetadataPath, s3NetworkSpeakerMetadataPath)
+      logger.info("Network speaker metadata uploaded to S3")
+    } else {
+      console.log("No network speaker metadata file found at path:", networkSpeakerMetadataPath)
     }
 
     // Upload screenshots if they are not already uploaded

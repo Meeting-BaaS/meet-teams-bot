@@ -815,14 +815,14 @@ export class MeetSpeakersObserver {
 
     private async ensurePeoplePanelOpen(): Promise<void> {
         try {
-            await this.page.evaluate(() => {
+            const clicked = await this.page.evaluate(() => {
                 // Check if People panel is already open
                 const participantsList = document.querySelector(
                     "[aria-label='Participants']",
                 )
                 if (participantsList) {
                     console.log('[Meet-Browser] People panel already open')
-                    return
+                    return true // Already open, no click needed
                 }
 
                 console.log(
