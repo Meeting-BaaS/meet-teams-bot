@@ -315,6 +315,8 @@ export class StreamingTranscription {
         const encoding = this.config.encoding || 'linear16'
         const sampleRate = this.config.sample_rate || 16000
 
+        // Build streaming options from structured options + custom_params
+        // custom_params are spread last to allow provider-specific overrides
         const streamingOptions = {
             encoding,
             sampleRate,
@@ -327,6 +329,8 @@ export class StreamingTranscription {
             ...(options?.profanity_filter && { profanityFilter: true }),
             ...(options?.custom_vocabulary && { customVocabulary: options.custom_vocabulary }),
             ...(options?.endpointing_ms && { endpointing: options.endpointing_ms }),
+            // Spread custom_params last - allows full SDK type access (GladiaStreamingOptions, etc.)
+            ...(this.config.custom_params || {}),
         }
 
         const callbacks = {

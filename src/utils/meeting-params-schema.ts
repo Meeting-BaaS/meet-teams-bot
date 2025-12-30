@@ -36,7 +36,10 @@ export const StreamingTranscriptionConfigSchema = object({
   websocket_timeout_ms: number().int().positive().optional(),
   encoding: string().optional(),
   sample_rate: number().int().positive().optional(),
-  options: StreamingTranscriptionOptionsSchema
+  model: string().optional().nullable(),
+  options: StreamingTranscriptionOptionsSchema,
+  // Provider-specific SDK options (GladiaStreamingOptions, DeepgramStreamingOptions, etc.)
+  custom_params: record(string(), zodUnknown()).optional().nullable()
 })
 
 /**

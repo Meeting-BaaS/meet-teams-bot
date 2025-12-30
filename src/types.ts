@@ -94,6 +94,9 @@ export type StreamingTranscriptionConfig = {
   sample_rate?: number
   model?: string // Provider-specific model (e.g., 'nova-2' for Deepgram multilingual)
   options?: StreamingTranscriptionOptions
+  // Provider-specific SDK options (GladiaStreamingOptions, DeepgramStreamingOptions, etc.)
+  // Passed directly to VoiceRouter SDK - allows full access to provider features
+  custom_params?: Record<string, unknown>
 }
 
 // Enhanced speaker data for network-level detection
