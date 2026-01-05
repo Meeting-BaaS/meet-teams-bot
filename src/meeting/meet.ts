@@ -148,11 +148,11 @@ export class MeetProvider implements MeetingProviderInterface {
                     await clickOutsideModal(page)
 
                     if (attempt < 5) {
-                        // Fast path: 500ms fixed delay for first 5 attempts (happy path)
+                        // Fast path: 500ms fixed delay for attempts 1-4
                         await page.waitForTimeout(500)
                     } else {
-                        // Slow path: exponential backoff for attempts 6-10 (handles dialog cases, page temporarily frozen)
-                        // Delays: 1s, 2s, 4s, 8s
+                        // Slow path: exponential backoff for attempts 5-9 (handles dialog cases, page temporarily frozen)
+                        // Attempt 5: 500ms, attempts 6-9: 1s, 2s, 4s, 8s
                         const exponentialDelay = 1000 * Math.pow(2, attempt - 6)
                         console.log(
                             `Bot name typing failed at attempt ${attempt}, waiting ${exponentialDelay}ms before retry (exponential backoff)`,
