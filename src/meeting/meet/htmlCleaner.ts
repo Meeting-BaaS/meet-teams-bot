@@ -302,6 +302,17 @@ export class MeetHtmlCleaner {
                 } catch (e) {}
             }
 
+            /**
+             * Removes black borders from screen sharing video in Google Meet.
+             * When screen sharing starts, Google Meet creates [data-layout="roi-crop"] elements
+             * that contain the shared screen video. These elements often have fixed pixel widths
+             * (e.g., 982px) instead of full viewport width, causing black bars on the right side.
+             * This function:
+             * 1. Finds the largest roi-crop element (the main screen share)
+             * 2. Sets it and its parents to full viewport width/height (100vw/100vh)
+             * 3. Styles the video element to fill the container using object-fit: fill
+             *    (ensures no black borders even with aspect ratio mismatches)
+             */
             function removeBlackBox(): void {
                 const elements: NodeListOf<HTMLElement> =
                     document.querySelectorAll('[data-layout="roi-crop"]')
@@ -327,14 +338,35 @@ export class MeetHtmlCleaner {
                         el.style.position = 'fixed'
                         el.style.zIndex = '9000'
                         el.style.backgroundColor = 'black'
+                        // Set full viewport dimensions to eliminate black bars on the right
+                        // Previously, roi-crop elements had fixed pixel widths (e.g., 982px)
+                        // which didn't fill the entire screen, causing black borders
+                        el.style.width = '100vw'
+                        el.style.height = '100vh'
 
-                        // Also apply parent styling to the main element
+                        // Style video elements inside roi-crop to fill container completely
+                        // Using object-fit: fill ensures the video stretches to fill the container
+                        // without any black borders, even when aspect ratios don't match.
+                        // This may cause slight distortion but guarantees full screen coverage.
+                        const videos = el.querySelectorAll('video')
+                        videos.forEach((video: HTMLVideoElement) => {
+                            video.style.width = '100%'
+                            video.style.height = '100%'
+                            video.style.objectFit = 'fill'
+                        })
+
+                        // Also apply parent styling to ensure all container layers are full width
+                        // Parent elements may also have fixed widths that need to be overridden
                         let element = el.parentElement
                         let depth = 4
                         while (depth >= 0 && element) {
                             element.style.opacity = '1'
                             element.style.border = 'none'
                             element.style.clipPath = 'none'
+                            // Set parent containers to full viewport width/height as well
+                            // This ensures the entire container hierarchy fills the screen
+                            element.style.width = '100vw'
+                            element.style.height = '100vh'
                             element = element.parentElement
                             depth--
                         }
@@ -360,8 +392,9 @@ export class MeetHtmlCleaner {
             const observer = new MutationObserver(() => {
                 removeShityHtml(recordingMode)
                 // Call removeBlackBox() on DOM mutations to handle dynamically added
-                // [data-layout="roi-crop"] elements and remove their borders properly.
-                // Without this, new elements added after initial load won't have borders removed.
+                // [data-layout="roi-crop"] elements (e.g., when screen sharing starts).
+                // Without this, screen sharing elements added after initial load won't
+                // have their black borders removed and won't fill the full viewport.
                 removeBlackBox()
             })
 
