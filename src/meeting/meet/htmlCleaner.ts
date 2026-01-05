@@ -333,7 +333,7 @@ export class MeetHtmlCleaner {
                         let depth = 4
                         while (depth >= 0 && element) {
                             element.style.opacity = '1'
-                            element.style.border = 'transparent'
+                            element.style.border = 'none'
                             element.style.clipPath = 'none'
                             element = element.parentElement
                             depth--
@@ -343,7 +343,7 @@ export class MeetHtmlCleaner {
                         let depth = 4
                         while (depth >= 0 && element) {
                             element.style.opacity = '0'
-                            element.style.border = 'transparent'
+                            element.style.border = 'none'
                             element.style.clipPath = 'none'
                             element = element.parentElement
                             depth--
@@ -359,6 +359,10 @@ export class MeetHtmlCleaner {
             // Setup continuous cleanup
             const observer = new MutationObserver(() => {
                 removeShityHtml(recordingMode)
+                // Call removeBlackBox() on DOM mutations to handle dynamically added
+                // [data-layout="roi-crop"] elements and remove their borders properly.
+                // Without this, new elements added after initial load won't have borders removed.
+                removeBlackBox()
             })
 
             if (document.documentElement) {
