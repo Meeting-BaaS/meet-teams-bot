@@ -136,13 +136,30 @@ export class MeetProvider implements MeetingProviderInterface {
                 ),
             )
 
-            for (let attempt = 1; attempt <= 5; attempt++) {
+            // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
+            for (let attempt = 1; attempt <= 10; attempt++) {
                 if (await typeBotName(page, GLOBAL.get().bot_name)) {
                     console.log('Bot name typed at attempt', attempt)
                     break
                 }
-                await clickOutsideModal(page)
-                await page.waitForTimeout(500)
+
+                if (attempt < 10) {
+                    // Don't wait after last attempt
+                    await clickOutsideModal(page)
+
+                    if (attempt < 5) {
+                        // Fast path: 500ms fixed delay for attempts 1-4
+                        await page.waitForTimeout(500)
+                    } else {
+                        // Slow path: exponential backoff for attempts 5-9 (handles dialog cases, page temporarily frozen)
+                        // Attempt 5: 500ms, attempts 6-9: 1s, 2s, 4s, 8s
+                        const exponentialDelay = 1000 * Math.pow(2, attempt - 6)
+                        console.log(
+                            `Bot name typing failed at attempt ${attempt}, waiting ${exponentialDelay}ms before retry (exponential backoff)`,
+                        )
+                        await page.waitForTimeout(exponentialDelay)
+                    }
+                }
             }
 
             // Control microphone based on streaming_input
@@ -393,12 +410,15 @@ async function findShowEveryOne(
                 try {
                     await buttons.first().click()
                     console.log('Successfully clicked People button')
-                    
+
                     // Dismiss the hover dialog (new UI Dec 2025+)
                     // The new badge-style People button shows a hover dialog that needs to be dismissed
                     // Click on the page body to move focus away from the button
                     await page.waitForTimeout(100) // Wait for dialog to appear
-                    await page.click('body', { position: { x: 10, y: 10 }, force: true })
+                    await page.click('body', {
+                        position: { x: 10, y: 10 },
+                        force: true,
+                    })
                     console.log('Clicked body to dismiss People hover dialog')
                 } catch (e) {
                     console.log('Failed to click People button:', e)
@@ -548,13 +568,15 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
                 denialPattern.reason,
                 `${denialPattern.errorMessage} - Found text: "${result.matchedText}"`,
             )
-            
+
             // NEW: Set retry flag for specific Google Meet anti-bot error
             if (result.matchedText === "You can't join this video call") {
                 GLOBAL.setShouldRetry(true)
-                console.log('🔄 Google Meet anti-bot detection - marking for retry')
+                console.log(
+                    '🔄 Google Meet anti-bot detection - marking for retry',
+                )
             }
-            
+
             return true
         }
 
