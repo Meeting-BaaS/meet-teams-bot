@@ -33,20 +33,24 @@ const VIRTUAL_SPEAKER_MONITOR =
     process.env.VIRTUAL_SPEAKER_MONITOR || 'virtual_speaker.monitor'
 
 // Resolution configuration from environment variable (defaults to 720p)
-function getResolution(): { width: number; height: number; captureHeight: number } {
+function getResolution(): {
+    width: number
+    height: number
+    captureHeight: number
+} {
     const resolution = process.env.RESOLUTION || '720'
     if (resolution === '1080') {
         return {
             width: 1920,
             height: 1080,
-            captureHeight: 1240, // 1080 + 160px for browser bar
+            captureHeight: 1220, // 1080 + 140px for browser bar
         }
     }
     // Default to 720p
     return {
         width: 1280,
         height: 720,
-        captureHeight: 880, // 720 + 160px for browser bar
+        captureHeight: 860, // 720 + 140px for browser bar
     }
 }
 
@@ -147,7 +151,10 @@ export class ScreenRecorder extends EventEmitter {
                     PathManager.getInstance().getOutputPath() + '.wav'
             }
         } catch (error) {
-            console.error('Failed to generate output paths:', formatError(error))
+            console.error(
+                'Failed to generate output paths:',
+                formatError(error),
+            )
             throw new Error('Failed to generate output paths')
         }
     }
@@ -156,12 +163,14 @@ export class ScreenRecorder extends EventEmitter {
         this.meetingStartTime = startTime
     }
 
-    public async startRecording(page: Page   ): Promise<void> {
+    public async startRecording(page: Page): Promise<void> {
         if (this.isRecording) {
             throw new Error('Recording is already in progress')
         }
 
-        this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency ?  GLOBAL.get().streaming_audio_frequency : DEFAULT_STREAMING_SAMPLE_RATE
+        this.streamingSampleRate = GLOBAL.get().streaming_audio_frequency
+            ? GLOBAL.get().streaming_audio_frequency
+            : DEFAULT_STREAMING_SAMPLE_RATE
 
         // Capture DOM state before starting screen recording (void to avoid blocking)
         const htmlSnapshot = HtmlSnapshotService.getInstance()
@@ -200,7 +209,10 @@ export class ScreenRecorder extends EventEmitter {
                 isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
             })
         } catch (error) {
-            console.error('Failed to start native recording:', formatError(error))
+            console.error(
+                'Failed to start native recording:',
+                formatError(error),
+            )
             this.isRecording = false
             this.emit('error', { type: 'startError', error })
         }
@@ -352,7 +364,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-map',
                 '1:v:0',
                 '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
                 '-q:v',
                 '3', // High quality JPEG compression
                 '-f',
@@ -424,7 +436,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-refs',
                 '1',
                 '-vf',
-                `crop=${res.width}:${res.height}:0:160`,
+                `crop=${res.width}:${res.height}:0:140`,
                 '-avoid_negative_ts',
                 'make_zero',
                 '-f',
@@ -453,7 +465,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-map',
                 '0:v:0',
                 '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
                 '-q:v',
                 '3', // High quality JPEG compression
                 '-f',
@@ -551,21 +563,25 @@ export class ScreenRecorder extends EventEmitter {
                     outputLower.includes('connection refused')
                 ) {
                     const now = Date.now()
-                    const recordingDurationSeconds = this.recordingStartTime > 0
-                        ? (now - this.recordingStartTime) / 1000
-                        : 0
-                    
+                    const recordingDurationSeconds =
+                        this.recordingStartTime > 0
+                            ? (now - this.recordingStartTime) / 1000
+                            : 0
+
                     // Log file size at time of error for diagnostics
                     let currentFileSize = 'unknown'
                     try {
-                        if (this.rawAudioPath && fs.existsSync(this.rawAudioPath)) {
+                        if (
+                            this.rawAudioPath &&
+                            fs.existsSync(this.rawAudioPath)
+                        ) {
                             const stats = fs.statSync(this.rawAudioPath)
                             currentFileSize = `${(stats.size / (1024 * 1024)).toFixed(2)} MB (${stats.size} bytes)`
                         }
                     } catch (e) {
                         // Ignore file stat errors
                     }
-                    
+
                     console.error(
                         `❌ CRITICAL: FFmpeg file write error detected!`,
                     )
@@ -575,13 +591,11 @@ export class ScreenRecorder extends EventEmitter {
                     console.error(
                         `   📁 Raw audio file size: ${currentFileSize}`,
                     )
-                    console.error(
-                        `   🔍 Error details: ${output.trim()}`,
-                    )
-                    
+                    console.error(`   🔍 Error details: ${output.trim()}`)
+
                     // Log system resources for diagnostics
                     this.logSystemResources()
-                    
+
                     // Emit a critical error event
                     ;(this as EventEmitter).emit('error', {
                         type: 'fileWriteError',
@@ -689,7 +703,10 @@ export class ScreenRecorder extends EventEmitter {
                     if (this.soundMonitorRemainder.length > 0) {
                         // Due to iterator type differences in @types/node definitions. Buffer extends Uint8Array
                         // at runtime and Buffer.concat() handles this correctly. This is a known TypeScript issue.
-                        buf = Buffer.concat([this.soundMonitorRemainder as unknown as Uint8Array, data as unknown as Uint8Array])
+                        buf = Buffer.concat([
+                            this.soundMonitorRemainder as unknown as Uint8Array,
+                            data as unknown as Uint8Array,
+                        ])
                     } else {
                         buf = data
                     }
@@ -703,7 +720,9 @@ export class ScreenRecorder extends EventEmitter {
                     }
 
                     // Save unaligned remainder for next chunk
-                    this.soundMonitorRemainder = buf.subarray(alignedLen) as Buffer
+                    this.soundMonitorRemainder = buf.subarray(
+                        alignedLen,
+                    ) as Buffer
 
                     // Create Float32Array view and copy to avoid retaining pooled buffers
                     const view = new Float32Array(
@@ -754,20 +773,23 @@ export class ScreenRecorder extends EventEmitter {
                 const stats = fs.statSync(this.rawAudioPath)
                 const currentSize = stats.size
                 const currentTime = Date.now()
-                const recordingDurationSeconds = (currentTime - this.recordingStartTime) / 1000
+                const recordingDurationSeconds =
+                    (currentTime - this.recordingStartTime) / 1000
                 const sizeMB = (currentSize / (1024 * 1024)).toFixed(2)
-                
+
                 // Check if file size has grown since last check
                 const hasGrown = currentSize > lastFileSize
                 const timeSinceLastCheck = (currentTime - lastCheckTime) / 1000
-                
+
                 if (hasGrown) {
                     consecutiveNoGrowthCount = 0
                     const growthBytes = currentSize - lastFileSize
                     const growthMB = (growthBytes / (1024 * 1024)).toFixed(2)
                     const growthRate = growthBytes / timeSinceLastCheck // bytes per second
-                    const growthRateMBps = (growthRate / (1024 * 1024)).toFixed(2)
-                    
+                    const growthRateMBps = (growthRate / (1024 * 1024)).toFixed(
+                        2,
+                    )
+
                     console.log(
                         `📊 Raw audio file size: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s | Growth: +${growthMB} MB in ${timeSinceLastCheck.toFixed(1)}s (${growthRateMBps} MB/s)`,
                     )
@@ -789,7 +811,9 @@ export class ScreenRecorder extends EventEmitter {
             } catch (error) {
                 // Don't log errors for missing files during early recording
                 if (fs.existsSync(this.rawAudioPath)) {
-                    console.warn(`⚠️ Error checking raw audio file size: ${error}`)
+                    console.warn(
+                        `⚠️ Error checking raw audio file size: ${error}`,
+                    )
                 }
             }
         }, FILE_SIZE_CHECK_INTERVAL)
@@ -838,11 +862,17 @@ export class ScreenRecorder extends EventEmitter {
 
                     console.log(`✅ Chunk uploaded: ${filename}`)
                 } catch (error) {
-                    console.error(`Failed to upload chunk ${filename}:`, formatError(error))
+                    console.error(
+                        `Failed to upload chunk ${filename}:`,
+                        formatError(error),
+                    )
                 }
             }
         } catch (error) {
-            console.error('Failed to read chunks directory:', formatError(error))
+            console.error(
+                'Failed to read chunks directory:',
+                formatError(error),
+            )
         }
     }
 
@@ -858,17 +888,18 @@ export class ScreenRecorder extends EventEmitter {
                 const stats = fs.statSync(this.audioOutputPath)
                 const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
                 const sizeBytes = stats.size
-                const recordingDurationSeconds = this.recordingStartTime > 0 
-                    ? (Date.now() - this.recordingStartTime) / 1000 
-                    : 0
-                
+                const recordingDurationSeconds =
+                    this.recordingStartTime > 0
+                        ? (Date.now() - this.recordingStartTime) / 1000
+                        : 0
+
                 console.log(
                     `📤 Uploading WAV audio to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
                 console.log(
                     `📊 Audio file size before upload: ${sizeMB} MB (${sizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
                 )
-                
+
                 await S3Uploader.getInstance().uploadFile(
                     this.audioOutputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
@@ -886,14 +917,14 @@ export class ScreenRecorder extends EventEmitter {
                 const stats = fs.statSync(this.outputPath)
                 const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
                 const sizeBytes = stats.size
-                
+
                 console.log(
                     `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
                 )
                 console.log(
                     `📊 Video file size before upload: ${sizeMB} MB (${sizeBytes} bytes)`,
                 )
-                
+
                 await S3Uploader.getInstance().uploadFile(
                     this.outputPath,
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
@@ -1085,7 +1116,10 @@ export class ScreenRecorder extends EventEmitter {
                 }
             }
         } catch (error) {
-            console.error('❌ Error during recording processing:', formatError(error))
+            console.error(
+                '❌ Error during recording processing:',
+                formatError(error),
+            )
 
             if (error instanceof Error) {
                 if (
@@ -1130,14 +1164,15 @@ export class ScreenRecorder extends EventEmitter {
                 const stats = fs.statSync(rawAudioPath)
                 const fileSizeBytes = stats.size
                 const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
-                const recordingDurationSeconds = this.recordingStartTime > 0
-                    ? (Date.now() - this.recordingStartTime) / 1000
-                    : 0
-                
+                const recordingDurationSeconds =
+                    this.recordingStartTime > 0
+                        ? (Date.now() - this.recordingStartTime) / 1000
+                        : 0
+
                 console.log(
                     `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
                 )
-                
+
                 // Copy raw audio to final output location
                 fs.copyFileSync(rawAudioPath, this.audioOutputPath)
                 console.log(`✅ Audio copied to: ${this.audioOutputPath}`)
@@ -1166,10 +1201,11 @@ export class ScreenRecorder extends EventEmitter {
             const stats = fs.statSync(rawAudioPath)
             const fileSizeBytes = stats.size
             const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
-            const recordingDurationSeconds = this.recordingStartTime > 0
-                ? (Date.now() - this.recordingStartTime) / 1000
-                : 0
-            
+            const recordingDurationSeconds =
+                this.recordingStartTime > 0
+                    ? (Date.now() - this.recordingStartTime) / 1000
+                    : 0
+
             console.log(
                 `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
             )
@@ -1535,7 +1571,7 @@ file '${absoluteInputPath}'`
             fileSizeBytes = stats.size
             fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
         }
-        
+
         // Get audio duration
         const duration = await this.getDuration(audioPath)
         const botUuid = GLOBAL.get().bot_uuid

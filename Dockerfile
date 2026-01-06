@@ -56,11 +56,11 @@ mkdir -p $PULSE_RUNTIME_PATH\n\
 RESOLUTION=${RESOLUTION:-720}\n\
 if [ "$RESOLUTION" = "1080" ]; then\n\
     X11_WIDTH=1920\n\
-    X11_HEIGHT=1240\n\
+    X11_HEIGHT=1220\n\
     echo "📐 Using 1080p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
 else\n\
     X11_WIDTH=1280\n\
-    X11_HEIGHT=880\n\
+    X11_HEIGHT=860\n\
     echo "📐 Using 720p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
 fi\n\
 \n# Start virtual display with enhanced cursor hiding\n\

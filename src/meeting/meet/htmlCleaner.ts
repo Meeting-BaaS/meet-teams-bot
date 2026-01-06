@@ -310,8 +310,8 @@ export class MeetHtmlCleaner {
              * This function:
              * 1. Finds the largest roi-crop element (the main screen share)
              * 2. Sets it and its parents to full viewport width/height (100vw/100vh)
-             * 3. Styles the video element to fill the container using object-fit: fill
-             *    (ensures no black borders even with aspect ratio mismatches)
+             * 3. Styles the video element using object-fit: contain
+             *    (maintains aspect ratio, may show black bars if aspect ratios don't match)
              */
             function removeBlackBox(): void {
                 const elements: NodeListOf<HTMLElement> =
@@ -344,15 +344,15 @@ export class MeetHtmlCleaner {
                         el.style.width = '100vw'
                         el.style.height = '100vh'
 
-                        // Style video elements inside roi-crop to fill container completely
-                        // Using object-fit: fill ensures the video stretches to fill the container
-                        // without any black borders, even when aspect ratios don't match.
-                        // This may cause slight distortion but guarantees full screen coverage.
+                        // Style video elements inside roi-crop to fill container
+                        // Using object-fit: contain maintains the video's aspect ratio
+                        // and ensures it fits within the container without distortion.
+                        // May show black bars if aspect ratios don't match, but preserves video quality.
                         const videos = el.querySelectorAll('video')
                         videos.forEach((video: HTMLVideoElement) => {
                             video.style.width = '100%'
                             video.style.height = '100%'
-                            video.style.objectFit = 'fill'
+                            video.style.objectFit = 'contain'
                         })
 
                         // Also apply parent styling to ensure all container layers are full width
