@@ -1,4 +1,4 @@
-import { S3Client } from "@aws-sdk/client-s3"
+import { S3Client, type Tag } from "@aws-sdk/client-s3"
 import { Upload } from "@aws-sdk/lib-storage"
 import * as fs from "fs"
 import * as path from "path"
@@ -34,7 +34,12 @@ export class S3Uploader {
     return instance
   }
 
-  public async uploadFile(filePath: string, bucketName: string, s3Path: string): Promise<void> {
+  public async uploadFile(
+    filePath: string,
+    bucketName: string,
+    s3Path: string,
+    tags?: Record<string, string>
+  ): Promise<void> {
     if (GLOBAL.isServerless()) {
       console.log("Skipping S3 upload - serverless mode")
       return
@@ -42,15 +47,30 @@ export class S3Uploader {
     const dataRetentionDays = GLOBAL.get().data_retention_days
 
     try {
+      // Convert tags object to S3 Tag[] format if provided
+      const s3Tags: Tag[] = [
+        {
+          Key: "data_retention_days",
+          Value: dataRetentionDays.toString()
+        }
+      ]
+
+      Object.entries(tags).forEach(([Key, Value]) => {
+        s3Tags.push({
+          Key,
+          Value
+        })
+      })
+
       // Use Upload class for automatic multipart handling
       const upload = new Upload({
         client: this.s3Client,
         params: {
           Bucket: bucketName,
           Key: s3Path,
-          Body: fs.createReadStream(filePath),
-          Tagging: `data_retention_days=${dataRetentionDays}`
-        }
+          Body: fs.createReadStream(filePath)
+        },
+        tags: s3Tags
       })
 
       await upload.done()

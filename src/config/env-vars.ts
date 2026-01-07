@@ -28,7 +28,9 @@ export const envVars = cleanEnv(process.env, {
   VIRTUAL_SPEAKER: str({ default: "virtual_speaker" }),
   VIDEO_DEVICE: str({ default: "/dev/video10" }),
   EFS_MOUNT_POINT: str({ default: "/mnt/efs" }),
-  RESOLUTION: str({ choices: ["720", "1080"], default: "720" })
+  RESOLUTION: str({ choices: ["720", "1080"], default: "720" }),
+  UPLOAD_AUDIO_CHUNKS: bool({ default: false }),
+  UPLOAD_RAW_VIDEO: bool({ default: false })
 })
 
 export type EnvVars = typeof envVars
