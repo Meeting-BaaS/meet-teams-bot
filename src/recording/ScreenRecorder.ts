@@ -2,7 +2,6 @@ import { ChildProcess, spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import * as fs from 'fs'
 import * as path from 'path'
-import { Streaming } from '../streaming'
 
 import { Page } from 'playwright'
 import { GLOBAL } from '../singleton'
@@ -32,6 +31,9 @@ const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (fixed, not affec
 const DISPLAY = process.env.DISPLAY || ':99'
 const VIRTUAL_SPEAKER_MONITOR =
     process.env.VIRTUAL_SPEAKER_MONITOR || 'virtual_speaker.monitor'
+
+const UPLOAD_AUDIO_CHUNKS = process.env.UPLOAD_AUDIO_CHUNKS === 'true'
+const UPLOAD_RAW_VIDEO = process.env.UPLOAD_RAW_VIDEO === 'true'
 
 // Resolution configuration from environment variable (defaults to 720p)
 function getResolution(): {
@@ -141,15 +143,11 @@ export class ScreenRecorder extends EventEmitter {
 
     private generateOutputPaths(): void {
         try {
-            if (GLOBAL.get().recording_mode === 'audio_only') {
-                this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.flac'
-            } else {
-                this.outputPath =
-                    PathManager.getInstance().getOutputPath() + '.mp4'
-                this.audioOutputPath =
-                    PathManager.getInstance().getOutputPath() + '.flac'
-            }
+            // Always generate both paths for consistent flow
+            // Audio-only mode will just skip video upload at the end
+            this.outputPath = PathManager.getInstance().getOutputPath() + '.mp4'
+            this.audioOutputPath =
+                PathManager.getInstance().getOutputPath() + '.flac'
         } catch (error) {
             console.error(
                 'Failed to generate output paths:',
@@ -320,171 +318,105 @@ export class ScreenRecorder extends EventEmitter {
             `${timestamp}_%4d.png`,
         )
 
-        if (GLOBAL.get().recording_mode === 'audio_only') {
-            // Audio-only recording with screenshots
-            const tempDir = PathManager.getInstance().getTempPath()
-            this.rawAudioPath = path.join(tempDir, 'raw.flac')
+        // Use the same recording flow for both audio-only and video modes
+        // Audio-only mode will just skip video upload at the end
+        const tempDir = PathManager.getInstance().getTempPath()
+        const rawVideoPath = path.join(tempDir, 'raw.mp4')
+        this.rawAudioPath = path.join(tempDir, 'raw.flac')
 
-            args.push(
-                // === AUDIO INPUT ===
-                '-f',
-                'pulse',
-                '-thread_queue_size',
-                '4096', // Buffer size for audio capture stability
-                '-i',
-                VIRTUAL_SPEAKER_MONITOR,
+        args.push(
+            // === VIDEO INPUT ===
+            '-f',
+            'x11grab',
+            '-video_size',
+            `${res.width}x${res.captureHeight}`,
+            '-framerate',
+            '30',
+            '-i',
+            this.config.display,
 
-                // === VIDEO INPUT FOR SCREENSHOTS ===
-                '-f',
-                'x11grab',
-                '-video_size',
-                `${res.width}x${res.captureHeight}`,
-                '-framerate',
-                '30',
-                '-i',
-                this.config.display,
+            // === AUDIO INPUT ===
+            '-f',
+            'pulse',
+            '-thread_queue_size',
+            '4096', // Buffer size for audio capture stability
+            '-i',
+            VIRTUAL_SPEAKER_MONITOR,
 
-                // === OUTPUT 1: RAW AUDIO ===
-                '-map',
-                '0:a:0',
-                '-sample_fmt',
-                's16',
-                '-ac',
-                '1',
-                '-ar',
-                AUDIO_SAMPLE_RATE.toString(),
-                '-avoid_negative_ts',
-                'make_zero',
-                '-y',
-                this.rawAudioPath,
+            // === OUTPUT 1: RAW VIDEO (no audio) ===
+            '-map',
+            '0:v:0',
+            '-c:v',
+            'libx264',
+            '-preset',
+            'fast',
+            '-crf',
+            '23',
+            '-profile:v',
+            'main',
+            '-level',
+            '4.0',
+            '-pix_fmt',
+            'yuv420p',
+            '-g',
+            '30', // Keyframe every 30 frames (1 sec at 30fps) for precise trimming
+            '-keyint_min',
+            '30', // Force minimum keyframe interval
+            '-bf',
+            '0',
+            '-refs',
+            '1',
+            '-vf',
+            `crop=${res.width}:${res.height}:0:140`,
+            '-avoid_negative_ts',
+            'make_zero',
+            '-f',
+            'mp4',
+            '-y',
+            rawVideoPath,
 
-                // === OUTPUT 2: SCREENSHOTS (every 5 seconds) - fixed resolution ===
-                '-map',
-                '1:v:0',
-                '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
-                '-q:v',
-                '3', // High quality JPEG compression
-                '-f',
-                'image2',
-                '-y',
-                screenshotPattern,
+            // === OUTPUT 2: RAW AUDIO ===
+            '-map',
+            '1:a:0',
+            '-vn',
+            '-sample_fmt',
+            's16',
+            '-ac',
+            '1',
+            '-ar',
+            AUDIO_SAMPLE_RATE.toString(),
+            '-avoid_negative_ts',
+            'make_zero',
+            '-y',
+            this.rawAudioPath,
 
-                // === OUTPUT 3: SOUND LEVEL MONITORING (stdout) ===
-                // This output is CRITICAL for automatic leave detection
-                // It feeds the SoundLevelMonitor which is independent of streaming
-                '-map',
-                '0:a:0',
-                '-acodec',
-                'pcm_f32le', // Float32 for easy processing
-                '-ac',
-                '1', // Mono
-                '-ar',
-                '24000', // 24kHz is sufficient for sound level analysis
-                '-f',
-                'f32le', // Raw float32 format
-                'pipe:1', // stdout
-            )
-        } else {
-            // Separate audio and video recording
-            const tempDir = PathManager.getInstance().getTempPath()
-            const rawVideoPath = path.join(tempDir, 'raw.mp4')
-            this.rawAudioPath = path.join(tempDir, 'raw.flac')
+            // === OUTPUT 3: SCREENSHOTS (every 5 seconds) - fixed resolution ===
+            '-map',
+            '0:v:0',
+            '-vf',
+            `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+            '-q:v',
+            '3', // High quality JPEG compression
+            '-f',
+            'image2',
+            '-y',
+            screenshotPattern,
 
-            args.push(
-                // === VIDEO INPUT ===
-                '-f',
-                'x11grab',
-                '-video_size',
-                `${res.width}x${res.captureHeight}`,
-                '-framerate',
-                '30',
-                '-i',
-                this.config.display,
-
-                // === AUDIO INPUT ===
-                '-f',
-                'pulse',
-                '-thread_queue_size',
-                '4096', // Buffer size for audio capture stability
-                '-i',
-                VIRTUAL_SPEAKER_MONITOR,
-
-                // === OUTPUT 1: RAW VIDEO (no audio) ===
-                '-map',
-                '0:v:0',
-                '-c:v',
-                'libx264',
-                '-preset',
-                'fast',
-                '-crf',
-                '23',
-                '-profile:v',
-                'main',
-                '-level',
-                '4.0',
-                '-pix_fmt',
-                'yuv420p',
-                '-g',
-                '30', // Keyframe every 30 frames (1 sec at 30fps) for precise trimming
-                '-keyint_min',
-                '30', // Force minimum keyframe interval
-                '-bf',
-                '0',
-                '-refs',
-                '1',
-                '-vf',
-                `crop=${res.width}:${res.height}:0:140`,
-                '-avoid_negative_ts',
-                'make_zero',
-                '-f',
-                'mp4',
-                '-y',
-                rawVideoPath,
-
-                // === OUTPUT 2: RAW AUDIO ===
-                '-map',
-                '1:a:0',
-                '-vn',
-                '-sample_fmt',
-                's16',
-                '-ac',
-                '1',
-                '-ar',
-                AUDIO_SAMPLE_RATE.toString(),
-                '-avoid_negative_ts',
-                'make_zero',
-                '-y',
-                this.rawAudioPath,
-
-                // === OUTPUT 3: SCREENSHOTS (every 5 seconds) - fixed resolution ===
-                '-map',
-                '0:v:0',
-                '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
-                '-q:v',
-                '3', // High quality JPEG compression
-                '-f',
-                'image2',
-                '-y',
-                screenshotPattern,
-
-                // === OUTPUT 4: SOUND LEVEL MONITORING (stdout) ===
-                // This output is CRITICAL for automatic leave detection
-                // It feeds the SoundLevelMonitor which is independent of streaming
-                '-map',
-                '1:a:0',
-                '-acodec',
-                'pcm_f32le', // Float32 for easy processing
-                '-ac',
-                '1', // Mono
-                '-ar',
-                '24000', // 24kHz is sufficient for sound level analysis
-                '-f',
-                'f32le', // Raw float32 format
-                'pipe:1', // stdout
-            )
-        }
+            // === OUTPUT 4: SOUND LEVEL MONITORING (stdout) ===
+            // This output is CRITICAL for automatic leave detection
+            // It feeds the SoundLevelMonitor which is independent of streaming
+            '-map',
+            '1:a:0',
+            '-acodec',
+            'pcm_f32le', // Float32 for easy processing
+            '-ac',
+            '1', // Mono
+            '-ar',
+            '24000', // 24kHz is sufficient for sound level analysis
+            '-f',
+            'f32le', // Raw float32 format
+            'pipe:1', // stdout
+        )
 
         return args
     }
@@ -908,29 +840,50 @@ export class ScreenRecorder extends EventEmitter {
             // Don't throw - continue with video upload
         }
 
-        try {
-            if (fs.existsSync(this.outputPath)) {
-                const stats = fs.statSync(this.outputPath)
-                const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
-                const sizeBytes = stats.size
+        // Only upload video if not in audio-only mode
+        if (GLOBAL.get().recording_mode !== 'audio_only') {
+            try {
+                if (fs.existsSync(this.outputPath)) {
+                    const stats = fs.statSync(this.outputPath)
+                    const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
+                    const sizeBytes = stats.size
 
-                console.log(
-                    `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
-                )
-                console.log(
-                    `📊 Video file size before upload: ${sizeMB} MB (${sizeBytes} bytes)`,
-                )
+                    console.log(
+                        `📤 Uploading MP4 to video bucket: ${GLOBAL.get().remote?.aws_s3_video_bucket}`,
+                    )
+                    console.log(
+                        `📊 Video file size before upload: ${sizeMB} MB (${sizeBytes} bytes)`,
+                    )
 
-                await S3Uploader.getInstance().uploadFile(
-                    this.outputPath,
-                    GLOBAL.get().remote?.aws_s3_video_bucket!,
-                    `${identifier}.mp4`,
+                    await S3Uploader.getInstance().uploadFile(
+                        this.outputPath,
+                        GLOBAL.get().remote?.aws_s3_video_bucket!,
+                        `${identifier}.mp4`,
+                    )
+                    fs.unlinkSync(this.outputPath)
+                }
+            } catch (error) {
+                console.error(
+                    'Failed to upload video file:',
+                    formatError(error),
                 )
-                fs.unlinkSync(this.outputPath)
+                // Don't throw - mark as uploaded to allow process completion
             }
-        } catch (error) {
-            console.error('Failed to upload video file:', formatError(error))
-            // Don't throw - mark as uploaded to allow process completion
+        } else {
+            // Audio-only mode: skip video upload, just clean up if it exists
+            if (fs.existsSync(this.outputPath)) {
+                try {
+                    fs.unlinkSync(this.outputPath)
+                    console.log(
+                        '🗑️ Skipped video upload (audio-only mode), cleaned up video file',
+                    )
+                } catch (error) {
+                    console.warn(
+                        'Failed to clean up video file:',
+                        formatError(error),
+                    )
+                }
+            }
         }
 
         this.filesUploaded = true
@@ -1148,100 +1101,8 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     private async syncAndMergeFiles(): Promise<void> {
-        if (GLOBAL.get().recording_mode === 'audio_only') {
-            // Audio-only mode: just copy raw audio to final output
-            const tempDir = PathManager.getInstance().getTempPath()
-            const rawAudioPath = path.join(tempDir, 'raw.flac')
-
-            console.log('🔄 Processing audio-only recording...')
-
-            if (fs.existsSync(rawAudioPath)) {
-                // Log file size before processing
-                const stats = fs.statSync(rawAudioPath)
-                const fileSizeBytes = stats.size
-                const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
-                const recordingDurationSeconds =
-                    GLOBAL.getRecordingStartTime() > 0
-                        ? (Date.now() - GLOBAL.getRecordingStartTime()) / 1000
-                        : 0
-
-                console.log(
-                    `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`,
-                )
-
-                // Trim silence from end if detected (only if sound was detected during meeting)
-                let finalAudioPath = rawAudioPath
-                if (GLOBAL.getSoundDetectedInMeeting()) {
-                    const lastSilenceStart = GLOBAL.getLastSilenceStart()
-                    if (
-                        lastSilenceStart !== null &&
-                        GLOBAL.getRecordingStartTime() > 0
-                    ) {
-                        // Check if audio file exists and has content
-                        const stats = fs.existsSync(rawAudioPath)
-                            ? fs.statSync(rawAudioPath)
-                            : null
-                        if (stats && stats.size > 0) {
-                            // Calculate silence duration from recording start time
-                            const silenceStartInRecording =
-                                (lastSilenceStart -
-                                    GLOBAL.getRecordingStartTime()) /
-                                1000 // seconds
-                            const audioDuration =
-                                await this.getDuration(rawAudioPath)
-                            const silenceDurationSeconds =
-                                audioDuration - silenceStartInRecording
-                            const maxTrimSeconds =
-                                GLOBAL.get().automatic_leave.silence_timeout ??
-                                MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS // 10 minutes
-                            const trimSeconds = Math.min(
-                                Math.max(0, silenceDurationSeconds),
-                                maxTrimSeconds,
-                            )
-
-                            if (trimSeconds > 1) {
-                                // Only trim if more than 1 second of silence
-                                console.log(
-                                    `🔇 Trimming ${trimSeconds.toFixed(3)}s of silence from audio end (silence started at ${silenceStartInRecording.toFixed(3)}s)`,
-                                )
-                                const trimmedAudioPath = path.join(
-                                    tempDir,
-                                    'trimmed_end.flac',
-                                )
-                                await this.trimAudioEnd(
-                                    rawAudioPath,
-                                    trimmedAudioPath,
-                                    trimSeconds,
-                                )
-                                finalAudioPath = trimmedAudioPath
-                            }
-                        } else {
-                            console.log(
-                                '⚠️ Audio file is empty (0 bytes), skipping silence trimming',
-                            )
-                        }
-                    }
-                } else {
-                    console.log(
-                        'ℹ️ No sound detected during meeting, keeping full recording (no trimming)',
-                    )
-                }
-
-                // Copy processed audio to final output location
-                fs.copyFileSync(finalAudioPath, this.audioOutputPath)
-                console.log(`✅ Audio copied to: ${this.audioOutputPath}`)
-
-                // Create audio chunks from the final audio file
-                await this.createAudioChunks(this.audioOutputPath)
-            } else {
-                console.error('❌ Raw audio file not found:', rawAudioPath)
-            }
-
-            console.log('✅ Audio-only processing completed')
-            return
-        }
-
-        // Video mode: efficient sync and merge process for long recordings
+        // Use the same sync and merge flow for both audio-only and video modes
+        // Audio-only mode will just skip video upload at the end
         const tempDir = PathManager.getInstance().getTempPath()
         const rawVideoPath = path.join(tempDir, 'raw.mp4')
         const rawAudioPath = path.join(tempDir, 'raw.flac')
@@ -1420,7 +1281,45 @@ export class ScreenRecorder extends EventEmitter {
             finalDuration,
         )
 
-        // 9. Extract audio from the final trimmed video (ensures perfect sync)
+        // 7. Upload raw video for debugging (if enabled)
+        if (
+            UPLOAD_RAW_VIDEO &&
+            fs.existsSync(rawVideoPath) &&
+            S3Uploader.getInstance()
+        ) {
+            try {
+                const identifier = PathManager.getInstance().getIdentifier()
+                const stats = fs.statSync(rawVideoPath)
+                const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
+                const sizeBytes = stats.size
+
+                console.log(
+                    `📤 Uploading raw video to logs bucket for debugging...`,
+                )
+                console.log(
+                    `📊 Raw video file size: ${sizeMB} MB (${sizeBytes} bytes)`,
+                )
+
+                const s3Key = `${identifier}/raw_video.mp4`
+                await S3Uploader.getInstance()!.uploadFile(
+                    rawVideoPath,
+                    GLOBAL.get().remote?.aws_s3_log_bucket!,
+                    s3Key,
+                    { raw_upload: 'true' },
+                )
+
+                console.log(
+                    `✅ Raw video uploaded to logs bucket: ${s3Key} (tagged with raw_upload=true)`,
+                )
+            } catch (error) {
+                console.warn(
+                    `⚠️ Failed to upload raw video for debugging: ${formatError(error)}`,
+                )
+                // Don't throw - continue with processing
+            }
+        }
+
+        // 8. Extract audio from the final trimmed video (ensures perfect sync)
         try {
             await this.extractAudioFromVideo(
                 this.outputPath,
@@ -1430,7 +1329,7 @@ export class ScreenRecorder extends EventEmitter {
                 `✅ Audio extracted from final video: ${this.audioOutputPath}`,
             )
 
-            // 10. Create audio chunks from the extracted audio
+            // 9. Create audio chunks from the extracted audio
             await this.createAudioChunks(this.audioOutputPath)
         } catch (error) {
             console.warn(
@@ -1442,7 +1341,7 @@ export class ScreenRecorder extends EventEmitter {
             // Don't throw - allow cleanup to continue
         }
 
-        // 11. Cleanup temporary files
+        // 10. Cleanup temporary files
         await this.cleanupTempFiles([
             rawVideoPath,
             rawAudioPath,
@@ -1695,7 +1594,7 @@ file '${absoluteInputPath}'`
     }
 
     private async createAudioChunks(audioPath: string): Promise<void> {
-        if (!GLOBAL.get().speech_to_text_provider) return
+        if (!UPLOAD_AUDIO_CHUNKS) return
 
         const chunksDir = PathManager.getInstance().getAudioTmpPath()
         if (!fs.existsSync(chunksDir)) {
