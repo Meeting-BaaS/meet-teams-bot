@@ -12,6 +12,11 @@ export async function openBrowser(
             ? { width: 1920, height: 1080 }
             : { width: 1280, height: 720 }
 
+    // Window size must match Xvfb display size (includes browser UI ~140px)
+    // Xvfb is 1280x860 for 720p or 1920x1220 for 1080p
+    const windowWidth = width
+    const windowHeight = resolution === '1080' ? 1220 : 860
+
     try {
         console.log('Launching persistent context with exact extension args...')
 
@@ -25,6 +30,10 @@ export async function openBrowser(
             executablePath: chromePath,
             locale: 'en-US', // Set locale for Playwright context
             args: [
+                // Window size and position - must match Xvfb display exactly
+                `--window-size=${windowWidth},${windowHeight}`,
+                '--window-position=0,0',
+
                 // Security configurations
                 '--no-sandbox',
                 '--disable-setuid-sandbox',

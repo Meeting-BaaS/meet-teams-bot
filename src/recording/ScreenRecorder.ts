@@ -44,14 +44,14 @@ function getResolution(): {
         return {
             width: 1920,
             height: 1080,
-            captureHeight: 1240, // 1080 + 160px for browser bar
+            captureHeight: 1220, // 1080 + 140px for browser bar
         }
     }
     // Default to 720p
     return {
         width: 1280,
         height: 720,
-        captureHeight: 880, // 720 + 160px for browser bar
+        captureHeight: 860, // 720 + 140px for browser bar
     }
 }
 
@@ -151,7 +151,10 @@ export class ScreenRecorder extends EventEmitter {
                     PathManager.getInstance().getOutputPath() + '.flac'
             }
         } catch (error) {
-            console.error('Failed to generate output paths:', formatError(error))
+            console.error(
+                'Failed to generate output paths:',
+                formatError(error),
+            )
             throw new Error('Failed to generate output paths')
         }
     }
@@ -206,7 +209,10 @@ export class ScreenRecorder extends EventEmitter {
                 isAudioOnly: GLOBAL.get().recording_mode === 'audio_only',
             })
         } catch (error) {
-            console.error('Failed to start native recording:', formatError(error))
+            console.error(
+                'Failed to start native recording:',
+                formatError(error),
+            )
             this.isRecording = false
             this.emit('error', { type: 'startError', error })
         }
@@ -356,7 +362,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-map',
                 '1:v:0',
                 '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
                 '-q:v',
                 '3', // High quality JPEG compression
                 '-f',
@@ -428,7 +434,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-refs',
                 '1',
                 '-vf',
-                `crop=${res.width}:${res.height}:0:160`,
+                `crop=${res.width}:${res.height}:0:140`,
                 '-avoid_negative_ts',
                 'make_zero',
                 '-f',
@@ -455,7 +461,7 @@ export class ScreenRecorder extends EventEmitter {
                 '-map',
                 '0:v:0',
                 '-vf',
-                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
                 '-q:v',
                 '3', // High quality JPEG compression
                 '-f',
@@ -693,7 +699,10 @@ export class ScreenRecorder extends EventEmitter {
                     if (this.soundMonitorRemainder.length > 0) {
                         // Due to iterator type differences in @types/node definitions. Buffer extends Uint8Array
                         // at runtime and Buffer.concat() handles this correctly. This is a known TypeScript issue.
-                        buf = Buffer.concat([this.soundMonitorRemainder as unknown as Uint8Array, data as unknown as Uint8Array])
+                        buf = Buffer.concat([
+                            this.soundMonitorRemainder as unknown as Uint8Array,
+                            data as unknown as Uint8Array,
+                        ])
                     } else {
                         buf = data
                     }
@@ -707,7 +716,9 @@ export class ScreenRecorder extends EventEmitter {
                     }
 
                     // Save unaligned remainder for next chunk
-                    this.soundMonitorRemainder = buf.subarray(alignedLen) as Buffer
+                    this.soundMonitorRemainder = buf.subarray(
+                        alignedLen,
+                    ) as Buffer
 
                     // Create Float32Array view and copy to avoid retaining pooled buffers
                     const view = new Float32Array(
@@ -847,11 +858,17 @@ export class ScreenRecorder extends EventEmitter {
 
                     console.log(`✅ Chunk uploaded: ${filename}`)
                 } catch (error) {
-                    console.error(`Failed to upload chunk ${filename}:`, formatError(error))
+                    console.error(
+                        `Failed to upload chunk ${filename}:`,
+                        formatError(error),
+                    )
                 }
             }
         } catch (error) {
-            console.error('Failed to read chunks directory:', formatError(error))
+            console.error(
+                'Failed to read chunks directory:',
+                formatError(error),
+            )
         }
     }
 
@@ -1095,7 +1112,10 @@ export class ScreenRecorder extends EventEmitter {
                 }
             }
         } catch (error) {
-            console.error('❌ Error during recording processing:', formatError(error))
+            console.error(
+                '❌ Error during recording processing:',
+                formatError(error),
+            )
 
             if (error instanceof Error) {
                 if (
