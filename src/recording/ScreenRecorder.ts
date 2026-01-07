@@ -2,7 +2,6 @@ import { ChildProcess, spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import * as fs from 'fs'
 import * as path from 'path'
-import { Streaming } from '../streaming'
 
 import { Page } from 'playwright'
 import { GLOBAL } from '../singleton'
@@ -31,6 +30,9 @@ const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (fixed, not affec
 const DISPLAY = process.env.DISPLAY || ':99'
 const VIRTUAL_SPEAKER_MONITOR =
     process.env.VIRTUAL_SPEAKER_MONITOR || 'virtual_speaker.monitor'
+
+const UPLOAD_AUDIO_CHUNKS = process.env.UPLOAD_AUDIO_CHUNKS === 'true'
+const UPLOAD_RAW_VIDEO = process.env.UPLOAD_RAW_VIDEO === 'true'
 
 // Resolution configuration from environment variable (defaults to 720p)
 function getResolution(): {
@@ -1237,7 +1239,45 @@ export class ScreenRecorder extends EventEmitter {
             finalDuration,
         )
 
-        // 7. Extract audio from the final trimmed video (ensures perfect sync)
+        // 7. Upload raw video for debugging (if enabled)
+        if (
+            UPLOAD_RAW_VIDEO &&
+            fs.existsSync(rawVideoPath) &&
+            S3Uploader.getInstance()
+        ) {
+            try {
+                const identifier = PathManager.getInstance().getIdentifier()
+                const stats = fs.statSync(rawVideoPath)
+                const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
+                const sizeBytes = stats.size
+
+                console.log(
+                    `📤 Uploading raw video to logs bucket for debugging...`,
+                )
+                console.log(
+                    `📊 Raw video file size: ${sizeMB} MB (${sizeBytes} bytes)`,
+                )
+
+                const s3Key = `${identifier}/raw_video.mp4`
+                await S3Uploader.getInstance()!.uploadFile(
+                    rawVideoPath,
+                    GLOBAL.get().remote?.aws_s3_log_bucket!,
+                    s3Key,
+                    { raw_upload: 'true' },
+                )
+
+                console.log(
+                    `✅ Raw video uploaded to logs bucket: ${s3Key} (tagged with raw_upload=true)`,
+                )
+            } catch (error) {
+                console.warn(
+                    `⚠️ Failed to upload raw video for debugging: ${formatError(error)}`,
+                )
+                // Don't throw - continue with processing
+            }
+        }
+
+        // 8. Extract audio from the final trimmed video (ensures perfect sync)
         try {
             await this.extractAudioFromVideo(
                 this.outputPath,
@@ -1247,7 +1287,7 @@ export class ScreenRecorder extends EventEmitter {
                 `✅ Audio extracted from final video: ${this.audioOutputPath}`,
             )
 
-            // 8. Create audio chunks from the extracted audio
+            // 9. Create audio chunks from the extracted audio
             await this.createAudioChunks(this.audioOutputPath)
         } catch (error) {
             console.warn(
@@ -1259,7 +1299,7 @@ export class ScreenRecorder extends EventEmitter {
             // Don't throw - allow cleanup to continue
         }
 
-        // 9. Cleanup temporary files
+        // 10. Cleanup temporary files
         await this.cleanupTempFiles([
             rawVideoPath,
             rawAudioPath,
@@ -1471,7 +1511,7 @@ file '${absoluteInputPath}'`
     }
 
     private async createAudioChunks(audioPath: string): Promise<void> {
-        if (!GLOBAL.get().speech_to_text_provider) return
+        if (!UPLOAD_AUDIO_CHUNKS) return
 
         const chunksDir = PathManager.getInstance().getAudioTmpPath()
         if (!fs.existsSync(chunksDir)) {

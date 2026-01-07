@@ -1,4 +1,4 @@
-import { S3Client } from '@aws-sdk/client-s3'
+import { S3Client, Tag } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -39,6 +39,7 @@ export class S3Uploader {
         filePath: string,
         bucketName: string,
         s3Path: string,
+        tags?: Record<string, string>,
     ): Promise<void> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
@@ -46,6 +47,11 @@ export class S3Uploader {
         }
 
         try {
+            // Convert tags object to S3 Tag[] format if provided
+            const s3Tags: Tag[] | undefined = tags
+                ? Object.entries(tags).map(([Key, Value]) => ({ Key, Value }))
+                : undefined
+
             // Use Upload class for automatic multipart handling
             const upload = new Upload({
                 client: this.s3Client,
@@ -54,13 +60,16 @@ export class S3Uploader {
                     Key: s3Path,
                     Body: fs.createReadStream(filePath),
                 },
+                ...(s3Tags && { tags: s3Tags }),
             })
 
             await upload.done()
-            console.log(`✅ S3 upload successful: ${s3Path}`)
+            console.log(
+                `✅ S3 upload successful: ${s3Path}${tags ? ` (with tags: ${JSON.stringify(tags)})` : ''}`,
+            )
         } catch (error) {
             console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
-            
+
             // Fallback to EFS with the same structure
             await this.copyToEFS(filePath, s3Path)
         }
@@ -182,13 +191,15 @@ export class S3Uploader {
     private async copyToEFS(filePath: string, s3Path: string): Promise<void> {
         try {
             const global = GLOBAL.get()
-            
+
             // Only use EFS for prod and preprod environments
             if (global.environ === 'dev' || global.environ === 'local') {
-                console.warn(`⚠️ EFS not available in ${global.environ} environment - file will remain on local disk`)
+                console.warn(
+                    `⚠️ EFS not available in ${global.environ} environment - file will remain on local disk`,
+                )
                 return
             }
-            
+
             // Determine EFS environment path
             let efsEnvPath: string
             switch (global.environ) {
@@ -199,20 +210,26 @@ export class S3Uploader {
                     efsEnvPath = 'preprod'
                     break
                 default:
-                    console.warn(`⚠️ Unknown environment ${global.environ} - skipping EFS fallback`)
+                    console.warn(
+                        `⚠️ Unknown environment ${global.environ} - skipping EFS fallback`,
+                    )
                     return
             }
-            
-            const efsBasePath = path.join(EFS_MOUNT_POINT, efsEnvPath, global.bot_uuid)
+
+            const efsBasePath = path.join(
+                EFS_MOUNT_POINT,
+                efsEnvPath,
+                global.bot_uuid,
+            )
             const efsFilePath = path.join(efsBasePath, s3Path)
             const efsDir = path.dirname(efsFilePath)
-            
+
             // Create EFS directory structure
             await fs.promises.mkdir(efsDir, { recursive: true })
-            
+
             // Copy file to EFS
             await fs.promises.copyFile(filePath, efsFilePath)
-            
+
             console.log(`📁 File copied to EFS: ${efsFilePath}`)
         } catch (error) {
             console.error(`❌ Failed to copy to EFS: ${error}`)
