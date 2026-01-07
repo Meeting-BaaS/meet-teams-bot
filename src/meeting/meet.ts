@@ -18,6 +18,7 @@ import {
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
+const ENTRY_MESSAGE_TIMEOUT = 2000
 
 export class MeetProvider implements MeetingProviderInterface {
     async parseMeetingUrl(meeting_url: string) {
@@ -523,10 +524,12 @@ async function sendEntryMessage(
     // truncate the message as meet only allows 516 characters
     enterMessage = enterMessage.substring(0, 500)
     try {
-        await page.click('button[aria-label="Chat with everyone"]')
+        await page.click('button[aria-label="Chat with everyone"]', {
+            timeout: ENTRY_MESSAGE_TIMEOUT,
+        })
         await page.waitForSelector(
             'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
-            { state: 'visible' },
+            { state: 'visible', timeout: ENTRY_MESSAGE_TIMEOUT },
         )
 
         // Check again if we are still in the meeting
@@ -538,13 +541,15 @@ async function sendEntryMessage(
         const textarea = page.locator(
             'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
         )
-        await textarea.fill(enterMessage)
+        await textarea.fill(enterMessage, { timeout: ENTRY_MESSAGE_TIMEOUT })
 
         const sendButton = page.locator('button:has(i:text("send"))')
         if ((await sendButton.count()) > 0) {
-            await sendButton.click()
+            await sendButton.click({ timeout: ENTRY_MESSAGE_TIMEOUT })
             console.log('Clicked on send button')
-            await page.click('button[aria-label="Chat with everyone"]')
+            await page.click('button[aria-label="Chat with everyone"]', {
+                timeout: ENTRY_MESSAGE_TIMEOUT,
+            })
             return true
         }
         console.log('Send button not found')
