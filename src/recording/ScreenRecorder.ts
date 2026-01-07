@@ -36,14 +36,14 @@ function getResolution(): { width: number; height: number; captureHeight: number
     return {
       width: 1920,
       height: 1080,
-      captureHeight: 1240 // 1080 + 160px for browser bar
+      captureHeight: 1220 // 1080 + 140px for browser bar
     }
   }
   // Default to 720p
   return {
     width: 1280,
     height: 720,
-    captureHeight: 880 // 720 + 160px for browser bar
+    captureHeight: 860 // 720 + 140px for browser bar
   }
 }
 
@@ -315,7 +315,7 @@ export class ScreenRecorder extends EventEmitter {
         "-map",
         "1:v:0",
         "-vf",
-        `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+        `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
         "-q:v",
         "3", // High quality JPEG compression
         "-f",
@@ -389,7 +389,7 @@ export class ScreenRecorder extends EventEmitter {
         "-refs",
         "1",
         "-vf",
-        `crop=${res.width}:${res.height}:0:160`,
+        `crop=${res.width}:${res.height}:0:140`,
         "-avoid_negative_ts",
         "make_zero",
         "-f",
@@ -416,7 +416,7 @@ export class ScreenRecorder extends EventEmitter {
         "-map",
         "0:v:0",
         "-vf",
-        `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:160,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+        `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
         "-q:v",
         "3", // High quality JPEG compression
         "-f",
