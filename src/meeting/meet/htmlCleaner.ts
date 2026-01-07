@@ -180,8 +180,9 @@ export class MeetHtmlCleaner {
                 try {
                     for (const div of document.getElementsByTagName('div')) {
                         if (
-                            div.clientHeight === 164 &&
-                            div.clientWidth === 322
+                            (div.clientHeight === 164 &&
+                                div.clientWidth === 322) ||
+                            div.clientHeight === 36 // For the new People Icon at the top right corner
                         ) {
                             div.style.display = 'none'
                         }
@@ -388,24 +389,20 @@ export class MeetHtmlCleaner {
             console.log('[Meet] Executing HTML provider')
             await removeInitialShityHtml(recordingMode)
 
-            // Setup continuous cleanup
-            const observer = new MutationObserver(() => {
+            // Setup continuous cleanup using setInterval instead of MutationObserver
+            // for more consistent execution. This ensures removeShityHtml() and
+            // removeBlackBox() are called every 500ms to handle dynamically added
+            // elements (e.g., when screen sharing starts).
+            const cleanupInterval = setInterval(() => {
                 removeShityHtml(recordingMode)
-                // Call removeBlackBox() on DOM mutations to handle dynamically added
+                // Call removeBlackBox() to handle dynamically added
                 // [data-layout="roi-crop"] elements (e.g., when screen sharing starts).
                 // Without this, screen sharing elements added after initial load won't
                 // have their black borders removed and won't fill the full viewport.
                 removeBlackBox()
-            })
+            }, 500)
 
-            if (document.documentElement) {
-                observer.observe(document.documentElement, {
-                    childList: true,
-                    subtree: true,
-                })
-            }
-
-            ;(window as any).htmlCleanerObserver = observer
+            ;(window as any).htmlCleanerInterval = cleanupInterval
             console.log('[Meet] HTML provider complete')
         }, this.recordingMode)
     }
@@ -415,9 +412,9 @@ export class MeetHtmlCleaner {
 
         await this.page
             .evaluate(() => {
-                if ((window as any).htmlCleanerObserver) {
-                    ;(window as any).htmlCleanerObserver.disconnect()
-                    delete (window as any).htmlCleanerObserver
+                if ((window as any).htmlCleanerInterval) {
+                    clearInterval((window as any).htmlCleanerInterval)
+                    delete (window as any).htmlCleanerInterval
                 }
             })
             .catch((e) => console.error('[Meet] HTML cleaner stop error:', e))
