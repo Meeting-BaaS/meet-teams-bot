@@ -1,6 +1,6 @@
 import { Events } from '../../events'
-import { MEETING_CONSTANTS } from '../constants'
 import { formatError } from '../../utils/Logger'
+import { MEETING_CONSTANTS } from '../constants'
 
 import {
     MeetingEndReason,
@@ -9,23 +9,34 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 
+import { Api } from '../../api/methods'
 import {
     AudioWarningEvent,
     ScreenRecorderManager,
 } from '../../recording/ScreenRecorder'
-import { Api } from '../../api/methods'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
 import { uploadTranscriptTask } from '../../uploadTranscripts'
-import { MeetingStateMachine } from '../machine'
 import { sleep } from '../../utils/sleep'
 import { SoundLevelMonitor } from '../../utils/sound-level-monitor'
+import { MeetingStateMachine } from '../machine'
 
 // Sound level threshold for considering activity (0-100)
 const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
 
-// Timeout for bot removal check - must be >= inner timeout in provider.findEndMeeting (20s for Teams)
-const BOT_REMOVAL_CHECK_TIMEOUT_MS = 25000
+// Timeout for bot removal check - Teams needs more time due to isRemovedFromTheMeeting
+// which calls ensurePageLoaded (20s) + button search, while Meet is faster
+const getBotRemovalCheckTimeout = (): number => {
+    const provider = GLOBAL.get().meetingProvider
+    return provider === 'Teams' ? 40000 : 25000 // Teams: 40s, Meet: 25s (sufficient for page.content())
+}
+
+// Window for checking recent speaker callbacks when timeout occurs
+// Use a wider window for Teams to avoid false positives when page is slow but still active
+const getSpeakerCallbackCheckWindow = (): number => {
+    const provider = GLOBAL.get().meetingProvider
+    return provider === 'Teams' ? 60000 : 30000 // Teams: 60s, Meet: 30s
+}
 
 export class RecordingState extends BaseState {
     private isProcessing: boolean = true
@@ -34,6 +45,7 @@ export class RecordingState extends BaseState {
     private lastSoundActivityLogTime: number = 0
     private lastSoundMonitorInactiveLogTime: number = 0
     private lastNoOneJoinedPeriodLog: number = 0
+    private lastNoSpeakerLogTime: number = 0
     private hasNoOneJoinedPeriodEnded: boolean = false
 
     async execute(): StateExecuteResult {
@@ -198,12 +210,13 @@ export class RecordingState extends BaseState {
             }
 
             // Check if bot was removed (with timeout protection)
+            const botRemovalTimeout = getBotRemovalCheckTimeout()
             const botRemovedResult = await Promise.race([
                 this.checkBotRemoved(),
                 new Promise<boolean>((_, reject) =>
                     setTimeout(
                         () => reject(new Error('Bot removed check timeout')),
-                        BOT_REMOVAL_CHECK_TIMEOUT_MS,
+                        botRemovalTimeout,
                     ),
                 ),
             ])
@@ -278,15 +291,29 @@ export class RecordingState extends BaseState {
                 // Secondary check: if we've received speaker callbacks recently,
                 // the page is still responsive - don't treat as bot removal
                 const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
+                const timeSinceLastCallback = lastCallbackTime ? Date.now() - lastCallbackTime : null
+                const callbackCheckWindow = getSpeakerCallbackCheckWindow()
 
-                if (lastCallbackTime && (Date.now() - lastCallbackTime) < BOT_REMOVAL_CHECK_TIMEOUT_MS) {
+                if (lastCallbackTime && timeSinceLastCallback !== null && timeSinceLastCallback < callbackCheckWindow) {
                     console.warn(
-                        `Bot removal check timed out, but received speaker callback ${Date.now() - lastCallbackTime}ms ago - page still responsive, not treating as bot removal`
+                        `Bot removal check timed out, but received speaker callback ${timeSinceLastCallback}ms ago - page still responsive, not treating as bot removal`
                     )
                     return { shouldEnd: false }
                 }
 
-                console.warn('Bot removal check timed out and no recent speaker callbacks - treating as bot removal')
+                // If no recent callbacks, check if we have sound activity as another indicator
+                const monitor = SoundLevelMonitor.peekInstance()
+                const currentSoundLevel = monitor?.getCurrentSoundLevel() ?? 0
+                if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+                    console.warn(
+                        `Bot removal check timed out, but sound activity detected (${currentSoundLevel.toFixed(2)}) - page likely still active, not treating as bot removal`
+                    )
+                    return { shouldEnd: false }
+                }
+
+                console.warn(
+                    `Bot removal check timed out and no recent speaker callbacks (last: ${timeSinceLastCallback ? `${Math.round(timeSinceLastCallback / 1000)}s ago` : 'never'}) - treating as bot removal`
+                )
                 return this.getBotRemovedReason()
             }
 
@@ -527,12 +554,17 @@ export class RecordingState extends BaseState {
                 `[checkNoSpeaker] No sound activity detected for ${silenceDurationSeconds} seconds, ending meeting`,
             )
         } else {
-            // Log progress periodically
-            if (silenceDurationSeconds % 30 === 0) {
-                // Log every 30 seconds
+            // Log when silence starts (0s) and then periodically every 30 seconds
+            const timeSinceLastLog = now - this.lastNoSpeakerLogTime
+            const shouldLog = 
+                (silenceDurationSeconds === 0 && timeSinceLastLog >= 5000) || // Log once at 0s, but throttle to avoid spam (min 5s between logs)
+                (silenceDurationSeconds > 0 && silenceDurationSeconds % 30 === 0 && timeSinceLastLog >= 30000) // Then every 30s
+            
+            if (shouldLog) {
                 console.log(
                     `[checkNoSpeaker] No speaker detected for ${silenceDurationSeconds}s / ${silenceTimeoutSeconds}s`,
                 )
+                this.lastNoSpeakerLogTime = now
             }
         }
         return shouldEnd
