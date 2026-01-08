@@ -736,7 +736,7 @@ export class ScreenRecorder extends EventEmitter {
 
           console.log(`✅ Chunk uploaded: ${filename}`)
         } catch (error) {
-          console.error(`Failed to upload chunk ${filename}:`, error)
+          console.error(`Failed to upload chunk ${filename}:`, formatError(error))
           GLOBAL.addAudioChunk({
             s3Key: null,
             filePath: chunkPath,
@@ -806,7 +806,7 @@ export class ScreenRecorder extends EventEmitter {
         })
       }
     } catch (error) {
-      console.error("Failed to upload audio file:", error)
+      console.error("Failed to upload audio file:", formatError(error))
       GLOBAL.addArtifactKey({
         s3Key: null,
         filePath: this.audioOutputPath,
@@ -1262,7 +1262,7 @@ export class ScreenRecorder extends EventEmitter {
 
         console.log(`✅ Raw video uploaded to logs bucket: ${s3Key} (tagged with raw_upload=true)`)
       } catch (error) {
-        console.warn(`⚠️ Failed to upload raw video for debugging: ${formatError(error)}`)
+        console.warn("⚠️ Failed to upload raw video for debugging:", formatError(error))
         // Don't throw - continue with processing
       }
     }

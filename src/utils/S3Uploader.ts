@@ -1,7 +1,7 @@
+import * as fs from "node:fs"
+import * as path from "node:path"
 import { S3Client, type Tag } from "@aws-sdk/client-s3"
 import { Upload } from "@aws-sdk/lib-storage"
-import * as fs from "fs"
-import * as path from "path"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 
@@ -55,12 +55,14 @@ export class S3Uploader {
         }
       ]
 
-      Object.entries(tags).forEach(([Key, Value]) => {
-        s3Tags.push({
-          Key,
-          Value
+      if (tags) {
+        Object.entries(tags).forEach(([Key, Value]) => {
+          s3Tags.push({
+            Key,
+            Value
+          })
         })
-      })
+      }
 
       // Use Upload class for automatic multipart handling
       const upload = new Upload({
