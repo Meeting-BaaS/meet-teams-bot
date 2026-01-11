@@ -55,6 +55,16 @@ export class PathManager {
 
   // Write to /tmp during runtime
   public getBasePath(): string {
+    // If OUTPUT_BASE_DIR is set, use it (for serverless mode with mounted volumes)
+    if (envVars.OUTPUT_BASE_DIR) {
+      return path.join(envVars.OUTPUT_BASE_DIR, this.botUuid)
+    }
+
+    // In serverless mode with local environment, use ./recordings like main branch
+    if (envVars.SERVERLESS && envVars.ENVIRON === "local") {
+      return path.join("./recordings", this.botUuid)
+    }
+
     switch (envVars.ENVIRON) {
       case "prod":
         return path.join("/tmp", this.botUuid)

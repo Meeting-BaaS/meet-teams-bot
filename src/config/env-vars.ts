@@ -30,7 +30,9 @@ export const envVars = cleanEnv(process.env, {
   EFS_MOUNT_POINT: str({ default: "/mnt/efs" }),
   RESOLUTION: str({ choices: ["720", "1080"], default: "720" }),
   UPLOAD_AUDIO_CHUNKS: bool({ default: false }),
-  UPLOAD_RAW_VIDEO: bool({ default: false })
+  UPLOAD_RAW_VIDEO: bool({ default: false }),
+  // Override output directory for serverless mode (e.g., when using run_bot.sh)
+  OUTPUT_BASE_DIR: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars

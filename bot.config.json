@@ -1,19 +1,25 @@
 {
     "bot_id": 1,
-    "bot_uuid": "unique-bot-identifier",
+    "bot_uuid": "will-be-generated-by-run-bot-sh",
     "bot_name": "Recording Bot",
     "bot_image": "https://i.ibb.co/N9YtnDZ/ducobu.jpg",
-    "meeting_url": "https://meet.google.com/abc-def-ghi",
+    "meeting_url": "https://meet.google.com/ysy-umws-bif",
     "meeting_platform": "meet",
     "entry_message": "Recording bot has joined the meeting",
-    "recording_mode": "speakerView",
-    "streaming_input": "",
-    "streaming_output": "",
+    "recording_mode": "speaker_view",
+    "data_retention_days": 30,
+    "transformed_meeting_url": null,
+    "streaming_input": null,
+    "streaming_output": null,
     "streaming_audio_frequency": 24000,
     "start_time": 0,
     "exit_time": 0,
     "waiting_room_timeout": 600,
     "no_one_joined_timeout": 600,
-    "event_uuid": "123e4567-e89b-12d3-a456-426614174000",
-    "speech_to_text_provider": "gladia"
+    "silence_timeout": 600,
+    "speech_to_text_provider": "gladia",
+    "retry_count": 0,
+    "extra": {
+        "foo": "bar"
+    }
 }

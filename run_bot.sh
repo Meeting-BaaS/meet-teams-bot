@@ -234,6 +234,16 @@ cleanup_port_locks() {
 # Set trap to cleanup on exit
 trap cleanup_port_locks EXIT INT TERM
 
+# Get .env file path for Docker (if exists)
+get_env_file_arg() {
+    local env_file=".env"
+    if [ -f "$env_file" ]; then
+        echo "--env-file $env_file"
+    else
+        echo ""
+    fi
+}
+
 # Mask sensitive information in JSON
 mask_sensitive_json() {
     local json=$1
@@ -375,12 +385,20 @@ run_with_config() {
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
+    # Get .env file argument if .env exists
+    local env_file_arg=$(get_env_file_arg)
+    if [ -n "$env_file_arg" ]; then
+        print_info "📄 Using .env file for environment variables"
+    fi
+    
     # Run the bot
     echo "$processed_config" | docker run -i \
         $docker_args \
+        $env_file_arg \
         -e RECORDING="$recording_mode" \
+        -e ENVIRON="local" \
         $debug_env \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
@@ -490,12 +508,20 @@ run_with_config_and_overrides() {
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
+    # Get .env file argument if .env exists
+    local env_file_arg=$(get_env_file_arg)
+    if [ -n "$env_file_arg" ]; then
+        print_info "📄 Using .env file for environment variables"
+    fi
+    
     # Run the bot
     echo "$processed_config" | docker run -i \
         $docker_args \
+        $env_file_arg \
         -e RECORDING="$recording_mode" \
+        -e ENVIRON="local" \
         $debug_env \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
@@ -603,11 +629,19 @@ run_with_json() {
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
+    # Get .env file argument if .env exists
+    local env_file_arg=$(get_env_file_arg)
+    if [ -n "$env_file_arg" ]; then
+        print_info "📄 Using .env file for environment variables"
+    fi
+    
     echo "$processed_config" | docker run -i \
         $docker_args \
+        $env_file_arg \
         -e RECORDING="$recording_mode" \
+        -e ENVIRON="local" \
         $debug_env \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)"
     
     print_success "Bot execution completed"
@@ -864,12 +898,20 @@ test_api_request() {
     print_info "🚀 Starting bot..."
     print_info "📡 Bot API will be accessible on port $main_port"
     
+    # Get .env file argument if .env exists
+    local env_file_arg=$(get_env_file_arg)
+    if [ -n "$env_file_arg" ]; then
+        print_info "📄 Using .env file for environment variables"
+    fi
+    
     # Start the bot and capture logs
     local log_file="/tmp/api-test-$(date +%s).log"
     echo "$processed_config" | docker run -i \
         -p $main_port:8080 \
+        $env_file_arg \
         -e RECORDING=true \
-        -v "$(pwd)/$output_dir:/app/data" \
+        -e ENVIRON="local" \
+        -v "$(pwd)/$output_dir:/app/recordings" \
         "$(get_docker_image)" 2>&1 | tee "$log_file" &
     
     local docker_pid=$!
