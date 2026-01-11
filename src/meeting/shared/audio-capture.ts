@@ -1,45 +1,45 @@
 // Shared Web Audio mixing for Meet and Teams
 // Factory approach to eliminate code duplication
 
-import { Page } from '@playwright/test'
-import { Streaming } from '../../streaming'
-import { formatError } from '../../utils/Logger'
+import { type Page } from "@playwright/test"
+import { Streaming } from "../../streaming"
+import { formatError } from "../../utils/Logger"
 
 export interface AudioCaptureConfig {
-    provider: 'Meet' | 'Teams'
-    callbackName: string
-    logPrefix: string
-    stopFunctionName: string
-    // Teams needs periodic scanning, Meet doesn't
-    enablePeriodicScanning?: boolean
+  provider: "Meet" | "Teams"
+  callbackName: string
+  logPrefix: string
+  stopFunctionName: string
+  // Teams needs periodic scanning, Meet doesn't
+  enablePeriodicScanning?: boolean
 }
 
 const MEET_CONFIG: AudioCaptureConfig = {
-    provider: 'Meet',
-    callbackName: 'onMeetMixedAudioChunk',
-    logPrefix: '[MeetAudio]',
-    stopFunctionName: '__meetAudioStop',
-    enablePeriodicScanning: false,
+  provider: "Meet",
+  callbackName: "onMeetMixedAudioChunk",
+  logPrefix: "[MeetAudio]",
+  stopFunctionName: "__meetAudioStop",
+  enablePeriodicScanning: false
 }
 
 const TEAMS_CONFIG: AudioCaptureConfig = {
-    provider: 'Teams',
-    callbackName: 'onTeamsMixedAudioChunk',
-    logPrefix: '[TeamsAudio]',
-    stopFunctionName: '__teamsAudioStop',
-    enablePeriodicScanning: true,
+  provider: "Teams",
+  callbackName: "onTeamsMixedAudioChunk",
+  logPrefix: "[TeamsAudio]",
+  stopFunctionName: "__teamsAudioStop",
+  enablePeriodicScanning: true
 }
 
 /**
  * Generate the browser-side audio capture script
  */
 function generateAudioCaptureScript(config: AudioCaptureConfig): string {
-    const { callbackName, logPrefix, stopFunctionName, enablePeriodicScanning } = config
+  const { callbackName, logPrefix, stopFunctionName, enablePeriodicScanning } = config
 
-    return `
+  return `
         (function() {
             try {
-                console.log('${logPrefix} Initializing Web Audio mixer...')
+                console.log("${logPrefix} Initializing Web Audio mixer...")
 
                 // Create AudioContext for mixing
                 const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
@@ -61,13 +61,13 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                     const mixedTrack = mixerDestination.stream.getAudioTracks()[0]
                     if (!mixedTrack) {
-                        console.error('${logPrefix} No mixed audio track available')
+                        console.error("${logPrefix} No mixed audio track available")
                         return
                     }
 
                     try {
-                        if (typeof MediaStreamTrackProcessor === 'undefined') {
-                            console.error('${logPrefix} MediaStreamTrackProcessor not available')
+                        if (typeof MediaStreamTrackProcessor === "undefined") {
+                            console.error("${logPrefix} MediaStreamTrackProcessor not available")
                             return
                         }
 
@@ -79,7 +79,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         abortController = new AbortController()
                         const signal = abortController.signal
 
-                        console.log('${logPrefix} Started Web Audio mixed stream processor')
+                        console.log("${logPrefix} Started Web Audio mixed stream processor")
 
                         // Read pre-mixed frames continuously with cancellation support
                         const processFrames = async (signal) => {
@@ -87,30 +87,30 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                             // Handle abort signal
                             const onAbort = () => {
-                                console.log('${logPrefix} Abort signal received, cancelling reader...')
+                                console.log("${logPrefix} Abort signal received, cancelling reader...")
                                 reader.cancel().catch(err => {
-                                    console.log('${logPrefix} Reader cancel error (expected):', err.message || err)
+                                    console.log("${logPrefix} Reader cancel error (expected):", err.message || err)
                                 })
                             }
-                            signal.addEventListener('abort', onAbort)
+                            signal.addEventListener("abort", onAbort)
 
                             try {
                                 while (true) {
                                     // Check for abort before reading
                                     if (signal.aborted) {
-                                        console.log('${logPrefix} Processing aborted (pre-read check)')
+                                        console.log("${logPrefix} Processing aborted (pre-read check)")
                                         break
                                     }
 
                                     const { done, value: frame } = await reader.read()
                                     if (done) {
-                                        console.log('${logPrefix} Reader done, stream ended')
+                                        console.log("${logPrefix} Reader done, stream ended")
                                         break
                                     }
 
                                     // Check for abort after reading
                                     if (signal.aborted) {
-                                        console.log('${logPrefix} Processing aborted (post-read check)')
+                                        console.log("${logPrefix} Processing aborted (post-read check)")
                                         if (frame) frame.close()
                                         break
                                     }
@@ -140,7 +140,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                         }
 
                                         // Send pre-mixed audio to Node.js
-                                        if (typeof window.${callbackName} === 'function') {
+                                        if (typeof window.${callbackName} === "function") {
                                             window.${callbackName}({
                                                 audioData: Array.from(audioData),
                                                 sampleRate: frame.sampleRate,
@@ -149,20 +149,20 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                             })
                                             chunksSent++
                                             if (chunksSent === 1) {
-                                                console.log('${logPrefix} First audio chunk sent to Node.js')
+                                                console.log("${logPrefix} First audio chunk sent to Node.js")
                                             } else if (chunksSent % 100 === 0) {
-                                                console.log('${logPrefix} Sent ' + chunksSent + ' chunks to Node.js')
+                                                console.log("${logPrefix} Sent " + chunksSent + " chunks to Node.js")
                                             }
                                         } else {
                                             if (chunksSent === 0) {
-                                                console.error('${logPrefix} window.${callbackName} not available!')
+                                                console.error("${logPrefix} window.${callbackName} not available!")
                                             }
                                         }
 
                                         frame.close()
                                         currentFrame = null
                                     } catch (err) {
-                                        console.error('${logPrefix} Frame processing error:', err)
+                                        console.error("${logPrefix} Frame processing error:", err)
                                         if (currentFrame) {
                                             currentFrame.close()
                                             currentFrame = null
@@ -171,31 +171,31 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                 }
                             } catch (err) {
                                 if (signal.aborted) {
-                                    console.log('${logPrefix} Stream read cancelled (abort)')
+                                    console.log("${logPrefix} Stream read cancelled (abort)")
                                 } else {
-                                    console.error('${logPrefix} Mixed stream error:', err)
+                                    console.error("${logPrefix} Mixed stream error:", err)
                                 }
                             } finally {
                                 // Cleanup
-                                signal.removeEventListener('abort', onAbort)
+                                signal.removeEventListener("abort", onAbort)
                                 if (currentFrame) {
                                     try { currentFrame.close() } catch (e) {}
                                 }
                                 try {
                                     reader.releaseLock()
-                                    console.log('${logPrefix} Reader lock released')
+                                    console.log("${logPrefix} Reader lock released")
                                 } catch (e) {
-                                    console.log('${logPrefix} Reader lock release error:', e.message || e)
+                                    console.log("${logPrefix} Reader lock release error:", e.message || e)
                                 }
                                 mixedStreamProcessor = null
-                                console.log('${logPrefix} Processor cleanup complete, sent ' + chunksSent + ' total chunks')
+                                console.log("${logPrefix} Processor cleanup complete, sent " + chunksSent + " total chunks")
                             }
                         }
 
                         // Start processing and store promise for await on cleanup
                         processorPromise = processFrames(signal)
                     } catch (e) {
-                        console.error('${logPrefix} Failed to start mixed stream processor:', e)
+                        console.error("${logPrefix} Failed to start mixed stream processor:", e)
                     }
                 }
 
@@ -207,14 +207,14 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     }
 
                     if (abortController) {
-                        console.log('${logPrefix} Stopping mixed stream processor...')
+                        console.log("${logPrefix} Stopping mixed stream processor...")
                         abortController.abort()
                         if (processorPromise) {
                             await processorPromise
                         }
                         abortController = null
                         processorPromise = null
-                        console.log('${logPrefix} Mixed stream processor stopped')
+                        console.log("${logPrefix} Mixed stream processor stopped")
                     }
                 }
 
@@ -222,14 +222,14 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                 window.${stopFunctionName} = stopMixedStreamProcessor
 
                 // Auto-cleanup on page unload
-                window.addEventListener('beforeunload', () => {
+                window.addEventListener("beforeunload", () => {
                     stopMixedStreamProcessor()
                 })
 
                 // Auto-cleanup on visibility change
-                document.addEventListener('visibilitychange', () => {
-                    if (document.visibilityState === 'hidden') {
-                        console.log('${logPrefix} Page hidden, stopping processor...')
+                document.addEventListener("visibilitychange", () => {
+                    if (document.visibilityState === "hidden") {
+                        console.log("${logPrefix} Page hidden, stopping processor...")
                         stopMixedStreamProcessor()
                     }
                 })
@@ -239,7 +239,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     if (mixedAudioSources.has(track.id)) return // Already connected
 
                     try {
-                        if (audioCtx.state === 'suspended') audioCtx.resume()
+                        if (audioCtx.state === "suspended") audioCtx.resume()
 
                         const stream = new MediaStream([track])
                         const source = audioCtx.createMediaStreamSource(stream)
@@ -248,7 +248,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         source.connect(mixerDestination)
                         mixedAudioSources.set(track.id, source)
 
-                        console.log('${logPrefix} Connected track ' + track.id + ' to mixer (' + mixedAudioSources.size + ' total)')
+                        console.log("${logPrefix} Connected track " + track.id + " to mixer (" + mixedAudioSources.size + " total)")
 
                         // Start the processor when first track is connected
                         if (mixedAudioSources.size === 1) {
@@ -258,25 +258,25 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         track.onended = () => {
                             source.disconnect()
                             mixedAudioSources.delete(track.id)
-                            console.log('${logPrefix} Disconnected track ' + track.id + ' from mixer')
+                            console.log("${logPrefix} Disconnected track " + track.id + " from mixer")
                         }
                     } catch (e) {
-                        console.error('${logPrefix} Failed to connect track to mixer:', e)
+                        console.error("${logPrefix} Failed to connect track to mixer:", e)
                     }
                 }
 
                 // Intercept RTCPeerConnection to capture audio tracks
-                if (typeof window.RTCPeerConnection !== 'undefined') {
+                if (typeof window.RTCPeerConnection !== "undefined") {
                     const OriginalPC = window.RTCPeerConnection
-                    ${enablePeriodicScanning ? 'const allPeerConnections = []' : ''}
+                    ${enablePeriodicScanning ? "const allPeerConnections = []" : ""}
 
                     window.RTCPeerConnection = function (...args) {
                         const pc = new OriginalPC(...args)
-                        ${enablePeriodicScanning ? 'allPeerConnections.push(pc)' : ''}
+                        ${enablePeriodicScanning ? "allPeerConnections.push(pc)" : ""}
 
-                        pc.addEventListener('track', (event) => {
-                            if (event.track.kind === 'audio') {
-                                console.log('${logPrefix} Audio track detected:', event.track.id)
+                        pc.addEventListener("track", (event) => {
+                            if (event.track.kind === "audio") {
+                                console.log("${logPrefix} Audio track detected:", event.track.id)
                                 connectTrackToMixer(event.track)
                             }
                         })
@@ -299,10 +299,10 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                             try {
                                 const receivers = pc.getReceivers()
                                 receivers.forEach(receiver => {
-                                    if (receiver.track && receiver.track.kind === 'audio') {
+                                    if (receiver.track && receiver.track.kind === "audio") {
                                         foundTracks++
                                         if (!scannedTracks.has(receiver.track.id)) {
-                                            console.log('${logPrefix} Found audio track from PC[' + index + ']:', receiver.track.id)
+                                            console.log("${logPrefix} Found audio track from PC[" + index + "]:", receiver.track.id)
                                             connectTrackToMixer(receiver.track)
                                             scannedTracks.add(receiver.track.id)
                                             newTracks++
@@ -310,12 +310,12 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                     }
                                 })
                             } catch (e) {
-                                console.error('${logPrefix} Error scanning PC[' + index + ']:', e)
+                                console.error("${logPrefix} Error scanning PC[" + index + "]:", e)
                             }
                         })
 
                         if (newTracks > 0) {
-                            console.log('${logPrefix} Scan: ' + newTracks + ' new tracks, ' + foundTracks + ' total')
+                            console.log("${logPrefix} Scan: " + newTracks + " new tracks, " + foundTracks + " total")
                         }
                     }
 
@@ -327,7 +327,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         }
                         scanTimeoutIds.forEach(id => clearTimeout(id))
                         scanTimeoutIds.length = 0
-                        console.log('${logPrefix} Periodic scanning stopped')
+                        console.log("${logPrefix} Periodic scanning stopped")
                     }
 
                     // Register cleanup function for stopMixedStreamProcessor to call
@@ -338,14 +338,14 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     scanTimeoutIds.push(setTimeout(scanForTracks, 5000))
                     scanTimeoutIds.push(setTimeout(scanForTracks, 10000))
                     periodicScanIntervalId = setInterval(scanForTracks, 30000)
-                    ` : ''}
+                    ` : ""}
 
-                    console.log('${logPrefix} RTCPeerConnection intercepted')
+                    console.log("${logPrefix} RTCPeerConnection intercepted")
                 }
 
-                console.log('${logPrefix} Web Audio mixer initialized')
+                console.log("${logPrefix} Web Audio mixer initialized")
             } catch (e) {
-                console.error('${logPrefix} Fatal Error:', e)
+                console.error("${logPrefix} Fatal Error:", e)
             }
         })();
     `
@@ -355,104 +355,104 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
  * Create audio capture functions for a specific provider
  */
 export function createAudioCapture(config: AudioCaptureConfig) {
-    const { callbackName, logPrefix, stopFunctionName } = config
+  const { callbackName, logPrefix, stopFunctionName } = config
 
-    return {
-        /**
-         * Enable audio capture for this provider
-         */
-        enable: async (page: Page): Promise<void> => {
-            // Expose callback function for audio chunks
-            // Guard against duplicate registration (may be called multiple times)
+  return {
+    /**
+     * Enable audio capture for this provider
+     */
+    enable: async (page: Page): Promise<void> => {
+      // Expose callback function for audio chunks
+      // Guard against duplicate registration (may be called multiple times)
+      try {
+        await page.exposeFunction(callbackName, async (audioChunk: {
+          audioData: number[]
+          sampleRate: number
+          timestamp: number
+          numberOfFrames: number
+        }) => {
+          if (Streaming.instance) {
             try {
-                await page.exposeFunction(callbackName, async (audioChunk: {
-                    audioData: number[]
-                    sampleRate: number
-                    timestamp: number
-                    numberOfFrames: number
-                }) => {
-                    if (Streaming.instance) {
-                        try {
-                            Streaming.instance.processMixedAudioChunk(audioChunk)
-                        } catch (error) {
-                            console.error(`${logPrefix} Failed to process mixed audio chunk:`, formatError(error))
-                        }
-                    }
-                })
+              Streaming.instance.processMixedAudioChunk(audioChunk)
             } catch (error) {
-                // Ignore duplicate registration error (function already exposed)
-                const errorMessage = error instanceof Error ? error.message : String(error)
-                if (errorMessage.includes('has been already registered')) {
-                    console.log(`${logPrefix} Callback ${callbackName} already registered, skipping`)
-                } else {
-                    throw error
-                }
+              console.error(`${logPrefix} Failed to process mixed audio chunk:`, formatError(error))
             }
+          }
+        })
+      } catch (error) {
+        // Ignore duplicate registration error (function already exposed)
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        if (errorMessage.includes("has been already registered")) {
+          console.log(`${logPrefix} Callback ${callbackName} already registered, skipping`)
+        } else {
+          throw error
+        }
+      }
 
-            // Inject the audio capture script
-            const script = generateAudioCaptureScript(config)
-            try {
-                await page.addInitScript(script)
-                console.log(`${logPrefix} Web Audio mixer script injected`)
-            } catch (error) {
-                console.error(`${logPrefix} Failed to inject mixer script:`, formatError(error))
-            }
-        },
+      // Inject the audio capture script
+      const script = generateAudioCaptureScript(config)
+      try {
+        await page.addInitScript(script)
+        console.log(`${logPrefix} Web Audio mixer script injected`)
+      } catch (error) {
+        console.error(`${logPrefix} Failed to inject mixer script:`, formatError(error))
+      }
+    },
 
-        /**
-         * Stop audio capture gracefully
-         */
-        stop: async (page: Page): Promise<void> => {
-            try {
-                await page.evaluate((stopFn) => {
-                    if (typeof (window as any)[stopFn] === 'function') {
-                        return (window as any)[stopFn]()
-                    }
-                }, stopFunctionName)
-                console.log(`${logPrefix} Audio capture stopped from Node.js`)
-            } catch (error) {
-                console.error(`${logPrefix} Failed to stop audio capture:`, formatError(error))
-            }
-        },
+    /**
+     * Stop audio capture gracefully
+     */
+    stop: async (page: Page): Promise<void> => {
+      try {
+        await page.evaluate((stopFn) => {
+          if (typeof (window as any)[stopFn] === "function") {
+            return (window as any)[stopFn]()
+          }
+        }, stopFunctionName)
+        console.log(`${logPrefix} Audio capture stopped from Node.js`)
+      } catch (error) {
+        console.error(`${logPrefix} Failed to stop audio capture:`, formatError(error))
+      }
+    },
 
-        /**
-         * Verify audio capture is working
-         */
-        verify: async (page: Page): Promise<boolean> => {
-            try {
-                const status = await page.evaluate((cbName) => {
-                    return {
-                        hasAudioContext: typeof AudioContext !== 'undefined' || typeof (window as any).webkitAudioContext !== 'undefined',
-                        hasMediaStreamTrackProcessor: typeof (window as any).MediaStreamTrackProcessor !== 'undefined',
-                        hasCallback: typeof (window as any)[cbName] === 'function',
-                    }
-                }, callbackName)
+    /**
+     * Verify audio capture is working
+     */
+    verify: async (page: Page): Promise<boolean> => {
+      try {
+        const status = await page.evaluate((cbName) => {
+          return {
+            hasAudioContext: typeof AudioContext !== "undefined" || typeof (window as any).webkitAudioContext !== "undefined",
+            hasMediaStreamTrackProcessor: typeof (window as any).MediaStreamTrackProcessor !== "undefined",
+            hasCallback: typeof (window as any)[cbName] === "function"
+          }
+        }, callbackName)
 
-                console.log(`${logPrefix} Status:`, status)
+        console.log(`${logPrefix} Status:`, status)
 
-                if (!status.hasAudioContext) {
-                    console.error(`${logPrefix} AudioContext not available`)
-                    return false
-                }
+        if (!status.hasAudioContext) {
+          console.error(`${logPrefix} AudioContext not available`)
+          return false
+        }
 
-                if (!status.hasMediaStreamTrackProcessor) {
-                    console.error(`${logPrefix} MediaStreamTrackProcessor not available`)
-                    return false
-                }
+        if (!status.hasMediaStreamTrackProcessor) {
+          console.error(`${logPrefix} MediaStreamTrackProcessor not available`)
+          return false
+        }
 
-                if (!status.hasCallback) {
-                    console.error(`${logPrefix} Callback not registered`)
-                    return false
-                }
+        if (!status.hasCallback) {
+          console.error(`${logPrefix} Callback not registered`)
+          return false
+        }
 
-                console.log(`${logPrefix} Audio capture verified`)
-                return true
-            } catch (error) {
-                console.error(`${logPrefix} Verification failed:`, formatError(error))
-                return false
-            }
-        },
+        console.log(`${logPrefix} Audio capture verified`)
+        return true
+      } catch (error) {
+        console.error(`${logPrefix} Verification failed:`, formatError(error))
+        return false
+      }
     }
+  }
 }
 
 // Pre-configured instances for Meet and Teams
