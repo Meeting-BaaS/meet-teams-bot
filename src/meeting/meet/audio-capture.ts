@@ -6,9 +6,11 @@ import { meetAudioCapture } from "../shared/audio-capture"
 
 /**
  * Enable Web Audio mixing for Google Meet
+ * @param enableMixing - If false, only creates __audioTrackLayer (for network diarization)
+ *                       If true, also enables audio mixing/streaming
  */
-export async function enableMeetAudioCapture(page: Page): Promise<void> {
-  return meetAudioCapture.enable(page)
+export async function enableMeetAudioCapture(page: Page, enableMixing = true): Promise<void> {
+  return meetAudioCapture.enable(page, enableMixing)
 }
 
 /**

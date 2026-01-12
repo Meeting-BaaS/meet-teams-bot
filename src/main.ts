@@ -12,6 +12,7 @@ import {
   formatError,
   setupConsoleLogger,
   setupExitHandler,
+  setupFileLogging,
   uploadLogsToS3,
   uploadScreenshotsToS3
 } from "./utils/Logger"
@@ -48,6 +49,8 @@ async function readFromStdin(): Promise<MeetingParams> {
 
         GLOBAL.set(parsedParams)
         PathManager.getInstance().initializePaths()
+        // Setup file logging now that meeting params are set
+        setupFileLogging()
         resolve(parsedParams)
       } catch (error) {
         if (error instanceof ZodError) {

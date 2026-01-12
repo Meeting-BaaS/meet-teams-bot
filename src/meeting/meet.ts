@@ -1,8 +1,8 @@
 import type { BrowserContext, Page } from "@playwright/test"
+import { listenPage } from "../browser/page-logger"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
-import { Streaming } from "../streaming"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
 import { formatError } from "../utils/Logger"
@@ -39,6 +39,10 @@ export class MeetProvider implements MeetingProviderInterface {
       console.log("Creating new page in existing context...")
       const page = await browserContext.newPage()
 
+      // Set up page logger IMMEDIATELY so we can see logs from injected scripts
+      listenPage(page)
+      console.log("[Meet] Page logger set up")
+
       // Set permissions based on streaming_input
       if (streaming_input) {
         await browserContext.grantPermissions(["microphone", "camera"])
@@ -46,11 +50,38 @@ export class MeetProvider implements MeetingProviderInterface {
         await browserContext.grantPermissions(["camera"])
       }
 
-      // Enable Web Audio mixing for streaming
-      // Check config directly, not Streaming.instance (which may not be instantiated yet)
-      if (GLOBAL.get().streaming_output) {
-        await enableMeetAudioCapture(page)
+      // Always enable audio track layer (for network diarization)
+      // Only enable mixing/streaming if streaming_output is configured
+      const enableMixing = !!GLOBAL.get().streaming_output
+      await enableMeetAudioCapture(page, enableMixing)
+      if (enableMixing) {
         console.log("[Meet] ✅ Web Audio capture enabled for streaming")
+      } else {
+        console.log("[Meet] ✅ Audio track layer enabled for network diarization (streaming disabled)")
+      }
+
+      // Setup network interception scripts BEFORE navigation
+      // addInitScript must be called before page.goto() to work properly
+      try {
+        const { setupNetworkInterceptionScripts } = await import(
+          "./meet/network-interception"
+        )
+        const success = await setupNetworkInterceptionScripts(page)
+        if (success) {
+          console.log("[Meet] ✅ Network interception scripts set up")
+        } else {
+          console.warn(
+            "[Meet] ⚠️ Network interception scripts setup returned false, will fallback to UI-based detection"
+          )
+          GLOBAL.setNetworkInterceptionSetupFailed()
+        }
+      } catch (error) {
+        console.warn(
+          "[Meet] ⚠️ Failed to setup network interception scripts, will fallback to UI-based detection:",
+          formatError(error)
+        )
+        // Mark as failed so we don't retry in in-call-state
+        GLOBAL.setNetworkInterceptionSetupFailed()
       }
 
       console.log(`Navigating to ${link}...`)
@@ -257,12 +288,9 @@ export class MeetProvider implements MeetingProviderInterface {
         }
       }
 
-      if (GLOBAL.get().recording_mode !== "gallery_view") {
-        // Capture DOM state before opening people panel
-        await htmlSnapshot.captureSnapshot(page, "meet_people_panel_before_open")
-
-        await findShowEveryOne(page, true, cancelCheck)
-      }
+      // Note: People button click is now handled in startUIBasedObservation() 
+      // when UI-based detection is actually used (fallback mode)
+      // This keeps the fallback tight - People panel only opens when needed
     } catch (error) {
       console.error("Error in joinMeeting:", formatError(error))
       throw error
@@ -312,7 +340,7 @@ export class MeetProvider implements MeetingProviderInterface {
   }
 }
 
-async function findShowEveryOne(page: Page, click: boolean, cancelCheck: () => boolean) {
+export async function findShowEveryOne(page: Page, click: boolean, cancelCheck: () => boolean) {
   let showEveryOneFound = false
   let inMeetingConfirmed = false
 

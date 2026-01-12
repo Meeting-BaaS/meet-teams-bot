@@ -40,11 +40,11 @@ export class TeamsProvider implements MeetingProviderInterface {
       origin: url.origin
     })
 
-    // Enable Web Audio mixing for clean streaming (KISS approach!)
-    // Check config directly, not Streaming.instance (which may not be instantiated yet)
+    // Enable Web Audio mixing for streaming (Teams doesn't use network diarization)
+    // Only enable if streaming_output is configured
     if (GLOBAL.get().streaming_output) {
       try {
-        await enableTeamsAudioCapture(page)
+        await enableTeamsAudioCapture(page, true)
         console.log("[Teams] ✅ Web Audio capture enabled for streaming")
       } catch (error) {
         console.error(
@@ -52,8 +52,6 @@ export class TeamsProvider implements MeetingProviderInterface {
           formatError(error)
         )
       }
-    } else {
-      console.log("[Teams] ℹ️ Streaming not configured, skipping audio capture setup")
     }
 
     try {

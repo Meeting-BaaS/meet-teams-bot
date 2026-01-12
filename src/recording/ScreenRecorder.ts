@@ -382,6 +382,10 @@ export class ScreenRecorder extends EventEmitter {
   private setupProcessMonitoring(): void {
     if (!this.ffmpegProcess) return
 
+    // Remove any existing listeners to prevent duplicates
+    this.ffmpegProcess.removeAllListeners("error")
+    this.ffmpegProcess.removeAllListeners("exit")
+
     this.ffmpegProcess.on("error", (error) => {
       console.error("FFmpeg error:", formatError(error))
       this.emit("error", error)
@@ -424,6 +428,9 @@ export class ScreenRecorder extends EventEmitter {
     const errorCooldownMs = 10000 // 10 second cooldown - less aggressive
     let consecutiveErrors = 0
     const maxConsecutiveErrors = 10 // Much less aggressive
+
+    // Remove any existing stderr listeners to prevent duplicates
+    this.ffmpegProcess.stderr?.removeAllListeners("data")
 
     this.ffmpegProcess.stderr?.on("data", (data) => {
       const output = data.toString()
@@ -532,6 +539,12 @@ export class ScreenRecorder extends EventEmitter {
       }
     })
 
+    // Clear any existing error monitor interval to prevent duplicates
+    if (this.errorMonitorIntervalId) {
+      clearInterval(this.errorMonitorIntervalId)
+      this.errorMonitorIntervalId = null
+    }
+
     // Reset error count periodically but less frequently
     this.errorMonitorIntervalId = setInterval(() => {
       if (errorCount > 0) {
@@ -555,6 +568,9 @@ export class ScreenRecorder extends EventEmitter {
     monitor.start()
 
     try {
+      // Remove any existing listeners to prevent duplicates
+      this.ffmpegProcess.stdout?.removeAllListeners("data")
+
       this.ffmpegProcess.stdout?.on("data", (data: Buffer) => {
         try {
           // Handle chunk boundaries: Float32 frames can split across data events
@@ -597,6 +613,12 @@ export class ScreenRecorder extends EventEmitter {
 
   private setupFileSizeMonitoring(): void {
     if (!this.rawAudioPath) return
+
+    // Clear any existing interval to prevent duplicates
+    if (this.fileSizeMonitorIntervalId) {
+      clearInterval(this.fileSizeMonitorIntervalId)
+      this.fileSizeMonitorIntervalId = null
+    }
 
     let lastFileSize = 0
     let lastCheckTime = Date.now()
