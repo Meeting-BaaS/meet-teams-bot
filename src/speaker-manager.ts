@@ -7,6 +7,8 @@ import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
 import type { Participant, SpeakerData } from "./types"
 import { PathManager } from "./utils/PathManager"
+import { generateStableUserId, createSequentialIdManager } from "./utils/speaker-id"
+import type { NetworkUser } from "./meeting/meet/network-interception/types"
 
 export class SpeakerManager {
   private static instance: SpeakerManager | null = null
@@ -15,6 +17,8 @@ export class SpeakerManager {
   private lastSpeakerTime: number | null = null
   private diarizationTracker: DiarizationTracker | null = null
   private lastCallbackTime: number | null = null // Track when we last received ANY callback
+  // Sequential ID manager for network-detected speakers
+  private sequentialIdManager = createSequentialIdManager()
 
   private constructor() {}
 
@@ -79,6 +83,57 @@ export class SpeakerManager {
       await this.handleSpeakersTranscription(speakers, speakersCount)
     } catch (error) {
       console.error("[SpeakerManager] ❌ Error handling speaker update:", error)
+      throw error
+    }
+  }
+
+  /**
+   * Handle network speaker updates from network interception.
+   * Converts NetworkUser[] to SpeakerData[] and stores metadata in singleton.
+   */
+  public async handleNetworkSpeakerUpdate(
+    networkUsers: NetworkUser[],
+    timestamp: number
+  ): Promise<void> {
+    try {
+      // Convert network users to SpeakerData format
+      const speakers: SpeakerData[] = networkUsers.map((user) => {
+        // Use fullName as stable identifier, fallback to name (displayName)
+        const stableName = user.fullName || user.name || "Unknown"
+        const stableId = generateStableUserId(stableName, user.profilePicture)
+        const sequentialId = this.sequentialIdManager.getSequentialId(stableId)
+
+        // Store participant metadata in singleton
+        const participant: Participant = {
+          name: stableName, // Full name (stable identifier)
+          id: sequentialId,
+          displayName: user.displayName !== stableName ? user.displayName : undefined,
+          profilePicture: user.profilePicture,
+          participantId: user.deviceId, // Network payload ID for debugging
+          isNetworkDetected: true
+        }
+
+        // Add all participants (whether speaking or not)
+        GLOBAL.addParticipantIfNotExists(participant)
+
+        // Add speakers who are currently speaking
+        if (user.isSpeaking === true) {
+          GLOBAL.addSpeakerIfNotExists(participant)
+        }
+
+        // Return SpeakerData for diarization
+        return {
+          name: stableName,
+          id: sequentialId,
+          timestamp,
+          isSpeaking: user.isSpeaking === true
+        }
+      })
+
+      // Process as regular speaker update
+      await this.handleSpeakerUpdate(speakers)
+    } catch (error) {
+      console.error("[SpeakerManager] ❌ Error handling network speaker update:", error)
       throw error
     }
   }

@@ -44,8 +44,14 @@ export type SpeakerData = {
 export type MeetingProvider = output<typeof MeetingPlatformSchema>
 
 export type Participant = {
-  name: string
-  id: number | null
+  name: string // Full name (stable identifier from network, or display name from UI)
+  id: number | null // Our sequential ID (1, 2, 3...)
+  // Network-detected fields (optional)
+  displayName?: string // Display name shown in UI (if different from name)
+  profilePicture?: string // Profile picture URL
+  odaId?: string // ODA ID from network (if available)
+  participantId?: string // Participant ID from network payload (for debugging/correlation, different from our sequential id)
+  isNetworkDetected?: boolean // Flag to indicate network vs UI detection
 }
 
 export type ArtifactType = "audio" | "video" | "screenshots" | "diarization"

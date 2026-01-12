@@ -2,7 +2,7 @@ import type { Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 
 // Controlled via enablePrintPageLogs()/disablePrintPageLogs()
-// Enabled when DEBUG_LOGS is true OR when debugging specific scenarios (e.g., no speakers detected)
+// Enabled when LOG_LEVEL is "debug" OR when debugging specific scenarios (e.g., no speakers detected)
 let PRINT_PAGE_LOGS = envVars.LOG_LEVEL === "debug"
 
 const formatValue = (value: unknown): string => {
@@ -39,12 +39,16 @@ export function listenPage(page: Page) {
       const text = message.text()
       const location = message.location()
 
-      // Only show DEBUG logs when --debug flag is used
+      // Only show DEBUG logs when LOG_LEVEL=debug
       const isDebugLog = text.includes("DEBUG")
+      const isNetworkInterceptorLog = text.includes("[NetworkInterceptor]") || text.includes("[MeetAudio]") || text.includes("[TeamsAudio]")
 
-      // Print page logs only if PRINT_PAGE_LOGS is true or if DEBUG_LOGS is true and the log contains DEBUG
-      if (!PRINT_PAGE_LOGS && (!(envVars.LOG_LEVEL === "debug") || !isDebugLog)) {
-        return // Skip all logs unless --debug is enabled and log contains DEBUG
+      // Print page logs if:
+      // 1. PRINT_PAGE_LOGS is true (LOG_LEVEL=debug), OR
+      // 2. LOG_LEVEL=debug and log contains "DEBUG", OR
+      // 3. LOG_LEVEL=debug and it's a network interceptor or audio capture log (always show these for debugging)
+      if (!PRINT_PAGE_LOGS && !(envVars.LOG_LEVEL === "debug" && (isDebugLog || isNetworkInterceptorLog))) {
+        return // Skip logs unless LOG_LEVEL=debug and conditions above are met
       }
 
       const args = await Promise.all(

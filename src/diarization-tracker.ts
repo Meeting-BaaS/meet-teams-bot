@@ -6,6 +6,7 @@ import { PathManager } from "./utils/PathManager"
 
 interface DiarizationSegment {
   speaker: string
+  user_id?: number // Optional: Sequential user ID for network-detected speakers
   start_time: number
   end_time: number
 }
@@ -17,7 +18,7 @@ interface DiarizationSegment {
 export class DiarizationTracker {
   private static instance: DiarizationTracker | null = null
   private fileStream: WriteStream | null = null
-  private currentSegment: { speaker: string; startTime: number } | null = null
+  private currentSegment: { speaker: string; startTime: number; userId?: number } | null = null
   private filePath: string
   private isEnded = false
 
@@ -54,7 +55,8 @@ export class DiarizationTracker {
       const closedSegment: DiarizationSegment = {
         speaker: this.currentSegment.speaker,
         start_time: this.currentSegment.startTime,
-        end_time: relativeTime
+        end_time: relativeTime,
+        ...(this.currentSegment.userId !== undefined && { user_id: this.currentSegment.userId })
       }
       this.writeToFile(closedSegment)
     }
@@ -62,7 +64,8 @@ export class DiarizationTracker {
     // Start new segment (keep in memory)
     this.currentSegment = {
       speaker: speaker.name,
-      startTime: relativeTime
+      startTime: relativeTime,
+      ...(speaker.id !== undefined && { userId: speaker.id })
     }
   }
 
@@ -90,7 +93,8 @@ export class DiarizationTracker {
           const finalSegment: DiarizationSegment = {
             speaker: this.currentSegment.speaker,
             start_time: this.currentSegment.startTime,
-            end_time: relativeTime
+            end_time: relativeTime,
+            ...(this.currentSegment.userId !== undefined && { user_id: this.currentSegment.userId })
           }
           const line = `${JSON.stringify(finalSegment)}\n`
 

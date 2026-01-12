@@ -12,6 +12,8 @@ class Global {
   private audioChunks: ArtifactKey[] = []
   private participants: Participant[] = []
   private speakers: Participant[] = []
+  private networkInterceptionSetupFailed = false // Track if network interception scripts failed to load
+  private networkDiarizationActive = false // Track if network diarization is actually active and working
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -222,6 +224,42 @@ class Global {
 
   public getSpeakers(): Participant[] {
     return this.speakers
+  }
+
+  /**
+   * Mark network interception setup as failed.
+   * Used to skip retrying network interception in later states.
+   */
+  public setNetworkInterceptionSetupFailed(): void {
+    this.networkInterceptionSetupFailed = true
+  }
+
+  /**
+   * Check if network interception setup failed.
+   * If true, should skip network interception and use UI-based detection directly.
+   */
+  public hasNetworkInterceptionSetupFailed(): boolean {
+    return this.networkInterceptionSetupFailed
+  }
+
+  /**
+   * Set network diarization as active (defensive: only sets if not already set).
+   * This is called when network diarization is confirmed working (callback setup successful).
+   * Using setIfNotSet pattern allows defensive switching back to UI-based if needed.
+   */
+  public setNetworkDiarizationActiveIfNotSet(): void {
+    if (!this.networkDiarizationActive) {
+      this.networkDiarizationActive = true
+      console.log("[GLOBAL] ✅ Network diarization marked as active")
+    }
+  }
+
+  /**
+   * Check if network diarization is currently active.
+   * Returns true if network diarization is confirmed working.
+   */
+  public isNetworkDiarizationActive(): boolean {
+    return this.networkDiarizationActive
   }
 }
 

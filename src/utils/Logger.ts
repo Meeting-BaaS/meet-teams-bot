@@ -148,6 +148,55 @@ const logger = winston.createLogger({
   ]
 })
 
+// Track if file logging has been set up
+let fileLoggingSetup = false
+
+// Add file transport for local testing (serverless mode or local environment)
+// This should be called after meeting params are set (after GLOBAL.set())
+export function setupFileLogging(): void {
+  // Only setup once
+  if (fileLoggingSetup) return
+  
+  try {
+    // Only enable file logging in local/serverless mode
+    // In preprod/prod mode, the SQS process orchestrator will handle logging
+    if (envVars.SERVERLESS || envVars.ENVIRON === "local") {
+      const pathManager = PathManager.getInstance()
+      const logFilePath = path.join(pathManager.getBasePath(), "bot.log")
+      
+      // Ensure the directory exists
+      const logDir = path.dirname(logFilePath)
+      if (!fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true })
+      }
+
+      // Add file transport (plain format, no colors)
+      const fileFormat = winston.format.combine(
+        winston.format.timestamp({
+          format: () => new Date().toISOString()
+        }),
+        winston.format.printf(({ timestamp, level, message }) => {
+          return `${timestamp}  ${level} ${currentCaller}: ${message}`
+        })
+      )
+
+      logger.add(
+        new winston.transports.File({
+          filename: logFilePath,
+          format: fileFormat,
+          level: "debug"
+        })
+      )
+
+      fileLoggingSetup = true
+      console.log(`File logging enabled: ${logFilePath}`)
+    }
+  } catch (error) {
+    console.error("Failed to setup file logging:", formatError(error))
+    // Don't throw - file logging is optional
+  }
+}
+
 export function setupConsoleLogger() {
   console.log("Setting up console logger")
 

@@ -129,6 +129,9 @@ export class WaitingRoomState extends BaseState {
         meetingLink,
         GLOBAL.get().streaming_input
       )
+      // Page logger is already set up in openMeetingPage() before page.goto()
+      // so we can see logs from init scripts. BaseState.setupPageLoggers() runs
+      // too early (page doesn't exist yet) and would miss init script logs.
       console.info("Meeting page opened successfully")
     } catch (error) {
       console.error("Failed to open meeting page:", formatError(error))

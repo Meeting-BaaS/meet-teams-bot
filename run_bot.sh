@@ -381,7 +381,7 @@ run_with_config() {
     # Add debug logs environment variable if enabled
     local debug_env=""
     if [ "$debug_logs" = "true" ]; then
-        debug_env="-e DEBUG_LOGS=true"
+        debug_env="-e LOG_LEVEL=debug"
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
@@ -504,7 +504,7 @@ run_with_config_and_overrides() {
     # Add debug logs environment variable if enabled
     local debug_env=""
     if [ "$debug_logs" = "true" ]; then
-        debug_env="-e DEBUG_LOGS=true"
+        debug_env="-e LOG_LEVEL=debug"
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     
@@ -565,7 +565,7 @@ run_debug() {
     print_info "🐛 Starting DEBUG mode - speakers debug logs + VNC enabled"
     
     # Force enable debug modes
-    export DEBUG_LOGS=true
+    export DEBUG_LOGS=true  # This will be converted to LOG_LEVEL=debug in run_with_config
     export DEBUG=true
     
     # Call the regular run function with debug enabled
@@ -625,7 +625,7 @@ run_with_json() {
     # Add debug logs environment variable if enabled
     local debug_env=""
     if [ "$debug_logs" = "true" ]; then
-        debug_env="-e DEBUG_LOGS=true"
+        debug_env="-e LOG_LEVEL=debug"
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
     

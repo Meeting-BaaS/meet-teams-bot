@@ -6,9 +6,12 @@ import { teamsAudioCapture } from "../shared/audio-capture"
 
 /**
  * Enable Web Audio mixing for Teams
+ * @param enableMixing - If false, only creates __audioTrackLayer (for network diarization)
+ *                       If true, also enables audio mixing/streaming
+ *                       Note: Teams doesn't use network diarization, so this is always true for teams
  */
-export async function enableTeamsAudioCapture(page: Page): Promise<void> {
-  return teamsAudioCapture.enable(page)
+export async function enableTeamsAudioCapture(page: Page, enableMixing = true): Promise<void> {
+  return teamsAudioCapture.enable(page, enableMixing)
 }
 
 /**
