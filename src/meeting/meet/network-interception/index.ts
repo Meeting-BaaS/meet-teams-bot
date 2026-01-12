@@ -179,7 +179,7 @@ export async function verifyNetworkInterception(page: Page): Promise<boolean> {
       }
     })
 
-    console.error("[NetworkInterceptor] Status:", status)
+    console.log("[NetworkInterceptor] Status:", status)
 
     if (!status.hasInterceptor) {
       console.error("[NetworkInterceptor] ❌ Main interceptor not loaded")

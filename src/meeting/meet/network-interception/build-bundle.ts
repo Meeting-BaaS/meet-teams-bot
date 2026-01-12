@@ -53,7 +53,7 @@ function buildLibrariesBundle() {
         // ===== SETUP GLOBALS =====
         if (typeof window !== "undefined") {
             window.protobuf = window.protobuf || window.protobufjs;
-            window.pako = window.pako;
+            // pako is already set by the library itself
         }
 
         if (!window.protobuf || !window.pako) {

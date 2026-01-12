@@ -43,12 +43,10 @@ export function listenPage(page: Page) {
       const isDebugLog = text.includes("DEBUG")
       const isNetworkInterceptorLog = text.includes("[NetworkInterceptor]") || text.includes("[MeetAudio]") || text.includes("[TeamsAudio]")
 
-      // Print page logs if:
-      // 1. PRINT_PAGE_LOGS is true (LOG_LEVEL=debug), OR
-      // 2. LOG_LEVEL=debug and log contains "DEBUG", OR
-      // 3. LOG_LEVEL=debug and it's a network interceptor or audio capture log (always show these for debugging)
-      if (!PRINT_PAGE_LOGS && !(envVars.LOG_LEVEL === "debug" && (isDebugLog || isNetworkInterceptorLog))) {
-        return // Skip logs unless LOG_LEVEL=debug and conditions above are met
+      // Print if PRINT_PAGE_LOGS is enabled, or if LOG_LEVEL=debug and it's a relevant debug log
+      const shouldPrint = PRINT_PAGE_LOGS || (envVars.LOG_LEVEL === "debug" && (isDebugLog || isNetworkInterceptorLog))
+      if (!shouldPrint) {
+        return
       }
 
       const args = await Promise.all(

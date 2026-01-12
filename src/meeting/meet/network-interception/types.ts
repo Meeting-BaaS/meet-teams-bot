@@ -10,7 +10,7 @@ export type NetworkUser = {
   status: number
   isHost: boolean
   audioLevel?: number
-  // PII fields for enhanced logging
+  // PII fields for enhanced Speaker/Participant capture
   fullName?: string
   displayName?: string
   profilePicture?: string

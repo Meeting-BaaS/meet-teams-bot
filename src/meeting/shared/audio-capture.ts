@@ -356,7 +356,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                         foundTracks++
                                         if (!scannedTracks.has(receiver.track.id)) {
                                             console.log("${logPrefix} Found audio track from PC[" + index + "]:", receiver.track.id)
-                                            connectTrackToMixer(receiver.track)
+                                            ${enableMixing ? "connectTrackToMixer(receiver.track)" : "// Mixing disabled, skipping mixer connection"}
                                             scannedTracks.add(receiver.track.id)
                                             newTracks++
                                         }

@@ -44,6 +44,16 @@ const currentBotLogFile: string | null = null
 // Store current caller info globally
 let currentCaller = "unknown:0"
 
+// Base format shared between console and file logging
+const baseFormat = winston.format.combine(
+  winston.format.timestamp({
+    format: () => new Date().toISOString()
+  }),
+  winston.format.printf(({ timestamp, level, message }) => {
+    return `${timestamp}  ${level} ${currentCaller}: ${message}`
+  })
+)
+
 const format = winston.format.combine(
   winston.format.colorize({
     all: true,
@@ -54,12 +64,7 @@ const format = winston.format.combine(
       debug: "blue"
     }
   }),
-  winston.format.timestamp({
-    format: () => new Date().toISOString()
-  }),
-  winston.format.printf(({ timestamp, level, message }) => {
-    return `${timestamp}  ${level} ${currentCaller}: ${message}`
-  })
+  baseFormat
 )
 
 function formatTable(data: unknown): string {
@@ -170,15 +175,8 @@ export function setupFileLogging(): void {
         fs.mkdirSync(logDir, { recursive: true })
       }
 
-      // Add file transport (plain format, no colors)
-      const fileFormat = winston.format.combine(
-        winston.format.timestamp({
-          format: () => new Date().toISOString()
-        }),
-        winston.format.printf(({ timestamp, level, message }) => {
-          return `${timestamp}  ${level} ${currentCaller}: ${message}`
-        })
-      )
+      // Add file transport (plain format, no colors - reuse base format)
+      const fileFormat = baseFormat
 
       logger.add(
         new winston.transports.File({

@@ -1044,12 +1044,19 @@ export function browserInterceptionLogic(schema: any[]) {
             }
         }
 
-        setInterval(() => {
+        // Periodic state broadcasting
+        const broadcastIntervalId = setInterval(() => {
             broadcastCurrentState()
         }, 5000)
-        setTimeout(() => {
+        const broadcastTimeoutId = setTimeout(() => {
             broadcastCurrentState()
         }, 2000)
+
+        // Clean up timers on page unload
+        window.addEventListener("beforeunload", () => {
+            clearInterval(broadcastIntervalId)
+            clearTimeout(broadcastTimeoutId)
+        })
 
         const originalFetch = window.fetch
         window.fetch = async function (...args) {

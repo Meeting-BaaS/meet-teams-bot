@@ -37,7 +37,7 @@ export type StopRecordParams = {
 
 export type SpeakerData = {
   name: string
-  id: number
+  id: number // Sequential user ID (0 for UI-based detection, 1+ for network-based)
   timestamp: number
   isSpeaking: boolean
 }

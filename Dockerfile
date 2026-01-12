@@ -39,7 +39,7 @@ RUN npm run build:bundle
 # Compile TypeScript
 RUN npm run build
 # Copy bundle directory to build output (TypeScript doesn't copy non-TS files)
-RUN cp -r src/meeting/meet/network-interception/bundle build/src/meeting/meet/network-interception/ || true
+RUN cp -r src/meeting/meet/network-interception/bundle build/src/meeting/meet/network-interception/
 
 # Environment configuration
 ENV NODE_OPTIONS="--max-old-space-size=2048"
