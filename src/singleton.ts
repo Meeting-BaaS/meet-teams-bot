@@ -14,6 +14,7 @@ class Global {
   private speakers: Participant[] = []
   private networkInterceptionSetupFailed = false // Track if network interception scripts failed to load
   private networkDiarizationActive = false // Track if network diarization is actually active and working
+  private hasTriggeredDiarizationFallback = false // Track if diarization fallback has been triggered
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -260,6 +261,20 @@ class Global {
    */
   public isNetworkDiarizationActive(): boolean {
     return this.networkDiarizationActive
+  }
+
+  /**
+   * Set that diarization fallback has been triggered.
+   */
+  public setDiarizationFallbackTriggered(): void {
+    this.hasTriggeredDiarizationFallback = true
+  }
+
+  /**
+   * Check if diarization fallback has been triggered.
+   */
+  public hasDiarizationFallbackTriggered(): boolean {
+    return this.hasTriggeredDiarizationFallback
   }
 }
 

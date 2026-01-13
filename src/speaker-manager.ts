@@ -95,7 +95,7 @@ export class SpeakerManager {
     networkUsers: NetworkUser[],
     timestamp: number
   ): Promise<void> {
-    try {
+    try {      
       // Convert network users to SpeakerData format
       const speakers: SpeakerData[] = networkUsers.map((user) => {
         // Use fullName as stable identifier, fallback to name (displayName)
@@ -163,10 +163,13 @@ export class SpeakerManager {
 
   private async logSpeakers(speakers: SpeakerData[]): Promise<void> {
     const input = JSON.stringify(speakers)
+    const botName = GLOBAL.get().bot_name
     const maskedSpeakers = speakers.map((speaker, index) => {
+      // Check if this speaker's name matches the bot name
+      const isPotentialBot = botName && speaker.name && speaker.name.toLowerCase() === botName.toLowerCase()
       return {
         ...speaker,
-        name: `Speaker ${index + 1}`
+        name: isPotentialBot ? `Speaker ${index + 1} (Bot)` : `Speaker ${index + 1}`
       }
     })
     console.table(maskedSpeakers)

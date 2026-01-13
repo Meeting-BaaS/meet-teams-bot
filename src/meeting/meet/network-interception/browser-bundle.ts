@@ -346,6 +346,34 @@ export function browserInterceptionLogic(schema: any[]) {
             })
         }
 
+        // Send failure signal to Node.js when network interception fails
+        function sendFailureSignal(
+            track: MediaStreamTrack,
+            reason: "timeout" | "immediate_failure" | "processor_unavailable",
+        ): void {
+            if ((window as any).__networkInterceptorStopped) {
+                return // Don't send callbacks if stopped
+            }
+            if (typeof (window as any).onNetworkSpeakerUpdate !== "function") {
+                console.error(`[NetworkInterceptor] ⚠️ Cannot send failure signal: onNetworkSpeakerUpdate not available`)
+                return
+            }
+
+            console.error(`[NetworkInterceptor] 📤 Sending failure signal: track=${track.id}, reason=${reason}, state=${track.readyState}`)
+            
+            ;(window as any).onNetworkSpeakerUpdate({
+                users: [],
+                timestamp: Date.now(),
+                source: "network_interception_failed",
+                failure: {
+                    trackId: track.id,
+                    reason,
+                    trackState: track.readyState,
+                    timestamp: Date.now()
+                }
+            })
+        }
+
         // Broadcast speaker update with all users
         function broadcastSpeakerUpdate(
             userManager: any,
@@ -353,6 +381,9 @@ export function browserInterceptionLogic(schema: any[]) {
             audioLevel: number = 0,
             source: string = "audio",
         ): void {
+            if ((window as any).__networkInterceptorStopped) {
+                return // Don't send callbacks if stopped
+            }
             if (typeof (window as any).onNetworkSpeakerUpdate !== "function") {
                 return
             }
@@ -363,6 +394,7 @@ export function browserInterceptionLogic(schema: any[]) {
 
             // Calls the Node-side callback exposed via Playwright"s exposeFunction (see network-interception/index.ts)
             // This crosses the browser/Node boundary → triggers NetworkSpeakerLogger.handleNetworkPayload
+            // Note: We don't filter out bots - they'll appear in participants but not speakers (since they don't speak)
             ;(window as any).onNetworkSpeakerUpdate({
                 users,
                 timestamp: Date.now(),
@@ -386,15 +418,42 @@ export function browserInterceptionLogic(schema: any[]) {
                     "undefined"
                 ) {
                     console.error(
-                        "[NetworkInterceptor] ⚠️ MediaStreamTrackProcessor/Generator not available, using fallback",
+                        "[NetworkInterceptor] ⚠️ MediaStreamTrackProcessor/Generator not available",
                     )
+                    sendFailureSignal(track, "processor_unavailable")
                     return false
                 }
+
+                // Wait for track to be unmuted before creating processor
+                // MediaStreamTrackProcessor may not produce frames if created while track is muted
+                // Note: We wait indefinitely for unmute - tracks can legitimately stay muted for long periods
+                if (track.muted) {
+                    console.error(`[NetworkInterceptor] ⏳ Track ${track.id} is muted, waiting for unmute event before creating processor...`)
+                    const unmutePromise = new Promise<void>((resolve) => {
+                        const unmuteHandler = () => {
+                            track.removeEventListener('unmute', unmuteHandler)
+                            console.error(`[NetworkInterceptor] ✅ Track ${track.id} unmuted, creating processor`)
+                            resolve()
+                        }
+                        
+                        track.addEventListener('unmute', unmuteHandler)
+                        
+                        // Check if already unmuted (race condition)
+                        if (!track.muted) {
+                            track.removeEventListener('unmute', unmuteHandler)
+                            resolve()
+                        }
+                    })
+                    
+                    await unmutePromise
+                }
+
                 const processor = new (window as any).MediaStreamTrackProcessor(
                     { track },
                 )
                 reader = processor.readable.getReader()
                 console.error(`[NetworkInterceptor] 🎤 Started processing audio frames for track: ${track.id}`)
+                console.error(`[NetworkInterceptor] 📊 Track state before first read: id=${track.id}, readyState=${track.readyState}, muted=${track.muted}`)
 
                 const processFrames = async () => {
                     let abortListener: (() => void) | null = null
@@ -527,11 +586,35 @@ export function browserInterceptionLogic(schema: any[]) {
                 }
 
                 // Read first frame to verify processing works before returning true
-                const firstRead = await reader.read()
+                // Add 60-second timeout to detect hanging tracks
+                const TIMEOUT_MS = 60000 // 60 seconds
+                const firstReadPromise = reader.read()
+                const timeoutPromise = new Promise<never>((_, reject) => 
+                    setTimeout(() => reject(new Error('Timeout waiting for first frame')), TIMEOUT_MS)
+                )
+                
+                let firstRead: any
+                try {
+                    firstRead = await Promise.race([firstReadPromise, timeoutPromise])
+                } catch (error: any) {
+                    if (error?.message === 'Timeout waiting for first frame') {
+                        console.error(`[NetworkInterceptor] ⏱️ Timeout: No frames received for track ${track.id} within ${TIMEOUT_MS}ms`)
+                        console.error(`[NetworkInterceptor] 📊 Track state at timeout: id=${track.id}, readyState=${track.readyState}, muted=${track.muted}`)
+                        // Clean up AbortController since processing failed
+                        trackAbortControllers.delete(track.id)
+                        sendFailureSignal(track, "timeout")
+                        return false
+                    }
+                    throw error
+                }
+                
                 if (firstRead.done) {
                     console.error(
                         "[NetworkInterceptor] ⚠️ Audio stream ended immediately",
                     )
+                    // Clean up AbortController since processing failed
+                    trackAbortControllers.delete(track.id)
+                    sendFailureSignal(track, "immediate_failure")
                     return false
                 }
                 if (firstRead.value) firstRead.value.close()
@@ -549,35 +632,10 @@ export function browserInterceptionLogic(schema: any[]) {
                     "[NetworkInterceptor] Audio Frame Processing Setup Error:",
                     e,
                 )
+                // Clean up AbortController since processing failed
+                trackAbortControllers.delete(track.id)
+                sendFailureSignal(track, "immediate_failure")
                 return false
-            }
-        }
-
-        function setupWebAudioMonitoring(
-            track: MediaStreamTrack,
-            receiver: RTCRtpReceiver,
-            audioCtx: AudioContext,
-            activeAudioTracks: Map<string, { analyser: AnalyserNode; receiver?: RTCRtpReceiver }>,
-        ): void {
-            try {
-                if (audioCtx.state === "suspended") audioCtx.resume()
-                const stream = new MediaStream([track])
-                const source = audioCtx.createMediaStreamSource(stream)
-                const analyser = audioCtx.createAnalyser()
-                analyser.fftSize = 256
-                const gain = audioCtx.createGain()
-                gain.gain.value = 0.001
-                source.connect(analyser)
-                analyser.connect(gain)
-                gain.connect(audioCtx.destination)
-                activeAudioTracks.set(track.id, { analyser, receiver })
-                console.error(
-                    `[NetworkInterceptor] 🎤 Web Audio Monitoring: ${track.id}`,
-                )
-                // Note: track.onended is already set in monitorTrack to handle AbortController cleanup
-                // Don"t override it here to avoid losing the abort cleanup logic
-            } catch (e) {
-                console.error("[NetworkInterceptor] Web Audio Setup Error:", e)
             }
         }
 
@@ -616,6 +674,21 @@ export function browserInterceptionLogic(schema: any[]) {
                 }
 
                 linkReceiverToTrack(receiverManager, receiver, track.id)
+                
+                // Log track state when track arrives
+                console.error(`[NetworkInterceptor] 📊 Track state when received: id=${track.id}, readyState=${track.readyState}, muted=${track.muted}, kind=${track.kind}`)
+                
+                // Set up track event listeners for logging
+                track.addEventListener('ended', () => {
+                    console.error(`[NetworkInterceptor] 📊 Track event: ended for track ${track.id}`)
+                })
+                track.addEventListener('mute', () => {
+                    console.error(`[NetworkInterceptor] 📊 Track event: muted for track ${track.id}`)
+                })
+                track.addEventListener('unmute', () => {
+                    console.error(`[NetworkInterceptor] 📊 Track event: unmuted for track ${track.id}`)
+                })
+                
                 console.error(`[NetworkInterceptor] 🎵 Starting audio frame processing for track: ${track.id}`)
                 processAudioFrames(
                     track,
@@ -626,25 +699,18 @@ export function browserInterceptionLogic(schema: any[]) {
                 )
                     .then((success) => {
                         if (!success) {
-                            console.error(`[NetworkInterceptor] ⚠️ MediaStreamTrackProcessor failed for track: ${track.id}, falling back to Web Audio monitoring`)
-                            setupWebAudioMonitoring(
-                                track,
-                                receiver,
-                                audioCtx,
-                                activeAudioTracks,
-                            )
+                            console.error(`[NetworkInterceptor] ⚠️ MediaStreamTrackProcessor failed for track: ${track.id}`)
+                            // Failure signal already sent in processAudioFrames() for timeout/immediate_failure cases
+                            // For processor_unavailable, signal was also sent
                         } else {
                             console.error(`[NetworkInterceptor] ✅ MediaStreamTrackProcessor succeeded for track: ${track.id}`)
                         }
                     })
                     .catch((error) => {
                         console.error(`[NetworkInterceptor] ❌ Error processing audio frames for track: ${track.id}:`, error)
-                        setupWebAudioMonitoring(
-                            track,
-                            receiver,
-                            audioCtx,
-                            activeAudioTracks,
-                        )
+                        // Clean up AbortController since processing failed
+                        trackAbortControllers.delete(track.id)
+                        sendFailureSignal(track, "immediate_failure")
                     })
             } catch (e) {
                 console.error("[NetworkInterceptor] Audio Attach Error:", e)
@@ -704,6 +770,10 @@ export function browserInterceptionLogic(schema: any[]) {
                     }
                 })
 
+                // Note: We don't filter out bots - they'll appear in participants but not speakers (since they don't speak)
+                if ((window as any).__networkInterceptorStopped) {
+                    return // Don't send callbacks if stopped
+                }
                 if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
                     ;(window as any).onNetworkSpeakerUpdate({
                         users,
@@ -722,6 +792,27 @@ export function browserInterceptionLogic(schema: any[]) {
             return { inMeeting: users.length > 0, userCount: users.length }
         }
 
+        // Stop network interception: abort all tracks and prevent further callbacks
+        ;(window as any).__stopNetworkInterception = () => {
+            console.error("[NetworkInterceptor] 🛑 Stopping network interception...")
+            
+            // Abort all active track controllers
+            for (const [trackId, controller] of trackAbortControllers.entries()) {
+                try {
+                    controller.abort()
+                    console.error(`[NetworkInterceptor] ✅ Aborted track ${trackId}`)
+                } catch (err) {
+                    console.error(`[NetworkInterceptor] Error aborting track ${trackId}:`, err)
+                }
+            }
+            trackAbortControllers.clear()
+            
+            // Set flag to prevent further callbacks
+            ;(window as any).__networkInterceptorStopped = true
+            
+            console.error("[NetworkInterceptor] ✅ Network interception stopped")
+        }
+
             ; (window as any).triggerNetworkBroadcast = broadcastCurrentState
 
         const messageDecoders = createDecoders(schema)
@@ -733,31 +824,70 @@ export function browserInterceptionLogic(schema: any[]) {
 
         const activeAudioTracks = new Map<
             string,
-            { analyser: AnalyserNode; ssrc?: string; receiver?: RTCRtpReceiver }
+            { analyser: AnalyserNode; receiver?: RTCRtpReceiver }
         >()
 
         // SUBSCRIBE to centralized audio track layer
         // Wait for audio track layer to be available (audio capture script runs first, but may not be ready immediately)
         function subscribeToAudioTrackLayer() {
-            const audioTrackLayer = (window as any).__audioTrackLayer
-            if (audioTrackLayer && typeof audioTrackLayer.subscribe === "function") {
-                console.error("[NetworkInterceptor] 🔌 Subscribing to centralized audio track layer")
-                audioTrackLayer.subscribe({
-                    onTrack: (track: any, receiver: any, pc: any) => {
-                        console.error(`[NetworkInterceptor] 🎵 Received track from centralized layer: ${track.id}`)
-                        monitorTrack(
-                            track,
-                            receiver,
-                            receiverManager,
-                            userManager,
-                            audioCtx,
-                            activeAudioTracks,
-                        )
-                    }
-                })
+        const audioTrackLayer = (window as any).__audioTrackLayer
+        if (audioTrackLayer && typeof audioTrackLayer.subscribe === "function") {
+            console.error("[NetworkInterceptor] 🔌 Subscribing to centralized audio track layer")
+            audioTrackLayer.subscribe({
+                onTrack: (track: any, receiver: any, pc: any) => {
+                    console.error(`[NetworkInterceptor] 🎵 Received track from centralized layer: ${track.id}`)
+                    monitorTrack(
+                        track,
+                        receiver,
+                        receiverManager,
+                        userManager,
+                        audioCtx,
+                        activeAudioTracks,
+                    )
+                }
+            })
                 return true
             }
             return false
+        }
+
+        // Health check mechanism to report audio processing status
+        let healthCheckInterval: number | null = null
+        
+        function reportHealthCheck() {
+            const audioTrackLayer = (window as any).__audioTrackLayer
+            const subscribed = audioTrackLayer && typeof audioTrackLayer.subscribe === "function"
+            // Use trackAbortControllers to track active processing (tracks are added when processing starts)
+            const activeTrackCount = trackAbortControllers.size
+            const audioProcessingActive = activeTrackCount > 0
+            
+            // Check if we had subscription errors
+            let subscriptionError: string | null = null
+            if (!subscribed && typeof audioTrackLayer === "undefined") {
+                subscriptionError = "Audio track layer not found"
+            } else if (!subscribed) {
+                subscriptionError = "Audio track layer exists but subscribe function not available"
+            }
+            
+            const health = {
+                subscribed,
+                activeTrackCount,
+                audioProcessingActive,
+                subscriptionError,
+                timestamp: Date.now()
+            }
+            
+            if ((window as any).__networkInterceptorStopped) {
+                return // Don't send callbacks if stopped
+            }
+            if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
+                (window as any).onNetworkSpeakerUpdate({
+                    users: [],
+                    timestamp: Date.now(),
+                    source: "health_check",
+                    health
+                })
+            }
         }
 
         // Try to subscribe immediately
@@ -771,13 +901,28 @@ export function browserInterceptionLogic(schema: any[]) {
                 if (subscribeToAudioTrackLayer()) {
                     console.error(`[NetworkInterceptor] ✅ Subscribed to audio track layer after ${retryCount} attempt(s)`)
                     clearInterval(retryInterval)
+                    // Report health check after successful subscription
+                    setTimeout(() => reportHealthCheck(), 500)
                 } else if (retryCount >= maxRetries) {
                     console.error("[NetworkInterceptor] ⚠️ WARNING: Centralized audio track layer not found after retries!")
-                    console.error("[NetworkInterceptor] ⚠️ Speaker detection will not work. Ensure audio-capture is enabled first.")
+            console.error("[NetworkInterceptor] ⚠️ Speaker detection will not work. Ensure audio-capture is enabled first.")
                     clearInterval(retryInterval)
+                    // Report health check after failed subscription
+                    setTimeout(() => reportHealthCheck(), 500)
                 }
             }, 100) // Check every 100ms
+            
+            // Report initial health check (not subscribed yet)
+            setTimeout(() => reportHealthCheck(), 500)
+        } else {
+            // Report health check immediately if subscribed
+            setTimeout(() => reportHealthCheck(), 1000)
         }
+
+        // Report health check periodically (every 10 seconds) to monitor status
+        healthCheckInterval = window.setInterval(() => {
+            reportHealthCheck()
+        }, 10000)
 
         // Intercept RTCPeerConnection for datachannel only (track handling now centralized)
         if (typeof (window as any).RTCPeerConnection !== "undefined") {
@@ -1056,6 +1201,9 @@ export function browserInterceptionLogic(schema: any[]) {
         window.addEventListener("beforeunload", () => {
             clearInterval(broadcastIntervalId)
             clearTimeout(broadcastTimeoutId)
+            if (healthCheckInterval !== null) {
+                clearInterval(healthCheckInterval)
+            }
         })
 
         const originalFetch = window.fetch

@@ -1,12 +1,10 @@
 import { Events } from "../../events"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
-import { findShowEveryOne } from "../../meeting/meet"
-import { SpeakersObserver } from "../../meeting/speakersObserver"
+import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import type { NetworkUser } from "../../meeting/meet/network-interception/types"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
-import type { SpeakerData } from "../../types"
 import { formatError } from "../../utils/Logger"
 import { MEETING_CONSTANTS } from "../constants"
 import { MeetingStateType, type StateExecuteResult } from "../types"
@@ -172,9 +170,62 @@ export class InCallState extends BaseState {
         users: unknown[]
         timestamp: number
         source: string
+        health?: {
+          subscribed: boolean
+          activeTrackCount: number
+          audioProcessingActive: boolean
+          subscriptionError: string | null
+          timestamp: number
+        }
+        failure?: {
+          trackId: string
+          reason: "timeout" | "immediate_failure" | "processor_unavailable"
+          trackState: string
+          timestamp: number
+        }
       }) => {
         try {
-          // Convert network users to SpeakerData format
+          // Handle network interception failure - trigger UI Observer fallback
+          if (payload.source === "network_interception_failed" && payload.failure) {
+            const { trackId, reason, trackState } = payload.failure
+            console.warn(`[NetworkInterceptor] ❌ Network interception failed for track ${trackId}: ${reason} (state: ${trackState})`)
+            
+            // Mark network interception as failed to prevent further attempts
+            GLOBAL.setNetworkInterceptionSetupFailed()
+            
+            // Trigger UI Observer fallback (only if not already started)
+            if (!this.context.speakersObserver) {
+              console.warn(`[NetworkInterceptor] 🔄 Falling back to UI-based speaker detection`)
+              await this.startUIBasedObservation()
+            } else {
+              console.log(`[NetworkInterceptor] ℹ️ UI Observer already running, skipping fallback`)
+            }
+            return // Don't process as speaker update
+          }
+          
+          // Handle health check reports
+          if (payload.source === "health_check" && payload.health) {
+            const { subscribed, activeTrackCount, audioProcessingActive, subscriptionError } = payload.health
+            
+            if (subscriptionError) {
+              console.warn(`[NetworkInterceptor] ⚠️ Health Check: ${subscriptionError}`)
+            }
+            
+            if (!subscribed) {
+              console.warn(`[NetworkInterceptor] ⚠️ Health Check: Not subscribed to audio track layer`)
+            } else if (activeTrackCount === 0) {
+              console.log(`[NetworkInterceptor] ℹ️ Health Check: Subscribed but no audio tracks detected yet (${activeTrackCount} tracks)`)
+            } else {
+              console.log(`[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) being monitored)`)
+            }
+            
+            // Log detailed health status at info level
+            console.log(`[NetworkInterceptor] Health Status: subscribed=${subscribed}, tracks=${activeTrackCount}, processing=${audioProcessingActive}`)
+            
+            return // Don't process as speaker update
+          }
+          
+          // Existing speaker update handling
           const networkUsers = payload.users as NetworkUser[]
           await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
             networkUsers,
@@ -218,52 +269,7 @@ export class InCallState extends BaseState {
       return
     }
 
-    // For Meet, open People panel if needed (UI-based detection requires it)
-    if (GLOBAL.get().meeting_platform === "meet" && GLOBAL.get().recording_mode !== "gallery_view") {
-      try {
-        console.log("[Meet] Opening People panel for UI-based speaker detection...")
-        // Create a cancelCheck function that checks for global errors
-        const cancelCheck = () => GLOBAL.getEndReason() !== null
-        
-        await findShowEveryOne(this.context.playwrightPage, true, cancelCheck)
-        console.log("[Meet] ✅ People panel opened for UI-based detection")
-      } catch (error) {
-        console.warn(
-          "[Meet] ⚠️ Failed to open People panel, UI-based detection may not work:",
-          formatError(error)
-        )
-        // Continue anyway - the observer might still work
-      }
-    }
-
-    // Create and start integrated speakers observer
-    const speakersObserver = new SpeakersObserver(GLOBAL.get().meeting_platform)
-
-    // Callback to handle speakers changes
-    const onSpeakersChange = async (speakers: SpeakerData[]) => {
-      try {
-        await SpeakerManager.getInstance().handleSpeakerUpdate(speakers)
-      } catch (error) {
-        console.error("Error handling speaker update:", formatError(error))
-      }
-    }
-
-    try {
-      await speakersObserver.startObserving(
-        this.context.playwrightPage,
-        GLOBAL.get().recording_mode,
-        GLOBAL.get().bot_name,
-        onSpeakersChange
-      )
-
-      // Store the observer in context for cleanup later
-      this.context.speakersObserver = speakersObserver
-
-      console.log("✅ UI-based speakers observer started successfully")
-    } catch (error) {
-      console.error("Failed to start UI-based speakers observer:", error)
-      throw error
-    }
+    await startUIBasedObserver(this.context.playwrightPage, this.context)
   }
 
   private async startHtmlCleaning(): Promise<void> {

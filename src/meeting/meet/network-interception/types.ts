@@ -27,7 +27,20 @@ export type ChatMessage = {
 export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
-  source: "roster" | "audio"
+  source: "roster" | "audio" | "health_check" | "network_interception_failed"
+  health?: {
+    subscribed: boolean
+    activeTrackCount: number
+    audioProcessingActive: boolean
+    subscriptionError: string | null
+    timestamp: number
+  }
+  failure?: {
+    trackId: string
+    reason: "timeout" | "immediate_failure" | "processor_unavailable"
+    trackState: string
+    timestamp: number
+  }
 }
 
 // --- Browser Manager Types ---

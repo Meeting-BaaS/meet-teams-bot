@@ -7,11 +7,11 @@ import { formatError } from "../../utils/Logger"
 
 export interface AudioCaptureConfig {
   provider: "Meet" | "Teams"
-  callbackName: string
-  logPrefix: string
-  stopFunctionName: string
-  // Teams needs periodic scanning, Meet doesn't
-  enablePeriodicScanning?: boolean
+    callbackName: string
+    logPrefix: string
+    stopFunctionName: string
+    // Teams needs periodic scanning, Meet doesn't
+    enablePeriodicScanning?: boolean
   // Enable audio mixing/streaming (only when streaming_output is configured)
   enableMixing?: boolean
 }
@@ -38,7 +38,7 @@ const TEAMS_CONFIG: AudioCaptureConfig = {
 function generateAudioCaptureScript(config: AudioCaptureConfig): string {
   const { callbackName, logPrefix, stopFunctionName, enablePeriodicScanning, enableMixing } = config
 
-  return `
+    return `
         (function() {
             try {
                 // Idempotent initialization: Reuse existing window.__audioTrackLayer if present
@@ -46,7 +46,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     console.log("${logPrefix} Initializing centralized audio track layer...")
 
                     // Create AudioContext
-                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
 
                     // Create window.__audioTrackLayer with subscribers array
                     window.__audioTrackLayer = {
@@ -408,111 +408,111 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
  * Create audio capture functions for a specific provider
  */
 export function createAudioCapture(config: AudioCaptureConfig) {
-  const { callbackName, logPrefix, stopFunctionName } = config
+    const { callbackName, logPrefix, stopFunctionName } = config
 
-  return {
-    /**
-     * Enable audio capture for this provider
+    return {
+        /**
+         * Enable audio capture for this provider
      * @param enableMixing - If false, only creates __audioTrackLayer (for network diarization)
      *                       If true, also enables audio mixing/streaming
-     */
+         */
     enable: async (page: Page, enableMixing = true): Promise<void> => {
       // Expose callback function for audio chunks (only if mixing is enabled)
       if (enableMixing) {
-        try {
-          await page.exposeFunction(callbackName, async (audioChunk: {
-            audioData: number[]
-            sampleRate: number
-            timestamp: number
-            numberOfFrames: number
-          }) => {
-            if (Streaming.instance) {
-              try {
-                Streaming.instance.processMixedAudioChunk(audioChunk)
-              } catch (error) {
-                console.error(`${logPrefix} Failed to process mixed audio chunk:`, formatError(error))
-              }
-            }
-          })
-        } catch (error) {
-          // Ignore duplicate registration error (function already exposed)
-          const errorMessage = error instanceof Error ? error.message : String(error)
+            try {
+                await page.exposeFunction(callbackName, async (audioChunk: {
+                    audioData: number[]
+                    sampleRate: number
+                    timestamp: number
+                    numberOfFrames: number
+                }) => {
+                    if (Streaming.instance) {
+                        try {
+                            Streaming.instance.processMixedAudioChunk(audioChunk)
+                        } catch (error) {
+                            console.error(`${logPrefix} Failed to process mixed audio chunk:`, formatError(error))
+                        }
+                    }
+                })
+            } catch (error) {
+                // Ignore duplicate registration error (function already exposed)
+                const errorMessage = error instanceof Error ? error.message : String(error)
           if (errorMessage.includes("has been already registered")) {
-            console.log(`${logPrefix} Callback ${callbackName} already registered, skipping`)
-          } else {
-            throw error
+                    console.log(`${logPrefix} Callback ${callbackName} already registered, skipping`)
+                } else {
+                    throw error
           }
-        }
-      }
+                }
+            }
 
       // Inject the audio capture script (always creates __audioTrackLayer, mixing is optional)
       const script = generateAudioCaptureScript({ ...config, enableMixing })
-      try {
-        await page.addInitScript(script)
+            try {
+                await page.addInitScript(script)
         if (enableMixing) {
-          console.log(`${logPrefix} Web Audio mixer script injected`)
+                console.log(`${logPrefix} Web Audio mixer script injected`)
         } else {
           console.log(`${logPrefix} Audio track layer script injected (mixing disabled)`)
         }
-      } catch (error) {
+            } catch (error) {
         console.error(`${logPrefix} Failed to inject script:`, formatError(error))
-      }
-    },
+            }
+        },
 
-    /**
-     * Stop audio capture gracefully
-     */
-    stop: async (page: Page): Promise<void> => {
-      try {
-        await page.evaluate((stopFn) => {
+        /**
+         * Stop audio capture gracefully
+         */
+        stop: async (page: Page): Promise<void> => {
+            try {
+                await page.evaluate((stopFn) => {
           if (typeof (window as any)[stopFn] === "function") {
-            return (window as any)[stopFn]()
-          }
-        }, stopFunctionName)
-        console.log(`${logPrefix} Audio capture stopped from Node.js`)
-      } catch (error) {
-        console.error(`${logPrefix} Failed to stop audio capture:`, formatError(error))
-      }
-    },
+                        return (window as any)[stopFn]()
+                    }
+                }, stopFunctionName)
+                console.log(`${logPrefix} Audio capture stopped from Node.js`)
+            } catch (error) {
+                console.error(`${logPrefix} Failed to stop audio capture:`, formatError(error))
+            }
+        },
 
-    /**
-     * Verify audio capture is working
-     */
-    verify: async (page: Page): Promise<boolean> => {
-      try {
-        const status = await page.evaluate((cbName) => {
-          return {
+        /**
+         * Verify audio capture is working
+         */
+        verify: async (page: Page): Promise<boolean> => {
+            try {
+                const status = await page.evaluate((cbName) => {
+                    return {
             hasAudioContext: typeof AudioContext !== "undefined" || typeof (window as any).webkitAudioContext !== "undefined",
             hasMediaStreamTrackProcessor: typeof (window as any).MediaStreamTrackProcessor !== "undefined",
             hasCallback: typeof (window as any)[cbName] === "function"
-          }
-        }, callbackName)
+                    }
+                }, callbackName)
 
-        console.log(`${logPrefix} Status:`, status)
+                console.log(`${logPrefix} Status:`, status)
 
-        if (!status.hasAudioContext) {
-          console.error(`${logPrefix} AudioContext not available`)
-          return false
-        }
+                if (!status.hasAudioContext) {
+                    console.error(`${logPrefix} AudioContext not available`)
+                    return false
+                }
 
-        if (!status.hasMediaStreamTrackProcessor) {
-          console.error(`${logPrefix} MediaStreamTrackProcessor not available`)
-          return false
-        }
+                if (!status.hasMediaStreamTrackProcessor) {
+                    console.error(`${logPrefix} MediaStreamTrackProcessor not available`)
+                    return false
+                }
 
-        if (!status.hasCallback) {
-          console.error(`${logPrefix} Callback not registered`)
-          return false
-        }
+                if (!status.hasCallback) {
+                    console.error(`${logPrefix} Callback not registered`)
+                    return false
+                }
 
-        console.log(`${logPrefix} Audio capture verified`)
-        return true
-      } catch (error) {
-        console.error(`${logPrefix} Verification failed:`, formatError(error))
-        return false
-      }
+                console.log(`${logPrefix} Audio capture verified`)
+                return true
+            } catch (error) {
+                console.error(`${logPrefix} Verification failed:`, formatError(error))
+                return false
+            }
     }
-  }
+    }
 }
 
 // Pre-configured instances for Meet and Teams

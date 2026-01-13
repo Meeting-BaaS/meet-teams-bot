@@ -12,13 +12,28 @@ interface DiarizationSegment {
 }
 
 /**
+ * Health status levels for diarization monitoring.
+ */
+export type DiarizationHealthStatusLevel = "optimal" | "acceptable" | "stale"
+
+/**
  * Tracks speaker diarization during the meeting and writes to a local file.
  * Uses in-memory buffering to minimize file I/O operations.
  */
+export interface DiarizationHealthStatus {
+  hasActive: boolean
+  hasRecent60s: boolean
+  hasRecent5min: boolean
+  segmentCount60s: number
+  segmentCount5min: number
+  status: DiarizationHealthStatusLevel
+}
+
 export class DiarizationTracker {
   private static instance: DiarizationTracker | null = null
   private fileStream: WriteStream | null = null
   private currentSegment: { speaker: string; startTime: number; userId: number } | null = null
+  private recentSegments: DiarizationSegment[] = [] // Last 5 closed segments
   private filePath: string
   private isEnded = false
 
@@ -59,6 +74,12 @@ export class DiarizationTracker {
         user_id: this.currentSegment.userId
       }
       this.writeToFile(closedSegment)
+      
+      // Add to recent segments (keep max 5)
+      this.recentSegments.push(closedSegment)
+      if (this.recentSegments.length > 5) {
+        this.recentSegments.shift() // Remove oldest
+      }
     }
 
     // Start new segment (keep in memory)
@@ -136,6 +157,82 @@ export class DiarizationTracker {
    */
   public getFilePath(): string {
     return this.filePath
+  }
+
+  /**
+   * Get the current active segment.
+   */
+  public getCurrentSegment(): { speaker: string; startTime: number; userId: number } | null {
+    return this.currentSegment
+  }
+
+  /**
+   * Check if there's an active or recent segment within the specified time windows.
+   * @param meetingStartTime - Meeting start timestamp in milliseconds
+   * @param currentTime - Current timestamp in milliseconds
+   * @returns Health status object
+   */
+  public hasActiveOrRecentSegment(
+    meetingStartTime: number,
+    currentTime: number
+  ): DiarizationHealthStatus {
+    const currentTimeSeconds = (currentTime - meetingStartTime) / 1000
+    const window60s = 60 // 60 seconds
+    const window5min = 300 // 5 minutes
+
+    let hasActive = false
+    let hasRecent60s = false
+    let hasRecent5min = false
+    let segmentCount60s = 0
+    let segmentCount5min = 0
+
+    // Check current active segment
+    if (this.currentSegment) {
+      hasActive = true
+      const segmentAge = currentTimeSeconds - this.currentSegment.startTime
+      
+      if (segmentAge < window60s) {
+        hasRecent60s = true
+        segmentCount60s++
+      }
+      if (segmentAge < window5min) {
+        hasRecent5min = true
+        segmentCount5min++
+      }
+    }
+
+    // Check recent closed segments
+    for (const segment of this.recentSegments) {
+      const segmentAge = currentTimeSeconds - segment.end_time
+      
+      if (segmentAge < window60s) {
+        hasRecent60s = true
+        segmentCount60s++
+      }
+      if (segmentAge < window5min) {
+        hasRecent5min = true
+        segmentCount5min++
+      }
+    }
+
+    // Determine overall status
+    let status: DiarizationHealthStatusLevel
+    if (segmentCount60s > 1) {
+      status = "optimal"
+    } else if (hasRecent5min) {
+      status = "acceptable"
+    } else {
+      status = "stale"
+    }
+
+    return {
+      hasActive,
+      hasRecent60s,
+      hasRecent5min,
+      segmentCount60s,
+      segmentCount5min,
+      status
+    }
   }
 
   /**

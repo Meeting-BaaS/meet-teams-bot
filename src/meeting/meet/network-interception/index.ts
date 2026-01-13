@@ -203,3 +203,24 @@ export async function verifyNetworkInterception(page: Page): Promise<boolean> {
     return false
   }
 }
+
+/**
+ * Stop network interception by aborting all tracks and preventing further callbacks
+ */
+export async function stopNetworkInterception(page: Page): Promise<void> {
+  try {
+    await page.evaluate(() => {
+      if (typeof (window as any).__stopNetworkInterception === "function") {
+        ;(window as any).__stopNetworkInterception()
+      } else {
+        console.warn("[NetworkInterceptor] ⚠️ Stop function not available")
+      }
+    })
+    console.log("[NetworkInterceptor] ✅ Network interception stopped")
+  } catch (error) {
+    console.error(
+      "[NetworkInterceptor] ❌ Failed to stop network interception:",
+      error
+    )
+  }
+}
