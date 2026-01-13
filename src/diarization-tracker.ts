@@ -1,6 +1,5 @@
 import { createWriteStream, type WriteStream } from "node:fs"
 import { join } from "node:path"
-import { GLOBAL } from "./singleton"
 import type { SpeakerData } from "./types"
 import { PathManager } from "./utils/PathManager"
 
@@ -74,7 +73,7 @@ export class DiarizationTracker {
         user_id: this.currentSegment.userId
       }
       this.writeToFile(closedSegment)
-      
+
       // Add to recent segments (keep max 5)
       this.recentSegments.push(closedSegment)
       if (this.recentSegments.length > 5) {
@@ -190,7 +189,7 @@ export class DiarizationTracker {
     if (this.currentSegment) {
       hasActive = true
       const segmentAge = currentTimeSeconds - this.currentSegment.startTime
-      
+
       if (segmentAge < window60s) {
         hasRecent60s = true
         segmentCount60s++
@@ -204,7 +203,7 @@ export class DiarizationTracker {
     // Check recent closed segments
     for (const segment of this.recentSegments) {
       const segmentAge = currentTimeSeconds - segment.end_time
-      
+
       if (segmentAge < window60s) {
         hasRecent60s = true
         segmentCount60s++

@@ -1,10 +1,10 @@
 import { Events } from "../../events"
-import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import { stopNetworkInterception } from "../../meeting/meet/network-interception"
+import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import { type AudioWarningEvent, ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
-import { DiarizationMonitor } from "../../utils/diarization-monitor"
+import { checkDiarizationHealth, logHealthStatus } from "../../utils/diarization-monitor"
 import { formatError } from "../../utils/Logger"
 import { sleep } from "../../utils/sleep"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
@@ -317,15 +317,13 @@ export class RecordingState extends BaseState {
     }
 
     try {
-      const status = await DiarizationMonitor.checkDiarizationHealth(meetingStartTime, currentTime)
-      DiarizationMonitor.logHealthStatus(status)
+      const status = await checkDiarizationHealth(meetingStartTime, currentTime)
+      logHealthStatus(status)
 
       // Debouncing logic for fallback
       if (status.status === "stale") {
         this.consecutiveStaleCount++
-        console.log(
-          `[DiarizationHealth] ⚠️ Stale event ${this.consecutiveStaleCount}/5`
-        )
+        console.log(`[DiarizationHealth] ⚠️ Stale event ${this.consecutiveStaleCount}/5`)
 
         // Check if we should trigger fallback (Meet only, network diarization active, 5 consecutive stale events)
         if (
@@ -336,24 +334,22 @@ export class RecordingState extends BaseState {
           this.context.playwrightPage
         ) {
           console.log(
-            `[DiarizationHealth] 🔄 Triggering fallback to UI-based diarization after 5 consecutive stale events`
+            "[DiarizationHealth] 🔄 Triggering fallback to UI-based diarization after 5 consecutive stale events"
           )
-          
+
           // Stop network interception to prevent duplicate logs
-          if (this.context.playwrightPage) {
-            try {
-              await stopNetworkInterception(this.context.playwrightPage)
-            } catch (error) {
-              console.error(
-                "[DiarizationHealth] Failed to stop network interception:",
-                formatError(error)
-              )
-            }
+          try {
+            await stopNetworkInterception(this.context.playwrightPage)
+          } catch (error) {
+            console.error(
+              "[DiarizationHealth] Failed to stop network interception:",
+              formatError(error)
+            )
           }
-          
+
           // Mark network interception as failed
           GLOBAL.setNetworkInterceptionSetupFailed()
-          
+
           // Start UI-based observation
           try {
             await startUIBasedObserver(this.context.playwrightPage, this.context)
@@ -363,14 +359,14 @@ export class RecordingState extends BaseState {
               "[DiarizationHealth] Failed to start UI-based observer fallback:",
               formatError(error)
             )
-            // Don't set fallback triggered so we can retry later if needed
+            // Retry not possible since network interception was already marked as failed
           }
         }
       } else if (status.status === "optimal" || status.status === "acceptable") {
         // Reset counter on any good status
         if (this.consecutiveStaleCount > 0) {
           console.log(
-            `[DiarizationHealth] ✅ Diarization health recovered, resetting stale counter`
+            "[DiarizationHealth] ✅ Diarization health recovered, resetting stale counter"
           )
           this.consecutiveStaleCount = 0
         }

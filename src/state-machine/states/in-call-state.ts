@@ -1,7 +1,7 @@
 import { Events } from "../../events"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
+import type { NetworkPayload, NetworkUser } from "../../meeting/meet/network-interception/types"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
-import type { NetworkUser } from "../../meeting/meet/network-interception/types"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
@@ -123,10 +123,7 @@ export class InCallState extends BaseState {
     // For Google Meet, try network interception first (PRIMARY), fallback to UI-based (FALLBACK)
     // This needs to happen early so the callback is ready when audio tracks start being processed
     // Skip if scripts failed to load in openMeetingPage (no point retrying)
-    if (
-      GLOBAL.get().meeting_platform === "meet" &&
-      !GLOBAL.hasNetworkInterceptionSetupFailed()
-    ) {
+    if (GLOBAL.get().meeting_platform === "meet" && !GLOBAL.hasNetworkInterceptionSetupFailed()) {
       try {
         const networkSetupSuccess = await this.tryNetworkInterception()
         if (networkSetupSuccess) {
@@ -166,65 +163,59 @@ export class InCallState extends BaseState {
       )
 
       // Callback to handle network speaker updates
-      const onNetworkSpeakersChange = async (payload: {
-        users: unknown[]
-        timestamp: number
-        source: string
-        health?: {
-          subscribed: boolean
-          activeTrackCount: number
-          audioProcessingActive: boolean
-          subscriptionError: string | null
-          timestamp: number
-        }
-        failure?: {
-          trackId: string
-          reason: "timeout" | "immediate_failure" | "processor_unavailable"
-          trackState: string
-          timestamp: number
-        }
-      }) => {
+      const onNetworkSpeakersChange = async (payload: NetworkPayload) => {
         try {
           // Handle network interception failure - trigger UI Observer fallback
           if (payload.source === "network_interception_failed" && payload.failure) {
             const { trackId, reason, trackState } = payload.failure
-            console.warn(`[NetworkInterceptor] ❌ Network interception failed for track ${trackId}: ${reason} (state: ${trackState})`)
-            
+            console.warn(
+              `[NetworkInterceptor] ❌ Network interception failed for track ${trackId}: ${reason} (state: ${trackState})`
+            )
+
             // Mark network interception as failed to prevent further attempts
             GLOBAL.setNetworkInterceptionSetupFailed()
-            
+
             // Trigger UI Observer fallback (only if not already started)
             if (!this.context.speakersObserver) {
-              console.warn(`[NetworkInterceptor] 🔄 Falling back to UI-based speaker detection`)
+              console.warn("[NetworkInterceptor] 🔄 Falling back to UI-based speaker detection")
               await this.startUIBasedObservation()
             } else {
-              console.log(`[NetworkInterceptor] ℹ️ UI Observer already running, skipping fallback`)
+              console.log("[NetworkInterceptor] ℹ️ UI Observer already running, skipping fallback")
             }
             return // Don't process as speaker update
           }
-          
+
           // Handle health check reports
           if (payload.source === "health_check" && payload.health) {
-            const { subscribed, activeTrackCount, audioProcessingActive, subscriptionError } = payload.health
-            
+            const { subscribed, activeTrackCount, audioProcessingActive, subscriptionError } =
+              payload.health
+
             if (subscriptionError) {
               console.warn(`[NetworkInterceptor] ⚠️ Health Check: ${subscriptionError}`)
             }
-            
+
             if (!subscribed) {
-              console.warn(`[NetworkInterceptor] ⚠️ Health Check: Not subscribed to audio track layer`)
+              console.warn(
+                "[NetworkInterceptor] ⚠️ Health Check: Not subscribed to audio track layer"
+              )
             } else if (activeTrackCount === 0) {
-              console.log(`[NetworkInterceptor] ℹ️ Health Check: Subscribed but no audio tracks detected yet (${activeTrackCount} tracks)`)
+              console.log(
+                `[NetworkInterceptor] ℹ️ Health Check: Subscribed but no audio tracks detected yet (${activeTrackCount} tracks)`
+              )
             } else {
-              console.log(`[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) being monitored)`)
+              console.log(
+                `[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) being monitored)`
+              )
             }
-            
+
             // Log detailed health status at info level
-            console.log(`[NetworkInterceptor] Health Status: subscribed=${subscribed}, tracks=${activeTrackCount}, processing=${audioProcessingActive}`)
-            
+            console.log(
+              `[NetworkInterceptor] Health Status: subscribed=${subscribed}, tracks=${activeTrackCount}, processing=${audioProcessingActive}`
+            )
+
             return // Don't process as speaker update
           }
-          
+
           // Existing speaker update handling
           const networkUsers = payload.users as NetworkUser[]
           await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
@@ -247,15 +238,11 @@ export class InCallState extends BaseState {
         // Mark network diarization as active (defensive pattern: only sets if not already set)
         GLOBAL.setNetworkDiarizationActiveIfNotSet()
         return true
-      } else {
-        console.warn("[NetworkInterceptor] ⚠️ Network interception setup returned false")
-        return false
       }
+      console.warn("[NetworkInterceptor] ⚠️ Network interception setup returned false")
+      return false
     } catch (error) {
-      console.warn(
-        "[NetworkInterceptor] ⚠️ Network interception setup failed:",
-        formatError(error)
-      )
+      console.warn("[NetworkInterceptor] ⚠️ Network interception setup failed:", formatError(error))
       return false
     }
   }

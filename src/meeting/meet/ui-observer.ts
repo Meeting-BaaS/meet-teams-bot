@@ -1,11 +1,11 @@
 import type { Page } from "@playwright/test"
-import { findShowEveryOne } from "../meet"
-import { SpeakersObserver } from "../speakersObserver"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
-import type { SpeakerData } from "../../types"
 import type { MeetingContext } from "../../state-machine/types"
+import type { SpeakerData } from "../../types"
 import { formatError } from "../../utils/Logger"
+import { findShowEveryOne } from "../meet"
+import { SpeakersObserver } from "../speakersObserver"
 
 /**
  * Start UI-based speaker observation (shared function for use in multiple states).
@@ -19,6 +19,12 @@ export async function startUIBasedObserver(
 ): Promise<SpeakersObserver> {
   if (!page) {
     throw new Error("Playwright page not available for speakers observation")
+  }
+
+  // Stop existing observer if any
+  if (context.speakersObserver?.isCurrentlyObserving()) {
+    console.warn("[UI Observer] Stopping existing observer before starting new one")
+    context.speakersObserver.stopObserving()
   }
 
   // For Meet, open People panel if needed (UI-based detection requires it)

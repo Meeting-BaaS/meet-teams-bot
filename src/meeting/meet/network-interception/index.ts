@@ -9,6 +9,8 @@ import { PROTO_SCHEMA } from "./schema"
 // Re-export types
 export type { ChatMessage, NetworkPayload, NetworkUser } from "./types"
 
+import type { NetworkPayload } from "./types"
+
 // Extend Window interface for network interception functions
 declare global {
   interface Window {
@@ -22,6 +24,7 @@ declare global {
       source: string
     }) => void
     triggerNetworkBroadcast?: () => void
+    __stopNetworkInterception?: () => void
   }
 }
 
@@ -37,10 +40,7 @@ export async function setupNetworkInterceptionScripts(page: Page): Promise<boole
     await page.addInitScript({ path: bundlePath })
     console.log("[NetworkInterceptor] ✅ Libraries bundle loaded from file")
   } catch (error) {
-    console.error(
-      "[NetworkInterceptor] ❌ Failed to load libraries bundle:",
-      error
-    )
+    console.error("[NetworkInterceptor] ❌ Failed to load libraries bundle:", error)
     console.error("Stack:", (error as Error).stack)
     return false
   }
@@ -72,10 +72,7 @@ export async function setupNetworkInterceptionScripts(page: Page): Promise<boole
     console.log("[NetworkInterceptor] ✅ Browser logic injected")
     return true
   } catch (error) {
-    console.error(
-      "[NetworkInterceptor] ❌ Failed to inject browser logic:",
-      error
-    )
+    console.error("[NetworkInterceptor] ❌ Failed to inject browser logic:", error)
     console.error("Error details:", {
       name: (error as Error).name,
       message: (error as Error).message,
@@ -92,11 +89,7 @@ export async function setupNetworkInterceptionScripts(page: Page): Promise<boole
  */
 export async function setupNetworkInterceptionCallback(
   page: Page,
-  onSpeakersChange: (payload: {
-    users: unknown[]
-    timestamp: number
-    source: string
-  }) => void
+  onSpeakersChange: (payload: NetworkPayload) => void
 ): Promise<boolean> {
   try {
     // Expose the Node-side callback to the browser via Playwright's exposeFunction
@@ -105,10 +98,7 @@ export async function setupNetworkInterceptionCallback(
     console.log("[NetworkInterceptor] ✅ Callback exposed")
     return true
   } catch (error) {
-    console.error(
-      "[NetworkInterceptor] Failed to expose function:",
-      error
-    )
+    console.error("[NetworkInterceptor] Failed to expose function:", error)
     console.error("Stack:", (error as Error).stack)
     return false
   }
@@ -121,11 +111,7 @@ export async function setupNetworkInterceptionCallback(
  */
 export async function enableNetworkInterception(
   page: Page,
-  onSpeakersChange: (payload: {
-    users: unknown[]
-    timestamp: number
-    source: string
-  }) => void
+  onSpeakersChange: (payload: NetworkPayload) => void
 ): Promise<boolean> {
   const scriptsSuccess = await setupNetworkInterceptionScripts(page)
   if (!scriptsSuccess) {
@@ -136,10 +122,7 @@ export async function enableNetworkInterception(
 }
 
 // Send chat message using network/data channel (protobuf approach)
-export async function sendChatMessage(
-  page: Page,
-  message: string
-): Promise<boolean> {
+export async function sendChatMessage(page: Page, message: string): Promise<boolean> {
   try {
     console.log("[NetworkInterceptor] Sending chat message via network...")
 
@@ -154,12 +137,9 @@ export async function sendChatMessage(
     if (result) {
       console.log("[NetworkInterceptor] ✅ Chat message sent via network")
       return true
-    } else {
-      console.error(
-        "[NetworkInterceptor] ❌ Failed to send chat message via network"
-      )
-      return false
     }
+    console.error("[NetworkInterceptor] ❌ Failed to send chat message via network")
+    return false
   } catch (e) {
     console.error("[NetworkInterceptor] Exception sending chat message:", e)
     return false
@@ -210,17 +190,14 @@ export async function verifyNetworkInterception(page: Page): Promise<boolean> {
 export async function stopNetworkInterception(page: Page): Promise<void> {
   try {
     await page.evaluate(() => {
-      if (typeof (window as any).__stopNetworkInterception === "function") {
-        ;(window as any).__stopNetworkInterception()
+      if (typeof window.__stopNetworkInterception === "function") {
+        window.__stopNetworkInterception()
       } else {
         console.warn("[NetworkInterceptor] ⚠️ Stop function not available")
       }
     })
     console.log("[NetworkInterceptor] ✅ Network interception stopped")
   } catch (error) {
-    console.error(
-      "[NetworkInterceptor] ❌ Failed to stop network interception:",
-      error
-    )
+    console.error("[NetworkInterceptor] ❌ Failed to stop network interception:", error)
   }
 }

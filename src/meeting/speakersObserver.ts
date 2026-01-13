@@ -1,8 +1,8 @@
 import type { Page } from "@playwright/test"
 import type { MeetingProvider, RecordingMode, SpeakerData } from "../types"
+import { formatError } from "../utils/Logger"
 import { MeetSpeakersObserver } from "./meet/speakersObserver"
 import { TeamsSpeakersObserver } from "./teams/speakersObserver"
-import { formatError } from "../utils/Logger"
 
 export class SpeakersObserver {
   private meetingProvider: MeetingProvider

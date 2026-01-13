@@ -1,14 +1,14 @@
 import * as fs from "node:fs"
 import { enablePrintPageLogs } from "./browser/page-logger"
 import { DiarizationTracker } from "./diarization-tracker"
+import type { NetworkUser } from "./meeting/meet/network-interception/types"
 import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
 import type { Participant, SpeakerData } from "./types"
 import { PathManager } from "./utils/PathManager"
-import { generateStableUserId, createSequentialIdManager } from "./utils/speaker-id"
-import type { NetworkUser } from "./meeting/meet/network-interception/types"
+import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
 
 export class SpeakerManager {
   private static instance: SpeakerManager | null = null
@@ -95,7 +95,7 @@ export class SpeakerManager {
     networkUsers: NetworkUser[],
     timestamp: number
   ): Promise<void> {
-    try {      
+    try {
       // Convert network users to SpeakerData format
       const speakers: SpeakerData[] = networkUsers.map((user) => {
         // Use fullName as stable identifier, fallback to name (displayName)
@@ -166,7 +166,8 @@ export class SpeakerManager {
     const botName = GLOBAL.get().bot_name
     const maskedSpeakers = speakers.map((speaker, index) => {
       // Check if this speaker's name matches the bot name
-      const isPotentialBot = botName && speaker.name && speaker.name.toLowerCase() === botName.toLowerCase()
+      const isPotentialBot =
+        botName && speaker.name && speaker.name.toLowerCase() === botName.toLowerCase()
       return {
         ...speaker,
         name: isPotentialBot ? `Speaker ${index + 1} (Bot)` : `Speaker ${index + 1}`
