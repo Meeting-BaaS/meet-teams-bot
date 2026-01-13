@@ -11,6 +11,8 @@ import { MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
 
 export class InCallState extends BaseState {
+  private isStartingUIObserver = false // Lock to prevent race conditions in fallback
+
   async execute(): StateExecuteResult {
     const startTime = Date.now()
     console.info(`[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`)
@@ -175,12 +177,23 @@ export class InCallState extends BaseState {
             // Mark network interception as failed to prevent further attempts
             GLOBAL.setNetworkInterceptionSetupFailed()
 
-            // Trigger UI Observer fallback (only if not already started)
-            if (!this.context.speakersObserver) {
+            // Trigger UI Observer fallback (only if not already started or starting)
+            if (!this.context.speakersObserver && !this.isStartingUIObserver) {
+              this.isStartingUIObserver = true
               console.warn("[NetworkInterceptor] 🔄 Falling back to UI-based speaker detection")
-              await this.startUIBasedObservation()
+              try {
+                await this.startUIBasedObservation()
+              } finally {
+                this.isStartingUIObserver = false
+              }
             } else {
-              console.log("[NetworkInterceptor] ℹ️ UI Observer already running, skipping fallback")
+              if (this.context.speakersObserver) {
+                console.log("[NetworkInterceptor] ℹ️ UI Observer already running, skipping fallback")
+              } else {
+                console.log(
+                  "[NetworkInterceptor] ℹ️ UI Observer fallback already in progress, skipping duplicate"
+                )
+              }
             }
             return // Don't process as speaker update
           }

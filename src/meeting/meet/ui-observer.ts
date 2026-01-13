@@ -21,8 +21,14 @@ export async function startUIBasedObserver(
     throw new Error("Playwright page not available for speakers observation")
   }
 
-  // Stop existing observer if any
+  // If observer is already running, return it instead of creating a new one
   if (context.speakersObserver?.isCurrentlyObserving()) {
+    console.log("[UI Observer] Observer already running, reusing existing instance")
+    return context.speakersObserver
+  }
+
+  // Stop existing observer if any (but not currently observing)
+  if (context.speakersObserver) {
     console.warn("[UI Observer] Stopping existing observer before starting new one")
     context.speakersObserver.stopObserving()
   }

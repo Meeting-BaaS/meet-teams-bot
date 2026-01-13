@@ -7,10 +7,12 @@ export function browserInterceptionLogic(schema: any[]) {
     // - Stacking RTCPeerConnection/fetch overrides
     // - Leaking intervals
     // - Multiple event listeners
-    if ((window as any).__networkInterceptorInitialized) {
+    // Use a more robust check that also verifies the flag is actually set
+    if ((window as any).__networkInterceptorInitialized === true) {
       console.warn("[NetworkInterceptor] ⚠️ Already initialized, skipping duplicate initialization")
       return
     }
+    // Set flag immediately to prevent race conditions
     ;(window as any).__networkInterceptorInitialized = true
 
     // Feature flag: Proactive datachannel creation
