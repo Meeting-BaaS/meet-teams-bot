@@ -886,7 +886,7 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
     const inputValue = await page.inputValue(INPUT)
     return inputValue.includes(BotNameTyped)
   } catch (e) {
-    console.error("error in typeBotName", e)
+    console.error("error in typeBotName", formatError(e))
     return false
   }
 }

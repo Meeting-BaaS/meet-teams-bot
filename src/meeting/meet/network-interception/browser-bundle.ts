@@ -915,7 +915,8 @@ export function browserInterceptionLogic(schema: any[]) {
     // Intercept RTCPeerConnection for datachannel only (track handling now centralized)
     if (typeof (window as any).RTCPeerConnection !== "undefined") {
       const OriginalPC = (window as any).RTCPeerConnection
-      ;(window as any).RTCPeerConnection = (...args: any[]) => {
+      // We need to use a function expression to avoid issues with the RTCPeerConnection object being replaced
+      ;(window as any).RTCPeerConnection = function (...args: any[]) {
         const pc = new OriginalPC(...args)
 
         // Track whether we"ve attempted proactive creation for this PC instance

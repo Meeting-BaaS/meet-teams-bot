@@ -5,6 +5,16 @@ import type { Page } from "@playwright/test"
 import { Streaming } from "../../streaming"
 import { formatError } from "../../utils/Logger"
 
+// AudioData type from WebCodecs API (not in standard DOM types)
+interface AudioData {
+  readonly numberOfChannels: number
+  readonly numberOfFrames: number
+  readonly sampleRate: number
+  readonly timestamp: number
+  copyTo(destination: Float32Array, options?: { planeIndex?: number; frameOffset?: number; frameCount?: number }): void
+  close(): void
+}
+
 // Extend Window interface for browser APIs and audio capture functions
 declare global {
   interface Window {
