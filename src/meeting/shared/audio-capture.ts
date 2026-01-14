@@ -1,9 +1,48 @@
 // Shared Web Audio mixing for Meet and Teams
 // Factory approach to eliminate code duplication
 
-import { type Page } from "@playwright/test"
+import type { Page } from "@playwright/test"
 import { Streaming } from "../../streaming"
 import { formatError } from "../../utils/Logger"
+
+// AudioData type from WebCodecs API (not in standard DOM types)
+interface AudioData {
+  readonly numberOfChannels: number
+  readonly numberOfFrames: number
+  readonly sampleRate: number
+  readonly timestamp: number
+  copyTo(destination: Float32Array, options?: { planeIndex?: number; frameOffset?: number; frameCount?: number }): void
+  close(): void
+}
+
+// Extend Window interface for browser APIs and audio capture functions
+declare global {
+  interface Window {
+    webkitAudioContext?: typeof AudioContext
+    MediaStreamTrackProcessor?: {
+      new (options: {
+        track: MediaStreamTrack
+      }): {
+        readable: ReadableStream<AudioData>
+      }
+    }
+    onMeetMixedAudioChunk?: (audioChunk: {
+      audioData: number[]
+      sampleRate: number
+      timestamp: number
+      numberOfFrames: number
+    }) => void
+    onTeamsMixedAudioChunk?: (audioChunk: {
+      audioData: number[]
+      sampleRate: number
+      timestamp: number
+      numberOfFrames: number
+    }) => void
+    __meetAudioStop?: () => Promise<void>
+    __teamsAudioStop?: () => Promise<void>
+    [key: string]: unknown // Allow dynamic property access for callback and stop function names
+  }
+}
 
 export interface AudioCaptureConfig {
   provider: "Meet" | "Teams"
@@ -46,7 +85,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     console.log("${logPrefix} Initializing centralized audio track layer...")
 
                     // Create AudioContext
-                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)()
 
                     // Create window.__audioTrackLayer with subscribers array
                     window.__audioTrackLayer = {
@@ -69,15 +108,19 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                 const trackSubscribers = window.__audioTrackLayer.subscribers
                 const audioCtx = window.__audioTrackLayer.audioCtx
 
-                ${enableMixing ? `
+                ${
+                  enableMixing
+                    ? `
                 // Audio mixer (only if streaming enabled)
                 console.log("${logPrefix} Initializing Web Audio mixer...")
                 const mixerDestination = audioCtx.createMediaStreamDestination()
                 const mixedAudioSources = new Map()
                 let mixedStreamProcessor = null
-                let chunksSent = 0` : `
+                let chunksSent = 0`
+                    : `
                 // Audio mixer disabled (no streaming_output configured)
-                console.log("${logPrefix} Audio mixing disabled (streaming not configured)")`}
+                console.log("${logPrefix} Audio mixing disabled (streaming not configured)")`
+                }
 
                 // Abort controller for cleanup
                 let abortController = null
@@ -336,7 +379,9 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         return pc
                     }
 
-                    ${enablePeriodicScanning ? `
+                    ${
+                      enablePeriodicScanning
+                        ? `
                     // Teams needs periodic scanning as connections may be created at different times
                     const scannedTracks = new Set()
 
@@ -391,7 +436,9 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     scanTimeoutIds.push(setTimeout(scanForTracks, 5000))
                     scanTimeoutIds.push(setTimeout(scanForTracks, 10000))
                     periodicScanIntervalId = setInterval(scanForTracks, 30000)
-                    ` : ""}
+                    `
+                        : ""
+                    }
 
                     console.log("${logPrefix} RTCPeerConnection intercepted")
                 }
@@ -420,20 +467,26 @@ export function createAudioCapture(config: AudioCaptureConfig) {
       // Expose callback function for audio chunks (only if mixing is enabled)
       if (enableMixing) {
         try {
-          await page.exposeFunction(callbackName, async (audioChunk: {
-            audioData: number[]
-            sampleRate: number
-            timestamp: number
-            numberOfFrames: number
-          }) => {
-            if (Streaming.instance) {
-              try {
-                Streaming.instance.processMixedAudioChunk(audioChunk)
-              } catch (error) {
-                console.error(`${logPrefix} Failed to process mixed audio chunk:`, formatError(error))
+          await page.exposeFunction(
+            callbackName,
+            async (audioChunk: {
+              audioData: number[]
+              sampleRate: number
+              timestamp: number
+              numberOfFrames: number
+            }) => {
+              if (Streaming.instance) {
+                try {
+                  Streaming.instance.processMixedAudioChunk(audioChunk)
+                } catch (error) {
+                  console.error(
+                    `${logPrefix} Failed to process mixed audio chunk:`,
+                    formatError(error)
+                  )
+                }
               }
             }
-          })
+          )
         } catch (error) {
           // Ignore duplicate registration error (function already exposed)
           const errorMessage = error instanceof Error ? error.message : String(error)
@@ -465,8 +518,9 @@ export function createAudioCapture(config: AudioCaptureConfig) {
     stop: async (page: Page): Promise<void> => {
       try {
         await page.evaluate((stopFn) => {
-          if (typeof (window as any)[stopFn] === "function") {
-            return (window as any)[stopFn]()
+          const stopFunction = window[stopFn]
+          if (typeof stopFunction === "function") {
+            return stopFunction()
           }
         }, stopFunctionName)
         console.log(`${logPrefix} Audio capture stopped from Node.js`)
@@ -482,9 +536,11 @@ export function createAudioCapture(config: AudioCaptureConfig) {
       try {
         const status = await page.evaluate((cbName) => {
           return {
-            hasAudioContext: typeof AudioContext !== "undefined" || typeof (window as any).webkitAudioContext !== "undefined",
-            hasMediaStreamTrackProcessor: typeof (window as any).MediaStreamTrackProcessor !== "undefined",
-            hasCallback: typeof (window as any)[cbName] === "function"
+            hasAudioContext:
+              typeof AudioContext !== "undefined" ||
+              typeof window.webkitAudioContext !== "undefined",
+            hasMediaStreamTrackProcessor: typeof window.MediaStreamTrackProcessor !== "undefined",
+            hasCallback: typeof window[cbName] === "function"
           }
         }, callbackName)
 

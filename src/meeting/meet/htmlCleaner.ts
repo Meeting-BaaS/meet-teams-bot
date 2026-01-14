@@ -163,7 +163,8 @@ export class MeetHtmlCleaner {
               (div.clientHeight === 164 && div.clientWidth === 322) ||
               div.clientHeight === 36 // For the new People Icon at the top right corner
             ) {
-              div.style.display = "none"
+              // Use Opacity instead of Display to avoid hiding the button in case it needs to be clicked later
+              div.style.opacity = "0"
             }
           }
         } catch (_e) {}

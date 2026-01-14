@@ -1,6 +1,8 @@
 import { SoundContext, VideoContext } from "../../media_context"
+import { stopNetworkInterception } from "../../meeting/meet/network-interception"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
+import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
@@ -64,12 +66,12 @@ export class CleanupState extends BaseState {
 
       // 🚀 PARALLEL CLEANUP: Independent steps that can run simultaneously
       console.info(
-        "🧹 Steps 5-8: Running parallel cleanup (streaming + sound monitor + speakers + HTML)"
+        "🧹 Steps 5-9: Running parallel cleanup (streaming + sound monitor + speakers + HTML + network interception)"
       )
       await Promise.allSettled([
         // 5. Stop the streaming (waits for debug audio file finalization)
         (async () => {
-          console.info("🧹 Step 5/8: Stopping streaming service")
+          console.info("🧹 Step 5/9: Stopping streaming service")
           if (this.context.streamingService) {
             await this.context.streamingService.stop()
           }
@@ -77,28 +79,41 @@ export class CleanupState extends BaseState {
 
         // 6. Stop sound level monitor (critical for automatic leave)
         (async () => {
-          console.info("🧹 Step 6/8: Stopping sound level monitor")
+          console.info("🧹 Step 6/9: Stopping sound level monitor")
           // Use stopIfStarted to avoid instantiating if never used
           SoundLevelMonitor.stopIfStarted()
         })(),
 
         // 7. Stop speakers observer (with 3s timeout)
         (async () => {
-          console.info("🧹 Step 7/8: Stopping speakers observer")
+          console.info("🧹 Step 7/9: Stopping speakers observer")
           await this.stopSpeakersObserver()
         })(),
 
         // 8. Stop HTML cleaner (with 3s timeout)
         (async () => {
-          console.info("🧹 Step 8/8: Stopping HTML cleaner")
+          console.info("🧹 Step 8/9: Stopping HTML cleaner")
           await this.stopHtmlCleaner()
+        })(),
+
+        // 9. Stop network interception (Meet only)
+        (async () => {
+          console.info("🧹 Step 9/9: Stopping network interception")
+          if (GLOBAL.get().meeting_platform === "meet" && this.context.playwrightPage) {
+            try {
+              await stopNetworkInterception(this.context.playwrightPage)
+            } catch (error) {
+              console.error("🧹 Failed to stop network interception:", formatError(error))
+              // Don't throw - continue cleanup even if this fails
+            }
+          }
         })()
       ])
 
       console.info("🧹 Parallel cleanup completed")
 
-      console.info("🧹 Step 9/9: Cleaning up browser resources")
-      // 8. Clean up browser resources (must be sequential after others)
+      console.info("🧹 Step 10/10: Cleaning up browser resources")
+      // 10. Clean up browser resources (must be sequential after others)
       await this.cleanupBrowserResources()
 
       console.info("🧹 All cleanup steps completed")

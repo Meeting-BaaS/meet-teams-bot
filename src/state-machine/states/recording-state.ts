@@ -1,7 +1,10 @@
 import { Events } from "../../events"
+import { stopNetworkInterception } from "../../meeting/meet/network-interception"
+import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import { type AudioWarningEvent, ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
+import { checkDiarizationHealth, logHealthStatus } from "../../utils/diarization-monitor"
 import { formatError } from "../../utils/Logger"
 import { sleep } from "../../utils/sleep"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
@@ -35,6 +38,8 @@ export class RecordingState extends BaseState {
   private lastNoOneJoinedPeriodLog = 0
   private lastNoSpeakerLogTime = 0
   private hasNoOneJoinedPeriodEnded = false
+  private lastDiarizationHealthCheckTime = 0
+  private consecutiveStaleCount = 0
 
   async execute(): StateExecuteResult {
     try {
@@ -227,6 +232,12 @@ export class RecordingState extends BaseState {
 
         // Reset the silence timer (this is the critical timer for automatic leave)
         this.lastSoundActivity = now
+
+        // Check diarization health (throttled to every 5 seconds)
+        if (now - this.lastDiarizationHealthCheckTime >= 5000) {
+          this.lastDiarizationHealthCheckTime = now
+          await this.checkDiarizationHealth(now)
+        }
       }
 
       // Check if we're still in the noone_joined_period
@@ -290,6 +301,78 @@ export class RecordingState extends BaseState {
 
       // For other errors, don't assume bot was removed - just retry next iteration
       return { shouldEnd: false }
+    }
+  }
+
+  /**
+   * Check diarization health when sound activity is detected.
+   * If diarization is stale and we're on Meet with network diarization active,
+   * trigger fallback to UI-based diarization after 5 consecutive stale events.
+   */
+  private async checkDiarizationHealth(currentTime: number): Promise<void> {
+    const meetingStartTime = this.context.startTime
+    if (!meetingStartTime) {
+      // Meeting start time not set yet, skip health check
+      return
+    }
+
+    try {
+      const status = await checkDiarizationHealth(meetingStartTime, currentTime)
+      logHealthStatus(status)
+
+      // Debouncing logic for fallback
+      if (status.status === "stale") {
+        this.consecutiveStaleCount++
+        console.log(`[DiarizationHealth] ⚠️ Stale event ${this.consecutiveStaleCount}/5`)
+
+        // Check if we should trigger fallback (Meet only, network diarization active, 5 consecutive stale events)
+        if (
+          this.consecutiveStaleCount >= 5 &&
+          GLOBAL.get().meeting_platform === "meet" &&
+          !GLOBAL.hasNetworkInterceptionSetupFailed() &&
+          !GLOBAL.hasDiarizationFallbackTriggered() &&
+          this.context.playwrightPage
+        ) {
+          console.log(
+            "[DiarizationHealth] 🔄 Triggering fallback to UI-based diarization after 5 consecutive stale events"
+          )
+
+          // Stop network interception to prevent duplicate logs
+          try {
+            await stopNetworkInterception(this.context.playwrightPage)
+          } catch (error) {
+            console.error(
+              "[DiarizationHealth] Failed to stop network interception:",
+              formatError(error)
+            )
+          }
+
+          // Mark network interception as failed
+          GLOBAL.setNetworkInterceptionSetupFailed()
+
+          // Start UI-based observation
+          try {
+            await startUIBasedObserver(this.context.playwrightPage, this.context)
+            GLOBAL.setDiarizationFallbackTriggered()
+          } catch (error) {
+            console.error(
+              "[DiarizationHealth] Failed to start UI-based observer fallback:",
+              formatError(error)
+            )
+            // Retry not possible since network interception was already marked as failed
+          }
+        }
+      } else if (status.status === "optimal" || status.status === "acceptable") {
+        // Reset counter on any good status
+        if (this.consecutiveStaleCount > 0) {
+          console.log(
+            "[DiarizationHealth] ✅ Diarization health recovered, resetting stale counter"
+          )
+          this.consecutiveStaleCount = 0
+        }
+      }
+    } catch (error) {
+      console.error("[DiarizationHealth] Error checking diarization health:", formatError(error))
     }
   }
 

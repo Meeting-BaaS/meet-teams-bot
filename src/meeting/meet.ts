@@ -57,15 +57,15 @@ export class MeetProvider implements MeetingProviderInterface {
       if (enableMixing) {
         console.log("[Meet] ✅ Web Audio capture enabled for streaming")
       } else {
-        console.log("[Meet] ✅ Audio track layer enabled for network diarization (streaming disabled)")
+        console.log(
+          "[Meet] ✅ Audio track layer enabled for network diarization (streaming disabled)"
+        )
       }
 
       // Setup network interception scripts BEFORE navigation
       // addInitScript must be called before page.goto() to work properly
       try {
-        const { setupNetworkInterceptionScripts } = await import(
-          "./meet/network-interception"
-        )
+        const { setupNetworkInterceptionScripts } = await import("./meet/network-interception")
         const success = await setupNetworkInterceptionScripts(page)
         if (success) {
           console.log("[Meet] ✅ Network interception scripts set up")
@@ -288,7 +288,7 @@ export class MeetProvider implements MeetingProviderInterface {
         }
       }
 
-      // Note: People button click is now handled in startUIBasedObservation() 
+      // Note: People button click is now handled in startUIBasedObservation()
       // when UI-based detection is actually used (fallback mode)
       // This keeps the fallback tight - People panel only opens when needed
     } catch (error) {
@@ -359,23 +359,48 @@ export async function findShowEveryOne(page: Page, click: boolean, cancelCheck: 
       }
 
       // Search for People button with multiple selectors (OLD + NEW Meet UI)
-      const buttons = page.locator(
-        [
-          // OLD UI selectors (pre-Dec 2025)
-          'nav button[aria-label="People"][role="button"]',
-          'nav button[aria-label="Show everyone"][role="button"]',
-          'nav button[data-panel-id="1"][role="button"]',
-          // NEW UI selectors (Dec 2025+) - Badge/hover tray style People button
-          'div[role="button"][aria-haspopup="dialog"]:has(span:text("People"))'
-        ].join(", ")
-      )
+      const selectors = [
+        // OLD UI selectors (pre-Dec 2025)
+        'nav button[aria-label="People"][role="button"]',
+        'nav button[aria-label="Show everyone"][role="button"]',
+        'nav button[data-panel-id="1"][role="button"]',
+        // NEW UI selectors (Dec 2025+) - Badge/hover tray style People button
+        'div[role="button"][aria-haspopup="dialog"]:has(span:text("People"))'
+      ]
 
+      // Check each selector individually to log which ones match
+      const matchedSelectors: string[] = []
+      let totalCount = 0
+      for (const selector of selectors) {
+        const count = await page.locator(selector).count()
+        if (count > 0) {
+          matchedSelectors.push(selector)
+          totalCount += count
+          console.log(`  - Selector "${selector}" found ${count} element(s)`)
+        }
+      }
+
+      const buttons = page.locator(selectors.join(", "))
       const count = await buttons.count()
-      showEveryOneFound = count > 0
+      showEveryOneFound = totalCount > 0
+
+      if (matchedSelectors.length > 0) {
+        console.log(
+          `[People Button] Found ${count} button(s) using ${matchedSelectors.length} selector(s): ${matchedSelectors.join(", ")}`
+        )
+      } else {
+        console.log(`[People Button] No selectors matched (checked ${selectors.length} selectors)`)
+      }
 
       if (showEveryOneFound && click) {
         try {
-          await buttons.first().click()
+          const button = buttons.first()
+
+          // Button may have opacity: 0 from HTML cleaner, but it's still clickable
+          // Wait for button to be attached to DOM and clickable
+          console.log("[People Button] Attempting to click button...")
+          // Use evaluate to click the button because it may be invisible (explicitly set to opacity:0 in htmlCleaner) and hence button.click() won't work
+          await button.evaluate((el: HTMLElement) => el.click())
           console.log("Successfully clicked People button")
 
           // Dismiss the hover dialog (new UI Dec 2025+)
@@ -385,7 +410,7 @@ export async function findShowEveryOne(page: Page, click: boolean, cancelCheck: 
           await page.click("body", { position: { x: 10, y: 10 }, force: true })
           console.log("Clicked body to dismiss People hover dialog")
         } catch (e) {
-          console.log("Failed to click People button:", e)
+          console.log("Failed to click People button:", formatError(e))
           showEveryOneFound = false
         }
       }
@@ -861,7 +886,7 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
     const inputValue = await page.inputValue(INPUT)
     return inputValue.includes(BotNameTyped)
   } catch (e) {
-    console.error("error in typeBotName", e)
+    console.error("error in typeBotName", formatError(e))
     return false
   }
 }

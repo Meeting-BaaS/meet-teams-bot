@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test"
 import type { MeetingProvider, RecordingMode, SpeakerData } from "../types"
+import { formatError } from "../utils/Logger"
 import { MeetSpeakersObserver } from "./meet/speakersObserver"
 import { TeamsSpeakersObserver } from "./teams/speakersObserver"
 
@@ -50,7 +51,7 @@ export class SpeakersObserver {
       } catch (error) {
         console.warn(
           `[SpeakersObserver] Failed to initialize (attempt ${this.retryCount + 1}/${this.maxRetries}):`,
-          error
+          formatError(error)
         )
 
         // Retry logic - same as before

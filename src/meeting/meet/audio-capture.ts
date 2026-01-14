@@ -1,7 +1,7 @@
 // Web Audio mixing for Google Meet
 // Uses shared audio capture module
 
-import { type Page } from "@playwright/test"
+import type { Page } from "@playwright/test"
 import { meetAudioCapture } from "../shared/audio-capture"
 
 /**

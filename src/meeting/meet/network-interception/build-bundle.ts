@@ -18,7 +18,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 
-function buildLibrariesBundle() {
+function buildLibrariesBundle(customOutputPath?: string) {
   console.log("🔨 Building network-interceptor libraries bundle...")
 
   try {
@@ -71,10 +71,19 @@ function buildLibrariesBundle() {
 })();
 `
 
-    // Write bundle
-    const outputDir = path.resolve(__dirname, "bundle")
+    // Determine output path
+    let outputPath: string
+    if (customOutputPath) {
+      outputPath = path.resolve(customOutputPath)
+    } else {
+      // Default: relative to this file's directory
+      const outputDir = path.resolve(__dirname, "bundle")
+      outputPath = path.join(outputDir, "network-interceptor-libs.bundle.js")
+    }
+
+    // Ensure output directory exists
+    const outputDir = path.dirname(outputPath)
     fs.mkdirSync(outputDir, { recursive: true })
-    const outputPath = path.join(outputDir, "network-interceptor-libs.bundle.js")
     fs.writeFileSync(outputPath, bundle, "utf8")
 
     const stats = fs.statSync(outputPath)
@@ -83,7 +92,6 @@ function buildLibrariesBundle() {
     console.log(`✅ Libraries bundle created: ${outputPath}`)
     console.log(`   Size: ${sizeKB} KB`)
     console.log(`   ~${(stats.size / (1024 * 1024)).toFixed(2)} MB`)
-
   } catch (error) {
     console.error("❌ Bundle build failed:", error)
     process.exit(1)
@@ -92,7 +100,9 @@ function buildLibrariesBundle() {
 
 // Run if called directly
 if (require.main === module) {
-  buildLibrariesBundle()
+  // Support OUTPUT_PATH environment variable or command-line argument
+  const outputPath = process.env.OUTPUT_PATH || process.argv[2]
+  buildLibrariesBundle(outputPath)
 }
 
 export { buildLibrariesBundle }

@@ -39,12 +39,25 @@ export function listenPage(page: Page) {
       const text = message.text()
       const location = message.location()
 
+      const type = message.type()
+
+      // Always capture NetworkInterceptor errors and warnings (Since we are just adding NetworkInterceptor, we need to capture the logs to ensure its working properly)
+      // TODO: Remove this once we are sure NetworkInterceptor is working properly
+      const isNetworkInterceptorLog = text.includes("[NetworkInterceptor]")
+      const isNetworkError = isNetworkInterceptorLog && (type === "error" || type === "warning")
+
       // Only show DEBUG logs when LOG_LEVEL=debug
       const isDebugLog = text.includes("DEBUG")
-      const isNetworkInterceptorLog = text.includes("[NetworkInterceptor]") || text.includes("[MeetAudio]") || text.includes("[TeamsAudio]")
+      const isNetworkInterceptorInfo = text.includes("[MeetAudio]") || text.includes("[TeamsAudio]")
 
-      // Print if PRINT_PAGE_LOGS is enabled, or if LOG_LEVEL=debug and it's a relevant debug log
-      const shouldPrint = PRINT_PAGE_LOGS || (envVars.LOG_LEVEL === "debug" && (isDebugLog || isNetworkInterceptorLog))
+      // Print if:
+      // 1. PRINT_PAGE_LOGS is enabled, OR
+      // 2. It's a NetworkInterceptor error/warning (always), OR
+      // 3. LOG_LEVEL=debug and it's a relevant debug log
+      const shouldPrint =
+        PRINT_PAGE_LOGS ||
+        isNetworkError ||
+        (envVars.LOG_LEVEL === "debug" && (isDebugLog || isNetworkInterceptorInfo))
       if (!shouldPrint) {
         return
       }
@@ -60,11 +73,11 @@ export function listenPage(page: Page) {
         })
       )
 
-      const type = message.type().substr(0, 3).toUpperCase()
+      const messageType = type.substring(0, 3).toUpperCase()
       const tags = `${location.url}:${location.lineNumber}`
       const formattedText = args.length === 1 ? args[0] : args.join(" ")
 
-      switch (type) {
+      switch (messageType) {
         case "LOG":
           console.log(`${tags}\n${formattedText}`)
           break
@@ -78,7 +91,7 @@ export function listenPage(page: Page) {
           console.log("\x1b[32m%s\x1b[0m", `${tags}\n${formattedText}`)
           break
         default:
-          console.log(`DEFAULT CASE ${type} ! ${tags}\n${formattedText}`)
+          console.log(`DEFAULT CASE ${messageType} ! ${tags}\n${formattedText}`)
       }
     } catch (e) {
       console.log(`Failed to log forward logs: ${e}`)

@@ -53,6 +53,7 @@
         "clean": "rimraf coverage build tmp",
         "build": "echo '{\"buildDate\": \"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'\"}' > src/buildInfo.json && ./node_modules/typescript/bin/tsc --skipLibCheck -p tsconfig.release.json",
         "build:bundle": "ts-node src/meeting/meet/network-interception/build-bundle.ts",
+        "build:bundle-dev": "OUTPUT_PATH=build/src/meeting/meet/network-interception/bundle/network-interceptor-libs.bundle.js ts-node src/meeting/meet/network-interception/build-bundle.ts",
         "watch": "./node_modules/typescript/bin/tsc --skipLibCheck -w -p tsconfig.release.json",
         "watch-dev": "PROFILE=DEV ts-node-dev --respawn --transpile-only src/main.ts -p tsconfig.release.json",
         "lint": "biome lint .",
