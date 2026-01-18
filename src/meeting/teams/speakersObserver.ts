@@ -57,7 +57,13 @@ export class TeamsSpeakersObserver {
 
     // Inject EXACT SAME LOGIC as extension but via Playwright
     await this.page.evaluate(
-      ({ botName, speakerLatency, mutationDebounce, checkInterval, freezeTimeout }) => {
+      ({
+        //botName, // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
+        speakerLatency,
+        mutationDebounce,
+        checkInterval,
+        freezeTimeout
+      }) => {
         console.log("[Teams-Browser] Setting up observation - EXACT EXTENSION LOGIC")
 
         // EXACT SAME VARIABLES AS EXTENSION
@@ -346,10 +352,11 @@ export class TeamsSpeakersObserver {
         async function checkSpeakers() {
           try {
             const timestamp = Date.now() - speakerLatency
-            let currentSpeakersList = getSpeakerFromDocument(timestamp)
+            const currentSpeakersList = getSpeakerFromDocument(timestamp)
 
             // Filter out bot - EXACT SAME AS EXTENSION
-            currentSpeakersList = currentSpeakersList.filter((speaker) => speaker.name !== botName)
+            // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
+            // currentSpeakersList = currentSpeakersList.filter((speaker) => speaker.name !== botName)
 
             const new_speakers = new Map(
               currentSpeakersList.map((elem) => [elem.name, elem.isSpeaking])
@@ -423,8 +430,9 @@ export class TeamsSpeakersObserver {
           try {
             // EXACT SAME as extension: Initial check for speakers already talking
             // But only send if isSpeaking === true (like extension)
+            // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
             const currentSpeakersList = getSpeakerFromDocument(Date.now() - speakerLatency).filter(
-              (speaker) => speaker.name !== botName && speaker.isSpeaking === true
+              (speaker) => /* speaker.name !== botName && */ speaker.isSpeaking === true
             )
 
             if (currentSpeakersList.length > 0) {
@@ -433,9 +441,10 @@ export class TeamsSpeakersObserver {
               )
               await window.teamsSpeakersChanged(currentSpeakersList)
               // Initialize CUR_SPEAKERS with ALL speakers (speaking and not speaking)
-              const allSpeakers = getSpeakerFromDocument(Date.now() - speakerLatency).filter(
-                (speaker) => speaker.name !== botName
-              )
+              // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
+              const allSpeakers = getSpeakerFromDocument(Date.now() - speakerLatency) // .filter(
+              //   (speaker) => speaker.name !== botName
+              // )
               CUR_SPEAKERS.clear()
               allSpeakers.forEach((elem) => {
                 CUR_SPEAKERS.set(elem.name, elem.isSpeaking)

@@ -61,7 +61,7 @@ export class MeetSpeakersObserver {
     await this.page.evaluate(
       ({
         recordingMode,
-        botName,
+        // botName, // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
         speakerLatency,
         mutationDebounce,
         checkInterval,
@@ -380,10 +380,11 @@ export class MeetSpeakersObserver {
         async function checkSpeakers() {
           try {
             const timestamp = Date.now() - speakerLatency
-            let currentSpeakersList = getSpeakerFromDocument(timestamp)
+            const currentSpeakersList = getSpeakerFromDocument(timestamp)
 
             // Filter out bot
-            currentSpeakersList = currentSpeakersList.filter((speaker) => speaker.name !== botName)
+            // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
+            // currentSpeakersList = currentSpeakersList.filter((speaker) => speaker.name !== botName)
 
             const new_speakers = new Map(
               currentSpeakersList.map((elem) => [elem.name, elem.isSpeaking])
@@ -454,8 +455,9 @@ export class MeetSpeakersObserver {
         async function observeSpeakers() {
           try {
             // But only send if isSpeaking === true
+            // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
             const currentSpeakersList = getSpeakerFromDocument(Date.now() - speakerLatency).filter(
-              (speaker) => speaker.name !== botName && speaker.isSpeaking === true
+              (speaker) => /* speaker.name !== botName && */ speaker.isSpeaking === true
             )
 
             if (currentSpeakersList.length > 0) {
@@ -464,9 +466,10 @@ export class MeetSpeakersObserver {
               )
               await window.meetSpeakersChanged(currentSpeakersList)
               // Initialize CUR_SPEAKERS with ALL speakers (speaking and not speaking)
-              const allSpeakers = getSpeakerFromDocument(Date.now() - speakerLatency).filter(
-                (speaker) => speaker.name !== botName
-              )
+              // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
+              const allSpeakers = getSpeakerFromDocument(Date.now() - speakerLatency) // .filter(
+              //   (speaker) => speaker.name !== botName
+              // )
               CUR_SPEAKERS.clear()
               allSpeakers.forEach((elem) => {
                 CUR_SPEAKERS.set(elem.name, elem.isSpeaking)
