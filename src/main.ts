@@ -6,6 +6,7 @@ import { MeetingStateMachine } from './state-machine/machine'
 import { detectMeetingProvider } from './utils/detectMeetingProvider'
 import {
     setupConsoleLogger,
+    setupFileLogging,
     setupExitHandler,
     uploadLogsToS3,
     formatError,
@@ -72,6 +73,7 @@ async function readFromStdin(): Promise<MeetingParams> {
                 )
                 GLOBAL.set(params)
                 PathManager.getInstance().initializePaths()
+                setupFileLogging()
                 resolve(params)
             } catch (error) {
                 console.error('Failed to parse JSON from stdin:', formatError(error))
