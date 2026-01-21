@@ -492,6 +492,10 @@ async function isInMeeting(page: Page): Promise<boolean> {
 }
 
 // Export for use in InCallState (non-blocking entry message)
+// Chat textarea selector (used multiple times in sendEntryMessage)
+const CHAT_TEXTAREA_SELECTOR =
+    'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]'
+
 export async function sendEntryMessage(
     page: Page,
     enterMessage: string,
@@ -518,14 +522,52 @@ export async function sendEntryMessage(
         await page.keyboard.press('Control+Alt+KeyC')
         await page.waitForTimeout(200) // Brief wait for chat to open
 
-        await page.waitForSelector(
-            'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
-            { state: 'visible', timeout: ENTRY_MESSAGE_TIMEOUT },
-        )
+        // Check if chat opened successfully
+        let chatOpened = false
+        try {
+            await page.waitForSelector(CHAT_TEXTAREA_SELECTOR, {
+                state: 'visible',
+                timeout: 2000,
+            })
+            chatOpened = true
+        } catch (e) {
+            console.log('Chat did not open with shortcut, trying button fallback...')
+            // Fallback: Try to find and click chat button using evaluate() to bypass visibility check
+            // (HTML cleaner may hide the button, but it's still in the DOM)
+            try {
+                const chatButton = page.locator(
+                    [
+                        'button[aria-label*="Chat"]',
+                        'button[aria-label*="chat"]',
+                        'button[title*="Chat"]',
+                        'button[title*="chat"]',
+                        'nav button[aria-label="Chat"][role="button"]',
+                        'div[role="button"][aria-label*="Chat"]',
+                    ].join(', '),
+                )
+                const count = await chatButton.count()
+                if (count > 0) {
+                    // Use evaluate() to click directly, bypassing Playwright's visibility check
+                    // (HTML cleaner may hide the button, but it's still in the DOM)
+                    await chatButton.first().evaluate((el: HTMLElement) => el.click())
+                    await page.waitForTimeout(200)
+                    await page.waitForSelector(CHAT_TEXTAREA_SELECTOR, {
+                        state: 'visible',
+                        timeout: ENTRY_MESSAGE_TIMEOUT,
+                    })
+                    chatOpened = true
+                }
+            } catch (fallbackError) {
+                console.error('Chat button fallback also failed:', formatError(fallbackError))
+            }
+        }
 
-        const textarea = page.locator(
-            'textarea[placeholder="Send a message"], textarea[aria-label="Send a message to everyone"]',
-        )
+        if (!chatOpened) {
+            console.error('Failed to open chat window')
+            return false
+        }
+
+        const textarea = page.locator(CHAT_TEXTAREA_SELECTOR)
         await textarea.fill(enterMessage, { timeout: ENTRY_MESSAGE_TIMEOUT })
 
         const sendButton = page.locator('button:has(i:text("send"))')
@@ -543,7 +585,6 @@ export async function sendEntryMessage(
         return false
     } catch (error) {
         console.error('Failed to send entry message:', formatError(error))
-        // No fallback - HTML cleaner hides chat button, shortcuts are more stable anyway
         return false
     }
 }
@@ -917,13 +958,15 @@ async function changeLayout(
 
         // 3. Click Spotlight option
         console.log('Looking for Spotlight option...')
-        const spotlightOption = page.locator(
-            [
-                'label:has-text("Spotlight"):has(input[type="radio"])',
-                'label:has(input[name="preferences"]):has-text("Spotlight")',
-                'label:has(span:text-is("Spotlight"))',
-            ].join(','),
-        )
+        const spotlightOption = page
+            .locator(
+                [
+                    'label:has-text("Spotlight"):has(input[type="radio"])',
+                    'label:has(input[name="preferences"]):has-text("Spotlight")',
+                    'label:has(span:text-is("Spotlight"))',
+                ].join(','),
+            )
+            .first() // Use first() to handle cases where multiple Spotlight labels exist
         await spotlightOption.waitFor({ state: 'visible', timeout: 3000 })
         await spotlightOption.click()
 
