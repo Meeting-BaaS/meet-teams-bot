@@ -8,6 +8,8 @@ import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
+import { sendEntryMessage } from '../../meeting/meet'
+import { verifyMeetAudioCapture } from '../../meeting/meet/audio-capture'
 
 export class InCallState extends BaseState {
     async execute(): StateExecuteResult {
@@ -82,15 +84,43 @@ export class InCallState extends BaseState {
                 'Setting up browser components with integrated HTML cleanup...',
             )
 
-            // fix: Set meeting start time BEFORE starting speakers observation
-            // This prevents race condition where speakers are detected before startTime is set
+            // Set meetingStartTime for clean video output
+            // This is set here (not in joinMeeting) to ensure clean video output
             const startTime = Date.now()
             this.context.startTime = startTime
             ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
-            console.log(`Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`)
+            console.log(
+                `Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`,
+            )
 
-            // Start HTML cleanup first to clean the interface
+
+            // OPTIMIZATION: Start HTML Cleaner FIRST to surface video on top
+            // This ensures video is at z-index: 900000 before other actions
             await this.startHtmlCleaning()
+
+            // Start speakers observation in all cases
+            // Speakers observation is independent of video recording
+            try {
+                await this.startSpeakersObservation()
+            } catch (error) {
+                console.error(
+                    'Failed to start speakers observation:',
+                    formatError(error),
+                )
+                // Continue even if speakers observation fails
+            }
+
+            // OPTIMIZATION: Move entry message and audio verification to async (non-blocking)
+            // These run after video is surfaced and recording has started
+            this.performNonBlockingActions().catch((err) => {
+                console.error(
+                    'Error in non-blocking actions:',
+                    formatError(err),
+                )
+            })
+
+            // Notify that recording has started
+            Events.inCallRecording({ start_time: this.context.startTime })
         } catch (error) {
             console.error(
                 'Error in setupBrowserComponents:',
@@ -103,21 +133,48 @@ export class InCallState extends BaseState {
             )
             throw new Error(`Browser component setup failed: ${error as Error}`)
         }
+    }
 
-        // Start speakers observation in all cases
-        // Speakers observation is independent of video recording
-        try {
-            await this.startSpeakersObservation()
-        } catch (error) {
-            console.error(
-                'Failed to start speakers observation:',
-                formatError(error),
-            )
-            // Continue even if speakers observation fails
+    /**
+     * OPTIMIZATION: Non-blocking actions that run after critical setup
+     * - Entry message (if configured)
+     * - Audio verification (if streaming enabled)
+     */
+    private async performNonBlockingActions(): Promise<void> {
+        if (!this.context.playwrightPage) {
+            return
         }
 
-        // Notify that recording has started
-        Events.inCallRecording({ start_time: this.context.startTime })
+        // Only for Meet provider
+        if (GLOBAL.get().meetingProvider !== 'Meet') {
+            return
+        }
+
+        // 1. Verify audio capture (if streaming enabled)
+        if (GLOBAL.get().streaming_output) {
+            try {
+                await verifyMeetAudioCapture(this.context.playwrightPage)
+            } catch (error) {
+                console.error(
+                    '[Meet] Failed to verify audio capture post-join:',
+                    formatError(error),
+                )
+            }
+        }
+
+        // 2. Send entry message (if configured) - non-blocking
+        if (GLOBAL.get().enter_message) {
+            console.log('Sending entry message (non-blocking)...')
+            sendEntryMessage(
+                this.context.playwrightPage,
+                GLOBAL.get().enter_message,
+            ).catch((error) => {
+                console.error(
+                    'Failed to send entry message:',
+                    formatError(error),
+                )
+            })
+        }
     }
 
     private async startSpeakersObservation(): Promise<void> {

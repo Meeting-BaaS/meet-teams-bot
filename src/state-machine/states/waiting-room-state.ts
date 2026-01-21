@@ -67,8 +67,9 @@ export class WaitingRoomState extends BaseState {
                 this.context.streamingService.start()
             }
 
-            ScreenRecorderManager.getInstance().startRecording(
-                this.context.playwrightPage            )
+            // Start recording early to capture entire bot lifecycle
+            // Recording will be cropped based on meetingStartTime anyway
+            ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
 
             // Send waiting room event after the page is open
             Events.inWaitingRoom()
