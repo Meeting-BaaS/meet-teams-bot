@@ -111,6 +111,10 @@ export class MeetProvider implements MeetingProviderInterface {
             return page
         } catch (error) {
             console.error('openMeetingPage error:', formatError(error))
+            // Mark as retryable - bot hasn't joined yet, so retrying is safe
+            // Worst case: 3 attempts (1 initial + 2 retries) before giving up
+            console.log('🔄 Error occurred before joining - marking as retryable')
+            GLOBAL.setShouldRetry(true)
             throw error
         }
     }

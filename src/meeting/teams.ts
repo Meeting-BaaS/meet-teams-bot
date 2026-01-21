@@ -125,28 +125,18 @@ export class TeamsProvider implements MeetingProviderInterface {
                 currentUrl.includes('light-meetings') ||
                 currentUrl.includes('light')
 
-            if (isLightInterface && attempts < 3) {
-                // Limit retries to 3
-                await page.close()
-                console.log(
-                    `🥕 Light interface detected, retry ${attempts + 1}/3`,
-                )
-                await sleep(500) // Reduced wait time
-                return await this.openMeetingPage(
-                    browserContext,
-                    link,
-                    streaming_input,
-                    attempts + 1,
-                )
-            } else if (isLightInterface && attempts >= 3) {
-                console.log(
-                    '🥕 Light interface persists after 3 retries, continuing anyway',
-                )
+            // Teams now almost always renders in light mode, so we accept it and continue
+            if (isLightInterface) {
+                console.log('🥕 Light interface detected (expected), continuing...')
             }
 
             return page
         } catch (error) {
             console.error('Error in openMeetingPage:', formatError(error))
+            // Mark as retryable - bot hasn't joined yet, so retrying is safe
+            // Worst case: 3 attempts (1 initial + 2 retries) before giving up
+            console.log('🔄 Error occurred before joining - marking as retryable')
+            GLOBAL.setShouldRetry(true)
             throw error
         }
     }
