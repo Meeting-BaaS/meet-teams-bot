@@ -71,6 +71,7 @@ const calculateFFmpegTimeout = (operation: string, fileSizeMB?: number): number 
     case "finalTrimFromOffset":
     case "extractAudioFromVideo":
     case "createAudioChunks":
+    case "createAudioChunk":
       // Critical operations: Dynamic scaling based on file size with ceiling
       timeout = Math.max(FFMPEG_TIMEOUTS.COMPLEX_OPERATIONS, (fileSizeMB || 100) * 1000)
       return Math.min(timeout, FFMPEG_TIMEOUTS.MAX_CEILING)
@@ -1501,6 +1502,18 @@ file '${absoluteInputPath}'`
     await this.runFFmpeg(args, "extractAudioFromVideo", estimatedSizeMB)
   }
 
+  /**
+   * Split the full audio file into FLAC chunks for transcription upload.
+   *
+   * We use one FFmpeg invocation per chunk with explicit `-ss`/`-t` instead of
+   * the segment muxer (`-f segment -segment_format flac`) because the segment
+   * muxer produces FLAC files with incorrect metadata:
+   *   - Chunk 0 gets `duration: N/A` (missing `total_samples` in STREAMINFO)
+   *   - Subsequent chunks inherit the full source duration and a non-zero `start_time`
+   * Gladia rejects chunks whose metadata duration exceeds 8100s, even though the
+   * actual audio content is shorter. Per-chunk seeking avoids this entirely since
+   * each output is a standalone FLAC with correct `total_samples` and `start_time=0`.
+   */
   private async createAudioChunks(audioPath: string): Promise<void> {
     if (!UPLOAD_AUDIO_CHUNKS) return
 
@@ -1520,43 +1533,54 @@ file '${absoluteInputPath}'`
 
     // Get audio duration
     const actualDuration = await this.getDuration(audioPath)
-    const duration = actualDuration + 1 // Add 1 second margin to avoid math precision issues
     const botUuid = GLOBAL.get().bot_uuid
 
-    // Calculate chunk duration (max 2 hours = 7200 seconds)
-    const chunkDuration = Math.min(duration, TRANSCRIPTION_CHUNK_DURATION)
-    const chunkPattern = path.join(chunksDir, `${botUuid}-%d.flac`)
+    // Add 1 second margin to avoid floating-point precision issues in duration reporting
+    const durationWithMargin = actualDuration + 1
 
-    const args = [
-      "-i",
-      audioPath,
-      "-sample_fmt",
-      "s16",
-      "-ac",
-      "1",
-      "-ar",
-      AUDIO_SAMPLE_RATE.toString(),
-      "-f",
-      "segment",
-      "-segment_time",
-      chunkDuration.toString(),
-      "-segment_format",
-      "flac",
-      "-y",
-      chunkPattern
-    ]
+    // Calculate total number of chunks
+    const totalChunks = Math.ceil(durationWithMargin / TRANSCRIPTION_CHUNK_DURATION)
 
     console.log(
-      `🎵 Creating audio chunks (${chunkDuration.toFixed(1)}s each) from ${actualDuration.toFixed(1)}s audio`
+      `🎵 Creating ${totalChunks} audio chunk(s) (${TRANSCRIPTION_CHUNK_DURATION}s max each) from ${actualDuration.toFixed(1)}s audio`
     )
     console.log(
       `📊 Audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Duration: ${actualDuration.toFixed(1)}s`
     )
+
     try {
       // Estimate file size for timeout calculation
       const estimatedSizeMB = this.estimateFileSizeMB(audioPath)
 
-      await this.runFFmpeg(args, "createAudioChunks", estimatedSizeMB)
+      for (let i = 0; i < totalChunks; i++) {
+        const startTime = i * TRANSCRIPTION_CHUNK_DURATION
+        const chunkLength = Math.min(TRANSCRIPTION_CHUNK_DURATION, durationWithMargin - startTime)
+        const outputPath = path.join(chunksDir, `${botUuid}-${i}.flac`)
+
+        console.log(
+          `🎵 Creating chunk ${i + 1}/${totalChunks}: ${startTime}s-${(startTime + chunkLength).toFixed(1)}s`
+        )
+
+        const args = [
+          "-ss",
+          startTime.toString(),
+          "-i",
+          audioPath,
+          "-t",
+          chunkLength.toString(),
+          "-sample_fmt",
+          "s16",
+          "-ac",
+          "1",
+          "-ar",
+          AUDIO_SAMPLE_RATE.toString(),
+          "-y",
+          outputPath
+        ]
+
+        await this.runFFmpeg(args, "createAudioChunk", estimatedSizeMB)
+      }
+
       // Upload created chunks
       await this.uploadAudioChunks(chunksDir, botUuid)
     } catch (error) {
