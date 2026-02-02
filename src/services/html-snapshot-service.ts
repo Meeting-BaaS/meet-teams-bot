@@ -84,13 +84,13 @@ export class HtmlSnapshotService {
     const filename = this.generateFilename(context)
     const filePath = path.join(this.pathManager.getHtmlSnapshotsPath(), filename)
 
-    // Ensure directory exists
-    await fs.mkdir(path.dirname(filePath), { recursive: true })
-
-    // Save HTML file
-    await fs.writeFile(filePath, html, "utf-8")
-
-    console.log(`[HtmlSnapshot] Captured snapshot: ${filename}`)
+    // Fire-and-forget: don't await file operations
+    fs.mkdir(path.dirname(filePath), { recursive: true })
+      .then(() => fs.writeFile(filePath, html, "utf-8"))
+      .then(() => console.log(`[HtmlSnapshot] Captured snapshot: ${filename}`))
+      .catch((error) => {
+        console.error(`[HtmlSnapshot] Failed to save snapshot for ${context}:`, error?.message ?? error)
+      })
 
     return {
       success: true
