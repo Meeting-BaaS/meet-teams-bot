@@ -1,5 +1,7 @@
 import { Events } from "../../events"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
+import { sendEntryMessage } from "../../meeting/meet"
+import { verifyMeetAudioCapture } from "../../meeting/meet/audio-capture"
 import type { NetworkPayload, NetworkUser } from "../../meeting/meet/network-interception/types"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
@@ -107,8 +109,36 @@ export class InCallState extends BaseState {
       // Continue even if speakers observation fails
     }
 
+    // Non-blocking: entry message and audio verification (Meet only)
+    this.performNonBlockingActions().catch((err) => {
+      console.error("Error in non-blocking actions:", formatError(err))
+    })
+
     // Notify that recording has started
     Events.inCallRecording({ start_time: this.context.startTime })
+  }
+
+  /**
+   * Non-blocking actions after critical setup: entry message, audio verification (Meet only).
+   */
+  private async performNonBlockingActions(): Promise<void> {
+    if (!this.context.playwrightPage) return
+    if (GLOBAL.get().meeting_platform !== "meet") return
+
+    if (GLOBAL.get().streaming_output) {
+      try {
+        await verifyMeetAudioCapture(this.context.playwrightPage)
+      } catch (error) {
+        console.error("[Meet] Failed to verify audio capture post-join:", formatError(error))
+      }
+    }
+
+    if (GLOBAL.get().entry_message) {
+      console.log("Sending entry message (non-blocking)...")
+      sendEntryMessage(this.context.playwrightPage, GLOBAL.get().entry_message).catch((error) => {
+        console.error("Failed to send entry message:", formatError(error))
+      })
+    }
   }
 
   private async startSpeakersObservation(): Promise<void> {
