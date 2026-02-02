@@ -894,7 +894,7 @@ export async function sendTeamsEntryMessage(
     console.log('[Teams] Attempting to send entry message...')
 
     // Truncate to 500 characters
-    enterMessage = enterMessage.substring(0, 500)
+    const truncatedMessage = enterMessage.substring(0, 500)
 
     for (let attempt = 1; attempt <= MAX_CHAT_RETRIES; attempt++) {
         // Check if bot is leaving/removed before each attempt
@@ -929,10 +929,14 @@ export async function sendTeamsEntryMessage(
                 })
             }
 
+            // Ensure editor is still present before interacting (avoids race if panel closed)
+            await page.waitForSelector(editorSelector, {
+                timeout: CHAT_ACTION_TIMEOUT_MS,
+            })
             await page.$eval(editorSelector, (el: HTMLElement) => el.focus())
 
             // CKEditor ignores programmatic value changes — real keyboard events are required
-            await page.keyboard.type(enterMessage)
+            await page.keyboard.type(truncatedMessage)
             await page.waitForTimeout(200)
 
             const sendButton = page.locator('button[data-tid="newMessageCommands-send"]')
