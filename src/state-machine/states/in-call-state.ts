@@ -10,6 +10,7 @@ import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
 import { sendEntryMessage } from '../../meeting/meet'
 import { verifyMeetAudioCapture } from '../../meeting/meet/audio-capture'
+import { sendTeamsEntryMessage } from '../../meeting/teams'
 
 export class InCallState extends BaseState {
     async execute(): StateExecuteResult {
@@ -145,13 +146,8 @@ export class InCallState extends BaseState {
             return
         }
 
-        // Only for Meet provider
-        if (GLOBAL.get().meetingProvider !== 'Meet') {
-            return
-        }
-
-        // 1. Verify audio capture (if streaming enabled)
-        if (GLOBAL.get().streaming_output) {
+        // Meet-specific: Verify audio capture (if streaming enabled)
+        if (GLOBAL.get().meetingProvider === 'Meet' && GLOBAL.get().streaming_output) {
             try {
                 await verifyMeetAudioCapture(this.context.playwrightPage)
             } catch (error) {
@@ -162,18 +158,30 @@ export class InCallState extends BaseState {
             }
         }
 
-        // 2. Send entry message (if configured) - non-blocking
+        // Send entry message (if configured) - non-blocking, works for both Meet and Teams
         if (GLOBAL.get().enter_message) {
-            console.log('Sending entry message (non-blocking)...')
-            sendEntryMessage(
-                this.context.playwrightPage,
-                GLOBAL.get().enter_message,
-            ).catch((error) => {
-                console.error(
-                    'Failed to send entry message:',
-                    formatError(error),
-                )
-            })
+            console.log(`Sending entry message (non-blocking) for ${GLOBAL.get().meetingProvider}...`)
+            if (GLOBAL.get().meetingProvider === 'Meet') {
+                sendEntryMessage(
+                    this.context.playwrightPage,
+                    GLOBAL.get().enter_message,
+                ).catch((error) => {
+                    console.error(
+                        'Failed to send entry message:',
+                        formatError(error),
+                    )
+                })
+            } else if (GLOBAL.get().meetingProvider === 'Teams') {
+                sendTeamsEntryMessage(
+                    this.context.playwrightPage,
+                    GLOBAL.get().enter_message,
+                ).catch((error) => {
+                    console.error(
+                        '[Teams] Failed to send entry message:',
+                        formatError(error),
+                    )
+                })
+            }
         }
     }
 

@@ -15,6 +15,11 @@ import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from './teams/audio-
 // Create a singleton detector instance for Microsoft Teams
 const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
 
+// Entry message retry constants
+const MAX_CHAT_RETRIES = 5
+const CHAT_RETRY_INTERVAL_MS = 5000
+const CHAT_ACTION_TIMEOUT_MS = 3000
+
 export class TeamsProvider implements MeetingProviderInterface {
     constructor() {}
     async parseMeetingUrl(meeting_url: string) {
@@ -879,4 +884,78 @@ async function isInTeamsMeeting(page: Page): Promise<boolean> {
         console.error('Error checking if in Teams meeting:', formatError(error))
         return false
     }
+}
+
+// Export for use in InCallState (non-blocking entry message)
+export async function sendTeamsEntryMessage(
+    page: Page,
+    enterMessage: string,
+): Promise<boolean> {
+    console.log('[Teams] Attempting to send entry message...')
+
+    // Truncate to 500 characters
+    enterMessage = enterMessage.substring(0, 500)
+
+    for (let attempt = 1; attempt <= MAX_CHAT_RETRIES; attempt++) {
+        // Check if bot is leaving/removed before each attempt
+        if (GLOBAL.getEndReason()) {
+            console.log('[Teams] Bot is ending, aborting entry message')
+            return false
+        }
+
+        try {
+            // Chat button can take 10-20s to appear after joining — retries handle this
+            const chatButton = page.locator('button#chat-button[aria-label="Chat"]')
+            if ((await chatButton.count()) === 0) {
+                console.log(`[Teams] Chat button not found, attempt ${attempt}/${MAX_CHAT_RETRIES}`)
+                if (attempt < MAX_CHAT_RETRIES) {
+                    await sleep(CHAT_RETRY_INTERVAL_MS)
+                }
+                continue
+            }
+
+            // Use evaluate() for all clicks — header is hidden (opacity:0) and main area
+            // has z-index:900000, so normal Playwright clicks would fail visibility checks
+            await chatButton.evaluate((el: HTMLElement) => el.click())
+            console.log('[Teams] Chat button clicked')
+
+            await page.waitForSelector('div[data-tid="ckeditor"][role="textbox"]', {
+                timeout: CHAT_ACTION_TIMEOUT_MS,
+            })
+
+            await page.$eval('div[data-tid="ckeditor"][role="textbox"]', (el: HTMLElement) => el.focus())
+
+            // CKEditor ignores programmatic value changes — real keyboard events are required
+            await page.keyboard.type(enterMessage)
+            await page.waitForTimeout(200)
+
+            const sendButton = page.locator('button[data-tid="newMessageCommands-send"]')
+            if ((await sendButton.count()) > 0) {
+                await sendButton.evaluate((el: HTMLElement) => el.click())
+                console.log('[Teams] Entry message sent successfully')
+            } else {
+                console.warn('[Teams] Send button not found, trying Enter key')
+                await page.keyboard.press('Enter')
+            }
+
+            await page.waitForTimeout(200)
+
+            // Close chat panel so it doesn't linger in the recording
+            const closeButton = page.locator('button[data-tid="rail-header-close-button"]')
+            if ((await closeButton.count()) > 0) {
+                await closeButton.evaluate((el: HTMLElement) => el.click())
+                console.log('[Teams] Chat panel closed')
+            }
+
+            return true
+        } catch (error) {
+            console.warn(`[Teams] Entry message attempt ${attempt}/${MAX_CHAT_RETRIES} failed:`, formatError(error))
+            if (attempt < MAX_CHAT_RETRIES) {
+                await sleep(CHAT_RETRY_INTERVAL_MS)
+            }
+        }
+    }
+
+    console.log('[Teams] Failed to send entry message after all attempts')
+    return false
 }

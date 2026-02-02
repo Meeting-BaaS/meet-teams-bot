@@ -90,6 +90,8 @@ export class TeamsHtmlCleaner {
                     if (mainArea instanceof HTMLElement) {
                         mainArea.style.height = '100vh'
                         mainArea.style.width = '100vw'
+                        mainArea.style.position = 'relative'
+                        mainArea.style.zIndex = '900000'
                     }
                 } catch (e) {
                     console.error('[Teams] Failed to modify main area', e)
@@ -146,6 +148,8 @@ export class TeamsHtmlCleaner {
                     if (mainArea instanceof HTMLElement) {
                         mainArea.style.height = '100vh'
                         mainArea.style.width = '100vw'
+                        mainArea.style.position = 'relative'
+                        mainArea.style.zIndex = '900000'
                     }
                 } catch (e) {
                     console.error('[Teams] Failed to modify main area', e)
