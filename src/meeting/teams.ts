@@ -904,26 +904,32 @@ export async function sendTeamsEntryMessage(
         }
 
         try {
-            // Chat button can take 10-20s to appear after joining — retries handle this
-            const chatButton = page.locator('button#chat-button[aria-label="Chat"]')
-            if ((await chatButton.count()) === 0) {
-                console.log(`[Teams] Chat button not found, attempt ${attempt}/${MAX_CHAT_RETRIES}`)
-                if (attempt < MAX_CHAT_RETRIES) {
-                    await sleep(CHAT_RETRY_INTERVAL_MS)
+            // Check if CKEditor is already visible (chat panel already open from previous attempt)
+            const editorSelector = 'div[data-tid="ckeditor"][role="textbox"]'
+            const editorAlreadyVisible = (await page.locator(editorSelector).count()) > 0
+
+            if (!editorAlreadyVisible) {
+                // Chat button can take 10-20s to appear after joining — retries handle this
+                const chatButton = page.locator('button#chat-button[aria-label="Chat"]')
+                if ((await chatButton.count()) === 0) {
+                    console.log(`[Teams] Chat button not found, attempt ${attempt}/${MAX_CHAT_RETRIES}`)
+                    if (attempt < MAX_CHAT_RETRIES) {
+                        await sleep(CHAT_RETRY_INTERVAL_MS)
+                    }
+                    continue
                 }
-                continue
+
+                // Use evaluate() for all clicks — header is hidden (opacity:0) and main area
+                // has z-index:900000, so normal Playwright clicks would fail visibility checks
+                await chatButton.evaluate((el: HTMLElement) => el.click())
+                console.log('[Teams] Chat button clicked')
+
+                await page.waitForSelector(editorSelector, {
+                    timeout: CHAT_ACTION_TIMEOUT_MS,
+                })
             }
 
-            // Use evaluate() for all clicks — header is hidden (opacity:0) and main area
-            // has z-index:900000, so normal Playwright clicks would fail visibility checks
-            await chatButton.evaluate((el: HTMLElement) => el.click())
-            console.log('[Teams] Chat button clicked')
-
-            await page.waitForSelector('div[data-tid="ckeditor"][role="textbox"]', {
-                timeout: CHAT_ACTION_TIMEOUT_MS,
-            })
-
-            await page.$eval('div[data-tid="ckeditor"][role="textbox"]', (el: HTMLElement) => el.focus())
+            await page.$eval(editorSelector, (el: HTMLElement) => el.focus())
 
             // CKEditor ignores programmatic value changes — real keyboard events are required
             await page.keyboard.type(enterMessage)
