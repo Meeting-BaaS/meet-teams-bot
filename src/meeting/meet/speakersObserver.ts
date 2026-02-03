@@ -76,10 +76,17 @@ export class MeetSpeakersObserver {
         let MUTATION_OBSERVER: MutationObserver | null = null
         let periodicCheck: NodeJS.Timeout | null = null
 
+        // MEMORY FIX: Track all iframe content observers for proper cleanup
+        const iframeContentObservers: MutationObserver[] = []
+
         // EXACT SAME freeze detection variables as extension
         let lastValidSpeakers: SpeakerData[] = []
         let lastValidSpeakerCheck = Date.now()
         const FREEZE_TIMEOUT_MS = 30000 // 30 seconds
+
+        // DEBUG: Memory tracking
+        let observerCount = 0
+        console.log("[Meet-Browser] 📊 Initial observer count: 0")
 
         // EXACT SAME getSpeakerRootToObserve as extension
         async function getSpeakerRootToObserve(
@@ -553,24 +560,51 @@ export class MeetSpeakersObserver {
                   subtree: true,
                   attributeFilter: ["class", "aria-label"]
                 })
+
+                // MEMORY FIX: Track this observer for cleanup
+                iframeContentObservers.push(observer)
+                observerCount++
+                console.log("[Meet-Browser] 📊 Created iframe content observer #" + observerCount + " (total: " + iframeContentObservers.length + ")")
               }
             })
 
-            // Cleanup function
+            // Cleanup function - MEMORY FIX: Now cleans up ALL observers
             window.meetObserverCleanup = () => {
-              console.log("[Meet-Browser] Cleaning up observer")
+              console.log("[Meet-Browser] 🧹 Cleaning up observers (main + " + iframeContentObservers.length + " iframe observers)")
+
+              // Clean up main mutation observer
               if (MUTATION_OBSERVER) {
                 MUTATION_OBSERVER.disconnect()
+                console.log("[Meet-Browser] ✅ Main mutation observer disconnected")
               }
+
+              // Clean up timeout and interval
               if (checkSpeakersTimeout) {
                 clearTimeout(checkSpeakersTimeout)
               }
               if (periodicCheck) {
                 clearInterval(periodicCheck)
               }
+
+              // Clean up iframe parent observer
               if (iframeObserver) {
                 iframeObserver.disconnect()
+                console.log("[Meet-Browser] ✅ Iframe parent observer disconnected")
               }
+
+              // MEMORY FIX: Clean up ALL iframe content observers
+              let cleanedCount = 0
+              for (const obs of iframeContentObservers) {
+                try {
+                  obs.disconnect()
+                  cleanedCount++
+                } catch (e) {
+                  console.warn("[Meet-Browser] Failed to disconnect iframe observer:", e)
+                }
+              }
+              iframeContentObservers.length = 0 // Clear the array
+              console.log("[Meet-Browser] ✅ Cleaned up " + cleanedCount + " iframe content observers")
+              console.log("[Meet-Browser] 📊 Final observer count: 0")
             }
 
             // CRITICAL: Initial check

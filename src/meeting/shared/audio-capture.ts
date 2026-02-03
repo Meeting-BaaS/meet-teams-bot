@@ -292,21 +292,56 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     }
                 }
 
-                // Expose stop function globally for cleanup
-                window.${stopFunctionName} = stopMixedStreamProcessor
+                // MEMORY FIX: Store event listener references for proper cleanup
+                let beforeUnloadHandler = null
+                let visibilityChangeHandler = null
+                let listenersAttached = false
 
-                // Auto-cleanup on page unload
-                window.addEventListener("beforeunload", () => {
-                    stopMixedStreamProcessor()
-                })
+                // Enhanced stop function with event listener cleanup
+                async function stopMixedStreamProcessorWithCleanup() {
+                    console.log("${logPrefix} 🧹 Starting full cleanup...")
 
-                // Auto-cleanup on visibility change
-                document.addEventListener("visibilitychange", () => {
-                    if (document.visibilityState === "hidden") {
-                        console.log("${logPrefix} Page hidden, stopping processor...")
-                        stopMixedStreamProcessor()
+                    // Remove event listeners FIRST to prevent re-entry
+                    if (listenersAttached) {
+                        if (beforeUnloadHandler) {
+                            window.removeEventListener("beforeunload", beforeUnloadHandler)
+                            console.log("${logPrefix} ✅ Removed beforeunload listener")
+                        }
+                        if (visibilityChangeHandler) {
+                            document.removeEventListener("visibilitychange", visibilityChangeHandler)
+                            console.log("${logPrefix} ✅ Removed visibilitychange listener")
+                        }
+                        listenersAttached = false
                     }
-                })
+
+                    // Now stop the processor
+                    await stopMixedStreamProcessor()
+                    console.log("${logPrefix} 📊 Cleanup complete")
+                }
+
+                // Expose stop function globally for cleanup
+                window.${stopFunctionName} = stopMixedStreamProcessorWithCleanup
+
+                // MEMORY FIX: Create named handlers that can be removed
+                beforeUnloadHandler = () => {
+                    console.log("${logPrefix} 🔔 beforeunload triggered")
+                    stopMixedStreamProcessorWithCleanup()
+                }
+
+                visibilityChangeHandler = () => {
+                    if (document.visibilityState === "hidden") {
+                        console.log("${logPrefix} 🔔 Page hidden, stopping processor...")
+                        stopMixedStreamProcessorWithCleanup()
+                    }
+                }
+
+                // Attach listeners only once
+                if (!listenersAttached) {
+                    window.addEventListener("beforeunload", beforeUnloadHandler)
+                    document.addEventListener("visibilitychange", visibilityChangeHandler)
+                    listenersAttached = true
+                    console.log("${logPrefix} 📊 Event listeners attached (beforeunload + visibilitychange)")
+                }
 
                 // Notify all subscribers when a track is detected
                 function notifyTrackSubscribers(track, receiver, pc) {
@@ -321,12 +356,22 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     })
                 }
 
+                // DEBUG: Track statistics
+                let totalTracksConnected = 0
+                let totalTracksDisconnected = 0
+
                 // Connect a track to the mixer
                 function connectTrackToMixer(track) {
-                    if (mixedAudioSources.has(track.id)) return // Already connected
+                    if (mixedAudioSources.has(track.id)) {
+                        console.log("${logPrefix} ⏭️ Track " + track.id + " already connected, skipping")
+                        return
+                    }
 
                     try {
-                        if (audioCtx.state === "suspended") audioCtx.resume()
+                        if (audioCtx.state === "suspended") {
+                            console.log("${logPrefix} 🔊 Resuming suspended AudioContext")
+                            audioCtx.resume()
+                        }
 
                         const stream = new MediaStream([track])
                         const source = audioCtx.createMediaStreamSource(stream)
@@ -334,21 +379,24 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         // Connect to mixer destination (browser does the mixing!)
                         source.connect(mixerDestination)
                         mixedAudioSources.set(track.id, source)
+                        totalTracksConnected++
 
-                        console.log("${logPrefix} Connected track " + track.id + " to mixer (" + mixedAudioSources.size + " total)")
+                        console.log("${logPrefix} ✅ Connected track " + track.id + " to mixer (active: " + mixedAudioSources.size + ", total connected: " + totalTracksConnected + ")")
 
                         // Start the processor when first track is connected
                         if (mixedAudioSources.size === 1) {
+                            console.log("${logPrefix} 🚀 First track connected, starting processor...")
                             startMixedStreamProcessor()
                         }
 
                         track.onended = () => {
                             source.disconnect()
                             mixedAudioSources.delete(track.id)
-                            console.log("${logPrefix} Disconnected track " + track.id + " from mixer")
+                            totalTracksDisconnected++
+                            console.log("${logPrefix} 🔌 Disconnected track " + track.id + " from mixer (active: " + mixedAudioSources.size + ", total disconnected: " + totalTracksDisconnected + ")")
                         }
                     } catch (e) {
-                        console.error("${logPrefix} Failed to connect track to mixer:", e)
+                        console.error("${logPrefix} ❌ Failed to connect track to mixer:", e)
                     }
                 }
 
