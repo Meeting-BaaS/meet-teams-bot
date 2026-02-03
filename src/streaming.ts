@@ -9,6 +9,15 @@ import { PathManager } from "./utils/PathManager"
 
 const DEFAULT_SAMPLE_RATE: number = 24_000
 
+// Memory monitoring thresholds (in MB)
+const MEMORY_WARNING_THRESHOLD_MB = 1200 // 1.2 GB - warn
+const MEMORY_CRITICAL_THRESHOLD_MB = 1600 // 1.6 GB - critical alert
+const MEMORY_CHECK_INTERVAL_MS = 30000 // Check every 30 seconds
+
+// Connection buffer limits
+const MAX_CONNECTION_BUFFER_SIZE = 500 // ~20 seconds of audio at 25 chunks/sec
+const MAX_CONNECTION_BUFFER_DURATION_MS = 30000 // Max 30 seconds of buffered audio
+
 /**
  * Streaming class for real-time audio output to external services
  *
@@ -22,6 +31,9 @@ const DEFAULT_SAMPLE_RATE: number = 24_000
  * - External WebSocket input (for bidirectional audio)
  *
  * Note: processAudioChunk() is deprecated and no longer used for streaming
+ *
+ * MEMORY OPTIMIZATION: This class now reuses typed arrays to reduce GC pressure
+ * and includes memory monitoring with threshold-based alerts.
  */
 export class Streaming {
   public static instance: Streaming | null = null
@@ -47,7 +59,9 @@ export class Streaming {
   private lastBrowserStatsLogTime = 0
 
   // WebSocket connection buffer (for chunks received before WS is ready)
+  // Now with size limit and FIFO behavior to prevent memory leaks
   private connectionBuffer: Float32Array[] = []
+  private connectionBufferStartTime = 0 // Track when buffering started
   private wsConnectionStartTime = 0
 
   // WebSocket reconnection with exponential backoff
@@ -56,13 +70,25 @@ export class Streaming {
   private reconnectTimeoutId: NodeJS.Timeout | null = null
   private readonly INITIAL_RECONNECT_DELAY_MS: number = 1000 // 1 second
   private readonly MAX_RECONNECT_DELAY_MS: number = 60000 // 1 minute
-  private lastWsNotReadyLogTime = 0
   private readonly WS_NOT_READY_LOG_INTERVAL_MS: number = 10000 // Log at most every 10 seconds
 
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
   private debugAudioBytesWritten = 0
   private readonly debugAudioEnabled: boolean = process.env.DEBUG_AUDIO === "true"
+
+  // ========== MEMORY OPTIMIZATION: Reusable buffers ==========
+  // Pre-allocated buffers to reduce GC pressure during audio processing
+  private reusableNormalizedBuffer: Float32Array | null = null
+  private reusableResampledBuffer: Float32Array | null = null
+  private reusableInt16Buffer: Int16Array | null = null
+
+  // Memory monitoring
+  private memoryCheckIntervalId: NodeJS.Timeout | null = null
+  private lastMemoryWarningTime = 0
+  private readonly MEMORY_WARNING_COOLDOWN_MS = 60000 // Don't spam warnings
+  private droppedChunksCount = 0
+  private lastDroppedChunksLogTime = 0
 
   constructor(
     input: string | undefined,
@@ -85,9 +111,133 @@ export class Streaming {
       console.log("🐛 Debug audio file recording enabled (DEBUG_AUDIO=true)")
     }
 
+    // Start memory monitoring
+    this.startMemoryMonitoring()
+
     this.start()
 
     Streaming.instance = this
+  }
+
+  // ========== MEMORY MONITORING ==========
+
+  /**
+   * Start periodic memory monitoring
+   */
+  private startMemoryMonitoring(): void {
+    this.memoryCheckIntervalId = setInterval(() => {
+      this.checkMemoryUsage()
+    }, MEMORY_CHECK_INTERVAL_MS)
+
+    // Initial check
+    this.checkMemoryUsage()
+    console.log(
+      `📊 Memory monitoring started (warning: ${MEMORY_WARNING_THRESHOLD_MB}MB, critical: ${MEMORY_CRITICAL_THRESHOLD_MB}MB)`
+    )
+  }
+
+  /**
+   * Stop memory monitoring
+   */
+  private stopMemoryMonitoring(): void {
+    if (this.memoryCheckIntervalId) {
+      clearInterval(this.memoryCheckIntervalId)
+      this.memoryCheckIntervalId = null
+    }
+  }
+
+  /**
+   * Check current memory usage and log warnings if thresholds exceeded
+   */
+  private checkMemoryUsage(): void {
+    const memUsage = process.memoryUsage()
+    const heapUsedMB = Math.round(memUsage.heapUsed / 1024 / 1024)
+    const rssMB = Math.round(memUsage.rss / 1024 / 1024)
+    const now = Date.now()
+
+    // Calculate buffer memory usage
+    const bufferMemoryMB = this.calculateBufferMemoryUsage()
+
+    if (rssMB >= MEMORY_CRITICAL_THRESHOLD_MB) {
+      // Critical - always log
+      console.error(
+        `🚨 [Streaming] CRITICAL MEMORY: RSS=${rssMB}MB, Heap=${heapUsedMB}MB, ` +
+          `Buffers=${bufferMemoryMB.toFixed(1)}MB, ConnectionBuffer=${this.connectionBuffer.length} chunks`
+      )
+      // Clear connection buffer to free memory immediately
+      if (this.connectionBuffer.length > 0) {
+        console.warn(`🧹 [Streaming] Emergency: Clearing connection buffer (${this.connectionBuffer.length} chunks)`)
+        this.connectionBuffer = []
+      }
+    } else if (rssMB >= MEMORY_WARNING_THRESHOLD_MB) {
+      // Warning - throttled
+      if (now - this.lastMemoryWarningTime >= this.MEMORY_WARNING_COOLDOWN_MS) {
+        console.warn(
+          `⚠️ [Streaming] HIGH MEMORY: RSS=${rssMB}MB, Heap=${heapUsedMB}MB, ` +
+            `Buffers=${bufferMemoryMB.toFixed(1)}MB, ConnectionBuffer=${this.connectionBuffer.length} chunks, ` +
+            `ChunksSent=${this.browserAudioChunksSent}`
+        )
+        this.lastMemoryWarningTime = now
+      }
+    }
+  }
+
+  /**
+   * Calculate approximate memory used by reusable buffers
+   */
+  private calculateBufferMemoryUsage(): number {
+    let totalBytes = 0
+
+    if (this.reusableNormalizedBuffer) {
+      totalBytes += this.reusableNormalizedBuffer.byteLength
+    }
+    if (this.reusableResampledBuffer) {
+      totalBytes += this.reusableResampledBuffer.byteLength
+    }
+    if (this.reusableInt16Buffer) {
+      totalBytes += this.reusableInt16Buffer.byteLength
+    }
+
+    // Connection buffer
+    for (const chunk of this.connectionBuffer) {
+      totalBytes += chunk.byteLength
+    }
+
+    return totalBytes / 1024 / 1024 // Convert to MB
+  }
+
+  /**
+   * Get or resize reusable normalized buffer
+   */
+  private getNormalizedBuffer(size: number): Float32Array {
+    if (!this.reusableNormalizedBuffer || this.reusableNormalizedBuffer.length < size) {
+      // Allocate with 20% extra to reduce frequent reallocations
+      const allocSize = Math.ceil(size * 1.2)
+      this.reusableNormalizedBuffer = new Float32Array(allocSize)
+    }
+    return this.reusableNormalizedBuffer
+  }
+
+  /**
+   * Get or resize reusable resampled buffer
+   */
+  private getResampledBuffer(size: number): Float32Array {
+    if (!this.reusableResampledBuffer || this.reusableResampledBuffer.length < size) {
+      const allocSize = Math.ceil(size * 1.2)
+      this.reusableResampledBuffer = new Float32Array(allocSize)
+    }
+    return this.reusableResampledBuffer
+  }
+
+  /**
+   * Get or resize reusable Int16 buffer for WebSocket transmission
+   */
+  private getInt16Buffer(size: number): Int16Array {
+    if (!this.reusableInt16Buffer || this.reusableInt16Buffer.length < size) {
+      const allocSize = Math.ceil(size * 1.2)
+      this.reusableInt16Buffer = new Int16Array(allocSize)
+    }
+    return this.reusableInt16Buffer
   }
 
   /**
@@ -134,16 +284,44 @@ export class Streaming {
     }
 
     if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
-      // Throttle warning logs to avoid spam
       const now = Date.now()
-      if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
-        console.warn(
-          "[Streaming] ⚠️ WebSocket not ready, discarding audio chunks (state:",
-          this.output_ws?.readyState,
-          ")"
-        )
-        this.lastWsNotReadyLogTime = now
+
+      // Buffer chunks while WS is reconnecting (with FIFO limit to prevent memory leak)
+      const float32Data = new Float32Array(audioChunk.audioData)
+
+      // Initialize buffer start time if this is the first buffered chunk
+      if (this.connectionBuffer.length === 0) {
+        this.connectionBufferStartTime = now
       }
+
+      // Check if we should buffer or drop
+      const bufferDuration = now - this.connectionBufferStartTime
+      const shouldBuffer =
+        this.connectionBuffer.length < MAX_CONNECTION_BUFFER_SIZE &&
+        bufferDuration < MAX_CONNECTION_BUFFER_DURATION_MS
+
+      if (shouldBuffer) {
+        this.connectionBuffer.push(float32Data)
+      } else {
+        // FIFO: Remove oldest chunk and add new one (sliding window)
+        if (this.connectionBuffer.length >= MAX_CONNECTION_BUFFER_SIZE) {
+          this.connectionBuffer.shift()
+          this.connectionBuffer.push(float32Data)
+        }
+        this.droppedChunksCount++
+
+        // Log dropped chunks periodically
+        if (now - this.lastDroppedChunksLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
+          console.warn(
+            `[Streaming] ⚠️ WebSocket not ready, dropped ${this.droppedChunksCount} chunks. ` +
+              `Buffer: ${this.connectionBuffer.length}/${MAX_CONNECTION_BUFFER_SIZE} chunks ` +
+              `(state: ${this.output_ws?.readyState})`
+          )
+          this.droppedChunksCount = 0
+          this.lastDroppedChunksLogTime = now
+        }
+      }
+
       // Trigger reconnection if not already reconnecting
       this.scheduleReconnect()
       return
@@ -183,23 +361,31 @@ export class Streaming {
 
   /**
    * Process and send a single audio chunk immediately
+   * OPTIMIZED: Uses reusable buffers to reduce GC pressure
    */
   private processAndSendAudioChunk(audioData: Float32Array): void {
-    // Simple clipping protection
-    const normalized = new Float32Array(audioData.length)
-    for (let i = 0; i < audioData.length; i++) {
+    const inputLength = audioData.length
+
+    // Get or resize reusable normalized buffer
+    const normalized = this.getNormalizedBuffer(inputLength)
+
+    // Simple clipping protection - write directly to reusable buffer
+    for (let i = 0; i < inputLength; i++) {
       normalized[i] = Math.max(-1, Math.min(1, audioData[i]))
     }
 
     // Resample if needed (e.g. 48kHz -> 16kHz)
     const sourceRate = this.sourceSampleRate
     const targetRate = this.sample_rate
-    let finalBuffer = normalized
+    let finalBuffer: Float32Array
+    let finalLength: number
 
     if (sourceRate !== targetRate) {
       const ratio = sourceRate / targetRate
-      const newLength = Math.round(normalized.length / ratio)
-      const resampled = new Float32Array(newLength)
+      const newLength = Math.round(inputLength / ratio)
+
+      // Get or resize reusable resampled buffer
+      const resampled = this.getResampledBuffer(newLength)
 
       for (let i = 0; i < newLength; i++) {
         const sourceIndex = i * ratio
@@ -212,21 +398,27 @@ export class Streaming {
         resampled[i] = p0 + (p1 - p0) * decimal
       }
       finalBuffer = resampled
+      finalLength = newLength
+    } else {
+      finalBuffer = normalized
+      finalLength = inputLength
     }
 
-    // Convert to Int16 for WebSocket transmission
-    const s16Array = new Int16Array(finalBuffer.length)
-    for (let i = 0; i < finalBuffer.length; i++) {
+    // Get or resize reusable Int16 buffer for WebSocket transmission
+    const s16Array = this.getInt16Buffer(finalLength)
+    for (let i = 0; i < finalLength; i++) {
       s16Array[i] = Math.round(Math.max(-32768, Math.min(32767, finalBuffer[i] * 32768)))
     }
 
-    // Send to WebSocket
+    // Send to WebSocket - create a properly sized copy for transmission
     if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
-      this.output_ws.send(s16Array.buffer)
+      // Create minimal ArrayBuffer with exact size needed (not the oversized reusable buffer)
+      const transmitBuffer = s16Array.buffer.slice(0, finalLength * 2)
+      this.output_ws.send(transmitBuffer)
       this.browserAudioChunksSent++
 
-      // Write to debug file
-      this.writeDebugAudioChunk(s16Array)
+      // Write to debug file (pass the view with correct length)
+      this.writeDebugAudioChunk(new Int16Array(transmitBuffer))
     }
   }
 
@@ -436,11 +628,30 @@ export class Streaming {
 
     console.log("🛑 Stopping simplified streaming service...")
 
+    // Stop memory monitoring first
+    this.stopMemoryMonitoring()
+
+    // Log final memory stats
+    const memUsage = process.memoryUsage()
+    const bufferMemoryMB = this.calculateBufferMemoryUsage()
+    console.log(
+      `📊 [Streaming] Final stats: ChunksSent=${this.browserAudioChunksSent}, ` +
+        `RSS=${Math.round(memUsage.rss / 1024 / 1024)}MB, ` +
+        `Heap=${Math.round(memUsage.heapUsed / 1024 / 1024)}MB, ` +
+        `Buffers=${bufferMemoryMB.toFixed(1)}MB`
+    )
+
     // Finalize debug audio file (wait for WAV header to be written)
     await this.finalizeDebugAudioFile()
 
     // Close external WebSockets only
     this.closeExternalWebSockets()
+
+    // Clean up reusable buffers to free memory
+    this.reusableNormalizedBuffer = null
+    this.reusableResampledBuffer = null
+    this.reusableInt16Buffer = null
+    this.connectionBuffer = []
 
     // Reset state
     this.isInitialized = false
