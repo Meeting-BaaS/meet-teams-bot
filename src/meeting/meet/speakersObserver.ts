@@ -79,6 +79,12 @@ export class MeetSpeakersObserver {
                 let MUTATION_OBSERVER: MutationObserver | null = null
                 let periodicCheck: any = null
 
+                // ========== MEMORY OPTIMIZATION: Track iframe content observers ==========
+                // This array stores all MutationObservers created for iframe content
+                // Without tracking, these observers leak and accumulate over time
+                const iframeContentObservers: MutationObserver[] = []
+                let observerCount = 0
+
                 // EXACT SAME freeze detection variables as extension
                 let lastValidSpeakers: SpeakerData[] = []
                 let lastValidSpeakerCheck = Date.now()
@@ -693,6 +699,7 @@ export class MeetSpeakersObserver {
                         }, checkInterval)
 
                         // Setup iframe observation
+                        // ========== MEMORY OPTIMIZATION: Track all iframe content observers ==========
                         const iframeObserver = observeIframes((iframe) => {
                             const iframeDoc = getIframeDocument(iframe)
                             if (iframeDoc) {
@@ -723,10 +730,16 @@ export class MeetSpeakersObserver {
                                     subtree: true,
                                     attributeFilter: ['class', 'aria-label'],
                                 })
+
+                                // CRITICAL: Track this observer for later cleanup
+                                iframeContentObservers.push(observer)
+                                observerCount++
+                                console.log(`[Meet-Browser] Created iframe content observer #${observerCount}`)
                             }
                         })
 
                         // Cleanup function
+                        // ========== MEMORY OPTIMIZATION: Clean up ALL observers ==========
                         ;(window as any).meetObserverCleanup = () => {
                             console.log('[Meet-Browser] Cleaning up observer')
                             if (MUTATION_OBSERVER) {
@@ -741,6 +754,14 @@ export class MeetSpeakersObserver {
                             if (iframeObserver) {
                                 iframeObserver.disconnect()
                             }
+
+                            // CRITICAL: Disconnect ALL iframe content observers
+                            // Without this, observers accumulate and leak memory
+                            console.log(`[Meet-Browser] Disconnecting ${iframeContentObservers.length} iframe content observers`)
+                            for (const obs of iframeContentObservers) {
+                                obs.disconnect()
+                            }
+                            iframeContentObservers.length = 0
                         }
 
                         // CRITICAL: Initial check

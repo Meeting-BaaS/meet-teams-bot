@@ -221,18 +221,41 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                 // Expose stop function globally for cleanup
                 window.${stopFunctionName} = stopMixedStreamProcessor
 
-                // Auto-cleanup on page unload
-                window.addEventListener('beforeunload', () => {
-                    stopMixedStreamProcessor()
-                })
+                // ========== MEMORY OPTIMIZATION: Named event handlers for proper cleanup ==========
+                // Anonymous functions cannot be removed, so we use named functions
+                let beforeUnloadHandler = null
+                let visibilityChangeHandler = null
+                let listenersAttached = false
 
-                // Auto-cleanup on visibility change
-                document.addEventListener('visibilitychange', () => {
+                // Named handler for beforeunload
+                beforeUnloadHandler = function handleBeforeUnload() {
+                    console.log('${logPrefix} beforeunload event, stopping processor...')
+                    stopMixedStreamProcessor()
+                }
+
+                // Named handler for visibility change
+                visibilityChangeHandler = function handleVisibilityChange() {
                     if (document.visibilityState === 'hidden') {
                         console.log('${logPrefix} Page hidden, stopping processor...')
                         stopMixedStreamProcessor()
                     }
-                })
+                }
+
+                // Attach event listeners
+                window.addEventListener('beforeunload', beforeUnloadHandler)
+                document.addEventListener('visibilitychange', visibilityChangeHandler)
+                listenersAttached = true
+                console.log('${logPrefix} Event listeners attached')
+
+                // Expose cleanup function to remove event listeners
+                window.${stopFunctionName}Cleanup = function() {
+                    if (listenersAttached && beforeUnloadHandler && visibilityChangeHandler) {
+                        window.removeEventListener('beforeunload', beforeUnloadHandler)
+                        document.removeEventListener('visibilitychange', visibilityChangeHandler)
+                        listenersAttached = false
+                        console.log('${logPrefix} Event listeners removed')
+                    }
+                }
 
                 // Connect a track to the mixer
                 function connectTrackToMixer(track) {
@@ -405,10 +428,20 @@ export function createAudioCapture(config: AudioCaptureConfig) {
         stop: async (page: Page): Promise<void> => {
             try {
                 await page.evaluate((stopFn) => {
+                    // Stop the audio processor
                     if (typeof (window as any)[stopFn] === 'function') {
                         return (window as any)[stopFn]()
                     }
                 }, stopFunctionName)
+
+                // Also clean up event listeners (MEMORY OPTIMIZATION)
+                await page.evaluate((stopFn) => {
+                    const cleanupFn = stopFn + 'Cleanup'
+                    if (typeof (window as any)[cleanupFn] === 'function') {
+                        return (window as any)[cleanupFn]()
+                    }
+                }, stopFunctionName)
+
                 console.log(`${logPrefix} Audio capture stopped from Node.js`)
             } catch (error) {
                 console.error(`${logPrefix} Failed to stop audio capture:`, formatError(error))

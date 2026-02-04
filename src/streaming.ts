@@ -10,6 +10,15 @@ import { formatError } from './utils/Logger'
 
 const DEFAULT_SAMPLE_RATE: number = 24_000
 
+// Memory monitoring thresholds (in MB)
+const MEMORY_WARNING_THRESHOLD_MB = 1200 // 1.2 GB - warn
+const MEMORY_CRITICAL_THRESHOLD_MB = 1600 // 1.6 GB - critical alert
+const MEMORY_CHECK_INTERVAL_MS = 30000 // Check every 30 seconds
+
+// Connection buffer limits
+const MAX_CONNECTION_BUFFER_SIZE = 500 // ~20 seconds of audio at 25 chunks/sec
+const MAX_CONNECTION_BUFFER_DURATION_MS = 30000 // Max 30 seconds of buffered audio
+
 /**
  * Streaming class for real-time audio output to external services
  * 
@@ -49,8 +58,9 @@ export class Streaming {
     private lastBrowserStatsLogTime: number = 0
 
     // WebSocket connection buffer (for chunks received before WS is ready)
+    // Now with size limit and FIFO behavior to prevent memory leaks
     private connectionBuffer: Float32Array[] = []
-    private readonly MAX_CONNECTION_BUFFER_SIZE: number = 100 // ~4 seconds at 24kHz
+    private connectionBufferStartTime: number = 0 // Track when buffering started
     private wsConnectionStartTime: number = 0
 
     // WebSocket reconnection with exponential backoff
@@ -60,13 +70,26 @@ export class Streaming {
     private reconnectTimeoutId: NodeJS.Timeout | null = null
     private readonly INITIAL_RECONNECT_DELAY_MS: number = 1000 // 1 second
     private readonly MAX_RECONNECT_DELAY_MS: number = 60000 // 1 minute
-    private lastWsNotReadyLogTime: number = 0
     private readonly WS_NOT_READY_LOG_INTERVAL_MS: number = 10000 // Log at most every 10 seconds
+    private lastWsNotReadyLogTime: number = 0
 
     // Debug: Save streamed audio to file
     private debugAudioStream: fs.WriteStream | null = null
     private debugAudioBytesWritten: number = 0
     private readonly debugAudioEnabled: boolean = process.env.DEBUG_AUDIO === 'true'
+
+    // ========== MEMORY OPTIMIZATION: Reusable buffers ==========
+    // Pre-allocated buffers to reduce GC pressure during audio processing
+    private reusableNormalizedBuffer: Float32Array | null = null
+    private reusableResampledBuffer: Float32Array | null = null
+    private reusableInt16Buffer: Int16Array | null = null
+
+    // Memory monitoring
+    private memoryCheckIntervalId: NodeJS.Timeout | null = null
+    private lastMemoryWarningTime: number = 0
+    private readonly MEMORY_WARNING_COOLDOWN_MS: number = 60000 // Don't spam warnings
+    private droppedChunksCount: number = 0
+    private lastDroppedChunksLogTime: number = 0
 
     constructor(
         input: string | undefined,
@@ -92,6 +115,115 @@ export class Streaming {
         this.start()
 
         Streaming.instance = this
+    }
+
+    // ========== MEMORY MONITORING METHODS ==========
+
+    /**
+     * Start periodic memory monitoring
+     */
+    private startMemoryMonitoring(): void {
+        if (this.memoryCheckIntervalId) {
+            return // Already running
+        }
+
+        console.log('📊 [Memory] Starting memory monitoring (check every 30s)')
+        this.memoryCheckIntervalId = setInterval(() => {
+            this.checkMemoryUsage()
+        }, MEMORY_CHECK_INTERVAL_MS)
+    }
+
+    /**
+     * Stop memory monitoring
+     */
+    private stopMemoryMonitoring(): void {
+        if (this.memoryCheckIntervalId) {
+            clearInterval(this.memoryCheckIntervalId)
+            this.memoryCheckIntervalId = null
+            console.log('📊 [Memory] Stopped memory monitoring')
+        }
+    }
+
+    /**
+     * Check current memory usage and log warnings if needed
+     */
+    private checkMemoryUsage(): void {
+        const memUsage = this.getMemoryUsage()
+        const now = Date.now()
+
+        // Log memory stats
+        console.log(
+            `📊 [Memory] RSS: ${memUsage.rss.toFixed(1)}MB, Heap: ${memUsage.heapUsed.toFixed(1)}/${memUsage.heapTotal.toFixed(1)}MB, ` +
+            `External: ${memUsage.external.toFixed(1)}MB, ConnectionBuffer: ${this.connectionBuffer.length} chunks`
+        )
+
+        // Check thresholds (with cooldown to avoid spam)
+        if (now - this.lastMemoryWarningTime >= this.MEMORY_WARNING_COOLDOWN_MS) {
+            if (memUsage.rss >= MEMORY_CRITICAL_THRESHOLD_MB) {
+                console.error(
+                    `🚨 [Memory] CRITICAL: RSS ${memUsage.rss.toFixed(1)}MB exceeds ${MEMORY_CRITICAL_THRESHOLD_MB}MB threshold! ` +
+                    `Consider reducing buffer sizes or investigating leaks.`
+                )
+                this.lastMemoryWarningTime = now
+            } else if (memUsage.rss >= MEMORY_WARNING_THRESHOLD_MB) {
+                console.warn(
+                    `⚠️ [Memory] WARNING: RSS ${memUsage.rss.toFixed(1)}MB exceeds ${MEMORY_WARNING_THRESHOLD_MB}MB threshold`
+                )
+                this.lastMemoryWarningTime = now
+            }
+        }
+
+        // Log dropped chunks count periodically
+        if (this.droppedChunksCount > 0 && now - this.lastDroppedChunksLogTime >= 30000) {
+            console.warn(`📊 [Memory] Dropped ${this.droppedChunksCount} chunks due to buffer overflow in last 30s`)
+            this.droppedChunksCount = 0
+            this.lastDroppedChunksLogTime = now
+        }
+    }
+
+    /**
+     * Get current memory usage in MB
+     */
+    private getMemoryUsage(): { rss: number; heapUsed: number; heapTotal: number; external: number } {
+        const mem = process.memoryUsage()
+        return {
+            rss: mem.rss / 1024 / 1024,
+            heapUsed: mem.heapUsed / 1024 / 1024,
+            heapTotal: mem.heapTotal / 1024 / 1024,
+            external: mem.external / 1024 / 1024
+        }
+    }
+
+    // ========== REUSABLE BUFFER METHODS ==========
+
+    /**
+     * Get or create reusable normalized buffer
+     */
+    private getNormalizedBuffer(size: number): Float32Array {
+        if (!this.reusableNormalizedBuffer || this.reusableNormalizedBuffer.length < size) {
+            this.reusableNormalizedBuffer = new Float32Array(size)
+        }
+        return this.reusableNormalizedBuffer.subarray(0, size)
+    }
+
+    /**
+     * Get or create reusable resampled buffer
+     */
+    private getResampledBuffer(size: number): Float32Array {
+        if (!this.reusableResampledBuffer || this.reusableResampledBuffer.length < size) {
+            this.reusableResampledBuffer = new Float32Array(size)
+        }
+        return this.reusableResampledBuffer.subarray(0, size)
+    }
+
+    /**
+     * Get or create reusable Int16 buffer
+     */
+    private getInt16Buffer(size: number): Int16Array {
+        if (!this.reusableInt16Buffer || this.reusableInt16Buffer.length < size) {
+            this.reusableInt16Buffer = new Int16Array(size)
+        }
+        return this.reusableInt16Buffer.subarray(0, size)
     }
 
     /**
@@ -121,6 +253,9 @@ export class Streaming {
         this.isInitialized = true
         this.isPaused = false
 
+        // Start memory monitoring
+        this.startMemoryMonitoring()
+
         console.log('✅ Streaming service ready for direct audio processing')
     }
 
@@ -141,12 +276,39 @@ export class Streaming {
         }
 
         if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
-            // Throttle warning logs to avoid spam
+            // ========== MEMORY OPTIMIZATION: FIFO buffer with size limit ==========
             const now = Date.now()
+
+            // Initialize buffer start time on first chunk
+            if (this.connectionBuffer.length === 0) {
+                this.connectionBufferStartTime = now
+            }
+
+            // Check if buffer is too old (> 30 seconds) - clear it to prevent stale audio
+            const bufferAge = now - this.connectionBufferStartTime
+            if (bufferAge > MAX_CONNECTION_BUFFER_DURATION_MS && this.connectionBuffer.length > 0) {
+                console.warn(`[Streaming] ⚠️ Connection buffer too old (${(bufferAge / 1000).toFixed(1)}s), clearing ${this.connectionBuffer.length} chunks`)
+                this.connectionBuffer = []
+                this.connectionBufferStartTime = now
+            }
+
+            // FIFO: If buffer is full, remove oldest chunks to make room
+            if (this.connectionBuffer.length >= MAX_CONNECTION_BUFFER_SIZE) {
+                const chunksToRemove = Math.max(1, Math.floor(MAX_CONNECTION_BUFFER_SIZE * 0.1)) // Remove 10% of buffer
+                this.connectionBuffer.splice(0, chunksToRemove)
+                this.droppedChunksCount += chunksToRemove
+            }
+
+            // Store the audio chunk for later (create a copy to avoid reference issues)
+            const float32Data = new Float32Array(audioChunk.audioData)
+            this.connectionBuffer.push(float32Data)
+
+            // Throttle warning logs to avoid spam
             if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
-                console.warn('[Streaming] ⚠️ WebSocket not ready, discarding audio chunks (state:', this.output_ws?.readyState, ')')
+                console.warn(`[Streaming] ⚠️ WebSocket not ready, buffering audio chunks (state: ${this.output_ws?.readyState}, buffered: ${this.connectionBuffer.length})`)
                 this.lastWsNotReadyLogTime = now
             }
+
             // Trigger reconnection if not already reconnecting
             this.scheduleReconnect()
             return
@@ -187,8 +349,9 @@ export class Streaming {
      * Process and send a single audio chunk immediately
      */
     private processAndSendAudioChunk(audioData: Float32Array): void {
-        // Simple clipping protection
-        const normalized = new Float32Array(audioData.length)
+        // ========== MEMORY OPTIMIZATION: Use reusable buffers ==========
+        // Simple clipping protection - use reusable buffer
+        const normalized = this.getNormalizedBuffer(audioData.length)
         for (let i = 0; i < audioData.length; i++) {
             normalized[i] = Math.max(-1, Math.min(1, audioData[i]))
         }
@@ -197,11 +360,13 @@ export class Streaming {
         const sourceRate = this.sourceSampleRate
         const targetRate = this.sample_rate
         let finalBuffer = normalized
+        let finalLength = audioData.length
 
         if (sourceRate !== targetRate) {
             const ratio = sourceRate / targetRate
             const newLength = Math.round(normalized.length / ratio)
-            const resampled = new Float32Array(newLength)
+            // Use reusable resampled buffer
+            const resampled = this.getResampledBuffer(newLength)
 
             for (let i = 0; i < newLength; i++) {
                 const sourceIndex = i * ratio
@@ -214,22 +379,26 @@ export class Streaming {
                 resampled[i] = p0 + (p1 - p0) * decimal
             }
             finalBuffer = resampled
+            finalLength = newLength
         }
 
-        // Convert to Int16 for WebSocket transmission
-        const s16Array = new Int16Array(finalBuffer.length)
-        for (let i = 0; i < finalBuffer.length; i++) {
+        // Convert to Int16 for WebSocket transmission - use reusable buffer
+        const s16Array = this.getInt16Buffer(finalLength)
+        for (let i = 0; i < finalLength; i++) {
             s16Array[i] = Math.round(
                 Math.max(-32768, Math.min(32767, finalBuffer[i] * 32768)),
             )
         }
 
         // Send to WebSocket
+        // Note: We need to create a copy for sending because s16Array is a subarray of reusable buffer
         if (this.output_ws && this.output_ws.readyState === WebSocket.OPEN) {
-            this.output_ws.send(s16Array.buffer)
+            // Create a properly sized buffer for sending (subarray.buffer would send the entire underlying buffer)
+            const sendBuffer = new Int16Array(s16Array).buffer
+            this.output_ws.send(sendBuffer)
             this.browserAudioChunksSent++
 
-            // Write to debug file
+            // Write to debug file (pass the subarray, writeDebugAudioChunk will handle it)
             this.writeDebugAudioChunk(s16Array)
         }
     }
@@ -444,6 +613,9 @@ export class Streaming {
         }
 
         console.log('🛑 Stopping simplified streaming service...')
+
+        // Stop memory monitoring
+        this.stopMemoryMonitoring()
 
         // Finalize debug audio file (wait for WAV header to be written)
         await this.finalizeDebugAudioFile()
