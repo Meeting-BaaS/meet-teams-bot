@@ -145,8 +145,27 @@ export class WaitingRoomState extends BaseState {
       throw new Error("Meeting page not initialized")
     }
 
-    // Handle timing control for precise meeting join times
-    const startTime = await handleTimingControl(GLOBAL.get().start_time)
+    // Handle timing control for precise meeting join times.
+    // While waiting, poll the page URL to detect if Google Meet denied/redirected
+    // (e.g. "You can't join this video call" → auto-redirect to workspace.google.com).
+    const startTime = await handleTimingControl(GLOBAL.get().start_time, async () => {
+      const url = this.context.playwrightPage?.url() ?? ""
+      if (url && !url.includes("meet.google.com")) {
+        console.log(`Page navigated away from Meet during timing wait: ${url}`)
+        GLOBAL.setShouldRetry(true)
+        GLOBAL.setError(
+          MeetingEndReason.BotNotAccepted,
+          "Google Meet denied entry - page redirected during scheduled wait"
+        )
+        return true
+      }
+      return false
+    })
+
+    // If the abort check detected a denial during the wait, bail out immediately
+    if (GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted) {
+      throw new Error("Bot denied during timing control wait")
+    }
 
     // Store the actual start time for later use - It is sent to the backend at the end of the meeting
     GLOBAL.setStartTime(startTime)
@@ -186,7 +205,8 @@ export class WaitingRoomState extends BaseState {
           () => {
             joinSuccessful = true
             console.log("Join successful notification received")
-          }
+          },
+          this.context.dialogObserver
         )
         .then(() => {
           clearInterval(checkStopSignal)

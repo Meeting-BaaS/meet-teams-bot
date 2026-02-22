@@ -29,6 +29,11 @@ const getSpeakerCallbackCheckWindow = (): number => {
   return provider === "teams" ? 60000 : 30000 // Teams: 60s, Meet: 30s
 }
 
+// How long the bot must be alone (no other attendees + no sound) before leaving
+const ALONE_IN_MEETING_TIMEOUT_MS = 30_000
+// Speaker observer is considered healthy if a callback was received within this window
+const SPEAKER_OBSERVER_HEALTH_WINDOW_MS = 10 * 60 * 1000 // 10 minutes
+
 export class RecordingState extends BaseState {
   private isProcessing = true
   private readonly CHECK_INTERVAL = 250
@@ -40,6 +45,7 @@ export class RecordingState extends BaseState {
   private hasNoOneJoinedPeriodEnded = false
   private lastDiarizationHealthCheckTime = 0
   private consecutiveStaleCount = 0
+  private aloneInMeetingSince: number | null = null
 
   async execute(): StateExecuteResult {
     try {
@@ -254,6 +260,14 @@ export class RecordingState extends BaseState {
         return { shouldEnd: false }
       }
 
+      // Check if all human participants have left (bot is alone)
+      // This triggers faster than silence_timeout when the speaker observer
+      // confirms the bot is the only attendee remaining.
+      const aloneResult = this.checkAloneInMeeting(now, currentSoundLevel)
+      if (aloneResult.shouldEnd) {
+        return aloneResult
+      }
+
       // No one joined period is over - check silence timeout
       if (await this.checkNoSpeaker(now)) {
         return { shouldEnd: true, reason: MeetingEndReason.NoSpeaker }
@@ -464,22 +478,21 @@ export class RecordingState extends BaseState {
     // Check for positive attendee signals (only use when true, not when false/0)
     // This helps when users are present but haven't spoken yet
     const attendeesCount = this.context.attendeesCount || 0
-    const firstUserJoined = this.context.firstUserJoined || false
 
     // If grace period has already ended (by sound or attendees), return early
     if (this.hasNoOneJoinedPeriodEnded) {
       return { shouldEnd: false }
     }
 
-    // If attendees detected via UI (positive signal), end grace period
-    // We only use this when it's positive (count > 0 or firstUserJoined = true)
-    // This way, if UI detection works, we use it; if it doesn't, we fall back to sound
-    if (attendeesCount > 0 || firstUserJoined) {
-      // Reset silence timer to start monitoring from now, even though no one joined was detected via UI
+    // If attendees detected via speaker observer (positive signal), end grace period
+    // Use > 1 because the bot itself is counted as an attendee.
+    // This way, if detection works, we use it; if it doesn't, we fall back to sound
+    if (attendeesCount > 1) {
+      // Reset silence timer to start monitoring from now
       // This is important to ensure that the silence timeout is not triggered too early
       this.lastSoundActivity = now
       console.log(
-        `[noone-joined] Grace period ended (attendees detected via UI: count=${attendeesCount}, firstUserJoined=${firstUserJoined}), enabling silence timeout checks`
+        `[noone-joined] Grace period ended (attendees detected: count=${attendeesCount}, excluding bot), enabling silence timeout checks`
       )
       this.hasNoOneJoinedPeriodEnded = true
       return { shouldEnd: false }
@@ -545,5 +558,59 @@ export class RecordingState extends BaseState {
       }
     }
     return shouldEnd
+  }
+
+  /**
+   * Checks if the bot is alone in the meeting (all human participants left).
+   * Only trusts the attendee count when the speaker observer has been healthy
+   * (received a callback within the last 10 minutes). If the observer is
+   * unhealthy, this check is skipped and the bot falls back to silence_timeout.
+   *
+   * Requires 30 seconds of being alone + no sound before triggering.
+   */
+  private checkAloneInMeeting(
+    now: number,
+    currentSoundLevel: number
+  ): { shouldEnd: boolean; reason?: MeetingEndReason } {
+    const attendeesCount = this.context.attendeesCount || 0
+
+    // Check if the speaker observer is healthy (received a callback recently)
+    const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
+    const speakerObserverHealthy =
+      lastCallbackTime !== null && now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
+
+    const isAlone = attendeesCount <= 1 // Only the bot (or stale 0)
+    const isSilent = currentSoundLevel <= SOUND_LEVEL_ACTIVITY_THRESHOLD
+
+    if (isAlone && isSilent && speakerObserverHealthy) {
+      // Start or continue the "alone" countdown
+      if (this.aloneInMeetingSince === null) {
+        this.aloneInMeetingSince = now
+        console.log(
+          `[alone-in-meeting] Bot appears to be alone (attendees=${attendeesCount}, sound=${currentSoundLevel.toFixed(2)}), starting ${ALONE_IN_MEETING_TIMEOUT_MS / 1000}s countdown`
+        )
+      }
+
+      const aloneForMs = now - this.aloneInMeetingSince
+      if (aloneForMs >= ALONE_IN_MEETING_TIMEOUT_MS) {
+        console.log(
+          `[alone-in-meeting] Bot has been alone for ${Math.floor(aloneForMs / 1000)}s with no sound, leaving meeting`
+        )
+        return { shouldEnd: true, reason: MeetingEndReason.AllParticipantsLeft }
+      }
+    } else {
+      // Reset the countdown if conditions no longer met
+      if (this.aloneInMeetingSince !== null) {
+        const resetReason = !isAlone
+          ? `attendees=${attendeesCount}`
+          : !isSilent
+            ? `sound=${currentSoundLevel.toFixed(2)}`
+            : "speaker observer unhealthy"
+        console.log(`[alone-in-meeting] Countdown reset (${resetReason})`)
+        this.aloneInMeetingSince = null
+      }
+    }
+
+    return { shouldEnd: false }
   }
 }

@@ -95,6 +95,26 @@ export function parseMeetingUrlFromJoinInfos(meeting_url: string): TeamsUrlCompo
 
     // Handle teams.live.com URLs
     if (url.hostname.includes("teams.live.com")) {
+      // Handle launcher/deep-link wrapper URLs
+      // e.g. teams.live.com/dl/launcher/launcher.html?url=/_#/meet/123?p=abc&anon=true
+      if (url.pathname.startsWith("/dl/launcher/")) {
+        const embeddedPath = url.searchParams.get("url")
+        if (embeddedPath) {
+          const meetMatch = embeddedPath.match(/\/meet\/(\d+)/)
+          const pMatch = embeddedPath.match(/[?&]p=([^&]+)/)
+          if (meetMatch) {
+            const directUrl = `https://teams.live.com/meet/${meetMatch[1]}${pMatch ? `?p=${pMatch[1]}&anon=true` : "?anon=true"}`
+            console.log(`Detected Teams launcher URL, resolved to: ${directUrl}`)
+            return {
+              meetingId: directUrl,
+              password: pMatch ? pMatch[1] : ""
+            }
+          }
+        }
+        GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
+        throw new Error("Invalid Teams launcher URL: could not extract meeting info")
+      }
+
       const meetPath = url.pathname.split("/meet/")[1]
       if (!meetPath) {
         GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
