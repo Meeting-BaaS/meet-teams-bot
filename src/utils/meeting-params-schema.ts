@@ -10,7 +10,9 @@ import {
 } from "zod"
 
 export const RecordingModeSchema = zodEnum(["speaker_view", "audio_only", "gallery_view"])
-export const SpeechToTextProviderSchema = zodEnum(["gladia", "assembly", "none"])
+export const SpeechToTextProviderSchema = zodEnum([
+  "gladia", "deepgram", "assemblyai", "speechmatics", "soniox", "none"
+])
 export const MeetingPlatformSchema = zodEnum(["zoom", "meet", "teams"])
 
 /**
@@ -42,5 +44,16 @@ export const BotMessageSchema = object({
   no_one_joined_timeout: number().int().positive().default(600),
   silence_timeout: number().int().positive().default(600),
   speech_to_text_provider: SpeechToTextProviderSchema.default("none"),
-  retry_count: number().int().nonnegative().default(0)
+  encrypted_speech_to_text_api_key: string().nullable().optional().default(null),
+  speech_to_text_region: string().nullable().optional().default(null),
+  speech_to_text_custom_params: record(string(), zodUnknown()).nullable().optional().default(null),
+  retry_count: number().int().nonnegative().default(0),
+  zoom_config: object({
+    sdk_id: string().optional(),
+    sdk_secret: string().optional(),
+    credential_id: uuid().optional(),
+    obf_token: string().optional(),
+    obf_token_url: url().optional(),
+    zak_token_url: url().optional()
+  }).nullable().optional().default(null)
 })
