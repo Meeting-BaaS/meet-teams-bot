@@ -42,6 +42,8 @@ export class SimpleDialogObserver {
 
     /**
      * Manually trigger a single dialog check-and-dismiss cycle.
+     * Should be called while the observer is paused (via SimpleDialogObserver.pause())
+     * to avoid racing with the periodic observer cycle.
      * Works even when the observer is paused — useful for clearing unexpected
      * dialogs before intentional UI interactions (e.g. layout change).
      */
