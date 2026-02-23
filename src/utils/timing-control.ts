@@ -32,9 +32,15 @@ export async function handleTimingControl(
     const POLL_INTERVAL_MS = 3000
     const endTime = Date.now() + waitDuration * 1000
     while (Date.now() < endTime) {
-      if (abortCheck && (await abortCheck())) {
-        console.log("Timing control: abort check triggered, stopping wait early")
-        return Math.floor(Date.now() / 1000)
+      if (abortCheck) {
+        try {
+          if (await abortCheck()) {
+            console.log("Timing control: abort check triggered, stopping wait early")
+            return Math.floor(Date.now() / 1000)
+          }
+        } catch (err) {
+          console.warn(`Timing control: abortCheck threw, treating as no-abort: ${err}`)
+        }
       }
       const remaining = endTime - Date.now()
       if (remaining <= 0) break
