@@ -148,7 +148,9 @@ export class WaitingRoomState extends BaseState {
     // Handle timing control for precise meeting join times.
     // While waiting, poll the page URL to detect if Google Meet denied/redirected
     // (e.g. "You can't join this video call" → auto-redirect to workspace.google.com).
-    const startTime = await handleTimingControl(GLOBAL.get().start_time, async () => {
+    // Only check for Meet — Teams URLs are on a different domain and would false-positive.
+    const isMeet = GLOBAL.get().meeting_platform === "meet"
+    const startTime = await handleTimingControl(GLOBAL.get().start_time, isMeet ? async () => {
       const url = this.context.playwrightPage?.url() ?? ""
       if (url && !url.includes("meet.google.com")) {
         console.log(`Page navigated away from Meet during timing wait: ${url}`)
@@ -160,7 +162,7 @@ export class WaitingRoomState extends BaseState {
         return true
       }
       return false
-    })
+    } : undefined)
 
     // If the abort check detected a denial during the wait, bail out immediately
     if (GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted) {
