@@ -27,5 +27,6 @@ export const NORMAL_END_REASONS = [
     MeetingEndReason.BotRemovedTooEarly, // Bot removed before minimum time but recording still completed
     MeetingEndReason.NoAttendees, // No participants joined the meeting (common scenario)
     MeetingEndReason.NoSpeaker, // No audio activity detected (silent meeting)
+    MeetingEndReason.AllParticipantsLeft, // All human participants left the meeting
     MeetingEndReason.RecordingTimeout, // Maximum recording duration reached (time limit hit)
 ]
