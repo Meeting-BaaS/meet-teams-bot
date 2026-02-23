@@ -609,9 +609,16 @@ export async function sendEntryMessage(page: Page, enterMessage: string): Promis
     if ((await sendButton.count()) > 0) {
       await sendButton.click({ timeout: ENTRY_MESSAGE_TIMEOUT })
       console.log("Clicked on send button")
-      await page.click('button[aria-label="Chat with everyone"]', {
-        timeout: ENTRY_MESSAGE_TIMEOUT
-      })
+      // Close the chat panel - use evaluate click since the button may be invisible (opacity:0 from HTML cleaner)
+      try {
+        const chatToggle = page.locator('button[aria-label="Chat with everyone"]')
+        if ((await chatToggle.count()) > 0) {
+          await chatToggle.first().evaluate((el: HTMLElement) => el.click())
+          console.log("Closed chat panel")
+        }
+      } catch (e) {
+        console.log("Failed to close chat panel (message was still sent):", formatError(e))
+      }
       return true
     }
     console.log("Send button not found")
