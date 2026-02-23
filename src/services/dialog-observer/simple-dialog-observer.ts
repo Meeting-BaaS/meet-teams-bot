@@ -60,7 +60,7 @@ export class SimpleDialogObserver {
             return result
         } catch (error) {
             console.error(`[SimpleDialogObserver] Error in manual dismiss: ${error}`)
-            return { found: false, dismissed: false, modalType: 'manual_dismiss_error' }
+            return { found: false, dismissed: false, modalType: null }
         }
     }
 
