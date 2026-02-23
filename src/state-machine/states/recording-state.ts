@@ -24,6 +24,11 @@ import { MeetingStateMachine } from '../machine'
 // Sound level threshold for considering activity (0-100)
 const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
 
+// How long the bot must be alone (no other attendees + no sound) before leaving
+const ALONE_IN_MEETING_TIMEOUT_MS = 30_000
+// Speaker observer is considered healthy if a callback was received within this window
+const SPEAKER_OBSERVER_HEALTH_WINDOW_MS = 10 * 60 * 1000 // 10 minutes
+
 // Timeout for bot removal check - Teams needs more time due to isRemovedFromTheMeeting
 // which calls ensurePageLoaded (20s) + button search, while Meet is faster
 const getBotRemovalCheckTimeout = (): number => {
@@ -47,6 +52,7 @@ export class RecordingState extends BaseState {
     private lastNoOneJoinedPeriodLog: number = 0
     private lastNoSpeakerLogTime: number = 0
     private hasNoOneJoinedPeriodEnded: boolean = false
+    private aloneInMeetingSince: number | null = null
 
     async execute(): StateExecuteResult {
         try {
@@ -274,6 +280,14 @@ export class RecordingState extends BaseState {
             if (!this.hasNoOneJoinedPeriodEnded) {
                 // Still waiting for first sound or attendees, no one joined period not over yet
                 return { shouldEnd: false }
+            }
+
+            // Check if all human participants have left (bot is alone)
+            // This triggers faster than silence_timeout when the speaker observer
+            // confirms the bot is the only attendee remaining.
+            const aloneResult = this.checkAloneInMeeting(now, currentSoundLevel)
+            if (aloneResult.shouldEnd) {
+                return aloneResult
             }
 
             // No one joined period is over - check silence timeout
@@ -568,5 +582,62 @@ export class RecordingState extends BaseState {
             }
         }
         return shouldEnd
+    }
+
+    /**
+     * Checks if the bot is alone in the meeting (all human participants left).
+     * Only trusts the attendee count when the speaker observer has been healthy
+     * (received a callback within the last 10 minutes). If the observer is
+     * unhealthy, this check is skipped and the bot falls back to silence_timeout.
+     *
+     * Requires 30 seconds of being alone + no sound before triggering.
+     *
+     * Note: v1 filters the bot from the speaker list, so attendeesCount === 0
+     * means truly alone (vs v2 which uses <= 1).
+     */
+    private checkAloneInMeeting(
+        now: number,
+        currentSoundLevel: number,
+    ): { shouldEnd: boolean; reason?: MeetingEndReason } {
+        const attendeesCount = this.context.attendeesCount || 0
+
+        // Check if the speaker observer is healthy (received a callback recently)
+        const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
+        const speakerObserverHealthy =
+            lastCallbackTime !== null && now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
+
+        const isAlone = attendeesCount === 0 // v1 filters bot, so 0 = truly alone
+        const isSilent = currentSoundLevel <= SOUND_LEVEL_ACTIVITY_THRESHOLD
+
+        if (isAlone && isSilent && speakerObserverHealthy) {
+            // Start or continue the "alone" countdown
+            if (this.aloneInMeetingSince === null) {
+                this.aloneInMeetingSince = now
+                console.log(
+                    `[alone-in-meeting] Bot appears to be alone (attendees=${attendeesCount}, sound=${currentSoundLevel.toFixed(2)}), starting ${ALONE_IN_MEETING_TIMEOUT_MS / 1000}s countdown`,
+                )
+            }
+
+            const aloneForMs = now - this.aloneInMeetingSince
+            if (aloneForMs >= ALONE_IN_MEETING_TIMEOUT_MS) {
+                console.log(
+                    `[alone-in-meeting] Bot has been alone for ${Math.floor(aloneForMs / 1000)}s with no sound, leaving meeting`,
+                )
+                return { shouldEnd: true, reason: MeetingEndReason.AllParticipantsLeft }
+            }
+        } else {
+            // Reset the countdown if conditions no longer met
+            if (this.aloneInMeetingSince !== null) {
+                const resetReason = !isAlone
+                    ? `attendees=${attendeesCount}`
+                    : !isSilent
+                      ? `sound=${currentSoundLevel.toFixed(2)}`
+                      : 'speaker observer unhealthy'
+                console.log(`[alone-in-meeting] Countdown reset (${resetReason})`)
+                this.aloneInMeetingSince = null
+            }
+        }
+
+        return { shouldEnd: false }
     }
 }

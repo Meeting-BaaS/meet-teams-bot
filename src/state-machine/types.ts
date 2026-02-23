@@ -22,6 +22,7 @@ export enum MeetingEndReason {
     BotRemoved = 'botRemoved',
     NoAttendees = 'noAttendees',
     NoSpeaker = 'noSpeaker',
+    AllParticipantsLeft = 'allParticipantsLeft',
     RecordingTimeout = 'recordingTimeout',
     ApiRequest = 'apiRequest',
 
@@ -45,6 +46,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
             return 'No attendees joined the meeting.'
         case MeetingEndReason.NoSpeaker:
             return 'No speakers detected during recording.'
+        case MeetingEndReason.AllParticipantsLeft:
+            return 'All participants left the meeting.'
         case MeetingEndReason.RecordingTimeout:
             return 'Recording timeout reached.'
         case MeetingEndReason.ApiRequest:
