@@ -15,6 +15,9 @@ function convertLightMeetingToStandard(url: URL): string {
     }
 
     try {
+        // TODO: decodeURIComponent after atob is unnecessary (searchParams.get already URL-decodes)
+        // and could cause URIError if decoded JSON contains % characters. Left as-is for now since
+        // this has been working in production for ~1 year.
         const decodedCoords = JSON.parse(decodeURIComponent(atob(coords)))
         const { conversationId, tenantId, messageId, organizerId } =
             decodedCoords
@@ -129,7 +132,7 @@ export function parseMeetingUrlFromJoinInfos(
                 const coords = url.searchParams.get('coords')
                 if (coords) {
                     try {
-                        const decoded = JSON.parse(decodeURIComponent(atob(coords)))
+                        const decoded = JSON.parse(atob(coords))
                         if (decoded.meetingCode) {
                             const passcode = decoded.passcode || url.searchParams.get('p') || ''
                             const directUrl = `https://teams.live.com/meet/${decoded.meetingCode}${passcode ? `?p=${passcode}&anon=true` : '?anon=true'}`
