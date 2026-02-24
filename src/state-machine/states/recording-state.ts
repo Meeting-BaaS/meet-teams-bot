@@ -566,13 +566,32 @@ export class RecordingState extends BaseState {
    * (received a callback within the last 10 minutes). If the observer is
    * unhealthy, this check is skipped and the bot falls back to silence_timeout.
    *
-   * Requires 30 seconds of being alone + no sound before triggering.
+   * Requires ALL of these conditions to be true for 30 seconds:
+   * 1. participantsEverSeen - At least one real participant was detected at some
+   *    point during the meeting. This is a proof-of-life gate: it ensures the
+   *    speaker observer is actually working and has successfully detected humans.
+   *    Without this, a broken observer (e.g. after a UI change) that returns
+   *    empty arrays but still fires callbacks would cause every bot to leave
+   *    after 30s of silence. This check also separates alone-in-meeting from
+   *    the noone_joined check, which handles the "nobody ever showed up" case.
+   *    Note: v2 includes the bot in participants, so > 1 means a real human.
+   * 2. isAlone - Current attendee count shows only the bot (or stale 0)
+   * 3. isSilent - No meaningful audio activity (sound level <= 5)
+   * 4. speakerObserverHealthy - Observer callback received within last 10 min
    */
   private checkAloneInMeeting(
     now: number,
     currentSoundLevel: number
   ): { shouldEnd: boolean; reason?: MeetingEndReason } {
     const attendeesCount = this.context.attendeesCount || 0
+
+    // Gate: only activate alone-in-meeting if we've ever seen a real participant.
+    // v2 includes the bot itself in the participants list, so > 1 means at least
+    // one real human was detected at some point during the meeting.
+    const participantsEverSeen = GLOBAL.getParticipants().length > 1
+    if (!participantsEverSeen) {
+      return { shouldEnd: false }
+    }
 
     // Check if the speaker observer is healthy (received a callback recently)
     const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
