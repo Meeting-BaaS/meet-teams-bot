@@ -56,4 +56,11 @@ export class ChatObserver {
   public isCurrentlyObserving(): boolean {
     return this.isObserving
   }
+
+  public isChatDisabled(): boolean {
+    if (this.observer instanceof TeamsChatObserver) {
+      return this.observer.chatDisabled
+    }
+    return false
+  }
 }

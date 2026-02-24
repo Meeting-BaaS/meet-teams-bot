@@ -115,6 +115,7 @@ export interface MeetingContext {
 
   // Chat observation
   chatObserver?: import("../meeting/chatObserver").ChatObserver
+  chatDisabled?: boolean
 
   // HTML cleanup
   htmlCleaner?: import("../meeting/htmlCleaner").HtmlCleaner

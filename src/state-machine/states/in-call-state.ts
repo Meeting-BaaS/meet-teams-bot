@@ -331,6 +331,10 @@ export class InCallState extends BaseState {
     const chatObserver = new ChatObserver(GLOBAL.get().meeting_platform)
     await chatObserver.startObserving(this.context.playwrightPage)
     this.context.chatObserver = chatObserver
+    if (chatObserver.isChatDisabled()) {
+      this.context.chatDisabled = true
+      console.warn("[InCallState] Chat is disabled for this meeting")
+    }
   }
 
   private async startHtmlCleaning(): Promise<void> {

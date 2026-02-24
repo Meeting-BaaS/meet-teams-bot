@@ -96,6 +96,10 @@ export async function server() {
         return res.status(500).json({ error: "Meeting page not available" })
       }
 
+      if (context.chatDisabled) {
+        return res.status(400).json({ error: "Chat is disabled for this meeting" })
+      }
+
       const platform = (await import("./singleton")).GLOBAL.get().meeting_platform
 
       if (platform === "meet") {
@@ -108,43 +112,50 @@ export async function server() {
       }
 
       if (platform === "teams") {
-        // Teams: use CKEditor with evaluate() to bypass z-index overlay
+        // Teams: open chat panel and type into chat input
         const page = context.playwrightPage
         try {
-          const editorSelector = 'div[data-tid="ckeditor"][role="textbox"]'
+          // Multiple selectors for the chat input — Teams UI varies across versions
+          const inputSelectors = [
+            '[aria-label="Type a message"]',
+            '[placeholder="Type a message"]',
+            'div[data-tid="ckeditor"][role="textbox"]',
+          ]
 
-          // Chat panel should already be open (from TeamsChatObserver).
-          // If not, try clicking the chat button first.
-          const editorVisible = await page.evaluate((sel) => !!document.querySelector(sel), editorSelector)
-          if (!editorVisible) {
+          // Check if any chat input is already visible
+          const inputFound = await page.evaluate((selectors) => {
+            for (const sel of selectors) {
+              if (document.querySelector(sel)) return sel
+            }
+            return null
+          }, inputSelectors)
+
+          if (!inputFound) {
+            // Open chat panel first
             await page.evaluate(() => {
-              const chatButton = document.querySelector(
-                'button#chat-button[aria-label="Chat"], button[aria-label*="chat" i]'
-              ) as HTMLElement | null
-              chatButton?.click()
+              const btn = document.querySelector('button#chat-button') as HTMLElement | null
+              btn?.click()
             })
-            await page.waitForSelector(editorSelector, { timeout: 3000 })
+            // Wait for any of the input selectors to appear
+            await page.waitForSelector(inputSelectors.join(", "), { timeout: 5000 })
           }
 
-          // Focus the CKEditor and type (CKEditor ignores programmatic value changes)
-          await page.$eval(editorSelector, (el: HTMLElement) => el.focus())
+          // Find and focus the actual input element
+          const activeSelector = await page.evaluate((selectors) => {
+            for (const sel of selectors) {
+              const el = document.querySelector(sel) as HTMLElement | null
+              if (el) { el.focus(); return sel }
+            }
+            return null
+          }, inputSelectors)
+
+          if (!activeSelector) {
+            return res.status(500).json({ error: "Chat input not found" })
+          }
+
           await page.keyboard.type(data.message)
           await page.waitForTimeout(200)
-
-          // Click send button or fallback to Enter
-          const sendClicked = await page.evaluate(() => {
-            const sendButton = document.querySelector(
-              'button[data-tid="newMessageCommands-send"]'
-            ) as HTMLElement | null
-            if (sendButton) {
-              sendButton.click()
-              return true
-            }
-            return false
-          })
-          if (!sendClicked) {
-            await page.keyboard.press("Enter")
-          }
+          await page.keyboard.press("Enter")
 
           return res.status(200).json({ success: true, message: "Chat message sent" })
         } catch (error) {

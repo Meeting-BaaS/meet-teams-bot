@@ -16,9 +16,14 @@ declare global {
 export class TeamsChatObserver {
   private page: Page
   private isObserving = false
+  private _chatDisabled = false
 
   constructor(page: Page) {
     this.page = page
+  }
+
+  public get chatDisabled(): boolean {
+    return this._chatDisabled
   }
 
   public async startObserving(): Promise<void> {
@@ -147,24 +152,64 @@ export class TeamsChatObserver {
   private async openChatPanel(): Promise<boolean> {
     for (let attempt = 1; attempt <= MAX_CHAT_OPEN_RETRIES; attempt++) {
       try {
-        // Check if chat container is already in DOM (panel already open)
-        const alreadyOpen = await this.page.evaluate(() => {
-          return !!document.querySelector('[data-tid="chat-pane-list"]')
+        // Check if chat is disabled by the meeting organizer
+        const chatStatus = await this.page.evaluate(() => {
+          // Chat panel with input ready
+          if (
+            document.querySelector('[aria-label="Type a message"]') ||
+            document.querySelector('[placeholder="Type a message"]') ||
+            document.querySelector('div[data-tid="ckeditor"][role="textbox"]')
+          ) {
+            return "ready"
+          }
+          // Chat panel open but disabled
+          const disabledEl = document.querySelector('[data-tid="compose-disabled-placeholder-text"]')
+          if (disabledEl) {
+            return `disabled:${disabledEl.textContent?.trim() || "Chat is disabled"}`
+          }
+          // Chat pane list exists (panel open, input may not be loaded yet)
+          if (document.querySelector('[data-tid="chat-pane-list"]')) {
+            return "panel-open"
+          }
+          return "closed"
         })
 
-        if (alreadyOpen) {
-          console.log("[TeamsChatObserver] Chat panel already open")
+        if (chatStatus === "ready") {
+          console.log("[TeamsChatObserver] Chat panel already open with input ready")
           return true
         }
 
-        // Click chat button using evaluate() to bypass z-index overlay visibility checks
+        if (chatStatus.startsWith("disabled:")) {
+          const reason = chatStatus.slice("disabled:".length)
+          console.warn(`[TeamsChatObserver] ⚠️ Chat is disabled: ${reason}`)
+          this._chatDisabled = true
+          return false
+        }
+
+        if (chatStatus === "panel-open") {
+          // Panel is open but no input — likely disabled without the placeholder text,
+          // or still loading. Wait briefly and re-check.
+          if (attempt < MAX_CHAT_OPEN_RETRIES) {
+            await this.page.waitForTimeout(CHAT_RETRY_INTERVAL_MS)
+          }
+          continue
+        }
+
+        // Chat panel is closed — click the chat button to open it
         const chatButtonClicked = await this.page.evaluate(() => {
-          const chatButton = document.querySelector(
-            'button#chat-button[aria-label="Chat"], button[aria-label*="chat" i], button[title*="chat" i]'
-          ) as HTMLElement | null
-          if (chatButton) {
-            chatButton.click()
-            return true
+          const selectors = [
+            'button#chat-button',
+            'button[aria-label*="chat" i]',
+            'button[title*="chat" i]',
+            '[data-tid="chat-button"]',
+            '[role="button"][aria-label*="chat" i]',
+          ]
+          for (const sel of selectors) {
+            const el = document.querySelector(sel) as HTMLElement | null
+            if (el) {
+              el.click()
+              return true
+            }
           }
           return false
         })
@@ -179,11 +224,24 @@ export class TeamsChatObserver {
 
         console.log("[TeamsChatObserver] Chat button clicked")
 
-        // Wait for chat container to appear in DOM
+        // Wait for chat panel to appear
         try {
-          await this.page.waitForSelector('[data-tid="chat-pane-list"]', {
-            timeout: CHAT_ACTION_TIMEOUT_MS,
+          await this.page.waitForSelector(
+            '[data-tid="chat-pane-list"], [aria-label="Type a message"], [placeholder="Type a message"]',
+            { timeout: CHAT_ACTION_TIMEOUT_MS }
+          )
+
+          // Check if it opened but is disabled
+          const disabled = await this.page.evaluate(() => {
+            const el = document.querySelector('[data-tid="compose-disabled-placeholder-text"]')
+            return el?.textContent?.trim() || null
           })
+          if (disabled) {
+            console.warn(`[TeamsChatObserver] ⚠️ Chat is disabled: ${disabled}`)
+            this._chatDisabled = true
+            return false
+          }
+
           console.log("[TeamsChatObserver] ✅ Chat panel opened successfully")
           return true
         } catch {
