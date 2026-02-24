@@ -293,11 +293,6 @@ export class MeetProvider implements MeetingProviderInterface {
       // People panel + layout + snapshot in performCriticalSetupActions; entry msg + audio in InCallState
     } catch (error) {
       console.error("Error in joinMeeting:", formatError(error))
-      // Bot never successfully joined — retrying is safe and won't cause
-      // user-facing inconsistency.  Skip only explicit API-requested stops.
-      if (GLOBAL.getEndReason() !== MeetingEndReason.ApiRequest) {
-        GLOBAL.setShouldRetry(true)
-      }
       throw error
     }
   }
