@@ -215,6 +215,7 @@ export class WaitingRoomState extends BaseState {
                         joinSuccessful = true
                         console.log('Join successful notification received')
                     },
+                    this.context.dialogObserver,
                 )
                 .then(() => {
                     clearInterval(checkStopSignal)

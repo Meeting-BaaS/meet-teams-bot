@@ -4,6 +4,7 @@ import { MeetingEndReason } from '../state-machine/types'
 import { MeetingProviderInterface } from '../types'
 
 import { HtmlSnapshotService } from '../services/html-snapshot-service'
+import { SimpleDialogObserver } from '../services/dialog-observer/simple-dialog-observer'
 import { GLOBAL } from '../singleton'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
@@ -123,6 +124,7 @@ export class MeetProvider implements MeetingProviderInterface {
         page: Page,
         cancelCheck: () => boolean,
         onJoinSuccess: () => void,
+        dialogObserver?: SimpleDialogObserver,
     ): Promise<void> {
         try {
             // Capture DOM state before starting join process
@@ -256,7 +258,7 @@ export class MeetProvider implements MeetingProviderInterface {
                         )
 
                         // Now do critical setup actions BEFORE state transition
-                        await performCriticalSetupActions(page)
+                        await performCriticalSetupActions(page, dialogObserver)
 
                         // Then trigger state transition
                         onJoinSuccess()
@@ -871,7 +873,10 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
  * - Changes layout to Spotlight (optimized)
  * - Captures HTML snapshot
  */
-async function performCriticalSetupActions(page: Page): Promise<void> {
+async function performCriticalSetupActions(
+    page: Page,
+    dialogObserver?: SimpleDialogObserver,
+): Promise<void> {
     const htmlSnapshot = HtmlSnapshotService.getInstance()
 
     // 1. Open People Panel FIRST (keyboard shortcut - fastest)
@@ -881,16 +886,31 @@ async function performCriticalSetupActions(page: Page): Promise<void> {
 
     // 2. Change Layout to Spotlight (optimized)
     if (GLOBAL.get().recording_mode !== 'audio_only') {
-        const maxAttempts = 3
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            if (await changeLayout(page, attempt)) {
-                console.log(`Layout change successful on attempt ${attempt}`)
-                break
+        // Pause the dialog observer while we interact with the layout dialog.
+        // The observer would detect the Change Layout dialog as generic_dismiss
+        // and race with our Playwright interactions, causing timeouts.
+        SimpleDialogObserver.pause()
+        try {
+            const maxAttempts = 3
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                // Manually dismiss any visible dialogs before attempting layout change.
+                // The observer is paused so it can't do this automatically — but dialogs
+                // like "Other people may see your video differently" block the More Options
+                // button with a scrim overlay.
+                if (dialogObserver) {
+                    await dialogObserver.dismissVisibleDialogs()
+                }
+                if (await changeLayout(page, attempt)) {
+                    console.log(`Layout change successful on attempt ${attempt}`)
+                    break
+                }
+                if (attempt < maxAttempts) {
+                    await clickOutsideModal(page)
+                    await page.waitForTimeout(300)
+                }
             }
-            if (attempt < maxAttempts) {
-                await clickOutsideModal(page)
-                await page.waitForTimeout(300) // Reduced retry delay
-            }
+        } finally {
+            SimpleDialogObserver.resume()
         }
     }
 

@@ -1,4 +1,5 @@
 import { BrowserContext, Page } from '@playwright/test'
+import { SimpleDialogObserver } from './services/dialog-observer/simple-dialog-observer'
 
 type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod'
 
@@ -21,6 +22,7 @@ export interface MeetingProviderInterface {
         page: Page,
         cancelCheck: () => boolean,
         onJoinSuccess: () => void,
+        dialogObserver?: SimpleDialogObserver,
     ): Promise<void>
     findEndMeeting(page: Page): Promise<boolean>
     parseMeetingUrl(
