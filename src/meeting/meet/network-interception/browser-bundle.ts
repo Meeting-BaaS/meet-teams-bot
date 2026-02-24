@@ -16,9 +16,8 @@ export function browserInterceptionLogic(schema: any[]) {
     ;(window as any).__networkInterceptorInitialized = true
 
     // Feature flag: Proactive datachannel creation
-    // Set to false by default - Google Meet creates "meet_messages" channel itself
-    // Only enable if passive listener fails to receive the channel
-    const ENABLE_PROACTIVE_MEET_CHANNEL = false
+    // Enabled — passive listener alone may miss the channel due to timing
+    const ENABLE_PROACTIVE_MEET_CHANNEL = true
 
     console.error("[NetworkInterceptor] ✅ Activated")
     console.error(
