@@ -115,6 +115,31 @@ export function parseMeetingUrlFromJoinInfos(meeting_url: string): TeamsUrlCompo
         throw new Error("Invalid Teams launcher URL: could not extract meeting info")
       }
 
+      // Handle personal/free Teams light-meetings launcher URLs
+      // e.g. teams.live.com/light-meetings/launch?coords=<base64>&p=abc&anon=true
+      // The coords param is base64-encoded JSON with meetingCode + passcode
+      if (url.pathname.includes("/light-meetings/launch")) {
+        const coords = url.searchParams.get("coords")
+        if (coords) {
+          try {
+            const decoded = JSON.parse(decodeURIComponent(atob(coords)))
+            if (decoded.meetingCode) {
+              const passcode = decoded.passcode || url.searchParams.get("p") || ""
+              const directUrl = `https://teams.live.com/meet/${decoded.meetingCode}${passcode ? `?p=${passcode}&anon=true` : "?anon=true"}`
+              console.log(`Detected Teams light-meetings launcher URL, resolved to: ${directUrl}`)
+              return {
+                meetingId: directUrl,
+                password: passcode
+              }
+            }
+          } catch (e) {
+            console.error("Error parsing light-meetings coords:", formatError(e))
+          }
+        }
+        GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
+        throw new Error("Invalid Teams light-meetings URL: could not extract meeting info from coords")
+      }
+
       const meetPath = url.pathname.split("/meet/")[1]
       if (!meetPath) {
         GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
