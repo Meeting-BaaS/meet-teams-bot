@@ -33,6 +33,10 @@ const getSpeakerCallbackCheckWindow = (): number => {
 const ALONE_IN_MEETING_TIMEOUT_MS = 30_000
 // Speaker observer is considered healthy if a callback was received within this window
 const SPEAKER_OBSERVER_HEALTH_WINDOW_MS = 10 * 60 * 1000 // 10 minutes
+// Don't activate alone-in-meeting within the first 5 minutes of recording.
+// The speaker observer can be unreliable at meeting start (especially on Teams, for example bot ID 419ea079-98e5-4363-928c-acbbd2b5a96d),
+// and brief false-positive attendee counts can pass the participantsEverSeen gate.
+const ALONE_IN_MEETING_GRACE_PERIOD_MS = 5 * 60 * 1000
 
 export class RecordingState extends BaseState {
   private isProcessing = true
@@ -584,6 +588,14 @@ export class RecordingState extends BaseState {
     currentSoundLevel: number
   ): { shouldEnd: boolean; reason?: MeetingEndReason } {
     const attendeesCount = this.context.attendeesCount || 0
+
+    // Don't activate alone-in-meeting within the first 5 minutes of recording.
+    // The speaker observer can be unreliable at meeting start (especially on Teams),
+    // and brief false-positive attendee counts can pass the participantsEverSeen gate.
+    const startTime = this.context.startTime
+    if (startTime && now - startTime < ALONE_IN_MEETING_GRACE_PERIOD_MS) {
+      return { shouldEnd: false }
+    }
 
     // Gate: only activate alone-in-meeting if we've ever seen a real participant.
     // v2 includes the bot itself in the participants list, so > 1 means at least
