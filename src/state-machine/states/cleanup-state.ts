@@ -53,6 +53,18 @@ export class CleanupState extends BaseState {
       console.info("🧹 Step 2/8: Finalizing diarization tracking")
       await this.finalizeDiarization()
 
+      // 2b. Stop network interception early to silence the 5s broadcast timer.
+      // This is a lightweight page.evaluate() that sets a flag — no need to wait
+      // for ScreenRecorder upload to finish before silencing it.
+      if (GLOBAL.get().meeting_platform === "meet" && this.context.playwrightPage) {
+        try {
+          console.info("🧹 Stopping network interception (early, before ScreenRecorder)")
+          await stopNetworkInterception(this.context.playwrightPage)
+        } catch (error) {
+          console.warn("🧹 Early network interception stop failed, will retry later:", formatError(error))
+        }
+      }
+
       // 🎬 PRIORITY 3: Stop video recording immediately to avoid data loss
       console.info("🧹 Step 3/8: Stopping ScreenRecorder (PRIORITY)")
       await this.stopScreenRecorder()

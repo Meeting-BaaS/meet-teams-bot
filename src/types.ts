@@ -15,7 +15,12 @@ export interface MeetingProviderInterface {
     link: string,
     streaming_input: string | undefined
   ): Promise<Page>
-  joinMeeting(page: Page, cancelCheck: () => boolean, onJoinSuccess: () => void): Promise<void>
+  joinMeeting(
+    page: Page,
+    cancelCheck: () => boolean,
+    onJoinSuccess: () => void,
+    dialogObserver?: import("./services/dialog-observer/simple-dialog-observer").SimpleDialogObserver
+  ): Promise<void>
   findEndMeeting(page: Page): Promise<boolean>
   parseMeetingUrl(meeting_url: string): Promise<{ meetingId: string; password: string }>
   getMeetingLink(
