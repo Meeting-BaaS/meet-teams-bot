@@ -15,6 +15,9 @@ function convertLightMeetingToStandard(url: URL): string {
     }
 
     try {
+        // TODO: decodeURIComponent after atob is unnecessary (searchParams.get already URL-decodes)
+        // and could cause URIError if decoded JSON contains % characters. Left as-is for now since
+        // this has been working in production for ~1 year.
         const decodedCoords = JSON.parse(decodeURIComponent(atob(coords)))
         const { conversationId, tenantId, messageId, organizerId } =
             decodedCoords
@@ -102,6 +105,51 @@ export function parseMeetingUrlFromJoinInfos(
 
         // Handle teams.live.com URLs
         if (url.hostname.includes('teams.live.com')) {
+            // Handle launcher/deep-link wrapper URLs
+            // e.g. teams.live.com/dl/launcher/launcher.html?url=/_#/meet/123?p=abc&anon=true
+            if (url.pathname.startsWith('/dl/launcher/')) {
+                const embeddedPath = url.searchParams.get('url')
+                if (embeddedPath) {
+                    const meetMatch = embeddedPath.match(/\/meet\/(\d+)/)
+                    const pMatch = embeddedPath.match(/[?&]p=([^&]+)/)
+                    if (meetMatch) {
+                        const directUrl = `https://teams.live.com/meet/${meetMatch[1]}${pMatch ? `?p=${pMatch[1]}&anon=true` : '?anon=true'}`
+                        console.log(`Detected Teams launcher URL, resolved to: ${directUrl}`)
+                        return {
+                            meetingId: directUrl,
+                            password: pMatch ? pMatch[1] : '',
+                        }
+                    }
+                }
+                GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
+                throw new Error('Invalid Teams launcher URL: could not extract meeting info')
+            }
+
+            // Handle personal/free Teams light-meetings launcher URLs
+            // e.g. teams.live.com/light-meetings/launch?coords=<base64>&p=abc&anon=true
+            // The coords param is base64-encoded JSON with meetingCode + passcode
+            if (url.pathname.includes('/light-meetings/launch')) {
+                const coords = url.searchParams.get('coords')
+                if (coords) {
+                    try {
+                        const decoded = JSON.parse(atob(coords))
+                        if (decoded.meetingCode) {
+                            const passcode = decoded.passcode || url.searchParams.get('p') || ''
+                            const directUrl = `https://teams.live.com/meet/${decoded.meetingCode}${passcode ? `?p=${passcode}&anon=true` : '?anon=true'}`
+                            console.log(`Detected Teams light-meetings launcher URL, resolved to: ${directUrl}`)
+                            return {
+                                meetingId: directUrl,
+                                password: passcode,
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error parsing light-meetings coords:', formatError(e))
+                    }
+                }
+                GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
+                throw new Error('Invalid Teams light-meetings URL: could not extract meeting info from coords')
+            }
+
             const meetPath = url.pathname.split('/meet/')[1]
             if (!meetPath) {
                 GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)

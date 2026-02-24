@@ -24,6 +24,48 @@ export class SimpleDialogObserver {
     protected context: MeetingContext
     protected dialogObserverInterval?: NodeJS.Timeout
 
+    /**
+     * Static flag to temporarily pause the observer (e.g. during layout change)
+     * so it doesn't race with intentional Playwright interactions on dialogs we opened.
+     */
+    private static _paused = false
+
+    static pause() {
+        SimpleDialogObserver._paused = true
+        console.info('[SimpleDialogObserver] Observer paused')
+    }
+
+    static resume() {
+        SimpleDialogObserver._paused = false
+        console.info('[SimpleDialogObserver] Observer resumed')
+    }
+
+    /**
+     * Manually trigger a single dialog check-and-dismiss cycle.
+     * Should be called while the observer is paused (via SimpleDialogObserver.pause())
+     * to avoid racing with the periodic observer cycle.
+     * Works even when the observer is paused — useful for clearing unexpected
+     * dialogs before intentional UI interactions (e.g. layout change).
+     */
+    async dismissVisibleDialogs(): Promise<DialogObserverResult> {
+        if (!this.context.playwrightPage || this.context.playwrightPage.isClosed()) {
+            return { found: false, dismissed: false, modalType: null }
+        }
+
+        try {
+            const result = await this.checkAndDismissModals(this.context.playwrightPage)
+            if (result.found) {
+                console.info(
+                    `[SimpleDialogObserver] Manual dismiss: ${result.modalType} - ${result.dismissed ? 'dismissed' : 'found but not dismissed'}`,
+                )
+            }
+            return result
+        } catch (error) {
+            console.error(`[SimpleDialogObserver] Error in manual dismiss: ${error}`)
+            return { found: false, dismissed: false, modalType: null }
+        }
+    }
+
     constructor(context: MeetingContext) {
         this.context = context
     }
@@ -92,6 +134,10 @@ export class SimpleDialogObserver {
     }
 
     protected observer = async (): Promise<void> => {
+        if (SimpleDialogObserver._paused) {
+            return
+        }
+
         if (!this.context.playwrightPage) {
             console.warn(
                 '[SimpleDialogObserver] Cannot start observer: page not available',
