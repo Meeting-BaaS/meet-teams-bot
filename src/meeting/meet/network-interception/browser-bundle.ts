@@ -969,6 +969,28 @@ export function browserInterceptionLogic(schema: any[]) {
                     updateUsers(userManager, users)
                     console.error(`[NetworkInterceptor] 👥 Updated ${users.length} users`)
                   }
+
+                  // Extract chat messages
+                  const chatMessages = wrapper?.userInfoListWrapperAndChatWrapper?.chatMessageWrapper
+                  if (chatMessages && chatMessages.length > 0) {
+                    for (const chatMsgWrapper of chatMessages) {
+                      const chatMsg = chatMsgWrapper.chatMessage
+                      if (chatMsg && chatMsg.chatMessageContent?.text) {
+                        const senderUser = userManager.allUsersMap.get(chatMsg.deviceId)
+                        const senderName = senderUser ? decodeUserName(senderUser) : "Unknown"
+
+                        if (typeof (window as any).onChatMessageReceived === "function") {
+                          ;(window as any).onChatMessageReceived({
+                            messageId: chatMsg.messageId,
+                            deviceId: chatMsg.deviceId,
+                            timestamp: chatMsg.timestamp,
+                            text: chatMsg.chatMessageContent.text,
+                            senderName: senderName,
+                          })
+                        }
+                      }
+                    }
+                  }
                 }
               } catch (e) {
                 console.error(

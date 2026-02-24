@@ -2,7 +2,7 @@ import express from "express"
 import { envVars } from "./config/env-vars"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason } from "./state-machine/types"
-import type { StopRecordParams } from "./types"
+import type { SendChatMessageParams, StopRecordParams } from "./types"
 import { formatError } from "./utils/Logger"
 
 const HOST = envVars.HOST
@@ -77,6 +77,91 @@ export async function server() {
       })
     }
   }
+
+  // Send chat message to meeting
+  app.post("/send_chat_message", async (req, res) => {
+    try {
+      const data: SendChatMessageParams = req.body
+      if (!data.message || data.message.trim() === "") {
+        return res.status(400).json({ error: "Missing required field: message" })
+      }
+
+      const meetingHandle = MeetingStateMachine.instance
+      if (!meetingHandle) {
+        return res.status(404).json({ error: "No active meeting found" })
+      }
+
+      const context = meetingHandle.getContext()
+      if (!context.playwrightPage) {
+        return res.status(500).json({ error: "Meeting page not available" })
+      }
+
+      const platform = (await import("./singleton")).GLOBAL.get().meeting_platform
+
+      if (platform === "meet") {
+        const { sendChatMessage } = await import("./meeting/meet/network-interception")
+        const success = await sendChatMessage(context.playwrightPage, data.message)
+        if (success) {
+          return res.status(200).json({ success: true, message: "Chat message sent" })
+        }
+        return res.status(500).json({ error: "Failed to send chat message via network" })
+      }
+
+      if (platform === "teams") {
+        // Teams: use CKEditor with evaluate() to bypass z-index overlay
+        const page = context.playwrightPage
+        try {
+          const editorSelector = 'div[data-tid="ckeditor"][role="textbox"]'
+
+          // Chat panel should already be open (from TeamsChatObserver).
+          // If not, try clicking the chat button first.
+          const editorVisible = await page.evaluate((sel) => !!document.querySelector(sel), editorSelector)
+          if (!editorVisible) {
+            await page.evaluate(() => {
+              const chatButton = document.querySelector(
+                'button#chat-button[aria-label="Chat"], button[aria-label*="chat" i]'
+              ) as HTMLElement | null
+              chatButton?.click()
+            })
+            await page.waitForSelector(editorSelector, { timeout: 3000 })
+          }
+
+          // Focus the CKEditor and type (CKEditor ignores programmatic value changes)
+          await page.$eval(editorSelector, (el: HTMLElement) => el.focus())
+          await page.keyboard.type(data.message)
+          await page.waitForTimeout(200)
+
+          // Click send button or fallback to Enter
+          const sendClicked = await page.evaluate(() => {
+            const sendButton = document.querySelector(
+              'button[data-tid="newMessageCommands-send"]'
+            ) as HTMLElement | null
+            if (sendButton) {
+              sendButton.click()
+              return true
+            }
+            return false
+          })
+          if (!sendClicked) {
+            await page.keyboard.press("Enter")
+          }
+
+          return res.status(200).json({ success: true, message: "Chat message sent" })
+        } catch (error) {
+          console.error("Failed to send Teams chat message:", formatError(error))
+          return res.status(500).json({ error: "Failed to send chat message via Teams UI" })
+        }
+      }
+
+      return res.status(400).json({ error: `Unsupported platform: ${platform}` })
+    } catch (error) {
+      console.error("Failed to send chat message:", formatError(error))
+      return res.status(500).json({
+        error: "Failed to send chat message",
+        details: error instanceof Error ? error.message : "Unknown error"
+      })
+    }
+  })
 
   // Get Recording Server Build Version Info
   app.get("/version", async (_req, res) => {

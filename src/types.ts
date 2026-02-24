@@ -59,6 +59,17 @@ export type Participant = {
   isNetworkDetected?: boolean // Flag to indicate network vs UI detection
 }
 
+export type ChatMessageData = {
+  text: string
+  senderName: string
+  timestamp: number
+  messageId: string
+}
+
+export type SendChatMessageParams = {
+  message: string
+}
+
 export type ArtifactType = "audio" | "video" | "screenshots" | "diarization"
 export type ArtifactErrorCode =
   | "FILE_NOT_FOUND"

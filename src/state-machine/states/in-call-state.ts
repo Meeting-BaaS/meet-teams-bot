@@ -1,5 +1,7 @@
 import { switchToRecordingBranding } from "../../branding"
+import { ChatManager } from "../../chat-manager"
 import { Events } from "../../events"
+import { ChatObserver } from "../../meeting/chatObserver"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
 import { sendEntryMessage } from "../../meeting/meet"
 import { verifyMeetAudioCapture } from "../../meeting/meet/audio-capture"
@@ -108,6 +110,14 @@ export class InCallState extends BaseState {
     } catch (error) {
       console.error("Failed to start speakers observation:", formatError(error))
       // Continue even if speakers observation fails
+    }
+
+    // Start chat observation (non-critical)
+    try {
+      await this.startChatObservation()
+    } catch (error) {
+      console.error("Failed to start chat observation:", formatError(error))
+      // Continue even if chat observation fails
     }
 
     // Non-blocking: entry message and audio verification (Meet only)
@@ -306,6 +316,21 @@ export class InCallState extends BaseState {
     }
 
     await startUIBasedObserver(this.context.playwrightPage, this.context)
+  }
+
+  private async startChatObservation(): Promise<void> {
+    if (!this.context.playwrightPage) {
+      console.error("Playwright page not available for chat observation")
+      return
+    }
+
+    console.log(`Starting chat observation for ${GLOBAL.get().meeting_platform}`)
+
+    ChatManager.start()
+
+    const chatObserver = new ChatObserver(GLOBAL.get().meeting_platform)
+    await chatObserver.startObserving(this.context.playwrightPage)
+    this.context.chatObserver = chatObserver
   }
 
   private async startHtmlCleaning(): Promise<void> {

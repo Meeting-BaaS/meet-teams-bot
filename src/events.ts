@@ -74,6 +74,15 @@ export class Events {
     })
   }
 
+  static async chatMessageReceived(data: {
+    text: string
+    sender_name: string
+    timestamp: number
+    message_id: string
+  }) {
+    return Events.EVENTS?.send("chat_message_received", data)
+  }
+
   // Final webhook events (replacing sendWebhookOnce)
   static async recordingSucceeded() {
     return Events.EVENTS?.sendOnce("recording_succeeded", {}, true)

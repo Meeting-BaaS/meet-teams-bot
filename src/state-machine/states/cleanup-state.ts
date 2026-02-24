@@ -104,8 +104,14 @@ export class CleanupState extends BaseState {
 
         // 8. Stop HTML cleaner (with 3s timeout)
         (async () => {
-          console.info("🧹 Step 8/9: Stopping HTML cleaner")
+          console.info("🧹 Step 8/10: Stopping HTML cleaner")
           await this.stopHtmlCleaner()
+        })(),
+
+        // 8b. Stop chat observer (with 3s timeout)
+        (async () => {
+          console.info("🧹 Step 8b/10: Stopping chat observer")
+          await this.stopChatObserver()
         })(),
 
         // 9. Stop network interception (Meet only)
@@ -196,6 +202,33 @@ export class CleanupState extends BaseState {
         console.error("Error stopping HTML cleaner:", formatError(error))
       }
       // Don't throw as this is non-critical
+    }
+  }
+
+  private async stopChatObserver(): Promise<void> {
+    try {
+      if (this.context.chatObserver) {
+        console.log("Stopping chat observer from cleanup state...")
+
+        await Promise.race([
+          (async () => {
+            this.context.chatObserver!.stopObserving()
+            this.context.chatObserver = undefined
+          })(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Chat observer stop timeout")), 3000)
+          )
+        ])
+
+        console.log("Chat observer stopped successfully")
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message?.includes("timeout")) {
+        console.warn("Chat observer stop timed out after 3s, continuing cleanup")
+        this.context.chatObserver = undefined
+      } else {
+        console.error("Error stopping chat observer:", formatError(error))
+      }
     }
   }
 
