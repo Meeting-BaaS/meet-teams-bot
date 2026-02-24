@@ -590,16 +590,33 @@ export class RecordingState extends BaseState {
      * (received a callback within the last 10 minutes). If the observer is
      * unhealthy, this check is skipped and the bot falls back to silence_timeout.
      *
-     * Requires 30 seconds of being alone + no sound before triggering.
-     *
-     * Note: v1 filters the bot from the speaker list, so attendeesCount === 0
-     * means truly alone (vs v2 which uses <= 1).
+     * Requires ALL of these conditions to be true for 30 seconds:
+     * 1. participantsEverSeen - At least one real participant was detected at some
+     *    point during the meeting. This is a proof-of-life gate: it ensures the
+     *    speaker observer is actually working and has successfully detected humans.
+     *    Without this, a broken observer (e.g. after a UI change) that returns
+     *    empty arrays but still fires callbacks would cause every bot to leave
+     *    after 30s of silence. This check also separates alone-in-meeting from
+     *    the noone_joined check, which handles the "nobody ever showed up" case.
+     *    Note: v1 filters the bot from the speaker list, so any entry in the
+     *    participant names list is a confirmed real human.
+     * 2. isAlone - Current attendee count is 0 (v1 filters bot, so 0 = truly alone)
+     * 3. isSilent - No meaningful audio activity (sound level <= 5)
+     * 4. speakerObserverHealthy - Observer callback received within last 10 min
      */
     private checkAloneInMeeting(
         now: number,
         currentSoundLevel: number,
     ): { shouldEnd: boolean; reason?: MeetingEndReason } {
         const attendeesCount = this.context.attendeesCount || 0
+
+        // Gate: only activate alone-in-meeting if we've ever seen a real participant.
+        // v1 filters the bot from the speaker list, so any entry in participantNames
+        // is a confirmed real human who was in the meeting at some point.
+        const participantsEverSeen = GLOBAL.getParticipantNames().length > 0
+        if (!participantsEverSeen) {
+            return { shouldEnd: false }
+        }
 
         // Check if the speaker observer is healthy (received a callback recently)
         const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()

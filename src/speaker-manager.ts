@@ -4,6 +4,7 @@ import { MeetingStateMachine } from './state-machine/machine'
 import { Streaming } from './streaming'
 
 import { enablePrintPageLogs } from './browser/page-logger'
+import { GLOBAL } from './singleton'
 import { ParticipantState } from './state-machine/types'
 import { SpeakerData } from './types'
 import { uploadTranscriptTask } from './uploadTranscripts'
@@ -45,6 +46,13 @@ export class SpeakerManager {
         try {
             // Track when we received this callback (for bot removal detection)
             this.lastCallbackTime = Date.now()
+
+            // Track cumulative participant names for alone-in-meeting detection.
+            // v1 filters the bot from the speaker list, so every name here is
+            // a real human participant.
+            for (const speaker of speakers) {
+                GLOBAL.addParticipantIfNotExists(speaker.name)
+            }
 
             // Send the speaker state to the streaming service only if RECORDING is enabled
             if (Streaming.instance) {

@@ -10,6 +10,15 @@ class Global {
     private endReason: MeetingEndReason | null = null
     private errorMessage: string | null = null
     private shouldRetry: boolean = false // NEW: Retry flag
+
+    // Cumulative list of participant names seen during the meeting.
+    // Used by alone-in-meeting detection as a proof-of-life gate:
+    // the check only activates after at least one real participant
+    // has been detected by the speaker observer.
+    // Note: v1 filters the bot from the speaker list, so every entry
+    // here is a real human participant.
+    private participantNames: string[] = []
+
     public constructor() {}
 
     /**
@@ -185,6 +194,16 @@ class Global {
             return 0
         }
         return this.meetingParams.retry_count ?? 0
+    }
+
+    public addParticipantIfNotExists(name: string): void {
+        if (!this.participantNames.includes(name)) {
+            this.participantNames.push(name)
+        }
+    }
+
+    public getParticipantNames(): string[] {
+        return this.participantNames
     }
 }
 
