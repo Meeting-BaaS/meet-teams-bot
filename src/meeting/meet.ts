@@ -22,6 +22,24 @@ const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
 const ENTRY_MESSAGE_TIMEOUT = 2000
 const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before checking if in meeting
 
+/**
+ * Checks that the page is still on meet.google.com.
+ * If the page navigated away (e.g. Google redirected to workspace.google.com
+ * after showing "You can't join this video call"), sets a retryable error and throws.
+ */
+function assertOnMeetPage(page: Page): void {
+    const url = page.url()
+    if (url && !url.includes('meet.google.com')) {
+        console.log(`Page is not on Google Meet: ${url}`)
+        GLOBAL.setShouldRetry(true)
+        GLOBAL.setError(
+            MeetingEndReason.BotNotAccepted,
+            `Google Meet denied entry - page redirected to: ${url}`,
+        )
+        throw new Error('Page navigated away from Google Meet')
+    }
+}
+
 export class MeetProvider implements MeetingProviderInterface {
     async parseMeetingUrl(meeting_url: string) {
         return parseMeetingUrlFromJoinInfos(meeting_url)
@@ -130,6 +148,9 @@ export class MeetProvider implements MeetingProviderInterface {
             // Capture DOM state before starting join process
             const htmlSnapshot = HtmlSnapshotService.getInstance()
             await htmlSnapshot.captureSnapshot(page, 'meet_join_meeting_start')
+
+            // Bail out early if page already navigated away (e.g. denial during timing wait)
+            assertOnMeetPage(page)
 
             await clickDismiss(page)
             await sleep(300)
@@ -257,14 +278,17 @@ export class MeetProvider implements MeetingProviderInterface {
                             `✅ Successfully confirmed we are in the meeting (grace period: ${!leftWaitingRoomAt ? 'not in waiting room' : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`,
                         )
 
-                        // Now do critical setup actions BEFORE state transition
-                        await performCriticalSetupActions(page, dialogObserver)
-
-                        // Then trigger state transition
+                        // Signal join success immediately so the waiting room timeout is cleared.
+                        // performCriticalSetupActions can take minutes if dialogs block it.
                         onJoinSuccess()
+                        // Critical setup actions BEFORE state transition (People panel, layout, snapshot)
+                        await performCriticalSetupActions(page, dialogObserver)
                         break
                     }
                 }
+
+                // Check page URL before text-based denial detection — catches redirects
+                assertOnMeetPage(page)
 
                 if (await notAcceptedInMeeting(page)) {
                     throw new Error('Bot not accepted into meeting')
