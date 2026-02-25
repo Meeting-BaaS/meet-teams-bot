@@ -8,8 +8,6 @@ const CHAT_ACTION_TIMEOUT_MS = 3000
 
 declare global {
   interface Window {
-    teamsChatObserverCleanup?: () => void
-    teamsChatApiPatched?: boolean
     onTeamsChatMessage?: (msg: { text: string; senderName: string; timestamp: number; messageId: string }) => void
   }
 }
@@ -59,98 +57,11 @@ export class TeamsChatObserver {
     // before Teams' JS and catches onMessageReceived.bind(). The exposeFunction
     // above makes window.onTeamsChatMessage available for the hook to call.
 
-    // Open the chat panel (needed for sending; also keeps DOM scraping viable)
+    // Open the chat panel (needed for sending)
     const chatOpened = await this.openChatPanel()
     if (!chatOpened) {
       console.warn("[TeamsChatObserver] Could not open chat panel, observation may be limited")
     }
-
-    // Fallback: DOM scraping with MutationObserver for cases where the API
-    // interception doesn't trigger (e.g. onMessageReceived was already bound)
-    await this.page.evaluate(() => {
-      console.log("[TeamsChatObserver-Browser] Setting up DOM scraping fallback...")
-
-      const seenIds = new Set<string>()
-      let pollInterval: ReturnType<typeof setInterval> | null = null
-      let lastContainerStatus = ""
-
-      function scrapeMessages() {
-        try {
-          const chatContainer = document.querySelector(
-            '[data-tid="chat-pane-list"], [role="log"], [aria-label*="Chat"], [aria-label*="chat"]'
-          )
-          const status = chatContainer ? "found" : "not-found"
-          if (status !== lastContainerStatus) {
-            console.log(`[TeamsChatObserver-Browser] DOM scrape — chat container: ${status}`)
-            lastContainerStatus = status
-          }
-          if (!chatContainer) return
-
-          const messageElements = chatContainer.querySelectorAll(
-            '[data-tid="chat-pane-message"], [role="listitem"]'
-          )
-
-          for (const el of messageElements) {
-            const textEl = el.querySelector(
-              '[data-tid="chat-pane-message-body"], .ui-chat__message__content, [class*="message-body"]'
-            )
-            const text = textEl?.textContent?.trim()
-            if (!text) continue
-
-            const senderEl = el.querySelector(
-              '[data-tid="chat-pane-message-sender"], .ui-chat__message__author, [class*="message-author"]'
-            )
-            const senderName = senderEl?.textContent?.trim() || "Unknown"
-
-            const messageId = `teams-dom-${senderName}-${text.substring(0, 50)}-${text.length}`
-            if (seenIds.has(messageId)) continue
-            seenIds.add(messageId)
-
-            if (seenIds.size > 1000) {
-              const iter = seenIds.values()
-              for (let i = 0; i < 500; i++) {
-                const result = iter.next()
-                if (!result.done) seenIds.delete(result.value)
-              }
-            }
-
-            console.log(`[TeamsChatObserver-Browser] DOM scraped: "${text}" from ${senderName}`)
-
-            if (typeof window.onTeamsChatMessage === "function") {
-              window.onTeamsChatMessage({
-                text,
-                senderName,
-                timestamp: Date.now(),
-                messageId,
-              })
-            }
-          }
-        } catch (e) {
-          console.error("[TeamsChatObserver-Browser] Error scraping messages:", e)
-        }
-      }
-
-      scrapeMessages()
-
-      const observer = new MutationObserver(() => {
-        scrapeMessages()
-      })
-
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-      })
-
-      pollInterval = setInterval(scrapeMessages, 5000)
-
-      window.teamsChatObserverCleanup = () => {
-        console.log("[TeamsChatObserver-Browser] Cleaning up")
-        observer.disconnect()
-        if (pollInterval) clearInterval(pollInterval)
-      }
-
-      console.log("[TeamsChatObserver-Browser] ✅ DOM scraping fallback active")
-    })
 
     this.isObserving = true
     console.log("[TeamsChatObserver] ✅ Chat observation started")
@@ -275,15 +186,6 @@ export class TeamsChatObserver {
 
   public stopObserving(): void {
     if (!this.isObserving) return
-
-    // Clean up MutationObserver
-    this.page
-      ?.evaluate(() => {
-        if (window.teamsChatObserverCleanup) {
-          window.teamsChatObserverCleanup()
-        }
-      })
-      .catch((e) => console.error("[TeamsChatObserver] Error cleaning up observer:", e))
 
     // Close chat panel on cleanup
     this.page
