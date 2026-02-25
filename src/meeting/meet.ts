@@ -200,16 +200,16 @@ export class MeetProvider implements MeetingProviderInterface {
 
       // Control microphone based on streaming_input
       if (GLOBAL.get().streaming_input) {
-        await activateMicrophone(page)
+        await ensureMicrophoneOn(page)
       } else {
-        await deactivateMicrophone(page)
+        await ensureMicrophoneOff(page)
       }
 
       // Control camera based on bot_image (branding)
       if (GLOBAL.get().bot_image) {
-        console.log("Camera will be used for branding, keeping it on")
+        await ensureCameraOn(page)
       } else {
-        await deactivateCamera(page)
+        await ensureCameraOff(page)
       }
 
       // Try to click join button - will retry continuously while waiting
@@ -369,6 +369,14 @@ async function performCriticalSetupActions(
   page: Page,
   dialogObserver?: SimpleDialogObserver
 ): Promise<void> {
+  // Re-enable camera/mic if Google Meet auto-disabled them during waiting room
+  if (GLOBAL.get().bot_image) {
+    await ensureCameraOn(page)
+  }
+  if (GLOBAL.get().streaming_input) {
+    await ensureMicrophoneOn(page)
+  }
+
   const htmlSnapshot = HtmlSnapshotService.getInstance()
 
   if (GLOBAL.get().recording_mode !== "gallery_view") {
@@ -912,55 +920,79 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   }
 }
 
-async function activateMicrophone(page: Page): Promise<boolean> {
-  console.log("Activating microphone...")
+// --- Camera/Mic state detection and control ---
+// Google Meet uses `data-is-muted="true"` on the toggle buttons and changes
+// the aria-label between "Turn on …" / "Turn off …".  We use both attributes
+// for reliable detection and keyboard shortcuts (Ctrl+E / Ctrl+D) as the
+// primary toggle mechanism with a DOM-click fallback.
+
+async function isCameraOff(page: Page): Promise<boolean> {
+  const btn = page.locator('button[aria-label="Turn on camera"][data-is-muted="true"]')
+  return (await btn.count()) > 0
+}
+
+async function isMicrophoneOff(page: Page): Promise<boolean> {
+  const btn = page.locator('button[aria-label="Turn on microphone"][data-is-muted="true"]')
+  return (await btn.count()) > 0
+}
+
+async function toggleCameraWithShortcut(page: Page): Promise<void> {
+  await page.keyboard.press("Control+KeyE")
+}
+
+async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
+  await page.keyboard.press("Control+KeyD")
+}
+
+async function ensureCameraOn(page: Page): Promise<void> {
   try {
-    // Look for the microphone button that's turned off
-    const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
-    if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
-      console.log("Microphone activated successfully")
-      return true
-    }
-    console.log("Microphone is already active or button not found")
-    return false
+    if (!(await isCameraOff(page))) return // already on
+    console.log("[Meet] Camera is off, enabling via keyboard shortcut (Ctrl+E)...")
+    await toggleCameraWithShortcut(page)
+    console.log("[Meet] Camera enable shortcut sent")
   } catch (error) {
-    console.error("Error activating microphone:", error)
-    return false
+    console.error("[Meet] Failed to enable camera via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn on camera"]')
+    if ((await btn.count()) > 0) await btn.click()
   }
 }
 
-async function deactivateMicrophone(page: Page): Promise<boolean> {
-  console.log("Deactivating microphone...")
+async function ensureCameraOff(page: Page): Promise<void> {
   try {
-    const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
-    if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
-      console.log("Microphone deactivated successfully")
-      return true
-    }
-    console.log("Microphone is already deactivated or button not found")
-    return false
+    if (await isCameraOff(page)) return // already off
+    console.log("[Meet] Camera is on, disabling via keyboard shortcut (Ctrl+E)...")
+    await toggleCameraWithShortcut(page)
+    console.log("[Meet] Camera disable shortcut sent")
   } catch (error) {
-    console.error("Error deactivating microphone:", error)
-    return false
+    console.error("[Meet] Failed to disable camera via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn off camera"]')
+    if ((await btn.count()) > 0) await btn.click()
   }
 }
 
-async function deactivateCamera(page: Page): Promise<boolean> {
-  console.log("Deactivating camera...")
+async function ensureMicrophoneOn(page: Page): Promise<void> {
   try {
-    const cameraButton = page.locator('div[aria-label="Turn off camera"]')
-    if ((await cameraButton.count()) > 0) {
-      await cameraButton.click()
-      console.log("Camera deactivated successfully")
-      return true
-    }
-    console.log("Camera is already deactivated or button not found")
-    return false
+    if (!(await isMicrophoneOff(page))) return // already on
+    console.log("[Meet] Microphone is off, enabling via keyboard shortcut (Ctrl+D)...")
+    await toggleMicrophoneWithShortcut(page)
+    console.log("[Meet] Microphone enable shortcut sent")
   } catch (error) {
-    console.error("Error deactivating camera:", error)
-    return false
+    console.error("[Meet] Failed to enable mic via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn on microphone"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+async function ensureMicrophoneOff(page: Page): Promise<void> {
+  try {
+    if (await isMicrophoneOff(page)) return // already off
+    console.log("[Meet] Microphone is on, disabling via keyboard shortcut (Ctrl+D)...")
+    await toggleMicrophoneWithShortcut(page)
+    console.log("[Meet] Microphone disable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to disable mic via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn off microphone"]')
+    if ((await btn.count()) > 0) await btn.click()
   }
 }
 
