@@ -30,6 +30,14 @@ export class SimpleDialogObserver {
      */
     private static _paused = false
 
+    /**
+     * Instance flag to prevent overlapping observer cycles.
+     * setInterval fires every 2s regardless of whether the previous async cycle
+     * has completed. Without this guard, multiple cycles run concurrently and
+     * contend for the Playwright CDP connection, causing timeouts.
+     */
+    private isRunning = false
+
     static pause() {
         SimpleDialogObserver._paused = true
         console.info('[SimpleDialogObserver] Observer paused')
@@ -97,55 +105,26 @@ export class SimpleDialogObserver {
         this.dialogObserverInterval = setInterval(this.observer, 2000)
     }
 
-    /**
-     * Try multiple click strategies on a locator to handle various edge cases
-     * (normal click → force click → JavaScript click)
-     */
-    private async tryMultipleClickStrategies(
-        locator: Locator,
-        buttonText: string,
-        timeout: number,
-    ): Promise<void> {
-        // Try normal click first
-        try {
-            await locator.click({ timeout })
-            return
-        } catch (error) {
-            // If normal click fails (e.g., intercepted by overlay),
-            // try force click or JavaScript click
-            console.info(
-                `[SimpleDialogObserver] Normal click failed, trying force click for "${buttonText}"`,
-            )
-            try {
-                await locator.click({ timeout, force: true })
-                return
-            } catch (forceError) {
-                // Last resort: use JavaScript click
-                console.info(
-                    `[SimpleDialogObserver] Force click failed, trying JavaScript click for "${buttonText}"`,
-                )
-                await locator.evaluate((el: HTMLElement) => {
-                    if (el instanceof HTMLElement) {
-                        el.click()
-                    }
-                })
-            }
-        }
-    }
-
     protected observer = async (): Promise<void> => {
         if (SimpleDialogObserver._paused) {
             return
         }
 
-        if (!this.context.playwrightPage) {
-            console.warn(
-                '[SimpleDialogObserver] Cannot start observer: page not available',
-            )
+        // Guard: skip if previous cycle is still running to prevent
+        // concurrent Playwright operations from contending on the CDP connection.
+        if (this.isRunning) {
             return
         }
+        this.isRunning = true
 
         try {
+            if (!this.context.playwrightPage) {
+                console.warn(
+                    '[SimpleDialogObserver] Cannot start observer: page not available',
+                )
+                return
+            }
+
             // Check if page is still open before proceeding
             if (this.context.playwrightPage?.isClosed()) {
                 console.info(
@@ -181,6 +160,8 @@ export class SimpleDialogObserver {
             console.error(
                 `[SimpleDialogObserver] Error checking dialogs: ${error}`,
             )
+        } finally {
+            this.isRunning = false
         }
     }
 
@@ -378,7 +359,11 @@ export class SimpleDialogObserver {
     }
 
     /**
-     * Try to dismiss a modal by clicking appropriate buttons within the modal
+     * Try to dismiss a modal by clicking appropriate buttons within the modal.
+     * Uses locator-based finding (same as before) but clicks via evaluate()
+     * (direct DOM click) instead of Playwright's coordinate-based click.
+     * This bypasses actionability checks so it works even when the button
+     * is behind the video overlay or hidden by the HTML cleaner.
      */
     private async tryDismissModal(
         modal: Locator,
@@ -401,11 +386,9 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button: "${buttonText}"`,
                     )
-                    await this.tryMultipleClickStrategies(
-                        button.first(),
-                        buttonText,
-                        timeouts.CLICK_TIMEOUT,
-                    )
+                    await button
+                        .first()
+                        .evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
                     return true
                 }
 
@@ -424,16 +407,16 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button (partial match): "${buttonText}"`,
                     )
-                    await this.tryMultipleClickStrategies(
-                        button.first(),
-                        buttonText,
-                        timeouts.CLICK_TIMEOUT,
-                    )
+                    await button
+                        .first()
+                        .evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
                     return true
                 }
 
                 // Try span content (for Material Design buttons)
-                button = modal.locator(`button span:has-text("${buttonText}")`)
+                button = modal.locator(
+                    `button span:has-text("${buttonText}")`,
+                )
                 buttonCount = await button.count()
 
                 if (
@@ -445,13 +428,9 @@ export class SimpleDialogObserver {
                     console.info(
                         `[SimpleDialogObserver] Clicking button (span): "${buttonText}"`,
                     )
-                    // Navigate to parent button element
+                    // Navigate to parent button element and click via evaluate
                     const parentButton = button.first().locator('xpath=..')
-                    await this.tryMultipleClickStrategies(
-                        parentButton,
-                        buttonText,
-                        timeouts.CLICK_TIMEOUT,
-                    )
+                    await parentButton.evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
                     return true
                 }
             } catch (error) {
