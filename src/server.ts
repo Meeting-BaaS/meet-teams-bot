@@ -130,21 +130,24 @@ export async function server() {
             return null
           }, inputSelectors)
 
+          console.log(`[Teams Chat Send] Input found: ${inputFound || "none"}`)
+
           if (!inputFound) {
             // Open chat panel first
+            console.log("[Teams Chat Send] Opening chat panel...")
             await page.evaluate(() => {
               const btn = document.querySelector('button#chat-button') as HTMLElement | null
-              btn?.click()
+              if (btn) { btn.click(); return true }
+              return false
             })
             // Wait for any of the input selectors to appear
             await page.waitForSelector(inputSelectors.join(", "), { timeout: 5000 })
           }
 
-          // Find and focus the actual input element
-          const activeSelector = await page.evaluate((selectors) => {
+          // Find which selector matches
+          const activeSelector = inputFound || await page.evaluate((selectors) => {
             for (const sel of selectors) {
-              const el = document.querySelector(sel) as HTMLElement | null
-              if (el) { el.focus(); return sel }
+              if (document.querySelector(sel)) return sel
             }
             return null
           }, inputSelectors)
@@ -153,9 +156,48 @@ export async function server() {
             return res.status(500).json({ error: "Chat input not found" })
           }
 
-          await page.keyboard.type(data.message)
-          await page.waitForTimeout(200)
-          await page.keyboard.press("Enter")
+          // Use CKEditor 5 internal API to insert text, then click the send button.
+          // All Playwright keyboard/focus approaches fail because the chat input
+          // is behind a z-index 900000 overlay and outside the viewport.
+          const sendResult = await page.evaluate(({ selector, message }) => {
+            const el = document.querySelector(selector) as any
+            if (!el) return { sent: false, reason: "element not found" }
+
+            const editor = el.ckeditorInstance
+            if (!editor) return { sent: false, reason: "no ckeditorInstance on element" }
+
+            // Insert text via CKEditor model API
+            editor.model.change((writer: any) => {
+              const root = editor.model.document.getRoot()
+              writer.remove(writer.createRangeIn(root))
+              writer.insertText(message, root, 0)
+            })
+
+            // Try clicking the send button (Teams enables it when there's text)
+            const sendBtn = document.querySelector(
+              'button[data-tid="sendMessageCommands-send"]'
+            ) as HTMLButtonElement | null
+
+            if (sendBtn && !sendBtn.disabled) {
+              sendBtn.click()
+              return { sent: true, method: "send-button" }
+            }
+
+            // Fallback: dispatch Ctrl+Enter on the editor element (Teams send shortcut)
+            el.dispatchEvent(new KeyboardEvent("keydown", {
+              key: "Enter", code: "Enter", keyCode: 13, which: 13,
+              ctrlKey: true, bubbles: true, cancelable: true
+            }))
+
+            return { sent: true, method: sendBtn ? "ctrl-enter (button disabled)" : "ctrl-enter (no button)" }
+          }, { selector: activeSelector, message: data.message })
+
+          console.log("[Teams Chat Send] CKEditor API result:", JSON.stringify(sendResult))
+
+          if (!sendResult.sent) {
+            console.error(`[Teams Chat Send] Failed: ${sendResult.reason}`)
+            return res.status(500).json({ error: sendResult.reason })
+          }
 
           return res.status(200).json({ success: true, message: "Chat message sent" })
         } catch (error) {
