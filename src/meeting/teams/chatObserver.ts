@@ -38,6 +38,7 @@ export class TeamsChatObserver {
     await this.page.exposeFunction(
       "onTeamsChatMessage",
       async (msg: { text: string; senderName: string; timestamp: number; messageId: string }) => {
+        console.log(`[TeamsChatObserver] 💬 Received: "${msg.text}" from ${msg.senderName} (id: ${msg.messageId})`)
         try {
           await ChatManager.getInstance().handleChatMessage({
             messageId: msg.messageId,
@@ -45,6 +46,7 @@ export class TeamsChatObserver {
             senderName: msg.senderName,
             timestamp: msg.timestamp,
           })
+          console.log(`[TeamsChatObserver] ✅ Forwarded to ChatManager`)
         } catch (error) {
           console.error("[TeamsChatObserver] Error handling chat message:", error)
         }
@@ -64,12 +66,19 @@ export class TeamsChatObserver {
       const seenIds = new Set<string>()
       let pollInterval: ReturnType<typeof setInterval> | null = null
 
+      let lastContainerStatus = ""
+
       function scrapeMessages() {
         try {
           // Teams chat messages container
           const chatContainer = document.querySelector(
             '[data-tid="chat-pane-list"], [role="log"], [aria-label*="Chat"], [aria-label*="chat"]'
           )
+          const status = chatContainer ? "found" : "not-found"
+          if (status !== lastContainerStatus) {
+            console.log(`[TeamsChatObserver-Browser] Chat container: ${status}`)
+            lastContainerStatus = status
+          }
           if (!chatContainer) return
 
           const messageElements = chatContainer.querySelectorAll(
