@@ -9,6 +9,7 @@ const CHAT_ACTION_TIMEOUT_MS = 3000
 declare global {
   interface Window {
     teamsChatObserverCleanup?: () => void
+    teamsChatApiPatched?: boolean
     onTeamsChatMessage?: (msg: { text: string; senderName: string; timestamp: number; messageId: string }) => void
   }
 }
@@ -53,30 +54,177 @@ export class TeamsChatObserver {
       }
     )
 
-    // Open the chat panel (hidden behind z-index overlay from htmlCleaner)
+    // Inject Function.prototype.bind monkey-patch to intercept Teams' internal
+    // chat API (chatServiceBatchEvent). This is the primary mechanism — much more
+    // reliable than DOM scraping since it hooks into the data layer directly.
+    // Technique borrowed from the attendee codebase.
+    await this.page.evaluate(() => {
+      if (window.teamsChatApiPatched) return
+      window.teamsChatApiPatched = true
+
+      console.log("[TeamsChatObserver-Browser] Injecting chat API interception...")
+
+      const seenIds = new Set<string>()
+      const originalBind = Function.prototype.bind
+
+      function stripHtml(html: string): string {
+        return html.replace(/<[^>]*>/g, "")
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      Function.prototype.bind = function (thisArg: any, ...args: any[]) {
+        if (this.name === "onMessageReceived") {
+          console.log("[TeamsChatObserver-Browser] Intercepted onMessageReceived.bind() — chat API hook active")
+          const bound = originalBind.apply(this, [thisArg, ...args]) as (...callArgs: any[]) => any
+          return function (...callArgs: any[]) {
+            try {
+              const eventData = callArgs[0]
+              const batchEvents = eventData?.data?.chatServiceBatchEvent
+              if (Array.isArray(batchEvents)) {
+                for (const evt of batchEvents) {
+                  const message = evt?.message
+                  if (!message) continue
+                  if (!message.clientMessageId || !message.from || !message.content) continue
+
+                  const messageId = message.clientMessageId as string
+                  if (seenIds.has(messageId)) continue
+                  seenIds.add(messageId)
+
+                  // Trim seenIds
+                  if (seenIds.size > 1000) {
+                    const iter = seenIds.values()
+                    for (let i = 0; i < 500; i++) {
+                      const result = iter.next()
+                      if (!result.done) seenIds.delete(result.value)
+                    }
+                  }
+
+                  const text = stripHtml(message.content as string)
+                  if (!text) continue
+
+                  const senderName = (message.imdisplayname as string) || (message.from as string) || "Unknown"
+                  const timestamp = message.originalArrivalTime
+                    ? new Date(message.originalArrivalTime as string).getTime()
+                    : Date.now()
+
+                  console.log(`[TeamsChatObserver-Browser] API intercepted: "${text}" from ${senderName}`)
+
+                  if (typeof window.onTeamsChatMessage === "function") {
+                    window.onTeamsChatMessage({
+                      text,
+                      senderName,
+                      timestamp,
+                      messageId,
+                    })
+                  }
+                }
+              }
+            } catch (e) {
+              console.error("[TeamsChatObserver-Browser] Error in API interception:", e)
+            }
+            return bound.apply(this, callArgs)
+          }
+        }
+        return originalBind.apply(this, [thisArg, ...args])
+      }
+
+      console.log("[TeamsChatObserver-Browser] ✅ Chat API interception installed")
+    })
+
+    // Also register for any future navigations within the page
+    await this.page.addInitScript(() => {
+      if (window.teamsChatApiPatched) return
+      window.teamsChatApiPatched = true
+
+      const seenIds = new Set<string>()
+      const originalBind = Function.prototype.bind
+
+      function stripHtml(html: string): string {
+        return html.replace(/<[^>]*>/g, "")
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      Function.prototype.bind = function (thisArg: any, ...args: any[]) {
+        if (this.name === "onMessageReceived") {
+          console.log("[TeamsChatObserver-Browser] Intercepted onMessageReceived.bind() — chat API hook active")
+          const bound = originalBind.apply(this, [thisArg, ...args]) as (...callArgs: any[]) => any
+          return function (...callArgs: any[]) {
+            try {
+              const eventData = callArgs[0]
+              const batchEvents = eventData?.data?.chatServiceBatchEvent
+              if (Array.isArray(batchEvents)) {
+                for (const evt of batchEvents) {
+                  const message = evt?.message
+                  if (!message) continue
+                  if (!message.clientMessageId || !message.from || !message.content) continue
+
+                  const messageId = message.clientMessageId as string
+                  if (seenIds.has(messageId)) continue
+                  seenIds.add(messageId)
+
+                  if (seenIds.size > 1000) {
+                    const iter = seenIds.values()
+                    for (let i = 0; i < 500; i++) {
+                      const result = iter.next()
+                      if (!result.done) seenIds.delete(result.value)
+                    }
+                  }
+
+                  const text = stripHtml(message.content as string)
+                  if (!text) continue
+
+                  const senderName = (message.imdisplayname as string) || (message.from as string) || "Unknown"
+                  const timestamp = message.originalArrivalTime
+                    ? new Date(message.originalArrivalTime as string).getTime()
+                    : Date.now()
+
+                  console.log(`[TeamsChatObserver-Browser] API intercepted: "${text}" from ${senderName}`)
+
+                  if (typeof window.onTeamsChatMessage === "function") {
+                    window.onTeamsChatMessage({
+                      text,
+                      senderName,
+                      timestamp,
+                      messageId,
+                    })
+                  }
+                }
+              }
+            } catch (e) {
+              console.error("[TeamsChatObserver-Browser] Error in API interception:", e)
+            }
+            return bound.apply(this, callArgs)
+          }
+        }
+        return originalBind.apply(this, [thisArg, ...args])
+      }
+    })
+
+    // Open the chat panel (hidden behind z-index overlay from htmlCleaner).
+    // This also triggers Teams to initialize the chat service, which calls
+    // onMessageReceived.bind() — caught by our monkey-patch above.
     const chatOpened = await this.openChatPanel()
     if (!chatOpened) {
       console.warn("[TeamsChatObserver] Could not open chat panel, observation may be limited")
     }
 
-    // Inject MutationObserver into the page
+    // Fallback: DOM scraping with MutationObserver for cases where the API
+    // interception doesn't trigger (e.g. onMessageReceived was already bound)
     await this.page.evaluate(() => {
-      console.log("[TeamsChatObserver-Browser] Setting up chat observation...")
+      console.log("[TeamsChatObserver-Browser] Setting up DOM scraping fallback...")
 
       const seenIds = new Set<string>()
       let pollInterval: ReturnType<typeof setInterval> | null = null
-
       let lastContainerStatus = ""
 
       function scrapeMessages() {
         try {
-          // Teams chat messages container
           const chatContainer = document.querySelector(
             '[data-tid="chat-pane-list"], [role="log"], [aria-label*="Chat"], [aria-label*="chat"]'
           )
           const status = chatContainer ? "found" : "not-found"
           if (status !== lastContainerStatus) {
-            console.log(`[TeamsChatObserver-Browser] Chat container: ${status}`)
+            console.log(`[TeamsChatObserver-Browser] DOM scrape — chat container: ${status}`)
             lastContainerStatus = status
           }
           if (!chatContainer) return
@@ -97,11 +245,10 @@ export class TeamsChatObserver {
             )
             const senderName = senderEl?.textContent?.trim() || "Unknown"
 
-            const messageId = `teams-${senderName}-${text.substring(0, 50)}-${text.length}`
+            const messageId = `teams-dom-${senderName}-${text.substring(0, 50)}-${text.length}`
             if (seenIds.has(messageId)) continue
             seenIds.add(messageId)
 
-            // Trim seenIds
             if (seenIds.size > 1000) {
               const iter = seenIds.values()
               for (let i = 0; i < 500; i++) {
@@ -109,6 +256,8 @@ export class TeamsChatObserver {
                 if (!result.done) seenIds.delete(result.value)
               }
             }
+
+            console.log(`[TeamsChatObserver-Browser] DOM scraped: "${text}" from ${senderName}`)
 
             if (typeof window.onTeamsChatMessage === "function") {
               window.onTeamsChatMessage({
@@ -124,10 +273,8 @@ export class TeamsChatObserver {
         }
       }
 
-      // Initial scrape
       scrapeMessages()
 
-      // MutationObserver for real-time updates
       const observer = new MutationObserver(() => {
         scrapeMessages()
       })
@@ -137,17 +284,15 @@ export class TeamsChatObserver {
         subtree: true,
       })
 
-      // Fallback polling every 5s
       pollInterval = setInterval(scrapeMessages, 5000)
 
-      // Cleanup function
       window.teamsChatObserverCleanup = () => {
         console.log("[TeamsChatObserver-Browser] Cleaning up")
         observer.disconnect()
         if (pollInterval) clearInterval(pollInterval)
       }
 
-      console.log("[TeamsChatObserver-Browser] ✅ Chat observation active")
+      console.log("[TeamsChatObserver-Browser] ✅ DOM scraping fallback active")
     })
 
     this.isObserving = true
