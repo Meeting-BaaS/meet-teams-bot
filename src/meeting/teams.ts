@@ -51,6 +51,75 @@ export class TeamsProvider implements MeetingProviderInterface {
       )
     }
 
+    // Install chat API interception BEFORE Teams JS loads.
+    // Monkey-patches Function.prototype.bind to intercept Teams' internal
+    // onMessageReceived handler and extract chat messages from chatServiceBatchEvent.
+    // window.onTeamsChatMessage is exposed later by TeamsChatObserver; messages
+    // received before that point are silently dropped (bot hasn't joined yet).
+    await page.addInitScript(() => {
+      const w = window as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (w.__teamsChatApiPatched) return
+      w.__teamsChatApiPatched = true
+
+      const seenIds = new Set<string>()
+      const originalBind = Function.prototype.bind
+
+      function stripHtml(html: string): string {
+        return html.replace(/<[^>]*>/g, "")
+      }
+
+      Function.prototype.bind = function (thisArg: unknown, ...args: unknown[]) {
+        if (this.name === "onMessageReceived") {
+          console.log("[TeamsChatAPI] Intercepted onMessageReceived.bind() — hook active")
+          const bound = originalBind.apply(this, [thisArg, ...args]) as (...a: unknown[]) => unknown
+          return function (...callArgs: unknown[]) {
+            try {
+              const eventData = callArgs[0] as any // eslint-disable-line @typescript-eslint/no-explicit-any
+              const batchEvents = eventData?.data?.chatServiceBatchEvent
+              if (Array.isArray(batchEvents)) {
+                for (const evt of batchEvents) {
+                  const message = evt?.message
+                  if (!message?.clientMessageId || !message?.from || !message?.content) continue
+
+                  const messageId = message.clientMessageId as string
+                  if (seenIds.has(messageId)) continue
+                  seenIds.add(messageId)
+
+                  if (seenIds.size > 1000) {
+                    const iter = seenIds.values()
+                    for (let i = 0; i < 500; i++) {
+                      const result = iter.next()
+                      if (!result.done) seenIds.delete(result.value)
+                    }
+                  }
+
+                  const text = stripHtml(message.content as string)
+                  if (!text) continue
+
+                  const senderName = (message.imdisplayname as string) || (message.from as string) || "Unknown"
+                  const timestamp = message.originalArrivalTime
+                    ? new Date(message.originalArrivalTime as string).getTime()
+                    : Date.now()
+
+                  console.log(`[TeamsChatAPI] Chat message: "${text}" from ${senderName}`)
+
+                  if (typeof w.onTeamsChatMessage === "function") {
+                    w.onTeamsChatMessage({ text, senderName, timestamp, messageId })
+                  }
+                }
+              }
+            } catch (e) {
+              console.error("[TeamsChatAPI] Error in interception:", e)
+            }
+            return bound.apply(this, callArgs)
+          }
+        }
+        return originalBind.apply(this, [thisArg, ...args])
+      }
+
+      console.log("[TeamsChatAPI] Function.prototype.bind monkey-patch installed")
+    })
+
     try {
       await page.goto(link, {
         waitUntil: "load",
