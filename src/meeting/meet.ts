@@ -200,16 +200,16 @@ export class MeetProvider implements MeetingProviderInterface {
 
       // Control microphone based on streaming_input
       if (GLOBAL.get().streaming_input) {
-        await ensureMicrophoneOn(page)
+        await activateMicrophone(page)
       } else {
-        await ensureMicrophoneOff(page)
+        await deactivateMicrophone(page)
       }
 
       // Control camera based on bot_image (branding)
       if (GLOBAL.get().bot_image) {
-        await ensureCameraOn(page)
+        console.log("Camera will be used for branding, keeping it on")
       } else {
-        await ensureCameraOff(page)
+        await deactivateCamera(page)
       }
 
       // Try to click join button - will retry continuously while waiting
@@ -369,12 +369,16 @@ async function performCriticalSetupActions(
   page: Page,
   dialogObserver?: SimpleDialogObserver
 ): Promise<void> {
-  // Re-enable camera/mic if Google Meet auto-disabled them during waiting room
+  // Re-enforce camera/mic state — Google Meet resets devices during waiting room → in-call transition
   if (GLOBAL.get().bot_image) {
     await ensureCameraOn(page)
+  } else {
+    await ensureCameraOff(page)
   }
   if (GLOBAL.get().streaming_input) {
     await ensureMicrophoneOn(page)
+  } else {
+    await ensureMicrophoneOff(page)
   }
 
   const htmlSnapshot = HtmlSnapshotService.getInstance()
@@ -993,6 +997,61 @@ async function ensureMicrophoneOff(page: Page): Promise<void> {
     console.error("[Meet] Failed to disable mic via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn off microphone"]')
     if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+// --- Pre-join lobby helpers (DOM click on div elements) ---
+// The pre-join/lobby page uses div[aria-label="..."] elements, not button[data-is-muted].
+// These are kept separate from the in-meeting ensure* functions above.
+
+async function activateMicrophone(page: Page): Promise<boolean> {
+  console.log("Activating microphone...")
+  try {
+    const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
+    if ((await microphoneButton.count()) > 0) {
+      await microphoneButton.click()
+      console.log("Microphone activated successfully")
+      return true
+    }
+    console.log("Microphone is already active or button not found")
+    return false
+  } catch (error) {
+    console.error("Error activating microphone:", error)
+    return false
+  }
+}
+
+async function deactivateMicrophone(page: Page): Promise<boolean> {
+  console.log("Deactivating microphone...")
+  try {
+    const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
+    if ((await microphoneButton.count()) > 0) {
+      await microphoneButton.click()
+      console.log("Microphone deactivated successfully")
+      return true
+    }
+    console.log("Microphone is already deactivated or button not found")
+    return false
+  } catch (error) {
+    console.error("Error deactivating microphone:", error)
+    return false
+  }
+}
+
+async function deactivateCamera(page: Page): Promise<boolean> {
+  console.log("Deactivating camera...")
+  try {
+    const cameraButton = page.locator('div[aria-label="Turn off camera"]')
+    if ((await cameraButton.count()) > 0) {
+      await cameraButton.click()
+      console.log("Camera deactivated successfully")
+      return true
+    }
+    console.log("Camera is already deactivated or button not found")
+    return false
+  } catch (error) {
+    console.error("Error deactivating camera:", error)
+    return false
   }
 }
 
