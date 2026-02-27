@@ -369,6 +369,18 @@ async function performCriticalSetupActions(
   page: Page,
   dialogObserver?: SimpleDialogObserver
 ): Promise<void> {
+  // Re-enforce camera/mic state — Google Meet resets devices during waiting room → in-call transition
+  if (GLOBAL.get().bot_image) {
+    await ensureCameraOn(page)
+  } else {
+    await ensureCameraOff(page)
+  }
+  if (GLOBAL.get().streaming_input) {
+    await ensureMicrophoneOn(page)
+  } else {
+    await ensureMicrophoneOff(page)
+  }
+
   const htmlSnapshot = HtmlSnapshotService.getInstance()
 
   if (GLOBAL.get().recording_mode !== "gallery_view") {
@@ -912,10 +924,89 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   }
 }
 
+// --- Camera/Mic state detection and control ---
+// Google Meet uses `data-is-muted="true"` on the toggle buttons and changes
+// the aria-label between "Turn on …" / "Turn off …".  We use both attributes
+// for reliable detection and keyboard shortcuts (Ctrl+E / Ctrl+D) as the
+// primary toggle mechanism with a DOM-click fallback.
+
+async function isCameraOff(page: Page): Promise<boolean> {
+  const btn = page.locator('button[aria-label="Turn on camera"][data-is-muted="true"]')
+  return (await btn.count()) > 0
+}
+
+async function isMicrophoneOff(page: Page): Promise<boolean> {
+  const btn = page.locator('button[aria-label="Turn on microphone"][data-is-muted="true"]')
+  return (await btn.count()) > 0
+}
+
+async function toggleCameraWithShortcut(page: Page): Promise<void> {
+  await page.keyboard.press("Control+KeyE")
+}
+
+async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
+  await page.keyboard.press("Control+KeyD")
+}
+
+async function ensureCameraOn(page: Page): Promise<void> {
+  try {
+    if (!(await isCameraOff(page))) return // already on
+    console.log("[Meet] Camera is off, enabling via keyboard shortcut (Ctrl+E)...")
+    await toggleCameraWithShortcut(page)
+    console.log("[Meet] Camera enable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to enable camera via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn on camera"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+async function ensureCameraOff(page: Page): Promise<void> {
+  try {
+    if (await isCameraOff(page)) return // already off
+    console.log("[Meet] Camera is on, disabling via keyboard shortcut (Ctrl+E)...")
+    await toggleCameraWithShortcut(page)
+    console.log("[Meet] Camera disable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to disable camera via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn off camera"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+async function ensureMicrophoneOn(page: Page): Promise<void> {
+  try {
+    if (!(await isMicrophoneOff(page))) return // already on
+    console.log("[Meet] Microphone is off, enabling via keyboard shortcut (Ctrl+D)...")
+    await toggleMicrophoneWithShortcut(page)
+    console.log("[Meet] Microphone enable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to enable mic via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn on microphone"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+async function ensureMicrophoneOff(page: Page): Promise<void> {
+  try {
+    if (await isMicrophoneOff(page)) return // already off
+    console.log("[Meet] Microphone is on, disabling via keyboard shortcut (Ctrl+D)...")
+    await toggleMicrophoneWithShortcut(page)
+    console.log("[Meet] Microphone disable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to disable mic via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn off microphone"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+// --- Pre-join lobby helpers (DOM click on div elements) ---
+// The pre-join/lobby page uses div[aria-label="..."] elements, not button[data-is-muted].
+// These are kept separate from the in-meeting ensure* functions above.
+
 async function activateMicrophone(page: Page): Promise<boolean> {
   console.log("Activating microphone...")
   try {
-    // Look for the microphone button that's turned off
     const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
     if ((await microphoneButton.count()) > 0) {
       await microphoneButton.click()
