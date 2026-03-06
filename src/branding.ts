@@ -1,6 +1,9 @@
 import { spawn } from "node:child_process"
+import fs from "node:fs"
 
 import { VideoContext } from "./media_context"
+
+export let brandingReady = false
 
 export type BrandingHandle = {
   wait: Promise<void>
@@ -25,12 +28,16 @@ export function generateBranding(botImage: string): BrandingHandle {
     command.stderr.addListener("data", stderrListener)
 
     return {
-      wait: new Promise<void>((res) => {
-        command.on("close", () => {
+      wait: new Promise<void>((res, rej) => {
+        command.on("close", (code) => {
           // Remove event listeners to prevent memory leaks
           command.stdout.removeListener("data", stdoutListener)
           command.stderr.removeListener("data", stderrListener)
-          res()
+          if (code === 0) {
+            res()
+          } else {
+            rej(new Error(`Branding generation failed with exit code ${code}`))
+          }
         })
       }),
       kill: () => {
@@ -48,8 +55,13 @@ export function generateBranding(botImage: string): BrandingHandle {
 
 export function playBranding() {
   try {
+    if (!fs.existsSync("../branding.mjpeg")) {
+      console.warn("Branding file not found after generation, skipping playback")
+      return
+    }
     const videoContext = new VideoContext()
     videoContext.default()
+    brandingReady = true
   } catch (e) {
     console.error("fail to play video branding ", e)
   }
