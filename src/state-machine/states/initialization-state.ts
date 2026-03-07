@@ -52,10 +52,12 @@ export class InitializationState extends BaseState {
     await this.context.brandingProcess.wait
     playBranding()
 
-    // Start auto-loop if configured
+    // Start auto-loop if multiple images provided
+    // Default to auto mode with 30s duration when bot_image_config is not specified
     const config = GLOBAL.get().bot_image_config
-    if (config?.loop_mode === "auto") {
-      startBrandingAutoLoop(config.image_duration)
+    const loopMode = config?.loop_mode ?? "auto"
+    if (loopMode === "auto") {
+      startBrandingAutoLoop(config?.image_duration ?? 30)
     }
   }
 
