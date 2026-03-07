@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { BrowserContext } from "@playwright/test"
-import { generateBranding, playBranding } from "../../branding"
+import { generateBranding, playBranding, startBrandingAutoLoop } from "../../branding"
 import { openBrowser } from "../../browser/browser"
 import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
@@ -51,6 +51,12 @@ export class InitializationState extends BaseState {
     this.context.brandingProcess = generateBranding(botImage)
     await this.context.brandingProcess.wait
     playBranding()
+
+    // Start auto-loop if configured
+    const config = GLOBAL.get().bot_image_config
+    if (config?.loop_mode === "auto") {
+      startBrandingAutoLoop(config.image_duration)
+    }
   }
 
   private async setupBrowser(): Promise<void> {

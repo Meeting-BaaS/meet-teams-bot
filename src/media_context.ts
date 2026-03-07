@@ -181,7 +181,12 @@ export class VideoContext extends MediaContext {
   }
 
   public default() {
-    VideoContext.instance.play("../branding.mjpeg", true)
+    VideoContext.instance.play("../branding_0.mjpeg", true)
+  }
+
+  public async switchTo(pathname: string) {
+    await this.stop()
+    this.play(pathname, true)
   }
 
   public play(pathname: string, loop: boolean) {

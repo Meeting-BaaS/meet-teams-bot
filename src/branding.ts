@@ -5,6 +5,15 @@ import { VideoContext } from "./media_context"
 
 export let brandingReady = false
 
+/** Number of branding files successfully generated */
+let brandingFileCount = 0
+
+/** Current branding index being played */
+let currentBrandingIndex = 0
+
+/** Timer for auto loop mode */
+let loopTimer: ReturnType<typeof setInterval> | null = null
+
 export type BrandingHandle = {
   wait: Promise<void>
   kill: () => void
@@ -53,16 +62,84 @@ export function generateBranding(botImage: string): BrandingHandle {
   }
 }
 
+function countBrandingFiles(): number {
+  let count = 0
+  while (fs.existsSync(`../branding_${count}.mjpeg`)) {
+    count++
+  }
+  return count
+}
+
 export function playBranding() {
   try {
-    if (!fs.existsSync("../branding.mjpeg")) {
-      console.warn("Branding file not found after generation, skipping playback")
+    brandingFileCount = countBrandingFiles()
+    if (brandingFileCount === 0) {
+      console.warn("No branding files found after generation, skipping playback")
       return
     }
+    console.log(`Found ${brandingFileCount} branding file(s)`)
     const videoContext = new VideoContext()
-    videoContext.default()
+    videoContext.play("../branding_0.mjpeg", true)
+    currentBrandingIndex = 0
     brandingReady = true
   } catch (e) {
     console.error("fail to play video branding ", e)
+  }
+}
+
+/**
+ * Start auto-looping through branding images at the given interval.
+ * Each image switches after `imageDuration` seconds.
+ */
+export function startBrandingAutoLoop(imageDuration: number) {
+  if (brandingFileCount <= 1) return // Nothing to loop
+  if (loopTimer) return // Already looping
+
+  console.log(
+    `Starting branding auto-loop: ${imageDuration}s per image, ${brandingFileCount} images`
+  )
+  loopTimer = setInterval(() => {
+    switchToNextBranding()
+  }, imageDuration * 1000)
+}
+
+/**
+ * Switch to the branding image for recording state (index 1 if available).
+ * Used when loop_mode is "bot_status".
+ */
+export function switchToRecordingBranding() {
+  if (brandingFileCount < 2) return
+  switchToBrandingIndex(1)
+}
+
+function switchToNextBranding() {
+  const nextIndex = (currentBrandingIndex + 1) % brandingFileCount
+  switchToBrandingIndex(nextIndex)
+}
+
+function switchToBrandingIndex(index: number) {
+  const file = `../branding_${index}.mjpeg`
+  if (!fs.existsSync(file)) {
+    console.warn(`Branding file not found: ${file}`)
+    return
+  }
+  if (index === currentBrandingIndex) return
+
+  console.log(`Switching branding: ${currentBrandingIndex} -> ${index}`)
+  currentBrandingIndex = index
+  try {
+    const videoContext = VideoContext.instance
+    if (videoContext) {
+      videoContext.switchTo(file)
+    }
+  } catch (e) {
+    console.error("Failed to switch branding:", e)
+  }
+}
+
+export function stopBrandingLoop() {
+  if (loopTimer) {
+    clearInterval(loopTimer)
+    loopTimer = null
   }
 }

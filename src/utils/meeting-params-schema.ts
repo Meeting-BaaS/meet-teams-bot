@@ -23,7 +23,11 @@ export const BotMessageSchema = object({
   bot_name: string(),
   extra: record(string(), zodUnknown()).nullable().default(null),
   data_retention_days: number().int().positive(),
-  bot_image: url().nullable(),
+  bot_image: string().nullable(), // Pipe-separated URLs when multiple images
+  bot_image_config: object({
+    loop_mode: zodEnum(["auto", "bot_status"]),
+    image_duration: number().int().min(10).max(120)
+  }).nullable().default(null),
   meeting_url: url(),
   transformed_meeting_url: url().nullable(),
   meeting_platform: MeetingPlatformSchema,
