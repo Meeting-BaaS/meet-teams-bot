@@ -28,9 +28,12 @@ export class InitializationState extends BaseState {
 
       // Setup branding if needed - non-bloquant
       if (GLOBAL.get().bot_image) {
-        // Immediately stream a black placeholder to v4l2 so Google Meet sees
-        // a working camera when it probes during the join flow
-        warmUpCamera()
+        // Only warm up the camera for multi-image (array) configs — these are new
+        // users of the feature. Single-URL users keep existing behavior (no warmup)
+        // to avoid showing a black frame if their URL happens to be invalid.
+        if (GLOBAL.get().bot_image.includes("|")) {
+          warmUpCamera()
+        }
 
         this.setupBranding(GLOBAL.get().bot_image).catch((error) => {
           console.warn("Branding setup failed, continuing anyway:", error)
