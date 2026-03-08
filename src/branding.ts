@@ -5,6 +5,29 @@ import { VideoContext } from "./media_context"
 
 export let brandingReady = false
 
+const CAMERA_WARMUP_FILE = "../camera_warmup.mjpeg"
+
+/**
+ * Start streaming a pre-built black placeholder MJPEG to the v4l2 device
+ * so that Google Meet sees a working camera when it probes during the join flow.
+ * The placeholder is baked into the Docker image at build time with the same
+ * specs as real branding output.
+ */
+export function warmUpCamera(): void {
+  try {
+    if (!fs.existsSync(CAMERA_WARMUP_FILE)) {
+      console.warn("Camera warmup file not found:", CAMERA_WARMUP_FILE)
+      return
+    }
+    const videoContext = new VideoContext()
+    videoContext.play(CAMERA_WARMUP_FILE, true)
+    brandingReady = true
+    console.log("Camera warmed up with placeholder — v4l2 device is now streaming")
+  } catch (e) {
+    console.warn("Failed to warm up camera with placeholder:", e)
+  }
+}
+
 /** Number of branding files successfully generated */
 let brandingFileCount = 0
 
@@ -78,8 +101,15 @@ export function playBranding() {
       return
     }
     console.log(`Found ${brandingFileCount} branding file(s)`)
-    const videoContext = new VideoContext()
-    videoContext.play("../branding_0.mjpeg", true)
+
+    // If VideoContext already exists (from warmUpCamera), switch to real branding.
+    // Otherwise create a new one (e.g. warmUpCamera was skipped or failed).
+    if (VideoContext.instance) {
+      VideoContext.instance.switchTo("../branding_0.mjpeg")
+    } else {
+      const videoContext = new VideoContext()
+      videoContext.play("../branding_0.mjpeg", true)
+    }
     currentBrandingIndex = 0
     brandingReady = true
   } catch (e) {

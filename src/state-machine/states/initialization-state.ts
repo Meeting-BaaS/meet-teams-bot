@@ -1,7 +1,12 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { BrowserContext } from "@playwright/test"
-import { generateBranding, playBranding, startBrandingAutoLoop } from "../../branding"
+import {
+  generateBranding,
+  playBranding,
+  startBrandingAutoLoop,
+  warmUpCamera
+} from "../../branding"
 import { openBrowser } from "../../browser/browser"
 import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
@@ -23,6 +28,10 @@ export class InitializationState extends BaseState {
 
       // Setup branding if needed - non-bloquant
       if (GLOBAL.get().bot_image) {
+        // Immediately stream a black placeholder to v4l2 so Google Meet sees
+        // a working camera when it probes during the join flow
+        warmUpCamera()
+
         this.setupBranding(GLOBAL.get().bot_image).catch((error) => {
           console.warn("Branding setup failed, continuing anyway:", error)
         })
