@@ -2,6 +2,7 @@ import fs from "node:fs"
 import path from "node:path"
 import type { BrowserContext } from "@playwright/test"
 import {
+  deferBrandingPlayback,
   generateBranding,
   playBranding,
   startBrandingAutoLoop,
@@ -28,11 +29,11 @@ export class InitializationState extends BaseState {
 
       // Setup branding if needed - non-bloquant
       if (GLOBAL.get().bot_image) {
-        // Only warm up the camera for multi-image (array) configs — these are new
-        // users of the feature. Single-URL users keep existing behavior (no warmup)
-        // to avoid showing a black frame if their URL happens to be invalid.
         if (GLOBAL.get().bot_image.includes("|")) {
+          // Multi-image: warm up camera immediately, defer playback until
+          // the bot is in the waiting room (avoids switch gaps during join flow)
           warmUpCamera()
+          deferBrandingPlayback()
         }
 
         this.setupBranding(GLOBAL.get().bot_image).catch((error) => {
@@ -64,8 +65,6 @@ export class InitializationState extends BaseState {
     await this.context.brandingProcess.wait
     playBranding()
 
-    // Start auto-loop if multiple images provided
-    // Default to auto mode with 30s duration when bot_image_config is not specified
     const config = GLOBAL.get().bot_image_config
     const loopMode = config?.loop_mode ?? "auto"
     if (loopMode === "auto") {

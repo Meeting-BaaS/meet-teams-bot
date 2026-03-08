@@ -37,6 +37,30 @@ let currentBrandingIndex = 0
 /** Timer for auto loop mode */
 let loopTimer: ReturnType<typeof setInterval> | null = null
 
+/** When true, playBranding() is deferred until notifyJoinReady() is called */
+let deferPlayback = false
+let pendingPlayback: (() => void) | null = null
+
+/**
+ * Tell branding to defer playBranding() until the bot is past the critical
+ * join phase. Call this before generateBranding() for multi-image configs.
+ */
+export function deferBrandingPlayback(): void {
+  deferPlayback = true
+}
+
+/**
+ * Signal that the bot has entered the waiting room and it's safe to switch
+ * from the warmup placeholder to real branding.
+ */
+export function notifyJoinReady(): void {
+  deferPlayback = false
+  if (pendingPlayback) {
+    pendingPlayback()
+    pendingPlayback = null
+  }
+}
+
 export type BrandingHandle = {
   wait: Promise<void>
   kill: () => void
@@ -102,19 +126,28 @@ export function playBranding() {
     }
     console.log(`Found ${brandingFileCount} branding file(s)`)
 
-    // If VideoContext already exists (from warmUpCamera), switch to real branding.
-    // Otherwise create a new one (e.g. warmUpCamera was skipped or failed).
-    if (VideoContext.instance) {
-      VideoContext.instance.switchTo("../branding_0.mjpeg")
-    } else {
-      const videoContext = new VideoContext()
-      videoContext.play("../branding_0.mjpeg", true)
+    if (deferPlayback) {
+      console.log("Playback deferred — waiting for join phase to complete")
+      return
     }
-    currentBrandingIndex = 0
-    brandingReady = true
+
+    startPlayback()
   } catch (e) {
     console.error("fail to play video branding ", e)
   }
+}
+
+function startPlayback() {
+  // If VideoContext already exists (from warmUpCamera), switch to real branding.
+  // Otherwise create a new one (e.g. warmUpCamera was skipped or failed).
+  if (VideoContext.instance) {
+    VideoContext.instance.switchTo("../branding_0.mjpeg")
+  } else {
+    const videoContext = new VideoContext()
+    videoContext.play("../branding_0.mjpeg", true)
+  }
+  currentBrandingIndex = 0
+  brandingReady = true
 }
 
 /**
@@ -124,6 +157,15 @@ export function playBranding() {
 export function startBrandingAutoLoop(imageDuration: number) {
   if (brandingFileCount <= 1) return // Nothing to loop
   if (loopTimer) return // Already looping
+
+  if (deferPlayback) {
+    // Capture the auto-loop start so it runs after notifyJoinReady()
+    pendingPlayback = () => {
+      startPlayback()
+      startBrandingAutoLoop(imageDuration)
+    }
+    return
+  }
 
   console.log(
     `Starting branding auto-loop: ${imageDuration}s per image, ${brandingFileCount} images`
