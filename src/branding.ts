@@ -128,6 +128,7 @@ export function playBranding() {
 
     if (deferPlayback) {
       console.log("Playback deferred — waiting for join phase to complete")
+      pendingPlayback = () => startPlayback()
       return
     }
 
@@ -203,6 +204,8 @@ function switchToBrandingIndex(index: number) {
     const videoContext = VideoContext.instance
     if (videoContext) {
       videoContext.switchTo(file)
+    } else {
+      console.warn("Cannot switch branding: VideoContext not initialized")
     }
   } catch (e) {
     console.error("Failed to switch branding:", e)
