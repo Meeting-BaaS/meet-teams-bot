@@ -1,5 +1,7 @@
 import type { BrowserContext, Page } from "@playwright/test"
+import { brandingReady } from "../branding"
 import { listenPage } from "../browser/page-logger"
+import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
@@ -15,7 +17,6 @@ import { sleep } from "../utils/sleep"
 import { enableMeetAudioCapture } from "./meet/audio-capture"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
-import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
@@ -205,8 +206,8 @@ export class MeetProvider implements MeetingProviderInterface {
         await deactivateMicrophone(page)
       }
 
-      // Control camera based on bot_image (branding)
-      if (GLOBAL.get().bot_image) {
+      // Control camera based on whether branding was actually generated successfully
+      if (brandingReady) {
         console.log("Camera will be used for branding, keeping it on")
       } else {
         await deactivateCamera(page)
@@ -370,7 +371,7 @@ async function performCriticalSetupActions(
   dialogObserver?: SimpleDialogObserver
 ): Promise<void> {
   // Re-enforce camera/mic state — Google Meet resets devices during waiting room → in-call transition
-  if (GLOBAL.get().bot_image) {
+  if (brandingReady) {
     await ensureCameraOn(page)
   } else {
     await ensureCameraOff(page)

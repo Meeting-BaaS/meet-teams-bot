@@ -1,3 +1,4 @@
+import { switchToRecordingBranding } from "../../branding"
 import { Events } from "../../events"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
 import { sendEntryMessage } from "../../meeting/meet"
@@ -113,6 +114,11 @@ export class InCallState extends BaseState {
     this.performNonBlockingActions().catch((err) => {
       console.error("Error in non-blocking actions:", formatError(err))
     })
+
+    // Switch branding to recording image if bot_status mode
+    if (GLOBAL.get().bot_image_config?.loop_mode === "bot_status") {
+      switchToRecordingBranding()
+    }
 
     // Notify that recording has started
     Events.inCallRecording({ start_time: this.context.startTime })

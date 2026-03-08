@@ -1,3 +1,4 @@
+import { notifyJoinReady } from "../../branding"
 import { Events } from "../../events"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
@@ -44,6 +45,11 @@ export class WaitingRoomState extends BaseState {
 
       // Open the meeting page
       await this.openMeetingPage(meetingLink)
+
+      // Signal that the meeting page is open and the platform has confirmed
+      // the camera works. If multi-image branding was deferred, this triggers
+      // the switch from warmup placeholder to real branding.
+      notifyJoinReady()
 
       // Start the dialog observer immediately after page is opened
       // This ensures it can start monitoring dialogs right away
