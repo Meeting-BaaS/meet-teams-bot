@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import { Readable } from "node:stream"
-import { type RawData, WebSocket } from "ws"
+import { type RawData, WebSocket, WebSocketServer } from "ws"
 
 import { SoundContext } from "./media_context"
 import type { SpeakerData } from "./types"
@@ -29,7 +29,7 @@ export class Streaming {
   // External services WebSockets (kept for backward compatibility)
   private output_ws: WebSocket | null = null // For external audio output services
   private input_ws: WebSocket | null = null // For external audio input services
-  private sample_rate: number = DEFAULT_SAMPLE_RATE
+  public sample_rate: number = DEFAULT_SAMPLE_RATE
 
   // Configuration parameters
   private inputUrl: string | undefined
@@ -58,6 +58,11 @@ export class Streaming {
   private readonly MAX_RECONNECT_DELAY_MS: number = 60000 // 1 minute
   private lastWsNotReadyLogTime = 0
   private readonly WS_NOT_READY_LOG_INTERVAL_MS: number = 10000 // Log at most every 10 seconds
+
+  // Local WebSocket server for binary audio from browser
+  private static readonly LOCAL_AUDIO_WS_PORT = 9321
+  private localWsServer: WebSocketServer | null = null
+  public localAudioPort = 0
 
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
@@ -111,6 +116,9 @@ export class Streaming {
     if (this.inputUrl && this.outputUrl !== this.inputUrl) {
       this.setupExternalInputWS()
     }
+
+    // Start local WebSocket server for binary audio from browser
+    this.startLocalAudioServer()
 
     this.isInitialized = true
     this.isPaused = false
@@ -338,6 +346,76 @@ export class Streaming {
   }
 
   /**
+   * Start local WebSocket server for receiving binary audio from browser.
+   * The browser sends pre-processed Int16 PCM chunks over a binary WebSocket
+   * instead of JSON-serialized Float32 arrays through Playwright's exposeFunction.
+   * This eliminates the JSON serialization overhead and reduces main thread blocking.
+   */
+  private startLocalAudioServer(): void {
+    if (!this.outputUrl) return
+
+    try {
+      const wss = new WebSocketServer({
+        host: "127.0.0.1",
+        port: Streaming.LOCAL_AUDIO_WS_PORT
+      })
+
+      wss.on("connection", (ws) => {
+        console.log("[Streaming] Browser audio connected via local WebSocket (binary mode)")
+
+        ws.on("message", (data: Buffer, isBinary: boolean) => {
+          if (!isBinary) return
+
+          if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+            const now = Date.now()
+            if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
+              console.warn("[Streaming] Output WebSocket not ready, discarding audio")
+              this.lastWsNotReadyLogTime = now
+            }
+            this.scheduleReconnect()
+            return
+          }
+
+          // Forward binary Int16 PCM directly — no resampling or conversion needed
+          this.output_ws.send(data)
+          this.browserAudioChunksSent++
+
+          // Stats logging
+          const now = Date.now()
+          if (now - this.lastBrowserStatsLogTime > 5000) {
+            console.log(
+              `📊 [Streaming] Sent ${this.browserAudioChunksSent} audio chunks to WebSocket`
+            )
+            this.lastBrowserStatsLogTime = now
+          }
+
+          // Debug audio file
+          if (this.debugAudioEnabled && this.debugAudioStream) {
+            const int16View = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2)
+            this.writeDebugAudioChunk(int16View)
+          }
+        })
+
+        ws.on("error", (err) => {
+          console.error("[Streaming] Local audio WebSocket error:", formatError(err))
+        })
+      })
+
+      wss.on("error", (err) => {
+        console.error("[Streaming] Local audio WS server error:", formatError(err))
+      })
+
+      this.localWsServer = wss
+      this.localAudioPort = Streaming.LOCAL_AUDIO_WS_PORT
+      console.log(
+        `[Streaming] Local audio WS server listening on 127.0.0.1:${this.localAudioPort}`
+      )
+    } catch (error) {
+      console.error("[Streaming] Failed to start local audio WS server:", formatError(error))
+    }
+  }
+
+  /**
    * Schedule WebSocket reconnection with exponential backoff
    * Max delay is 1 minute between reconnection attempts
    */
@@ -438,6 +516,12 @@ export class Streaming {
 
     // Finalize debug audio file (wait for WAV header to be written)
     await this.finalizeDebugAudioFile()
+
+    // Close local audio WS server
+    if (this.localWsServer) {
+      this.localWsServer.close()
+      this.localWsServer = null
+    }
 
     // Close external WebSockets only
     this.closeExternalWebSockets()

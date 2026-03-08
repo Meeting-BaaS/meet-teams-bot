@@ -53,6 +53,10 @@ export interface AudioCaptureConfig {
   enablePeriodicScanning?: boolean
   // Enable audio mixing/streaming (only when streaming_output is configured)
   enableMixing?: boolean
+  // Local audio WS port for binary transport (set at runtime)
+  localAudioPort?: number
+  // Target sample rate for resampling (set at runtime)
+  targetSampleRate?: number
 }
 
 const MEET_CONFIG: AudioCaptureConfig = {
@@ -75,7 +79,7 @@ const TEAMS_CONFIG: AudioCaptureConfig = {
  * Generate the browser-side audio capture script
  */
 function generateAudioCaptureScript(config: AudioCaptureConfig): string {
-  const { callbackName, logPrefix, stopFunctionName, enablePeriodicScanning, enableMixing } = config
+  const { logPrefix, stopFunctionName, enablePeriodicScanning, enableMixing, localAudioPort, targetSampleRate } = config
 
   return `
         (function() {
@@ -116,7 +120,67 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                 const mixerDestination = audioCtx.createMediaStreamDestination()
                 const mixedAudioSources = new Map()
                 let mixedStreamProcessor = null
-                let chunksSent = 0`
+                let chunksSent = 0
+
+                // Binary WebSocket for audio transport (replaces JSON serialization via exposeFunction)
+                const AUDIO_WS_PORT = ${localAudioPort || 9321}
+                const TARGET_SAMPLE_RATE = ${targetSampleRate || 24000}
+                let audioWs = null
+                let audioWsReady = false
+
+                function connectAudioWs() {
+                    try {
+                        audioWs = new WebSocket("ws://127.0.0.1:" + AUDIO_WS_PORT)
+                        audioWs.binaryType = "arraybuffer"
+                        audioWs.onopen = function() {
+                            audioWsReady = true
+                            console.log("${logPrefix} Audio binary WebSocket connected to port " + AUDIO_WS_PORT)
+                        }
+                        audioWs.onclose = function() {
+                            audioWsReady = false
+                            setTimeout(connectAudioWs, 1000)
+                        }
+                        audioWs.onerror = function() {
+                            console.error("${logPrefix} Audio binary WebSocket error")
+                        }
+                    } catch (e) {
+                        console.error("${logPrefix} Failed to connect audio WS:", e)
+                        setTimeout(connectAudioWs, 1000)
+                    }
+                }
+                connectAudioWs()
+
+                // Lanczos windowed-sinc resampler — proper anti-aliasing, no frequency folding
+                function lanczosResample(input, sourceRate, targetRate) {
+                    if (sourceRate === targetRate) return input
+                    var ratio = sourceRate / targetRate
+                    var outputLen = Math.floor(input.length / ratio)
+                    var output = new Float32Array(outputLen)
+                    var LOBES = 4
+                    for (var i = 0; i < outputLen; i++) {
+                        var srcPos = i * ratio
+                        var srcIdx = Math.floor(srcPos)
+                        var sample = 0, wSum = 0
+                        for (var j = -LOBES + 1; j <= LOBES; j++) {
+                            var idx = srcIdx + j
+                            if (idx < 0 || idx >= input.length) continue
+                            var x = srcPos - idx
+                            var w
+                            if (Math.abs(x) < 1e-6) {
+                                w = 1.0
+                            } else if (Math.abs(x) < LOBES) {
+                                var px = Math.PI * x
+                                w = (Math.sin(px) / px) * (Math.sin(px / LOBES) / (px / LOBES))
+                            } else {
+                                w = 0
+                            }
+                            sample += input[idx] * w
+                            wSum += w
+                        }
+                        output[i] = wSum > 0 ? sample / wSum : 0
+                    }
+                    return output
+                }`
                     : `
                 // Audio mixer disabled (no streaming_output configured)
                 console.log("${logPrefix} Audio mixing disabled (streaming not configured)")`
@@ -213,23 +277,21 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                             frame.copyTo(audioData, { planeIndex: 0 })
                                         }
 
-                                        // Send pre-mixed audio to Node.js
-                                        if (typeof window.${callbackName} === "function") {
-                                            window.${callbackName}({
-                                                audioData: Array.from(audioData),
-                                                sampleRate: frame.sampleRate,
-                                                timestamp: frame.timestamp,
-                                                numberOfFrames: numSamples,
-                                            })
+                                        // Resample and send as binary Int16 PCM via local WebSocket
+                                        var resampled = lanczosResample(audioData, frame.sampleRate, TARGET_SAMPLE_RATE)
+                                        var int16 = new Int16Array(resampled.length)
+                                        for (var k = 0; k < resampled.length; k++) {
+                                            var s = Math.max(-1, Math.min(1, resampled[k]))
+                                            int16[k] = Math.round(s * 32767)
+                                        }
+
+                                        if (audioWsReady && audioWs && audioWs.readyState === 1) {
+                                            audioWs.send(int16.buffer)
                                             chunksSent++
                                             if (chunksSent === 1) {
-                                                console.log("${logPrefix} First audio chunk sent to Node.js")
+                                                console.log("${logPrefix} First audio chunk sent via binary WebSocket")
                                             } else if (chunksSent % 100 === 0) {
-                                                console.log("${logPrefix} Sent " + chunksSent + " chunks to Node.js")
-                                            }
-                                        } else {
-                                            if (chunksSent === 0) {
-                                                console.error("${logPrefix} window.${callbackName} not available!")
+                                                console.log("${logPrefix} Sent " + chunksSent + " chunks via binary WebSocket")
                                             }
                                         }
 
@@ -278,6 +340,13 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     // Stop periodic scanning first (if enabled)
                     if (stopPeriodicScanningFn) {
                         stopPeriodicScanningFn()
+                    }
+
+                    // Close audio WebSocket
+                    if (typeof audioWs !== "undefined" && audioWs) {
+                        audioWs.close()
+                        audioWs = null
+                        audioWsReady = false
                     }
 
                     if (abortController) {
@@ -455,7 +524,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
  * Create audio capture functions for a specific provider
  */
 export function createAudioCapture(config: AudioCaptureConfig) {
-  const { callbackName, logPrefix, stopFunctionName } = config
+  const { logPrefix, stopFunctionName } = config
 
   return {
     /**
@@ -464,42 +533,21 @@ export function createAudioCapture(config: AudioCaptureConfig) {
      *                       If true, also enables audio mixing/streaming
      */
     enable: async (page: Page, enableMixing = true): Promise<void> => {
-      // Expose callback function for audio chunks (only if mixing is enabled)
-      if (enableMixing) {
-        try {
-          await page.exposeFunction(
-            callbackName,
-            async (audioChunk: {
-              audioData: number[]
-              sampleRate: number
-              timestamp: number
-              numberOfFrames: number
-            }) => {
-              if (Streaming.instance) {
-                try {
-                  Streaming.instance.processMixedAudioChunk(audioChunk)
-                } catch (error) {
-                  console.error(
-                    `${logPrefix} Failed to process mixed audio chunk:`,
-                    formatError(error)
-                  )
-                }
-              }
-            }
-          )
-        } catch (error) {
-          // Ignore duplicate registration error (function already exposed)
-          const errorMessage = error instanceof Error ? error.message : String(error)
-          if (errorMessage.includes("has been already registered")) {
-            console.log(`${logPrefix} Callback ${callbackName} already registered, skipping`)
-          } else {
-            throw error
-          }
-        }
+      // Get streaming config for binary audio transport
+      let audioPort = 0
+      let audioSampleRate = 24000
+      if (enableMixing && Streaming.instance) {
+        audioPort = Streaming.instance.localAudioPort
+        audioSampleRate = Streaming.instance.sample_rate
       }
 
       // Inject the audio capture script (always creates __audioTrackLayer, mixing is optional)
-      const script = generateAudioCaptureScript({ ...config, enableMixing })
+      const script = generateAudioCaptureScript({
+        ...config,
+        enableMixing,
+        localAudioPort: audioPort,
+        targetSampleRate: audioSampleRate
+      })
       try {
         await page.addInitScript(script)
         if (enableMixing) {
@@ -534,15 +582,14 @@ export function createAudioCapture(config: AudioCaptureConfig) {
      */
     verify: async (page: Page): Promise<boolean> => {
       try {
-        const status = await page.evaluate((cbName) => {
+        const status = await page.evaluate(() => {
           return {
             hasAudioContext:
               typeof AudioContext !== "undefined" ||
               typeof window.webkitAudioContext !== "undefined",
-            hasMediaStreamTrackProcessor: typeof window.MediaStreamTrackProcessor !== "undefined",
-            hasCallback: typeof window[cbName] === "function"
+            hasMediaStreamTrackProcessor: typeof window.MediaStreamTrackProcessor !== "undefined"
           }
-        }, callbackName)
+        })
 
         console.log(`${logPrefix} Status:`, status)
 
@@ -553,11 +600,6 @@ export function createAudioCapture(config: AudioCaptureConfig) {
 
         if (!status.hasMediaStreamTrackProcessor) {
           console.error(`${logPrefix} MediaStreamTrackProcessor not available`)
-          return false
-        }
-
-        if (!status.hasCallback) {
-          console.error(`${logPrefix} Callback not registered`)
           return false
         }
 
