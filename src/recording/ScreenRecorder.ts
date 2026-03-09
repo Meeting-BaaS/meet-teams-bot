@@ -20,7 +20,7 @@ const GRACE_PERIOD_SECONDS = 3
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = "192k" // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
-const SCREENSHOT_PERIOD = 5 // every 5 seconds
+const SCREENSHOT_PERIOD = 5 // every 5 seconds instead of 2
 const SCREENSHOT_WIDTH = 480 // reduced for smaller file size (fixed, not affected by RESOLUTION)
 const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (fixed, not affected by RESOLUTION)
 const MIN_AUDIO_CHUNK_SIZE = 100 * 1024 // 100KB
@@ -334,7 +334,7 @@ export class ScreenRecorder extends EventEmitter {
       "-y",
       rawVideoPath,
 
-      // === OUTPUT 2: RAW AUDIO (FLAC) ===
+      // === OUTPUT 2: RAW AUDIO ===
       "-map",
       "1:a:0",
       "-vn",
@@ -1174,6 +1174,21 @@ export class ScreenRecorder extends EventEmitter {
     const rawAudioPath = path.join(tempDir, "raw.flac")
 
     console.log("🔄 Starting efficient sync and merge for long recording...")
+
+    // 0. Log raw audio file size before processing
+    if (fs.existsSync(rawAudioPath)) {
+      const stats = fs.statSync(rawAudioPath)
+      const fileSizeBytes = stats.size
+      const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
+      const recordingDurationSeconds =
+        this.recordingStartTime > 0 ? (Date.now() - this.recordingStartTime) / 1000 : 0
+
+      console.log(
+        `📊 Raw audio file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`
+      )
+    } else {
+      console.warn("⚠️ Raw audio file not found:", rawAudioPath)
+    }
 
     // 1. Calculate sync offset (using your existing calculation)
     const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath)
