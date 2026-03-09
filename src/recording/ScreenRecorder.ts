@@ -279,7 +279,7 @@ export class ScreenRecorder extends EventEmitter {
     // Audio-only mode will just skip video upload at the end
     const tempDir = PathManager.getInstance().getTempPath()
     const rawVideoPath = path.join(tempDir, "raw.mp4")
-    this.rawAudioPath = path.join(tempDir, "raw.pcm")
+    this.rawAudioPath = path.join(tempDir, "raw.flac")
 
     args.push(
       // === VIDEO INPUT ===
@@ -334,23 +334,18 @@ export class ScreenRecorder extends EventEmitter {
       "-y",
       rawVideoPath,
 
-      // === OUTPUT 2: RAW AUDIO (PCM for immediate disk flush) ===
-      // Using raw PCM instead of FLAC to avoid encoder buffering that causes
-      // data loss when FFmpeg is terminated with SIGINT (exit code 255).
-      // Converted to FLAC in post-processing before sync & merge.
+      // === OUTPUT 2: RAW AUDIO (FLAC) ===
       "-map",
       "1:a:0",
       "-vn",
-      "-acodec",
-      "pcm_s16le",
+      "-sample_fmt",
+      "s16",
       "-ac",
       "1",
       "-ar",
       AUDIO_SAMPLE_RATE.toString(),
-      "-flush_packets",
-      "1",
-      "-f",
-      "s16le",
+      "-avoid_negative_ts",
+      "make_zero",
       "-y",
       this.rawAudioPath,
 
@@ -1176,47 +1171,9 @@ export class ScreenRecorder extends EventEmitter {
     // Audio-only mode will just skip video upload at the end
     const tempDir = PathManager.getInstance().getTempPath()
     const rawVideoPath = path.join(tempDir, "raw.mp4")
-    const rawPcmPath = path.join(tempDir, "raw.pcm")
     const rawAudioPath = path.join(tempDir, "raw.flac")
 
     console.log("🔄 Starting efficient sync and merge for long recording...")
-
-    // 0. Log raw PCM file size and convert to FLAC for downstream processing
-    if (fs.existsSync(rawPcmPath)) {
-      const stats = fs.statSync(rawPcmPath)
-      const fileSizeBytes = stats.size
-      const fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
-      const recordingDurationSeconds =
-        this.recordingStartTime > 0 ? (Date.now() - this.recordingStartTime) / 1000 : 0
-      const pcmDurationSeconds = fileSizeBytes / (AUDIO_SAMPLE_RATE * 2) // s16le = 2 bytes per sample, mono
-
-      console.log(
-        `📊 Raw PCM file size: ${fileSizeMB} MB (${fileSizeBytes} bytes) | PCM duration: ${pcmDurationSeconds.toFixed(1)}s | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`
-      )
-
-      // Convert raw PCM to FLAC for downstream processing (sync detection, padding, merge)
-      console.log("🔄 Converting raw PCM to FLAC for post-processing...")
-      await this.runFFmpeg(
-        [
-          "-f", "s16le",
-          "-ar", AUDIO_SAMPLE_RATE.toString(),
-          "-ac", "1",
-          "-i", rawPcmPath,
-          "-y", rawAudioPath
-        ],
-        "pcmToFlac",
-        Number.parseFloat(fileSizeMB)
-      )
-
-      if (fs.existsSync(rawAudioPath)) {
-        const flacStats = fs.statSync(rawAudioPath)
-        console.log(
-          `✅ PCM→FLAC conversion complete: ${(flacStats.size / (1024 * 1024)).toFixed(2)} MB`
-        )
-      }
-    } else {
-      console.warn("⚠️ Raw PCM audio file not found:", rawPcmPath)
-    }
 
     // 1. Calculate sync offset (using your existing calculation)
     const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath)
