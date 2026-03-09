@@ -20,7 +20,7 @@ const GRACE_PERIOD_SECONDS = 3
 const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
 const AUDIO_BITRATE = "192k" // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
-const SCREENSHOT_PERIOD = 30 // every 30 seconds
+const SCREENSHOT_PERIOD = 5 // every 5 seconds
 const SCREENSHOT_WIDTH = 480 // reduced for smaller file size (fixed, not affected by RESOLUTION)
 const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (fixed, not affected by RESOLUTION)
 const MIN_AUDIO_CHUNK_SIZE = 100 * 1024 // 100KB
@@ -349,7 +349,7 @@ export class ScreenRecorder extends EventEmitter {
       "-y",
       this.rawAudioPath,
 
-      // === OUTPUT 3: SCREENSHOTS (every 30 seconds) - fixed resolution ===
+      // === OUTPUT 3: SCREENSHOTS (every 5 seconds) - fixed resolution ===
       "-map",
       "0:v:0",
       "-vf",
