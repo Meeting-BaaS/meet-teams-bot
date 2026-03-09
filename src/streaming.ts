@@ -1,7 +1,9 @@
+import { type ChildProcess, spawn } from "node:child_process"
 import * as fs from "node:fs"
 import { Readable } from "node:stream"
 import { type RawData, WebSocket } from "ws"
 
+import { envVars } from "./config/env-vars"
 import { SoundContext } from "./media_context"
 import type { SpeakerData } from "./types"
 import { formatError } from "./utils/Logger"
@@ -13,9 +15,11 @@ const DEFAULT_SAMPLE_RATE: number = 24_000
 /**
  * Streaming class for real-time audio output to external services
  *
- * Audio source: FFmpeg stdout from ScreenRecorder (PulseAudio capture)
- * FFmpeg outputs Float32 PCM at the target sample rate — no resampling needed.
- * This bypasses Chrome's main thread entirely, avoiding frame drops and jitter.
+ * Audio source: Dedicated FFmpeg process capturing from PulseAudio.
+ * A lightweight audio-only FFmpeg (no video encoding) outputs Float32 PCM
+ * at the target sample rate to stdout. This avoids contention with the main
+ * ScreenRecorder FFmpeg (which handles x264 + screenshots + audio file)
+ * and provides steady real-time audio delivery.
  *
  * IMPORTANT: This is an OPTIONAL feature, completely independent of:
  * - Sound level monitoring (handled by SoundLevelMonitor)
@@ -61,6 +65,10 @@ export class Streaming {
   private outputBuffer: Int16Array | null = null
   private outputBufferOffset = 0
 
+  // Dedicated FFmpeg process for audio capture
+  private ffmpegProcess: ChildProcess | null = null
+  private audioRemainder: Buffer = Buffer.alloc(0)
+
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
   private debugAudioBytesWritten = 0
@@ -83,7 +91,7 @@ export class Streaming {
     console.log(
       `[Streaming] Initialized with sample rate: ${this.sample_rate} Hz${sample_rate ? " (from user config)" : ` (default: ${DEFAULT_SAMPLE_RATE} Hz)`}`
     )
-    console.log("[Streaming] Audio source: FFmpeg PulseAudio capture (no browser resampling)")
+    console.log("[Streaming] Audio source: dedicated FFmpeg PulseAudio capture")
     if (this.debugAudioEnabled) {
       console.log("[Streaming] Debug audio file recording enabled (DEBUG_AUDIO=true)")
     }
@@ -99,7 +107,7 @@ export class Streaming {
       return
     }
 
-    console.log("[Streaming] Starting streaming service (FFmpeg audio pipeline)")
+    console.log("[Streaming] Starting streaming service")
 
     // Setup external output WebSocket if configured
     if (this.outputUrl) {
@@ -111,20 +119,108 @@ export class Streaming {
       this.setupExternalInputWS()
     }
 
+    // Start dedicated audio capture FFmpeg process
+    if (this.outputUrl) {
+      this.startAudioCapture()
+    }
+
     this.isInitialized = true
     this.isPaused = false
 
-    console.log("[Streaming] Ready — waiting for FFmpeg audio data from ScreenRecorder")
+    console.log("[Streaming] Ready")
   }
 
   /**
-   * Process audio chunk from FFmpeg stdout (ScreenRecorder).
-   * FFmpeg already outputs Float32 at the target sample rate — no resampling needed.
-   * Called from ScreenRecorder.setupSoundLevelMonitoring() on each stdout data event.
+   * Start a dedicated lightweight FFmpeg process for audio capture.
+   * Captures from PulseAudio monitor and outputs Float32 PCM at the target
+   * sample rate to stdout. Completely independent of the main ScreenRecorder
+   * FFmpeg, so no contention with x264 encoding.
    */
-  public processFfmpegAudioChunk(data: Float32Array): void {
-    if (!this.isInitialized || this.isPaused) return
+  private startAudioCapture(): void {
+    const source = envVars.VIRTUAL_SPEAKER_MONITOR
+    const args = [
+      "-f", "pulse",
+      "-fflags", "nobuffer",
+      "-i", source,
+      "-ac", "1",
+      "-ar", this.sample_rate.toString(),
+      "-f", "f32le",
+      "pipe:1"
+    ]
 
+    console.log(`[Streaming] Starting dedicated audio FFmpeg: ${args.join(" ")}`)
+
+    this.ffmpegProcess = spawn("ffmpeg", args, {
+      stdio: ["pipe", "pipe", "pipe"]
+    })
+
+    this.ffmpegProcess.stderr?.on("data", (data: Buffer) => {
+      const output = data.toString().trim()
+      // FFmpeg outputs diagnostic info to stderr; only log non-progress lines
+      if (output && !output.match(/^size=\s*\d+/)) {
+        console.log(`[Streaming FFmpeg] ${output}`)
+      }
+    })
+
+    this.ffmpegProcess.on("exit", (code) => {
+      console.log(`[Streaming] Audio FFmpeg exited with code ${code}`)
+      this.ffmpegProcess = null
+    })
+
+    this.ffmpegProcess.on("error", (err) => {
+      console.error("[Streaming] Audio FFmpeg error:", formatError(err))
+      this.ffmpegProcess = null
+    })
+
+    // Handle stdout: Float32 PCM data with byte alignment
+    this.ffmpegProcess.stdout?.on("data", (data: Buffer) => {
+      if (this.isPaused) return
+
+      // Handle chunk boundaries: Float32 frames can split across data events
+      let buf: Buffer
+      if (this.audioRemainder.length > 0) {
+        buf = Buffer.concat([this.audioRemainder, data])
+      } else {
+        buf = data
+      }
+
+      // Only process aligned bytes (divisible by 4 for Float32)
+      const alignedLen = buf.length - (buf.length % 4)
+      if (alignedLen === 0) {
+        this.audioRemainder = buf
+        return
+      }
+
+      // Save unaligned remainder for next chunk
+      this.audioRemainder = buf.subarray(alignedLen) as Buffer
+
+      // Create Float32Array — copy to standalone array to avoid retaining pooled buffers
+      const view = new Float32Array(buf.buffer, buf.byteOffset, alignedLen / 4)
+      const float32Array = new Float32Array(view)
+
+      this.processFfmpegAudioChunk(float32Array)
+    })
+  }
+
+  /**
+   * Stop the dedicated audio capture FFmpeg process.
+   */
+  private stopAudioCapture(): void {
+    if (this.ffmpegProcess) {
+      console.log("[Streaming] Stopping audio FFmpeg process...")
+      this.ffmpegProcess.stdout?.removeAllListeners("data")
+      this.ffmpegProcess.stderr?.removeAllListeners("data")
+      this.ffmpegProcess.kill("SIGTERM")
+      this.ffmpegProcess = null
+    }
+    this.audioRemainder = Buffer.alloc(0)
+  }
+
+  /**
+   * Process Float32 audio from the dedicated FFmpeg stdout.
+   * Converts to Int16 and buffers into fixed-size chunks for the output WebSocket.
+   */
+  private processFfmpegAudioChunk(data: Float32Array): void {
     // Initialize output buffer on first chunk
     if (!this.outputBuffer) {
       const chunkSamples = Math.floor(this.sample_rate * (Streaming.OUTPUT_CHUNK_MS / 1000))
@@ -371,6 +467,9 @@ export class Streaming {
     }
 
     console.log("[Streaming] Stopping streaming service...")
+
+    // Stop dedicated audio capture
+    this.stopAudioCapture()
 
     // Finalize debug audio file (wait for WAV header to be written)
     await this.finalizeDebugAudioFile()
