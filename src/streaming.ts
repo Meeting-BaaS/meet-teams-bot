@@ -6,6 +6,7 @@ import { SoundContext } from "./media_context"
 import type { SpeakerData } from "./types"
 import { formatError } from "./utils/Logger"
 import { PathManager } from "./utils/PathManager"
+import { S3Uploader } from "./utils/S3Uploader"
 
 const DEFAULT_SAMPLE_RATE: number = 24_000
 
@@ -909,6 +910,16 @@ export class Streaming {
           console.log(
             `🎤 Debug: Streamed audio saved to ${debugPath} (${(bytesWritten / 1024).toFixed(1)} KB)`
           )
+
+          // Upload debug audio to S3 logs bucket
+          try {
+            const s3Path = `${this.botId}/debug_streamed_audio.wav`
+            await S3Uploader.getInstance().uploadToDefaultBucket(debugPath, s3Path)
+            console.log(`🎤 Debug: Uploaded debug audio to S3: ${s3Path}`)
+          } catch (uploadError) {
+            console.error("Failed to upload debug audio to S3:", formatError(uploadError))
+          }
+
           resolve()
         } catch (error) {
           console.error("Failed to update WAV header:", formatError(error))
