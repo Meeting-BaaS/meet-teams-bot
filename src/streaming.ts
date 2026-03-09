@@ -65,8 +65,9 @@ export class Streaming {
   private localWsServer: WebSocketServer | null = null
   public localAudioPort = 0
 
-  // Stateful resampler (carries filter tail across chunks to avoid boundary artifacts)
+  // Stateful resampler (carries filter tail + phase across chunks to avoid boundary artifacts)
   private resamplerState: Float32Array | null = null
+  private resamplerPhase = 0 // fractional sample position carried across chunks
   private static readonly RESAMPLER_LOBES = 4
 
   // Fixed-size output buffer (accumulates resampled Int16 into consistent chunks)
@@ -388,6 +389,7 @@ export class Streaming {
                 this.outputBufferOffset = 0
                 // Reset resampler state for new connection
                 this.resamplerState = null
+                this.resamplerPhase = 0
                 console.log(
                   `[Streaming] Source sample rate: ${this.sourceSampleRate} Hz, ` +
                     `target: ${this.sample_rate} Hz, ` +
@@ -441,8 +443,8 @@ export class Streaming {
 
   /**
    * Stateful Lanczos windowed-sinc resampler.
-   * Carries a tail buffer of samples from the previous chunk so the filter
-   * always has full context at chunk boundaries — no clicks or discontinuities.
+   * Carries both a tail buffer (for filter context) and a fractional phase
+   * (for sample-accurate positioning) across chunks — no clicks or drift.
    */
   private resampleStateful(input: Float32Array): Float32Array {
     const sourceRate = this.sourceSampleRate
@@ -460,14 +462,18 @@ export class Streaming {
     if (tail) extended.set(tail, 0)
     extended.set(input, tailLen)
 
-    // Compute output samples using the extended buffer
-    // Output positions are relative to the start of `input` (offset by tailLen)
-    const outputLen = Math.floor(input.length / ratio)
+    // Use carried phase from previous chunk for sample-accurate positioning.
+    // Without this, the fractional remainder (e.g. 0.4125 samples per chunk
+    // at 44100→24000) accumulates and causes periodic micro-discontinuities.
+    const startPhase = this.resamplerPhase
+
+    // Compute how many output samples we can produce from this input
+    const outputLen = Math.floor((input.length - startPhase) / ratio)
     const output = new Float32Array(outputLen)
 
     for (let i = 0; i < outputLen; i++) {
-      // srcPos is relative to the start of `input`, offset into extended buffer
-      const srcPos = i * ratio + tailLen
+      // srcPos in the extended buffer: phase-corrected position + tail offset
+      const srcPos = (startPhase + i * ratio) + tailLen
       const srcIdx = Math.floor(srcPos)
       let sample = 0
       let wSum = 0
@@ -493,6 +499,10 @@ export class Streaming {
 
       output[i] = wSum > 0 ? sample / wSum : 0
     }
+
+    // Carry the fractional remainder to the next chunk
+    // This is how far past the end of `input` the next output sample would land
+    this.resamplerPhase = (startPhase + outputLen * ratio) - input.length
 
     // Save the last LOBES*2 samples as tail for next chunk
     const newTailLen = Math.min(LOBES * 2, input.length)
@@ -671,6 +681,7 @@ export class Streaming {
 
     // Reset resampler and output buffer
     this.resamplerState = null
+    this.resamplerPhase = 0
     this.outputBuffer = null
     this.outputBufferOffset = 0
 
