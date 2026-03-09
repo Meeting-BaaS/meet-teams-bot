@@ -119,11 +119,6 @@ export class Streaming {
       this.setupExternalInputWS()
     }
 
-    // Start dedicated audio capture FFmpeg process
-    if (this.outputUrl) {
-      this.startAudioCapture()
-    }
-
     this.isInitialized = true
     this.isPaused = false
 
@@ -135,8 +130,15 @@ export class Streaming {
    * Captures from PulseAudio monitor and outputs Float32 PCM at the target
    * sample rate to stdout. Completely independent of the main ScreenRecorder
    * FFmpeg, so no contention with x264 encoding.
+   *
+   * Called from WaitingRoomState after the meeting page is opened,
+   * so we don't capture pre-join audio (beep, silence, join chime).
    */
-  private startAudioCapture(): void {
+  public startAudioCapture(): void {
+    if (this.ffmpegProcess) {
+      console.warn("[Streaming] Audio capture already running")
+      return
+    }
     const source = envVars.VIRTUAL_SPEAKER_MONITOR
     const args = [
       "-f", "pulse",

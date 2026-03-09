@@ -46,6 +46,11 @@ export class WaitingRoomState extends BaseState {
       // Open the meeting page
       await this.openMeetingPage(meetingLink)
 
+      // Start audio capture after page is open (avoids capturing pre-join beep/silence)
+      if (this.context.streamingService) {
+        this.context.streamingService.startAudioCapture()
+      }
+
       // Signal that the meeting page is open and the platform has confirmed
       // the camera works. If multi-image branding was deferred, this triggers
       // the switch from warmup placeholder to real branding.
@@ -65,11 +70,6 @@ export class WaitingRoomState extends BaseState {
       if (this.context.playwrightPage) {
         const htmlSnapshot = HtmlSnapshotService.getInstance()
         void htmlSnapshot.captureSnapshot(this.context.playwrightPage, "waiting_room_page_opened")
-      }
-
-      // Start streaming service (already initialized before openMeetingPage)
-      if (this.context.streamingService) {
-        this.context.streamingService.start()
       }
 
       ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
