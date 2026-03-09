@@ -531,9 +531,13 @@ export class Streaming {
       this.outputBufferOffset += toCopy
       offset += toCopy
 
-      // When buffer is full, send the chunk
+      // When buffer is full, send a copy and allocate a fresh buffer.
+      // We must NOT reuse the same ArrayBuffer because ws.send() and
+      // stream.write() are async — they hold a zero-copy view (Buffer.from(ArrayBuffer))
+      // that would be corrupted if we overwrote the buffer before I/O completes.
       if (this.outputBufferOffset >= this.outputBuffer.length) {
         this.sendOutputChunk(this.outputBuffer)
+        this.outputBuffer = new Int16Array(this.outputBuffer.length)
         this.outputBufferOffset = 0
       }
     }
