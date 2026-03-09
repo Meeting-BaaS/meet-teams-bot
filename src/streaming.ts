@@ -64,6 +64,15 @@ export class Streaming {
   private localWsServer: WebSocketServer | null = null
   public localAudioPort = 0
 
+  // Stateful resampler (carries filter tail across chunks to avoid boundary artifacts)
+  private resamplerState: Float32Array | null = null
+  private static readonly RESAMPLER_LOBES = 4
+
+  // Fixed-size output buffer (accumulates resampled Int16 into consistent chunks)
+  private static readonly OUTPUT_CHUNK_MS = 100 // 100ms chunks, same as Attendee
+  private outputBuffer: Int16Array | null = null
+  private outputBufferOffset = 0
+
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
   private debugAudioBytesWritten = 0
@@ -364,36 +373,51 @@ export class Streaming {
         console.log("[Streaming] Browser audio connected via local WebSocket (binary mode)")
 
         ws.on("message", (data: Buffer, isBinary: boolean) => {
-          if (!isBinary) return
-
-          if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
-            const now = Date.now()
-            if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
-              console.warn("[Streaming] Output WebSocket not ready, discarding audio")
-              this.lastWsNotReadyLogTime = now
+          // Text message: sample rate handshake from browser
+          if (!isBinary) {
+            try {
+              const msg = JSON.parse(data.toString())
+              if (msg.sampleRate && msg.sampleRate > 0) {
+                this.sourceSampleRate = msg.sampleRate
+                // Initialize output buffer based on target sample rate
+                const chunkSamples = Math.floor(
+                  this.sample_rate * (Streaming.OUTPUT_CHUNK_MS / 1000)
+                )
+                this.outputBuffer = new Int16Array(chunkSamples)
+                this.outputBufferOffset = 0
+                // Reset resampler state for new connection
+                this.resamplerState = null
+                console.log(
+                  `[Streaming] Source sample rate: ${this.sourceSampleRate} Hz, ` +
+                    `target: ${this.sample_rate} Hz, ` +
+                    `output chunk: ${chunkSamples} samples (${Streaming.OUTPUT_CHUNK_MS}ms)`
+                )
+              }
+            } catch {
+              // Ignore malformed text messages
             }
-            this.scheduleReconnect()
             return
           }
 
-          // Forward binary Int16 PCM directly — no resampling or conversion needed
-          this.output_ws.send(data)
-          this.browserAudioChunksSent++
+          // Binary message: raw Float32 audio from browser at source sample rate
+          const float32Data = new Float32Array(
+            data.buffer,
+            data.byteOffset,
+            data.byteLength / 4
+          )
 
-          // Stats logging
-          const now = Date.now()
-          if (now - this.lastBrowserStatsLogTime > 5000) {
-            console.log(
-              `📊 [Streaming] Sent ${this.browserAudioChunksSent} audio chunks to WebSocket`
-            )
-            this.lastBrowserStatsLogTime = now
+          // Resample with stateful filter (carries tail across chunks)
+          const resampled = this.resampleStateful(float32Data)
+
+          // Convert to Int16
+          const int16Chunk = new Int16Array(resampled.length)
+          for (let i = 0; i < resampled.length; i++) {
+            const s = Math.max(-1, Math.min(1, resampled[i]))
+            int16Chunk[i] = Math.round(s * 32767)
           }
 
-          // Debug audio file
-          if (this.debugAudioEnabled && this.debugAudioStream) {
-            const int16View = new Int16Array(data.buffer, data.byteOffset, data.byteLength / 2)
-            this.writeDebugAudioChunk(int16View)
-          }
+          // Buffer into fixed-size chunks and send
+          this.bufferAndSend(int16Chunk)
         })
 
         ws.on("error", (err) => {
@@ -412,6 +436,128 @@ export class Streaming {
       )
     } catch (error) {
       console.error("[Streaming] Failed to start local audio WS server:", formatError(error))
+    }
+  }
+
+  /**
+   * Stateful Lanczos windowed-sinc resampler.
+   * Carries a tail buffer of samples from the previous chunk so the filter
+   * always has full context at chunk boundaries — no clicks or discontinuities.
+   */
+  private resampleStateful(input: Float32Array): Float32Array {
+    const sourceRate = this.sourceSampleRate
+    const targetRate = this.sample_rate
+
+    if (sourceRate === targetRate) return input
+
+    const LOBES = Streaming.RESAMPLER_LOBES
+    const ratio = sourceRate / targetRate
+
+    // Prepend tail from previous chunk for filter context at the boundary
+    const tail = this.resamplerState
+    const tailLen = tail ? tail.length : 0
+    const extended = new Float32Array(tailLen + input.length)
+    if (tail) extended.set(tail, 0)
+    extended.set(input, tailLen)
+
+    // Compute output samples using the extended buffer
+    // Output positions are relative to the start of `input` (offset by tailLen)
+    const outputLen = Math.floor(input.length / ratio)
+    const output = new Float32Array(outputLen)
+
+    for (let i = 0; i < outputLen; i++) {
+      // srcPos is relative to the start of `input`, offset into extended buffer
+      const srcPos = i * ratio + tailLen
+      const srcIdx = Math.floor(srcPos)
+      let sample = 0
+      let wSum = 0
+
+      for (let j = -LOBES + 1; j <= LOBES; j++) {
+        const idx = srcIdx + j
+        if (idx < 0 || idx >= extended.length) continue
+        const x = srcPos - idx
+        let w: number
+
+        if (Math.abs(x) < 1e-6) {
+          w = 1.0
+        } else if (Math.abs(x) < LOBES) {
+          const px = Math.PI * x
+          w = (Math.sin(px) / px) * (Math.sin(px / LOBES) / (px / LOBES))
+        } else {
+          w = 0
+        }
+
+        sample += extended[idx] * w
+        wSum += w
+      }
+
+      output[i] = wSum > 0 ? sample / wSum : 0
+    }
+
+    // Save the last LOBES*2 samples as tail for next chunk
+    const newTailLen = Math.min(LOBES * 2, input.length)
+    this.resamplerState = input.slice(input.length - newTailLen)
+
+    return output
+  }
+
+  /**
+   * Buffer resampled Int16 samples into fixed-size chunks (e.g. 100ms)
+   * and send each complete chunk to the output WebSocket.
+   * This ensures the client receives predictably-sized frames.
+   */
+  private bufferAndSend(samples: Int16Array): void {
+    if (!this.outputBuffer) {
+      // Not initialized yet (no sample rate handshake received)
+      return
+    }
+
+    let offset = 0
+    while (offset < samples.length) {
+      const remaining = this.outputBuffer.length - this.outputBufferOffset
+      const toCopy = Math.min(remaining, samples.length - offset)
+
+      this.outputBuffer.set(samples.subarray(offset, offset + toCopy), this.outputBufferOffset)
+      this.outputBufferOffset += toCopy
+      offset += toCopy
+
+      // When buffer is full, send the chunk
+      if (this.outputBufferOffset >= this.outputBuffer.length) {
+        this.sendOutputChunk(this.outputBuffer)
+        this.outputBufferOffset = 0
+      }
+    }
+  }
+
+  /**
+   * Send a complete fixed-size Int16 PCM chunk to the output WebSocket.
+   */
+  private sendOutputChunk(chunk: Int16Array): void {
+    if (!this.output_ws || this.output_ws.readyState !== WebSocket.OPEN) {
+      const now = Date.now()
+      if (now - this.lastWsNotReadyLogTime >= this.WS_NOT_READY_LOG_INTERVAL_MS) {
+        console.warn("[Streaming] Output WebSocket not ready, discarding audio")
+        this.lastWsNotReadyLogTime = now
+      }
+      this.scheduleReconnect()
+      return
+    }
+
+    this.output_ws.send(chunk.buffer)
+    this.browserAudioChunksSent++
+
+    // Stats logging
+    const now = Date.now()
+    if (now - this.lastBrowserStatsLogTime > 5000) {
+      console.log(
+        `📊 [Streaming] Sent ${this.browserAudioChunksSent} chunks to WebSocket (${Streaming.OUTPUT_CHUNK_MS}ms each)`
+      )
+      this.lastBrowserStatsLogTime = now
+    }
+
+    // Debug audio file
+    if (this.debugAudioEnabled && this.debugAudioStream) {
+      this.writeDebugAudioChunk(chunk)
     }
   }
 
@@ -522,6 +668,11 @@ export class Streaming {
       this.localWsServer.close()
       this.localWsServer = null
     }
+
+    // Reset resampler and output buffer
+    this.resamplerState = null
+    this.outputBuffer = null
+    this.outputBufferOffset = 0
 
     // Close external WebSockets only
     this.closeExternalWebSockets()

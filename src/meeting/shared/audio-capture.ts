@@ -55,8 +55,6 @@ export interface AudioCaptureConfig {
   enableMixing?: boolean
   // Local audio WS port for binary transport (set at runtime)
   localAudioPort?: number
-  // Target sample rate for resampling (set at runtime)
-  targetSampleRate?: number
 }
 
 const MEET_CONFIG: AudioCaptureConfig = {
@@ -79,7 +77,7 @@ const TEAMS_CONFIG: AudioCaptureConfig = {
  * Generate the browser-side audio capture script
  */
 function generateAudioCaptureScript(config: AudioCaptureConfig): string {
-  const { logPrefix, stopFunctionName, enablePeriodicScanning, enableMixing, localAudioPort, targetSampleRate } = config
+  const { logPrefix, stopFunctionName, enablePeriodicScanning, enableMixing, localAudioPort } = config
 
   return `
         (function() {
@@ -124,9 +122,9 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                 // Binary WebSocket for audio transport (replaces JSON serialization via exposeFunction)
                 const AUDIO_WS_PORT = ${localAudioPort || 9321}
-                const TARGET_SAMPLE_RATE = ${targetSampleRate || 24000}
                 let audioWs = null
                 let audioWsReady = false
+                let sourceSampleRateSent = false
 
                 function connectAudioWs() {
                     try {
@@ -134,6 +132,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         audioWs.binaryType = "arraybuffer"
                         audioWs.onopen = function() {
                             audioWsReady = true
+                            sourceSampleRateSent = false
                             console.log("${logPrefix} Audio binary WebSocket connected to port " + AUDIO_WS_PORT)
                         }
                         audioWs.onclose = function() {
@@ -148,39 +147,7 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         setTimeout(connectAudioWs, 1000)
                     }
                 }
-                connectAudioWs()
-
-                // Lanczos windowed-sinc resampler — proper anti-aliasing, no frequency folding
-                function lanczosResample(input, sourceRate, targetRate) {
-                    if (sourceRate === targetRate) return input
-                    var ratio = sourceRate / targetRate
-                    var outputLen = Math.floor(input.length / ratio)
-                    var output = new Float32Array(outputLen)
-                    var LOBES = 4
-                    for (var i = 0; i < outputLen; i++) {
-                        var srcPos = i * ratio
-                        var srcIdx = Math.floor(srcPos)
-                        var sample = 0, wSum = 0
-                        for (var j = -LOBES + 1; j <= LOBES; j++) {
-                            var idx = srcIdx + j
-                            if (idx < 0 || idx >= input.length) continue
-                            var x = srcPos - idx
-                            var w
-                            if (Math.abs(x) < 1e-6) {
-                                w = 1.0
-                            } else if (Math.abs(x) < LOBES) {
-                                var px = Math.PI * x
-                                w = (Math.sin(px) / px) * (Math.sin(px / LOBES) / (px / LOBES))
-                            } else {
-                                w = 0
-                            }
-                            sample += input[idx] * w
-                            wSum += w
-                        }
-                        output[i] = wSum > 0 ? sample / wSum : 0
-                    }
-                    return output
-                }`
+                connectAudioWs()`
                     : `
                 // Audio mixer disabled (no streaming_output configured)
                 console.log("${logPrefix} Audio mixing disabled (streaming not configured)")`
@@ -277,16 +244,16 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                                             frame.copyTo(audioData, { planeIndex: 0 })
                                         }
 
-                                        // Resample and send as binary Int16 PCM via local WebSocket
-                                        var resampled = lanczosResample(audioData, frame.sampleRate, TARGET_SAMPLE_RATE)
-                                        var int16 = new Int16Array(resampled.length)
-                                        for (var k = 0; k < resampled.length; k++) {
-                                            var s = Math.max(-1, Math.min(1, resampled[k]))
-                                            int16[k] = Math.round(s * 32767)
-                                        }
-
+                                        // Send raw Float32 audio via local WebSocket
+                                        // Resampling happens in Node.js with stateful filter (no chunk boundary artifacts)
                                         if (audioWsReady && audioWs && audioWs.readyState === 1) {
-                                            audioWs.send(int16.buffer)
+                                            // Send sample rate as text message on first chunk
+                                            if (!sourceSampleRateSent) {
+                                                audioWs.send(JSON.stringify({ sampleRate: frame.sampleRate }))
+                                                sourceSampleRateSent = true
+                                                console.log("${logPrefix} Source sample rate: " + frame.sampleRate + " Hz")
+                                            }
+                                            audioWs.send(audioData.buffer)
                                             chunksSent++
                                             if (chunksSent === 1) {
                                                 console.log("${logPrefix} First audio chunk sent via binary WebSocket")
@@ -535,18 +502,15 @@ export function createAudioCapture(config: AudioCaptureConfig) {
     enable: async (page: Page, enableMixing = true): Promise<void> => {
       // Get streaming config for binary audio transport
       let audioPort = 0
-      let audioSampleRate = 24000
       if (enableMixing && Streaming.instance) {
         audioPort = Streaming.instance.localAudioPort
-        audioSampleRate = Streaming.instance.sample_rate
       }
 
       // Inject the audio capture script (always creates __audioTrackLayer, mixing is optional)
       const script = generateAudioCaptureScript({
         ...config,
         enableMixing,
-        localAudioPort: audioPort,
-        targetSampleRate: audioSampleRate
+        localAudioPort: audioPort
       })
       try {
         await page.addInitScript(script)
