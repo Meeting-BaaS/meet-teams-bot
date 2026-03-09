@@ -14,6 +14,7 @@ import { S3Uploader } from "../utils/S3Uploader"
 import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
 import { SoundLevelMonitor } from "../utils/sound-level-monitor"
+import { Streaming } from "../streaming"
 
 const TRANSCRIPTION_CHUNK_DURATION = 7200 // Increased from 3600 to 7200, i.e. 2 hours because Gladia can now accept a 135 minutes long audio file
 const GRACE_PERIOD_SECONDS = 3
@@ -371,7 +372,7 @@ export class ScreenRecorder extends EventEmitter {
       "-ac",
       "1", // Mono
       "-ar",
-      "24000", // 24kHz is sufficient for sound level analysis
+      (Streaming.instance?.sample_rate || 24000).toString(), // Match streaming sample rate if configured
       "-f",
       "f32le", // Raw float32 format
       "pipe:1" // stdout
@@ -600,6 +601,9 @@ export class ScreenRecorder extends EventEmitter {
 
           // Feed to sound level monitor (always active, critical for automatic leave)
           monitor.processAudioChunk(float32Array)
+
+          // Feed to streaming service if active (ffmpeg-based audio streaming)
+          Streaming.instance?.processFfmpegAudioChunk(float32Array)
         } catch (error) {
           console.error("[SoundLevelMonitor] Failed to process audio chunk:", formatError(error))
           // Don't throw - continue processing other chunks

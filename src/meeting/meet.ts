@@ -71,17 +71,10 @@ export class MeetProvider implements MeetingProviderInterface {
         await browserContext.grantPermissions(["camera"])
       }
 
-      // Always enable audio track layer (for network diarization)
-      // Only enable mixing/streaming if streaming_output is configured
-      const enableMixing = !!GLOBAL.get().streaming_output
-      await enableMeetAudioCapture(page, enableMixing)
-      if (enableMixing) {
-        console.log("[Meet] ✅ Web Audio capture enabled for streaming")
-      } else {
-        console.log(
-          "[Meet] ✅ Audio track layer enabled for network diarization (streaming disabled)"
-        )
-      }
+      // Audio track layer for network diarization
+      // Audio streaming is handled by FFmpeg PulseAudio capture
+      await enableMeetAudioCapture(page)
+      console.log("[Meet] Audio track layer enabled (streaming via FFmpeg)")
 
       // Setup network interception scripts BEFORE navigation
       // addInitScript must be called before page.goto() to work properly

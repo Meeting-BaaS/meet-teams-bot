@@ -1,20 +1,19 @@
-// Web Audio mixing for Google Meet
+// Audio track layer for Google Meet
 // Uses shared audio capture module
 
 import type { Page } from "@playwright/test"
 import { meetAudioCapture } from "../shared/audio-capture"
 
 /**
- * Enable Web Audio mixing for Google Meet
- * @param enableMixing - If false, only creates __audioTrackLayer (for network diarization)
- *                       If true, also enables audio mixing/streaming
+ * Enable audio track layer for Google Meet (for network diarization).
+ * Audio streaming is handled by FFmpeg PulseAudio capture.
  */
-export async function enableMeetAudioCapture(page: Page, enableMixing = true): Promise<void> {
-  return meetAudioCapture.enable(page, enableMixing)
+export async function enableMeetAudioCapture(page: Page): Promise<void> {
+  return meetAudioCapture.enable(page)
 }
 
 /**
- * Stop the audio capture processor gracefully
+ * Stop the audio capture gracefully
  */
 export async function stopMeetAudioCapture(page: Page): Promise<void> {
   return meetAudioCapture.stop(page)

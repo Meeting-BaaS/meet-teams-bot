@@ -2,7 +2,6 @@ import type { BrowserContext, Page } from "@playwright/test"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
-import { Streaming } from "../streaming"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/teamsUrlParser"
 import { formatError } from "../utils/Logger"
@@ -40,18 +39,16 @@ export class TeamsProvider implements MeetingProviderInterface {
       origin: url.origin
     })
 
-    // Enable Web Audio mixing for streaming (Teams doesn't use network diarization)
-    // Only enable if streaming_output is configured
-    if (GLOBAL.get().streaming_output) {
-      try {
-        await enableTeamsAudioCapture(page, true)
-        console.log("[Teams] ✅ Web Audio capture enabled for streaming")
-      } catch (error) {
-        console.error(
-          "[Teams] Failed to enable audio capture, continuing without it:",
-          formatError(error)
-        )
-      }
+    // Audio track layer for track detection
+    // Audio streaming is handled by FFmpeg PulseAudio capture
+    try {
+      await enableTeamsAudioCapture(page)
+      console.log("[Teams] Audio track layer enabled (streaming via FFmpeg)")
+    } catch (error) {
+      console.error(
+        "[Teams] Failed to enable audio capture, continuing without it:",
+        formatError(error)
+      )
     }
 
     try {
