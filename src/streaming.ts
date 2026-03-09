@@ -141,11 +141,17 @@ export class Streaming {
     }
     const source = envVars.VIRTUAL_SPEAKER_MONITOR
     const args = [
-      "-f", "pulse",
+      // Low-latency input: skip probing, no input buffering
+      "-probesize", "32",
+      "-analyzeduration", "0",
       "-fflags", "nobuffer",
+      "-flags", "low_delay",
+      "-f", "pulse",
       "-i", source,
+      // Output: mono Float32 at target rate, flush every packet
       "-ac", "1",
       "-ar", this.sample_rate.toString(),
+      "-flush_packets", "1",
       "-f", "f32le",
       "pipe:1"
     ]
