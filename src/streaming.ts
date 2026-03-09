@@ -400,11 +400,10 @@ export class Streaming {
           }
 
           // Binary message: raw Float32 audio from browser at source sample rate
-          const float32Data = new Float32Array(
-            data.buffer,
-            data.byteOffset,
-            data.byteLength / 4
-          )
+          // Copy to aligned buffer — WebSocket Buffer byteOffset may not be 4-byte aligned
+          const aligned = new Uint8Array(data.byteLength)
+          aligned.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
+          const float32Data = new Float32Array(aligned.buffer)
 
           // Resample with stateful filter (carries tail across chunks)
           const resampled = this.resampleStateful(float32Data)
