@@ -117,10 +117,12 @@ class Global {
     }
 
     public setError(reason: MeetingEndReason, message?: string): void {
-        // ApiRequest is a special case where we don't want to override an existing error
+        // Don't override these end reasons — they represent a definitive decision
+        // about why the bot is stopping and shouldn't be clobbered during cleanup
         if (
             this.endReason === MeetingEndReason.ApiRequest ||
-            this.endReason === MeetingEndReason.LoginRequired
+            this.endReason === MeetingEndReason.LoginRequired ||
+            this.endReason === MeetingEndReason.ExitingMeetingBeforeRecord
         ) {
             console.log(
                 `🔴 not setting global error, already set to: ${this.endReason}`,
