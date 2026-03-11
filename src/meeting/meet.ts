@@ -237,7 +237,10 @@ export class MeetProvider implements MeetingProviderInterface {
             let leftWaitingRoomAt: number | null = null
             while (true) {
                 if (cancelCheck()) {
-                    GLOBAL.setError(MeetingEndReason.ApiRequest)
+                    // Only set error if not already set by stopMeeting()
+                    if (!GLOBAL.getEndReason()) {
+                        GLOBAL.setError(MeetingEndReason.ApiRequest)
+                    }
                     throw new Error('API request to stop recording')
                 }
 
@@ -461,7 +464,9 @@ async function findShowEveryOne(
             }
 
             if (cancelCheck()) {
-                GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+                if (!GLOBAL.getEndReason()) {
+                    GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+                }
                 throw new Error('Timeout waiting to start')
             }
 

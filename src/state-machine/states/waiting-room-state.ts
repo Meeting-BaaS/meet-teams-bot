@@ -200,7 +200,8 @@ export class WaitingRoomState extends BaseState {
             const checkStopSignal = setInterval(() => {
                 if (
                     GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
-                    GLOBAL.getEndReason() === MeetingEndReason.LoginRequired
+                    GLOBAL.getEndReason() === MeetingEndReason.LoginRequired ||
+                    GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord
                 ) {
                     clearInterval(checkStopSignal)
                     clearTimeout(timeout)
@@ -211,7 +212,8 @@ export class WaitingRoomState extends BaseState {
             this.context.provider
                 .joinMeeting(
                     this.context.playwrightPage,
-                    () => GLOBAL.getEndReason() === MeetingEndReason.ApiRequest,
+                    () => GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
+                          GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord,
                     // Add a callback to notify that the join succeeded
                     () => {
                         joinSuccessful = true

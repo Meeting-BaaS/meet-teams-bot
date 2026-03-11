@@ -5,7 +5,7 @@ import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
 import { MEETING_CONSTANTS } from '../constants'
-import { MeetingStateType, StateExecuteResult } from '../types'
+import { MeetingEndReason, MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
 import { sendEntryMessage } from '../../meeting/meet'
@@ -17,6 +17,12 @@ export class InCallState extends BaseState {
         console.info(`[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`)
 
         try {
+            // Quick check: if stop was already requested before entering InCall, skip setup entirely
+            if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
+                console.info(`[InCallState] Stop already requested — skipping setup`)
+                return this.handleError(new Error('Stop requested before recording setup'))
+            }
+
             // Start with global timeout for setup
             await Promise.race([this.setupRecording(), this.createTimeout()])
 
@@ -118,6 +124,12 @@ export class InCallState extends BaseState {
                     formatError(err),
                 )
             })
+
+            // Final gate: if a stop request arrived during setup, bail out
+            // before firing the recording event and transitioning to Recording state
+            if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
+                throw new Error('Stop requested during recording setup — exiting before record')
+            }
 
             // Notify that recording has started
             Events.inCallRecording({ start_time: this.context.startTime })

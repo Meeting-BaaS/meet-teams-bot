@@ -385,7 +385,10 @@ export class TeamsProvider implements MeetingProviderInterface {
 
             // Check if we should cancel
             if (cancelCheck()) {
-                GLOBAL.setError(MeetingEndReason.ApiRequest)
+                // Only set error if not already set by stopMeeting()
+                if (!GLOBAL.getEndReason()) {
+                    GLOBAL.setError(MeetingEndReason.ApiRequest)
+                }
                 throw new Error('API request to stop Teams recording')
             }
 
