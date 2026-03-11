@@ -257,7 +257,7 @@ async function handleFailedRecording(): Promise<void> {
                     'Stop request detected on startup — aborting before joining meeting',
                 )
                 GLOBAL.setError(
-                    MeetingEndReason.BotStoppedBeforeRecording,
+                    MeetingEndReason.ExitingMeetingBeforeRecord,
                     'Bot was stopped before recording started',
                 )
                 await handleFailedRecording()

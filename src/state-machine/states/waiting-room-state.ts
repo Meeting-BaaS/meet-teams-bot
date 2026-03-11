@@ -96,6 +96,8 @@ export class WaitingRoomState extends BaseState {
                     case MeetingEndReason.ApiRequest:
                         Events.apiRequestStop()
                         return this.handleError(error as Error)
+                    case MeetingEndReason.ExitingMeetingBeforeRecord:
+                        return this.handleError(error as Error)
                 }
             }
 

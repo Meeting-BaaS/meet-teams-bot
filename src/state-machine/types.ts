@@ -26,8 +26,8 @@ export enum MeetingEndReason {
     RecordingTimeout = 'recordingTimeout',
     ApiRequest = 'apiRequest',
 
-    // Pre-recording stop (bot stopped before it joined the meeting)
-    BotStoppedBeforeRecording = 'botStoppedBeforeRecording',
+    // Pre-recording stop (bot exited before recording started)
+    ExitingMeetingBeforeRecord = 'exitingMeetingBeforeRecord',
 
     // Error end reasons
     BotRemovedTooEarly = 'botRemovedTooEarly',
@@ -55,8 +55,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
             return 'Recording timeout reached.'
         case MeetingEndReason.ApiRequest:
             return 'Recording stopped via API request.'
-        case MeetingEndReason.BotStoppedBeforeRecording:
-            return 'Bot was stopped before recording started.'
+        case MeetingEndReason.ExitingMeetingBeforeRecord:
+            return 'Bot exited before recording started.'
         case MeetingEndReason.BotRemovedTooEarly:
             return 'Bot was removed too early; the video is too short.'
         case MeetingEndReason.BotNotAccepted:

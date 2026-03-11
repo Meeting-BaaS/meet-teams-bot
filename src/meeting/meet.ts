@@ -209,7 +209,7 @@ export class MeetProvider implements MeetingProviderInterface {
             // Final stop check before the irreversible join button click
             if (cancelCheck()) {
                 console.log('Stop request detected before clicking Join — aborting')
-                GLOBAL.setError(MeetingEndReason.BotStoppedBeforeRecording)
+                GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
                 throw new Error('Bot stopped before joining meeting')
             }
 
