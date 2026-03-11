@@ -206,6 +206,13 @@ export class MeetProvider implements MeetingProviderInterface {
                 await deactivateCamera(page)
             }
 
+            // Final stop check before the irreversible join button click
+            if (cancelCheck()) {
+                console.log('Stop request detected before clicking Join — aborting')
+                GLOBAL.setError(MeetingEndReason.BotStoppedBeforeRecording)
+                throw new Error('Bot stopped before joining meeting')
+            }
+
             // Try to click join button - will retry continuously while waiting
             let lastJoinClickAt = 0
             const joinRetryCooldownMs = 2000

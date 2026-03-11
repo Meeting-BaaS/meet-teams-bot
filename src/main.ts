@@ -20,7 +20,10 @@ import {
     MAX_RETRY_COUNT,
 } from './utils/retry-handler'
 
-import { getErrorMessageFromCode } from './state-machine/types'
+import {
+    getErrorMessageFromCode,
+    MeetingEndReason,
+} from './state-machine/types'
 import { MeetingParams } from './types'
 
 import { exit } from 'process'
@@ -243,6 +246,23 @@ async function handleFailedRecording(): Promise<void> {
         // Create API instance for non-serverless mode
         if (!GLOBAL.isServerless()) {
             new Api()
+        }
+
+        // Check if a stop request was issued while the bot was scaling up.
+        // This is a lightweight DB check — failures are non-fatal (bot proceeds normally).
+        if (!GLOBAL.isServerless() && Api.instance) {
+            const shouldStop = await Api.instance.checkStopRequest()
+            if (shouldStop) {
+                console.log(
+                    'Stop request detected on startup — aborting before joining meeting',
+                )
+                GLOBAL.setError(
+                    MeetingEndReason.BotStoppedBeforeRecording,
+                    'Bot was stopped before recording started',
+                )
+                await handleFailedRecording()
+                return
+            }
         }
 
         // Start the meeting recording

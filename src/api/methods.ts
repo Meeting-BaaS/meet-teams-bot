@@ -150,6 +150,34 @@ export class Api {
         }
     }
 
+    /// Lightweight check to see if a stop request has been issued for this bot.
+    /// Called on startup before joining the meeting.
+    /// Returns true if the bot should stop, false otherwise.
+    /// Failures are non-fatal — if the server is unreachable, returns false to let the bot proceed.
+    public async checkStopRequest(): Promise<boolean> {
+        try {
+            const resp = await axios({
+                method: 'GET',
+                url: '/bots/check_stop_request',
+                timeout: 10000,
+                params: { bot_uuid: GLOBAL.get().bot_uuid },
+            })
+            const isStopped = resp.data?.is_stopped === true
+            if (isStopped) {
+                console.log(
+                    `Bot ${GLOBAL.get().bot_uuid} has a pending stop request — will not join meeting`,
+                )
+            }
+            return isStopped
+        } catch (error) {
+            console.warn(
+                'check-stop-request failed (proceeding with join):',
+                error instanceof Error ? error.message : error,
+            )
+            return false
+        }
+    }
+
     // Handle end meeting with retry logic
     public async handleEndMeetingWithRetry(): Promise<void> {
         if (GLOBAL.isServerless()) {
