@@ -41,6 +41,14 @@ export class CleanupState extends BaseState {
 
     private async performCleanup(): Promise<void> {
         try {
+            // Step 0: Stop dialog observer (runs in Node, not in the page)
+            console.info('🧹 Step 0: Stopping dialog observer')
+            try {
+                this.stopDialogObserver()
+            } catch (error) {
+                console.warn('🧹 Dialog observer stop failed, continuing cleanup:', error)
+            }
+
             // Step 1: Capture final DOM state while page is still alive
             if (this.context.playwrightPage) {
                 console.info('🧹 Step 1/5: Capturing final DOM state')
@@ -116,6 +124,19 @@ export class CleanupState extends BaseState {
             } else {
                 throw error
             }
+        }
+    }
+
+    private stopDialogObserver() {
+        if (this.context.dialogObserver) {
+            console.info(
+                `Stopping global dialog observer in state ${this.constructor.name}`,
+            )
+            this.context.dialogObserver.stopGlobalDialogObserver()
+        } else {
+            console.warn(
+                `Global dialog observer not available in state ${this.constructor.name}`,
+            )
         }
     }
 
