@@ -19,8 +19,6 @@ export class ChatObserver {
       return
     }
 
-    console.log(`[ChatObserver] Starting for ${this.meetingProvider}...`)
-
     switch (this.meetingProvider) {
       case "meet":
         this.observer = new MeetChatObserver(page)
@@ -36,9 +34,9 @@ export class ChatObserver {
     try {
       await this.observer.startObserving()
       this.isObserving = true
-      console.log(`[ChatObserver] ✅ Started for ${this.meetingProvider}`)
+      console.log(`[ChatObserver] Started for ${this.meetingProvider}`)
     } catch (error) {
-      console.error(`[ChatObserver] Failed to start:`, formatError(error))
+      console.error("[ChatObserver] Failed to start:", formatError(error))
       this.observer = null
     }
   }
@@ -46,11 +44,16 @@ export class ChatObserver {
   public stopObserving(): void {
     if (!this.isObserving || !this.observer) return
 
-    console.log(`[ChatObserver] Stopping for ${this.meetingProvider}...`)
-    this.observer.stopObserving()
+    if (this.observer instanceof TeamsChatObserver) {
+      // TeamsChatObserver.stopObserving is async but we fire-and-forget
+      this.observer.stopObserving().catch((e) => {
+        console.error("[ChatObserver] Error stopping Teams observer:", e)
+      })
+    } else {
+      this.observer.stopObserving()
+    }
     this.observer = null
     this.isObserving = false
-    console.log(`[ChatObserver] ✅ Stopped for ${this.meetingProvider}`)
   }
 
   public isCurrentlyObserving(): boolean {

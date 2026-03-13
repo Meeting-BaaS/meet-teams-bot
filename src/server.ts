@@ -1,5 +1,7 @@
 import express from "express"
+import { ChatManager } from "./chat-manager"
 import { envVars } from "./config/env-vars"
+import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason } from "./state-machine/types"
 import type { SendChatMessageParams, StopRecordParams } from "./types"
@@ -86,6 +88,10 @@ export async function server() {
         return res.status(400).json({ error: "Missing required field: message" })
       }
 
+      if (data.message.length > 500) {
+        return res.status(400).json({ error: "Message exceeds maximum length of 500 characters" })
+      }
+
       const meetingHandle = MeetingStateMachine.instance
       if (!meetingHandle) {
         return res.status(404).json({ error: "No active meeting found" })
@@ -96,117 +102,17 @@ export async function server() {
         return res.status(500).json({ error: "Meeting page not available" })
       }
 
-      if (context.chatDisabled) {
-        return res.status(400).json({ error: "Chat is disabled for this meeting" })
+      const result = await ChatManager.getInstance().sendBotMessage(
+        context.playwrightPage,
+        GLOBAL.get().meeting_platform,
+        data.message,
+        context.chatObserver,
+      )
+
+      if (result.success === false) {
+        return res.status(result.status).json({ error: result.error })
       }
-
-      const platform = (await import("./singleton")).GLOBAL.get().meeting_platform
-
-      if (platform === "meet") {
-        const { sendChatMessage } = await import("./meeting/meet/network-interception")
-        const success = await sendChatMessage(context.playwrightPage, data.message)
-        if (success) {
-          return res.status(200).json({ success: true, message: "Chat message sent" })
-        }
-        return res.status(500).json({ error: "Failed to send chat message via network" })
-      }
-
-      if (platform === "teams") {
-        // Teams: open chat panel and type into chat input
-        const page = context.playwrightPage
-        try {
-          // Multiple selectors for the chat input — Teams UI varies across versions
-          const inputSelectors = [
-            '[aria-label="Type a message"]',
-            '[placeholder="Type a message"]',
-            'div[data-tid="ckeditor"][role="textbox"]',
-          ]
-
-          // Check if any chat input is already visible
-          const inputFound = await page.evaluate((selectors) => {
-            for (const sel of selectors) {
-              if (document.querySelector(sel)) return sel
-            }
-            return null
-          }, inputSelectors)
-
-          console.log(`[Teams Chat Send] Input found: ${inputFound || "none"}`)
-
-          if (!inputFound) {
-            // Open chat panel first
-            console.log("[Teams Chat Send] Opening chat panel...")
-            await page.evaluate(() => {
-              const btn = document.querySelector('button#chat-button') as HTMLElement | null
-              if (btn) { btn.click(); return true }
-              return false
-            })
-            // Wait for any of the input selectors to appear
-            await page.waitForSelector(inputSelectors.join(", "), { timeout: 5000 })
-          }
-
-          // Find which selector matches
-          const activeSelector = inputFound || await page.evaluate((selectors) => {
-            for (const sel of selectors) {
-              if (document.querySelector(sel)) return sel
-            }
-            return null
-          }, inputSelectors)
-
-          if (!activeSelector) {
-            return res.status(500).json({ error: "Chat input not found" })
-          }
-
-          // Use CKEditor 5 internal API to insert text, then click the send button.
-          // All Playwright keyboard/focus approaches fail because the chat input
-          // is behind a z-index 900000 overlay and outside the viewport.
-          const sendResult = await page.evaluate(({ selector, message }) => {
-            const el = document.querySelector(selector) as any
-            if (!el) return { sent: false, reason: "element not found" }
-
-            const editor = el.ckeditorInstance
-            if (!editor) return { sent: false, reason: "no ckeditorInstance on element" }
-
-            // Insert text via CKEditor model API
-            editor.model.change((writer: any) => {
-              const root = editor.model.document.getRoot()
-              writer.remove(writer.createRangeIn(root))
-              writer.insertText(message, root, 0)
-            })
-
-            // Try clicking the send button (Teams enables it when there's text)
-            const sendBtn = document.querySelector(
-              'button[data-tid="sendMessageCommands-send"]'
-            ) as HTMLButtonElement | null
-
-            if (sendBtn && !sendBtn.disabled) {
-              sendBtn.click()
-              return { sent: true, method: "send-button" }
-            }
-
-            // Fallback: dispatch Ctrl+Enter on the editor element (Teams send shortcut)
-            el.dispatchEvent(new KeyboardEvent("keydown", {
-              key: "Enter", code: "Enter", keyCode: 13, which: 13,
-              ctrlKey: true, bubbles: true, cancelable: true
-            }))
-
-            return { sent: true, method: sendBtn ? "ctrl-enter (button disabled)" : "ctrl-enter (no button)" }
-          }, { selector: activeSelector, message: data.message })
-
-          console.log("[Teams Chat Send] CKEditor API result:", JSON.stringify(sendResult))
-
-          if (!sendResult.sent) {
-            console.error(`[Teams Chat Send] Failed: ${sendResult.reason}`)
-            return res.status(500).json({ error: sendResult.reason })
-          }
-
-          return res.status(200).json({ success: true, message: "Chat message sent" })
-        } catch (error) {
-          console.error("Failed to send Teams chat message:", formatError(error))
-          return res.status(500).json({ error: "Failed to send chat message via Teams UI" })
-        }
-      }
-
-      return res.status(400).json({ error: `Unsupported platform: ${platform}` })
+      return res.status(200).json({ success: true, message: "Chat message sent" })
     } catch (error) {
       console.error("Failed to send chat message:", formatError(error))
       return res.status(500).json({

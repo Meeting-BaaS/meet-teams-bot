@@ -332,7 +332,6 @@ export class InCallState extends BaseState {
     await chatObserver.startObserving(this.context.playwrightPage)
     this.context.chatObserver = chatObserver
     if (chatObserver.isChatDisabled()) {
-      this.context.chatDisabled = true
       console.warn("[InCallState] Chat is disabled for this meeting")
     }
   }

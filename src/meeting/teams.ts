@@ -10,6 +10,31 @@ import { sleep } from "../utils/sleep"
 import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from "./teams/audio-capture"
 import { TEAMS_STATE_CONFIG } from "./teams-state-config"
 
+// Types for Teams chat API interception
+interface TeamsChatMessage {
+  clientMessageId?: string
+  from?: string
+  content?: string
+  imdisplayname?: string
+  originalArrivalTime?: string
+}
+
+interface TeamsBatchEventData {
+  data?: {
+    chatServiceBatchEvent?: Array<{ message?: TeamsChatMessage }>
+  }
+}
+
+interface TeamsChatWindow extends Window {
+  __teamsChatApiPatched?: boolean
+  onTeamsChatMessage?: (msg: {
+    text: string
+    senderName: string
+    timestamp: number
+    messageId: string
+  }) => void
+}
+
 // Create a singleton detector instance for Microsoft Teams
 const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
 
@@ -57,11 +82,10 @@ export class TeamsProvider implements MeetingProviderInterface {
     // window.onTeamsChatMessage is exposed later by TeamsChatObserver; messages
     // received before that point are silently dropped (bot hasn't joined yet).
     await page.addInitScript(() => {
-      const w = window as any // eslint-disable-line @typescript-eslint/no-explicit-any
+      const w = window as TeamsChatWindow
       if (w.__teamsChatApiPatched) return
       w.__teamsChatApiPatched = true
 
-      const seenIds = new Set<string>()
       const originalBind = Function.prototype.bind
 
       function stripHtml(html: string): string {
@@ -74,34 +98,21 @@ export class TeamsProvider implements MeetingProviderInterface {
           const bound = originalBind.apply(this, [thisArg, ...args]) as (...a: unknown[]) => unknown
           return function (...callArgs: unknown[]) {
             try {
-              const eventData = callArgs[0] as any // eslint-disable-line @typescript-eslint/no-explicit-any
+              const eventData = callArgs[0] as TeamsBatchEventData | undefined
               const batchEvents = eventData?.data?.chatServiceBatchEvent
               if (Array.isArray(batchEvents)) {
                 for (const evt of batchEvents) {
                   const message = evt?.message
                   if (!message?.clientMessageId || !message?.from || !message?.content) continue
 
-                  const messageId = message.clientMessageId as string
-                  if (seenIds.has(messageId)) continue
-                  seenIds.add(messageId)
-
-                  if (seenIds.size > 1000) {
-                    const iter = seenIds.values()
-                    for (let i = 0; i < 500; i++) {
-                      const result = iter.next()
-                      if (!result.done) seenIds.delete(result.value)
-                    }
-                  }
-
-                  const text = stripHtml(message.content as string)
+                  const messageId = message.clientMessageId
+                  const text = stripHtml(message.content)
                   if (!text) continue
 
-                  const senderName = (message.imdisplayname as string) || (message.from as string) || "Unknown"
+                  const senderName = message.imdisplayname || message.from || "Unknown"
                   const timestamp = message.originalArrivalTime
-                    ? new Date(message.originalArrivalTime as string).getTime()
+                    ? new Date(message.originalArrivalTime).getTime()
                     : Date.now()
-
-                  console.log(`[TeamsChatAPI] Chat message: "${text}" from ${senderName}`)
 
                   if (typeof w.onTeamsChatMessage === "function") {
                     w.onTeamsChatMessage({ text, senderName, timestamp, messageId })

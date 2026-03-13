@@ -31,21 +31,18 @@ export class TeamsChatObserver {
       return
     }
 
-    console.log("[TeamsChatObserver] Starting chat observation...")
-
     // Expose callback to browser
     await this.page.exposeFunction(
       "onTeamsChatMessage",
       async (msg: { text: string; senderName: string; timestamp: number; messageId: string }) => {
-        console.log(`[TeamsChatObserver] 💬 Received: "${msg.text}" from ${msg.senderName} (id: ${msg.messageId})`)
         try {
           await ChatManager.getInstance().handleChatMessage({
             messageId: msg.messageId,
             text: msg.text,
             senderName: msg.senderName,
+            senderId: null, // Teams has no deviceId for participant lookup
             timestamp: msg.timestamp,
           })
-          console.log(`[TeamsChatObserver] ✅ Forwarded to ChatManager`)
         } catch (error) {
           console.error("[TeamsChatObserver] Error handling chat message:", error)
         }
@@ -64,7 +61,7 @@ export class TeamsChatObserver {
     }
 
     this.isObserving = true
-    console.log("[TeamsChatObserver] ✅ Chat observation started")
+    console.log("[TeamsChatObserver] Chat observation started")
   }
 
   /**
@@ -103,7 +100,7 @@ export class TeamsChatObserver {
 
         if (chatStatus.startsWith("disabled:")) {
           const reason = chatStatus.slice("disabled:".length)
-          console.warn(`[TeamsChatObserver] ⚠️ Chat is disabled: ${reason}`)
+          console.warn(`[TeamsChatObserver] Chat is disabled: ${reason}`)
           this._chatDisabled = true
           return false
         }
@@ -144,8 +141,6 @@ export class TeamsChatObserver {
           continue
         }
 
-        console.log("[TeamsChatObserver] Chat button clicked")
-
         // Wait for chat panel to appear
         try {
           await this.page.waitForSelector(
@@ -159,12 +154,12 @@ export class TeamsChatObserver {
             return el?.textContent?.trim() || null
           })
           if (disabled) {
-            console.warn(`[TeamsChatObserver] ⚠️ Chat is disabled: ${disabled}`)
+            console.warn(`[TeamsChatObserver] Chat is disabled: ${disabled}`)
             this._chatDisabled = true
             return false
           }
 
-          console.log("[TeamsChatObserver] ✅ Chat panel opened successfully")
+          console.log("[TeamsChatObserver] Chat panel opened successfully")
           return true
         } catch {
           console.warn(`[TeamsChatObserver] Chat container not found after click, attempt ${attempt}/${MAX_CHAT_OPEN_RETRIES}`)
@@ -184,23 +179,24 @@ export class TeamsChatObserver {
     return false
   }
 
-  public stopObserving(): void {
+  public async stopObserving(): Promise<void> {
     if (!this.isObserving) return
 
     // Close chat panel on cleanup
-    this.page
-      ?.evaluate(() => {
+    try {
+      await this.page?.evaluate(() => {
         const closeButton = document.querySelector(
           'button[data-tid="rail-header-close-button"]'
         ) as HTMLElement | null
         if (closeButton) {
           closeButton.click()
-          console.log("[TeamsChatObserver-Browser] Chat panel closed")
         }
       })
-      .catch((e) => console.error("[TeamsChatObserver] Error closing chat panel:", e))
+    } catch (e) {
+      console.error("[TeamsChatObserver] Error closing chat panel:", e)
+    }
 
     this.isObserving = false
-    console.log("[TeamsChatObserver] ✅ Chat observation stopped")
+    console.log("[TeamsChatObserver] Chat observation stopped")
   }
 }

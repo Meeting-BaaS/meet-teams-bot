@@ -1,9 +1,37 @@
-import { Events } from "./events"
-import type { ChatMessageData } from "./types"
+import { randomUUID } from "node:crypto"
+import * as fs from "node:fs"
+import * as path from "node:path"
+import type { Page } from "@playwright/test"
+import axios from "./api/axios-instance"
+import { envVars } from "./config/env-vars"
+import type { ChatObserver } from "./meeting/chatObserver"
+import { GLOBAL } from "./singleton"
+import type { ChatMessageData, MeetingProvider } from "./types"
+import { formatError } from "./utils/Logger"
+import { PathManager } from "./utils/PathManager"
+
+export type SendBotMessageResult =
+  | { success: true }
+  | { success: false; error: string; status: number }
+
+// Minimal CKEditor 5 type shapes for Teams chat sending
+type CKElement = Record<string, unknown>
+interface CKWriter {
+  createRangeIn(root: CKElement): unknown
+  remove(range: unknown): void
+  insertText(text: string, root: CKElement, offset: number): void
+}
+interface CKEditor {
+  model: {
+    change(callback: (writer: CKWriter) => void): void
+    document: { getRoot(): CKElement }
+  }
+}
 
 export class ChatManager {
   private static instance: ChatManager | null = null
   private seenMessageIds: Set<string> = new Set()
+  private chatMessages: ChatMessageData[] = []
 
   static getInstance(): ChatManager {
     if (!ChatManager.instance) {
@@ -14,35 +42,230 @@ export class ChatManager {
 
   static start(): void {
     ChatManager.getInstance()
-    console.log("[ChatManager] Started")
+  }
+
+  /**
+   * Add a message ID to the seen set (used to prevent echo of bot-sent messages).
+   */
+  addSeenMessageId(messageId: string): void {
+    this.seenMessageIds.add(messageId)
+  }
+
+  addChatMessage(msg: ChatMessageData): void {
+    this.chatMessages.push(msg)
+    this.writeToDisk()
+  }
+
+  getChatMessages(): ChatMessageData[] {
+    return this.chatMessages
+  }
+
+  getChatMessagesPath(): string {
+    try {
+      return path.join(PathManager.getInstance().getBasePath(), "chat_messages.json")
+    } catch {
+      return path.join("/tmp", GLOBAL.get().bot_uuid, "chat_messages.json")
+    }
+  }
+
+  /**
+   * Send a message as the bot into the meeting chat.
+   * Handles platform-specific sending, persistence, and dedup.
+   */
+  async sendBotMessage(
+    page: Page,
+    platform: MeetingProvider,
+    message: string,
+    chatObserver?: ChatObserver | null,
+  ): Promise<SendBotMessageResult> {
+    if (chatObserver?.isChatDisabled()) {
+      return { success: false, error: "Chat is disabled for this meeting", status: 400 }
+    }
+
+    if (platform === "meet") {
+      return this.sendViaMeet(page, message)
+    }
+
+    if (platform === "teams") {
+      return this.sendViaTeams(page, message)
+    }
+
+    return { success: false, error: `Unsupported platform: ${platform}`, status: 400 }
   }
 
   async handleChatMessage(message: ChatMessageData): Promise<void> {
-    // Dedup by messageId
+    // Deduplicate by messageId
     if (this.seenMessageIds.has(message.messageId)) return
     this.seenMessageIds.add(message.messageId)
 
-    // Trim set if > 1000 to prevent unbounded growth
-    if (this.seenMessageIds.size > 1000) {
-      const iterator = this.seenMessageIds.values()
-      for (let i = 0; i < 500; i++) {
-        const result = iterator.next()
-        if (!result.done) {
-          this.seenMessageIds.delete(result.value)
-        }
+    // Resolve senderId via deviceId lookup (Meet only)
+    if (message.deviceId && message.senderId === null) {
+      const participant = GLOBAL.getParticipants().find(
+        (p) => p.participantId === message.deviceId
+      )
+      if (participant?.id != null) {
+        message.senderId = participant.id
       }
     }
 
-    console.log(
-      `[ChatManager] Chat message from ${message.senderName}: "${message.text.substring(0, 50)}${message.text.length > 50 ? "..." : ""}"`
-    )
+    // Persist to disk
+    this.addChatMessage(message)
 
-    // Fire webhook
-    Events.chatMessageReceived({
-      text: message.text,
-      sender_name: message.senderName,
-      timestamp: message.timestamp,
-      message_id: message.messageId,
+    // Send to API server via dedicated chat-message route (fire-and-forget)
+    this.sendChatMessageToApi(message)
+  }
+
+  private persistBotSentMessage(text: string): void {
+    const messageId = randomUUID()
+    const botName = GLOBAL.get().bot_name
+    this.addChatMessage({
+      text,
+      senderName: botName,
+      senderId: null,
+      timestamp: Date.now(),
+      messageId,
+    })
+    // Add to seen set so if the platform echoes it back, we don't duplicate
+    this.addSeenMessageId(messageId)
+  }
+
+  private async sendViaMeet(page: Page, message: string): Promise<SendBotMessageResult> {
+    try {
+      const { sendChatMessage } = await import("./meeting/meet/network-interception")
+      const success = await sendChatMessage(page, message)
+      if (success) {
+        this.persistBotSentMessage(message)
+        return { success: true }
+      }
+      return { success: false, error: "Failed to send chat message via network", status: 500 }
+    } catch (error) {
+      console.error("[ChatManager] Meet send failed:", formatError(error))
+      return { success: false, error: "Failed to send chat message via Meet", status: 500 }
+    }
+  }
+
+  private async sendViaTeams(page: Page, message: string): Promise<SendBotMessageResult> {
+    try {
+      // Multiple selectors for the chat input — Teams UI varies across versions
+      const inputSelectors = [
+        '[aria-label="Type a message"]',
+        '[placeholder="Type a message"]',
+        'div[data-tid="ckeditor"][role="textbox"]',
+      ]
+
+      // Check if any chat input is already visible
+      const inputFound = await page.evaluate((selectors) => {
+        for (const sel of selectors) {
+          if (document.querySelector(sel)) return sel
+        }
+        return null
+      }, inputSelectors)
+
+      if (!inputFound) {
+        // Open chat panel first
+        await page.evaluate(() => {
+          const btn = document.querySelector('button#chat-button') as HTMLElement | null
+          if (btn) { btn.click(); return true }
+          return false
+        })
+        await page.waitForSelector(inputSelectors.join(", "), { timeout: 5000 })
+      }
+
+      // Find which selector matches
+      const activeSelector = inputFound || await page.evaluate((selectors) => {
+        for (const sel of selectors) {
+          if (document.querySelector(sel)) return sel
+        }
+        return null
+      }, inputSelectors)
+
+      if (!activeSelector) {
+        return { success: false, error: "Chat input not found", status: 500 }
+      }
+
+      // Use CKEditor 5 internal API to insert text, then click the send button.
+      // All Playwright keyboard/focus approaches fail because the chat input
+      // is behind a z-index 900000 overlay and outside the viewport.
+      const sendResult = await page.evaluate(({ selector, msg }) => {
+        const el = document.querySelector(selector) as (Element & { ckeditorInstance?: CKEditor }) | null
+        if (!el) return { sent: false, reason: "element not found" }
+
+        const editor = el.ckeditorInstance
+        if (!editor) return { sent: false, reason: "no ckeditorInstance on element" }
+
+        // Insert text via CKEditor model API
+        editor.model.change((writer) => {
+          const root = editor.model.document.getRoot()
+          writer.remove(writer.createRangeIn(root))
+          writer.insertText(msg, root, 0)
+        })
+
+        // Try clicking the send button (Teams enables it when there's text)
+        const sendBtn = document.querySelector(
+          'button[data-tid="sendMessageCommands-send"]'
+        ) as HTMLButtonElement | null
+
+        if (sendBtn && !sendBtn.disabled) {
+          sendBtn.click()
+          return { sent: true, method: "send-button" }
+        }
+
+        // Fallback: dispatch Ctrl+Enter on the editor element (Teams send shortcut)
+        el.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "Enter", code: "Enter", keyCode: 13, which: 13,
+          ctrlKey: true, bubbles: true, cancelable: true
+        }))
+
+        return { sent: true, method: sendBtn ? "ctrl-enter (button disabled)" : "ctrl-enter (no button)" }
+      }, { selector: activeSelector, msg: message })
+
+      console.log("[ChatManager] Teams CKEditor result:", JSON.stringify(sendResult))
+
+      if (!sendResult.sent) {
+        return { success: false, error: sendResult.reason ?? "Unknown Teams send error", status: 500 }
+      }
+
+      this.persistBotSentMessage(message)
+      return { success: true }
+    } catch (error) {
+      console.error("[ChatManager] Teams send failed:", formatError(error))
+      return { success: false, error: "Failed to send chat message via Teams UI", status: 500 }
+    }
+  }
+
+  private writeToDisk(): void {
+    try {
+      const filePath = this.getChatMessagesPath()
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      fs.writeFileSync(filePath, JSON.stringify(this.chatMessages, null, 2))
+    } catch (error) {
+      console.error("[ChatManager] Failed to write chat_messages.json:", error)
+    }
+  }
+
+  private sendChatMessageToApi(message: ChatMessageData): void {
+    if (envVars.SERVERLESS) return
+
+    const params = GLOBAL.get()
+    axios({
+      method: "POST",
+      url: "/bot-process/chat-message",
+      data: {
+        bot_id: params.bot_id,
+        bot_uuid: params.bot_uuid,
+        message_id: message.messageId,
+        sender_name: message.senderName,
+        sender_id: message.senderId,
+        text: message.text,
+        timestamp: message.timestamp
+      }
+    }).catch((error) => {
+      if (error instanceof Error) {
+        console.warn(
+          "[ChatManager] Failed to send chat message to API (continuing):",
+          error.message
+        )
+      }
     })
   }
 }

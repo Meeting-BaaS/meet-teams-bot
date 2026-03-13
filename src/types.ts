@@ -62,15 +62,17 @@ export type Participant = {
 export type ChatMessageData = {
   text: string
   senderName: string
+  senderId: number | null
   timestamp: number
   messageId: string
+  deviceId?: string // Internal: used for participant lookup (Meet), not sent in webhook
 }
 
 export type SendChatMessageParams = {
   message: string
 }
 
-export type ArtifactType = "audio" | "video" | "screenshots" | "diarization"
+export type ArtifactType = "audio" | "video" | "screenshots" | "diarization" | "chat_messages"
 export type ArtifactErrorCode =
   | "FILE_NOT_FOUND"
   | "UPLOAD_FAILED"

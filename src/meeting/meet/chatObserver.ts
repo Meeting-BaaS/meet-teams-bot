@@ -17,14 +17,14 @@ export class MeetChatObserver {
       return
     }
 
-    console.log("[MeetChatObserver] Starting chat observation...")
-
     const onChatMessage = async (msg: ChatMessage) => {
       try {
         await ChatManager.getInstance().handleChatMessage({
           messageId: msg.messageId,
           text: msg.text,
           senderName: msg.senderName || "Unknown",
+          senderId: null, // Resolved by ChatManager via deviceId lookup
+          deviceId: msg.deviceId,
           timestamp: typeof msg.timestamp === "string" ? Number.parseInt(msg.timestamp, 10) : msg.timestamp,
         })
       } catch (error) {
@@ -35,7 +35,7 @@ export class MeetChatObserver {
     const success = await setupChatMessageCallback(this.page, onChatMessage)
     if (success) {
       this.isObserving = true
-      console.log("[MeetChatObserver] ✅ Chat observation started")
+      console.log("[MeetChatObserver] Chat observation started")
     } else {
       console.warn("[MeetChatObserver] Failed to setup chat callback")
     }
@@ -44,6 +44,6 @@ export class MeetChatObserver {
   public stopObserving(): void {
     if (!this.isObserving) return
     this.isObserving = false
-    console.log("[MeetChatObserver] ✅ Chat observation stopped")
+    console.log("[MeetChatObserver] Chat observation stopped")
   }
 }
