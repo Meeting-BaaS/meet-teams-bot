@@ -30,7 +30,7 @@ interface TeamsChatWindow extends Window {
   onTeamsChatMessage?: (msg: {
     text: string
     senderName: string
-    timestamp: number
+    timestamp: string
     messageId: string
   }) => void
 }
@@ -111,8 +111,8 @@ export class TeamsProvider implements MeetingProviderInterface {
 
                   const senderName = message.imdisplayname || message.from || "Unknown"
                   const timestamp = message.originalArrivalTime
-                    ? new Date(message.originalArrivalTime).getTime()
-                    : Date.now()
+                    ? new Date(message.originalArrivalTime).toISOString()
+                    : new Date().toISOString()
 
                   if (typeof w.onTeamsChatMessage === "function") {
                     w.onTeamsChatMessage({ text, senderName, timestamp, messageId })

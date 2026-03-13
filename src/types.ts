@@ -63,7 +63,7 @@ export type ChatMessageData = {
   text: string
   senderName: string
   senderId: number | null
-  timestamp: number
+  timestamp: string
   messageId: string
   deviceId?: string // Internal: used for participant lookup (Meet), not sent in webhook
 }

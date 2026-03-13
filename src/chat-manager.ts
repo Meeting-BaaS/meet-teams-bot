@@ -122,7 +122,7 @@ export class ChatManager {
       text,
       senderName: botName,
       senderId: null,
-      timestamp: Date.now(),
+      timestamp: new Date().toISOString(),
       messageId,
     })
     // Add to seen set so if the platform echoes it back, we don't duplicate

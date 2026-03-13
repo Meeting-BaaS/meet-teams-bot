@@ -8,7 +8,7 @@ const CHAT_ACTION_TIMEOUT_MS = 3000
 
 declare global {
   interface Window {
-    onTeamsChatMessage?: (msg: { text: string; senderName: string; timestamp: number; messageId: string }) => void
+    onTeamsChatMessage?: (msg: { text: string; senderName: string; timestamp: string; messageId: string }) => void
   }
 }
 
@@ -34,7 +34,7 @@ export class TeamsChatObserver {
     // Expose callback to browser
     await this.page.exposeFunction(
       "onTeamsChatMessage",
-      async (msg: { text: string; senderName: string; timestamp: number; messageId: string }) => {
+      async (msg: { text: string; senderName: string; timestamp: string; messageId: string }) => {
         try {
           await ChatManager.getInstance().handleChatMessage({
             messageId: msg.messageId,
