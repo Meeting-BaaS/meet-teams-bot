@@ -1,6 +1,5 @@
 import type { Page } from "@playwright/test"
 import { ChatManager } from "../../chat-manager"
-import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
 
 const MAX_CHAT_OPEN_RETRIES = 5
@@ -43,22 +42,10 @@ export class TeamsChatObserver {
             return
           }
 
-          // Resolve raw Teams IDs (e.g. "8:orgid:..." or "8:teamsvisitor:...") to display names
-          let senderName = msg.senderName
-          if (senderName.startsWith("8:")) {
-            const resolved = this.resolveTeamsIdToName(senderName)
-            if (resolved) {
-              console.log(`[TeamsChatObserver] Resolved sender "${senderName}" -> "${resolved}"`)
-              senderName = resolved
-            } else {
-              console.warn(`[TeamsChatObserver] Could not resolve Teams ID: ${senderName}`)
-            }
-          }
-
           await ChatManager.getInstance().handleChatMessage({
             message_id: msg.messageId,
             text: msg.text,
-            sender_name: senderName,
+            sender_name: msg.senderName,
             sender_id: null, // Teams has no device ID for participant lookup
             timestamp: msg.timestamp,
           })
@@ -210,20 +197,6 @@ export class TeamsChatObserver {
     return false
   }
 
-  /**
-   * Try to resolve a raw Teams ID (e.g. "8:orgid:xxx") to a display name
-   * by looking up participants from the GLOBAL participants roster.
-   */
-  private resolveTeamsIdToName(teamsId: string): string | null {
-    const participants = GLOBAL.getParticipants()
-    for (const p of participants) {
-      // Match against participantId or odaId
-      if (p.participantId === teamsId || p.odaId === teamsId) {
-        return p.name
-      }
-    }
-    return null
-  }
 
   public async stopObserving(): Promise<void> {
     if (!this.isObserving) return

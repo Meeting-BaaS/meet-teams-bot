@@ -15,7 +15,8 @@ interface TeamsChatMessage {
   clientMessageId?: string
   from?: string
   content?: string
-  imdisplayname?: string
+  imDisplayName?: string
+  renamedDisplayName?: string
   originalArrivalTime?: string
 }
 
@@ -112,17 +113,19 @@ export class TeamsProvider implements MeetingProviderInterface {
                   const text = stripHtml(message.content)
                   if (!text) continue
 
+
                   // Filter out Teams system/metadata messages
                   if (text.includes("\n") && (text.includes("callEnded") || text.includes("api.flightproxy"))) {
                     continue
                   }
 
-                  // Resolve sender name: try imdisplayname, then cached MRI lookup, then raw ID
+                  // Resolve sender name: try imDisplayName/renamedDisplayName, then cached MRI lookup, then raw ID
                   const fromId = message.from
-                  if (message.imdisplayname && fromId) {
-                    mriNameCache[fromId] = message.imdisplayname
+                  const displayName = message.imDisplayName || message.renamedDisplayName
+                  if (displayName && fromId) {
+                    mriNameCache[fromId] = displayName
                   }
-                  const senderName = message.imdisplayname || mriNameCache[fromId] || fromId || "Unknown"
+                  const senderName = displayName || mriNameCache[fromId] || fromId || "Unknown"
                   const timestamp = message.originalArrivalTime
                     ? new Date(message.originalArrivalTime).toISOString()
                     : new Date().toISOString()
