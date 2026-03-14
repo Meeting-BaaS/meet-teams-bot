@@ -84,6 +84,8 @@ export async function server() {
   app.post("/send_chat_message", async (req, res) => {
     try {
       const data: SendChatMessageParams = req.body
+      console.log("[Server] Incoming /send_chat_message request:", JSON.stringify({ message: data.message?.substring(0, 100) }))
+
       if (!data.message || data.message.trim() === "") {
         return res.status(400).json({ error: "Missing required field: message" })
       }
@@ -108,6 +110,8 @@ export async function server() {
         data.message,
         context.chatObserver,
       )
+
+      console.log("[Server] Chat message result:", JSON.stringify(result))
 
       if (result.success === false) {
         return res.status(result.status).json({ error: result.error })

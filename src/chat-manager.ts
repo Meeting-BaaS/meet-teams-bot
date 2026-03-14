@@ -31,6 +31,7 @@ interface CKEditor {
 export class ChatManager {
   private static instance: ChatManager | null = null
   private seenMessageIds: Set<string> = new Set()
+  private seenMessageKeys: Set<string> = new Set()
   private chatMessages: ChatMessageData[] = []
 
   static getInstance(): ChatManager {
@@ -98,6 +99,11 @@ export class ChatManager {
     if (this.seenMessageIds.has(message.messageId)) return
     this.seenMessageIds.add(message.messageId)
 
+    // Deduplicate by senderName+text (catches bot echoes where platform assigns a different messageId)
+    const contentKey = `${message.senderName}|${message.text}`
+    if (this.seenMessageKeys.has(contentKey)) return
+    this.seenMessageKeys.add(contentKey)
+
     // Resolve senderId via deviceId lookup (Meet only)
     if (message.deviceId && message.senderId === null) {
       const participant = GLOBAL.getParticipants().find(
@@ -125,8 +131,9 @@ export class ChatManager {
       timestamp: new Date().toISOString(),
       messageId,
     })
-    // Add to seen set so if the platform echoes it back, we don't duplicate
+    // Add to seen sets so if the platform echoes it back, we don't duplicate
     this.addSeenMessageId(messageId)
+    this.seenMessageKeys.add(`${botName}|${text}`)
   }
 
   private async sendViaMeet(page: Page, message: string): Promise<SendBotMessageResult> {

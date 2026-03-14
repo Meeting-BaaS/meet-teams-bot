@@ -109,6 +109,11 @@ export class TeamsProvider implements MeetingProviderInterface {
                   const text = stripHtml(message.content)
                   if (!text) continue
 
+                  // Filter out Teams system/metadata messages
+                  if (text.includes("\n") && (text.includes("callEnded") || text.includes("api.flightproxy"))) {
+                    continue
+                  }
+
                   const senderName = message.imdisplayname || message.from || "Unknown"
                   const timestamp = message.originalArrivalTime
                     ? new Date(message.originalArrivalTime).toISOString()

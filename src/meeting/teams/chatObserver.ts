@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test"
 import { ChatManager } from "../../chat-manager"
+import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
 
 const MAX_CHAT_OPEN_RETRIES = 5
@@ -36,10 +37,28 @@ export class TeamsChatObserver {
       "onTeamsChatMessage",
       async (msg: { text: string; senderName: string; timestamp: string; messageId: string }) => {
         try {
+          // Filter out Teams system/metadata messages (e.g. callEnded with internal URLs)
+          if (this.isSystemMessage(msg.text)) {
+            console.log("[TeamsChatObserver] Filtered system message:", msg.text.substring(0, 80))
+            return
+          }
+
+          // Resolve raw Teams IDs (e.g. "8:orgid:..." or "8:teamsvisitor:...") to display names
+          let senderName = msg.senderName
+          if (senderName.startsWith("8:")) {
+            const resolved = this.resolveTeamsIdToName(senderName)
+            if (resolved) {
+              console.log(`[TeamsChatObserver] Resolved sender "${senderName}" -> "${resolved}"`)
+              senderName = resolved
+            } else {
+              console.warn(`[TeamsChatObserver] Could not resolve Teams ID: ${senderName}`)
+            }
+          }
+
           await ChatManager.getInstance().handleChatMessage({
             messageId: msg.messageId,
             text: msg.text,
-            senderName: msg.senderName,
+            senderName,
             senderId: null, // Teams has no deviceId for participant lookup
             timestamp: msg.timestamp,
           })
@@ -177,6 +196,33 @@ export class TeamsChatObserver {
 
     console.warn("[TeamsChatObserver] Failed to open chat panel after all attempts")
     return false
+  }
+
+  /**
+   * Check if a message is a Teams system/metadata message that should be filtered out.
+   * Examples: callEnded events, internal API URLs.
+   */
+  private isSystemMessage(text: string): boolean {
+    // System messages with callEnded and internal URLs spanning multiple lines
+    if (text.includes("\n") && (text.includes("callEnded") || text.includes("api.flightproxy"))) {
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Try to resolve a raw Teams ID (e.g. "8:orgid:xxx") to a display name
+   * by looking up participants from the GLOBAL participants roster.
+   */
+  private resolveTeamsIdToName(teamsId: string): string | null {
+    const participants = GLOBAL.getParticipants()
+    for (const p of participants) {
+      // Match against participantId or odaId
+      if (p.participantId === teamsId || p.odaId === teamsId) {
+        return p.name
+      }
+    }
+    return null
   }
 
   public async stopObserving(): Promise<void> {
