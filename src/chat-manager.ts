@@ -95,22 +95,22 @@ export class ChatManager {
   }
 
   async handleChatMessage(message: ChatMessageData): Promise<void> {
-    // Deduplicate by messageId
-    if (this.seenMessageIds.has(message.messageId)) return
-    this.seenMessageIds.add(message.messageId)
+    // Deduplicate by message_id
+    if (this.seenMessageIds.has(message.message_id)) return
+    this.seenMessageIds.add(message.message_id)
 
-    // Deduplicate by senderName+text (catches bot echoes where platform assigns a different messageId)
-    const contentKey = `${message.senderName}|${message.text}`
+    // Deduplicate by sender_name+text (catches bot echoes where platform assigns a different message_id)
+    const contentKey = `${message.sender_name}|${message.text}`
     if (this.seenMessageKeys.has(contentKey)) return
     this.seenMessageKeys.add(contentKey)
 
-    // Resolve senderId via deviceId lookup (Meet only)
-    if (message.deviceId && message.senderId === null) {
+    // Resolve sender_id via _device_id lookup (Meet only)
+    if (message._device_id && message.sender_id === null) {
       const participant = GLOBAL.getParticipants().find(
-        (p) => p.participantId === message.deviceId
+        (p) => p.participantId === message._device_id
       )
       if (participant?.id != null) {
-        message.senderId = participant.id
+        message.sender_id = participant.id
       }
     }
 
@@ -124,12 +124,14 @@ export class ChatManager {
   private persistBotSentMessage(text: string): void {
     const messageId = randomUUID()
     const botName = GLOBAL.get().bot_name
+    // Look up bot's own participant ID for sender_id
+    const botParticipant = GLOBAL.getParticipants().find((p) => p.name === botName)
     this.addChatMessage({
       text,
-      senderName: botName,
-      senderId: null,
+      sender_name: botName,
+      sender_id: botParticipant?.id ?? null,
       timestamp: new Date().toISOString(),
-      messageId,
+      message_id: messageId,
     })
     // Add to seen sets so if the platform echoes it back, we don't duplicate
     this.addSeenMessageId(messageId)
@@ -244,7 +246,9 @@ export class ChatManager {
     try {
       const filePath = this.getChatMessagesPath()
       fs.mkdirSync(path.dirname(filePath), { recursive: true })
-      fs.writeFileSync(filePath, JSON.stringify(this.chatMessages, null, 2))
+      // Filter out internal _device_id field before writing artifact
+      const artifact = this.chatMessages.map(({ _device_id, ...rest }) => rest)
+      fs.writeFileSync(filePath, JSON.stringify(artifact, null, 2))
     } catch (error) {
       console.error("[ChatManager] Failed to write chat_messages.json:", error)
     }
@@ -260,9 +264,9 @@ export class ChatManager {
       data: {
         bot_id: params.bot_id,
         bot_uuid: params.bot_uuid,
-        message_id: message.messageId,
-        sender_name: message.senderName,
-        sender_id: message.senderId,
+        message_id: message.message_id,
+        sender_name: message.sender_name,
+        sender_id: message.sender_id,
         text: message.text,
         timestamp: message.timestamp
       }

@@ -61,11 +61,12 @@ export type Participant = {
 
 export type ChatMessageData = {
   text: string
-  senderName: string
-  senderId: number | null
+  sender_name: string
+  sender_id: number | null
   timestamp: string
-  messageId: string
-  deviceId?: string // Internal: used for participant lookup (Meet), not sent in webhook
+  message_id: string
+  /** Internal: used for participant lookup (Meet), not persisted to artifact */
+  _device_id?: string
 }
 
 export type SendChatMessageParams = {

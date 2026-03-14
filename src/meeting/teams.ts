@@ -88,6 +88,9 @@ export class TeamsProvider implements MeetingProviderInterface {
 
       const originalBind = Function.prototype.bind
 
+      // Cache MRI ID → display name mappings learned from messages
+      const mriNameCache: Record<string, string> = {}
+
       function stripHtml(html: string): string {
         return html.replace(/<[^>]*>/g, "")
       }
@@ -114,7 +117,12 @@ export class TeamsProvider implements MeetingProviderInterface {
                     continue
                   }
 
-                  const senderName = message.imdisplayname || message.from || "Unknown"
+                  // Resolve sender name: try imdisplayname, then cached MRI lookup, then raw ID
+                  const fromId = message.from
+                  if (message.imdisplayname && fromId) {
+                    mriNameCache[fromId] = message.imdisplayname
+                  }
+                  const senderName = message.imdisplayname || mriNameCache[fromId] || fromId || "Unknown"
                   const timestamp = message.originalArrivalTime
                     ? new Date(message.originalArrivalTime).toISOString()
                     : new Date().toISOString()

@@ -22,11 +22,11 @@ export class MeetChatObserver {
         // Use current time as timestamp — Meet's protobuf timestamp is an internal
         // sequence number, not a reliable Unix timestamp in any unit
         await ChatManager.getInstance().handleChatMessage({
-          messageId: msg.messageId,
+          message_id: msg.messageId,
           text: msg.text,
-          senderName: msg.senderName || "Unknown",
-          senderId: null, // Resolved by ChatManager via deviceId lookup
-          deviceId: msg.deviceId,
+          sender_name: msg.senderName || "Unknown",
+          sender_id: null, // Resolved by ChatManager via _device_id lookup
+          _device_id: msg.deviceId,
           timestamp: new Date().toISOString(),
         })
       } catch (error) {

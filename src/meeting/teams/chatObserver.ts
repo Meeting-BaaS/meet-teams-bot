@@ -56,10 +56,10 @@ export class TeamsChatObserver {
           }
 
           await ChatManager.getInstance().handleChatMessage({
-            messageId: msg.messageId,
+            message_id: msg.messageId,
             text: msg.text,
-            senderName,
-            senderId: null, // Teams has no deviceId for participant lookup
+            sender_name: senderName,
+            sender_id: null, // Teams has no device ID for participant lookup
             timestamp: msg.timestamp,
           })
         } catch (error) {
