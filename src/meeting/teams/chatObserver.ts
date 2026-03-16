@@ -38,7 +38,7 @@ export class TeamsChatObserver {
         try {
           // Filter out Teams system/metadata messages (e.g. callEnded with internal URLs)
           if (this.isSystemMessage(msg.text)) {
-            console.log("[TeamsChatObserver] Filtered system message:", msg.text.substring(0, 80))
+            console.log("[TeamsChatObserver] Filtered system message")
             return
           }
 
