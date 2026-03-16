@@ -96,12 +96,18 @@ export class ChatManager {
 
   async handleChatMessage(message: ChatMessageData): Promise<void> {
     // Deduplicate by message_id
-    if (this.seenMessageIds.has(message.message_id)) return
+    if (this.seenMessageIds.has(message.message_id)) {
+      console.log(`[ChatManager] Dedup by message_id: ${message.message_id}`)
+      return
+    }
     this.seenMessageIds.add(message.message_id)
 
     // Deduplicate by sender_name+text (catches bot echoes where platform assigns a different message_id)
     const contentKey = `${message.sender_name}|${message.text}`
-    if (this.seenMessageKeys.has(contentKey)) return
+    if (this.seenMessageKeys.has(contentKey)) {
+      console.log(`[ChatManager] Dedup by content key (message_id=${message.message_id})`)
+      return
+    }
     this.seenMessageKeys.add(contentKey)
 
     // Resolve sender_id via _device_id lookup (Meet only)
@@ -177,7 +183,7 @@ export class ChatManager {
           if (btn) { btn.click(); return true }
           return false
         })
-        await page.waitForSelector(inputSelectors.join(", "), { timeout: 5000 })
+        await page.waitForSelector(inputSelectors.join(", "), { timeout: 2000 })
       }
 
       // Find which selector matches
@@ -189,7 +195,7 @@ export class ChatManager {
       }, inputSelectors)
 
       if (!activeSelector) {
-        return { success: false, error: "Chat input not found", status: 500 }
+        return { success: false, error: "Chat input not found", status: 400 }
       }
 
       // Use CKEditor 5 internal API to insert text, then click the send button.
@@ -231,14 +237,14 @@ export class ChatManager {
       console.log("[ChatManager] Teams CKEditor result:", JSON.stringify(sendResult))
 
       if (!sendResult.sent) {
-        return { success: false, error: sendResult.reason ?? "Unknown Teams send error", status: 500 }
+        return { success: false, error: sendResult.reason ?? "Unknown Teams send error", status: 400 }
       }
 
       this.persistBotSentMessage(message)
       return { success: true }
     } catch (error) {
       console.error("[ChatManager] Teams send failed:", formatError(error))
-      return { success: false, error: "Failed to send chat message via Teams UI", status: 500 }
+      return { success: false, error: "Chat is not available in this meeting", status: 400 }
     }
   }
 
