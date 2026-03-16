@@ -1,7 +1,9 @@
 import { switchToRecordingBranding } from "../../branding"
+import { ChatManager } from "../../chat-manager"
 import { Events } from "../../events"
+import { ChatObserver } from "../../meeting/chatObserver"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
-import { sendEntryMessage } from "../../meeting/meet"
+
 import { verifyMeetAudioCapture } from "../../meeting/meet/audio-capture"
 import type { NetworkPayload, NetworkUser } from "../../meeting/meet/network-interception/types"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
@@ -110,6 +112,14 @@ export class InCallState extends BaseState {
       // Continue even if speakers observation fails
     }
 
+    // Start chat observation (non-critical)
+    try {
+      await this.startChatObservation()
+    } catch (error) {
+      console.error("Failed to start chat observation:", formatError(error))
+      // Continue even if chat observation fails
+    }
+
     // Non-blocking: entry message and audio verification (Meet only)
     this.performNonBlockingActions().catch((err) => {
       console.error("Error in non-blocking actions:", formatError(err))
@@ -125,13 +135,15 @@ export class InCallState extends BaseState {
   }
 
   /**
-   * Non-blocking actions after critical setup: entry message, audio verification (Meet only).
+   * Non-blocking actions after critical setup: entry message (all platforms), audio verification (Meet only).
    */
   private async performNonBlockingActions(): Promise<void> {
     if (!this.context.playwrightPage) return
-    if (GLOBAL.get().meeting_platform !== "meet") return
 
-    if (GLOBAL.get().streaming_output) {
+    const platform = GLOBAL.get().meeting_platform
+
+    // Meet-specific: verify audio capture
+    if (platform === "meet" && GLOBAL.get().streaming_output) {
       try {
         await verifyMeetAudioCapture(this.context.playwrightPage)
       } catch (error) {
@@ -139,11 +151,26 @@ export class InCallState extends BaseState {
       }
     }
 
+    // Entry message: works for both Meet and Teams via ChatManager
     if (GLOBAL.get().entry_message) {
-      console.log("Sending entry message (non-blocking)...")
-      sendEntryMessage(this.context.playwrightPage, GLOBAL.get().entry_message).catch((error) => {
-        console.error("Failed to send entry message:", formatError(error))
-      })
+      console.log(`Sending entry message via ChatManager (non-blocking, platform=${platform})...`)
+      ChatManager.getInstance()
+        .sendBotMessage(
+          this.context.playwrightPage,
+          platform,
+          GLOBAL.get().entry_message,
+          this.context.chatObserver,
+        )
+        .then((result) => {
+          if (result.success) {
+            console.log("[InCallState] Entry message sent successfully")
+          } else {
+            console.error("[InCallState] Entry message failed:", (result as { error: string }).error)
+          }
+        })
+        .catch((error) => {
+          console.error("Failed to send entry message:", formatError(error))
+        })
     }
   }
 
@@ -306,6 +333,24 @@ export class InCallState extends BaseState {
     }
 
     await startUIBasedObserver(this.context.playwrightPage, this.context)
+  }
+
+  private async startChatObservation(): Promise<void> {
+    if (!this.context.playwrightPage) {
+      console.error("Playwright page not available for chat observation")
+      return
+    }
+
+    console.log(`Starting chat observation for ${GLOBAL.get().meeting_platform}`)
+
+    ChatManager.start()
+
+    const chatObserver = new ChatObserver(GLOBAL.get().meeting_platform)
+    await chatObserver.startObserving(this.context.playwrightPage)
+    this.context.chatObserver = chatObserver
+    if (chatObserver.isChatDisabled()) {
+      console.warn("[InCallState] Chat is disabled for this meeting")
+    }
   }
 
   private async startHtmlCleaning(): Promise<void> {

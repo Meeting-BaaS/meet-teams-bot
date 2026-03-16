@@ -113,6 +113,9 @@ export interface MeetingContext {
   // Speakers observation
   speakersObserver?: import("../meeting/speakersObserver").SpeakersObserver
 
+  // Chat observation
+  chatObserver?: import("../meeting/chatObserver").ChatObserver
+
   // HTML cleanup
   htmlCleaner?: import("../meeting/htmlCleaner").HtmlCleaner
 

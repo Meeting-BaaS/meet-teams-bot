@@ -1,8 +1,10 @@
 import express from "express"
+import { ChatManager } from "./chat-manager"
 import { envVars } from "./config/env-vars"
+import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason } from "./state-machine/types"
-import type { StopRecordParams } from "./types"
+import type { SendChatMessageParams, StopRecordParams } from "./types"
 import { formatError } from "./utils/Logger"
 
 const HOST = envVars.HOST
@@ -77,6 +79,52 @@ export async function server() {
       })
     }
   }
+
+  // Send chat message to meeting
+  app.post("/send_chat_message", async (req, res) => {
+    try {
+      const data: SendChatMessageParams = req.body
+      console.log("[Server] Incoming /send_chat_message request")
+
+      if (!data.message || data.message.trim() === "") {
+        return res.status(400).json({ error: "Missing required field: message" })
+      }
+
+      if (data.message.length > 500) {
+        return res.status(400).json({ error: "Message exceeds maximum length of 500 characters" })
+      }
+
+      const meetingHandle = MeetingStateMachine.instance
+      if (!meetingHandle) {
+        return res.status(404).json({ error: "No active meeting found" })
+      }
+
+      const context = meetingHandle.getContext()
+      if (!context.playwrightPage) {
+        return res.status(500).json({ error: "Meeting page not available" })
+      }
+
+      const result = await ChatManager.getInstance().sendBotMessage(
+        context.playwrightPage,
+        GLOBAL.get().meeting_platform,
+        data.message,
+        context.chatObserver,
+      )
+
+      console.log("[Server] Chat message result:", JSON.stringify(result))
+
+      if (result.success === false) {
+        return res.status(result.status).json({ error: result.error })
+      }
+      return res.status(200).json({ success: true, message: "Chat message sent" })
+    } catch (error) {
+      console.error("Failed to send chat message:", formatError(error))
+      return res.status(500).json({
+        error: "Failed to send chat message",
+        details: error instanceof Error ? error.message : "Unknown error"
+      })
+    }
+  })
 
   // Get Recording Server Build Version Info
   app.get("/version", async (_req, res) => {

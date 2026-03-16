@@ -1,10 +1,14 @@
+import * as fs from "node:fs"
+import { envVars } from "../../config/env-vars"
 import { SoundContext, VideoContext } from "../../media_context"
 import { stopNetworkInterception } from "../../meeting/meet/network-interception"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
+import { ChatManager } from "../../chat-manager"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
+import { S3Uploader } from "../../utils/S3Uploader"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
 import { MEETING_CONSTANTS } from "../constants"
 import { MeetingStateType, type StateExecuteResult } from "../types"
@@ -61,7 +65,10 @@ export class CleanupState extends BaseState {
           console.info("🧹 Stopping network interception (early, before ScreenRecorder)")
           await stopNetworkInterception(this.context.playwrightPage)
         } catch (error) {
-          console.warn("🧹 Early network interception stop failed, will retry later:", formatError(error))
+          console.warn(
+            "🧹 Early network interception stop failed, will retry later:",
+            formatError(error)
+          )
         }
       }
 
@@ -104,8 +111,14 @@ export class CleanupState extends BaseState {
 
         // 8. Stop HTML cleaner (with 3s timeout)
         (async () => {
-          console.info("🧹 Step 8/9: Stopping HTML cleaner")
+          console.info("🧹 Step 8/10: Stopping HTML cleaner")
           await this.stopHtmlCleaner()
+        })(),
+
+        // 8b. Stop chat observer (with 3s timeout)
+        (async () => {
+          console.info("🧹 Step 8b/10: Stopping chat observer")
+          await this.stopChatObserver()
         })(),
 
         // 9. Stop network interception (Meet only)
@@ -196,6 +209,78 @@ export class CleanupState extends BaseState {
         console.error("Error stopping HTML cleaner:", formatError(error))
       }
       // Don't throw as this is non-critical
+    }
+  }
+
+  private async stopChatObserver(): Promise<void> {
+    try {
+      if (this.context.chatObserver) {
+        console.log("Stopping chat observer from cleanup state...")
+
+        await Promise.race([
+          (async () => {
+            this.context.chatObserver!.stopObserving()
+            this.context.chatObserver = undefined
+          })(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Chat observer stop timeout")), 3000)
+          )
+        ])
+
+        console.log("Chat observer stopped successfully")
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message?.includes("timeout")) {
+        console.warn("Chat observer stop timed out after 3s, continuing cleanup")
+        this.context.chatObserver = undefined
+      } else {
+        console.error("Error stopping chat observer:", formatError(error))
+      }
+    }
+
+    // Upload chat messages artifact to S3
+    await this.uploadChatMessagesArtifact()
+  }
+
+  private async uploadChatMessagesArtifact(): Promise<void> {
+    try {
+      const chatManager = ChatManager.getInstance()
+      const chatMessages = chatManager.getChatMessages()
+      if (chatMessages.length === 0) {
+        console.log("No chat messages to upload")
+        return
+      }
+
+      const filePath = chatManager.getChatMessagesPath()
+      if (!fs.existsSync(filePath)) {
+        console.warn("Chat messages file not found at:", filePath)
+        return
+      }
+
+      const botUuid = GLOBAL.get().bot_uuid
+      const s3Key = `${botUuid}/chat_messages.json`
+      const bucket = envVars.AWS_S3_ARTIFACTS_BUCKET
+
+      console.log(`Uploading ${chatMessages.length} chat messages to S3: ${s3Key}`)
+
+      const uploader = S3Uploader.getInstance()
+      if (uploader) {
+        await uploader.uploadFile(filePath, bucket, s3Key)
+        GLOBAL.addArtifactKey({
+          s3Key,
+          filePath,
+          extension: "json",
+          uploaded: true,
+          uploadedAt: new Date().toISOString(),
+          type: "chat_messages",
+          errorCode: null,
+          errorMessage: null
+        })
+        console.log("Chat messages artifact uploaded successfully")
+      }
+    } catch (error) {
+      console.error("Failed to upload chat messages artifact:", formatError(error))
+      // Don't throw — continue cleanup
     }
   }
 

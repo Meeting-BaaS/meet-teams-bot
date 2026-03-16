@@ -59,7 +59,21 @@ export type Participant = {
   isNetworkDetected?: boolean // Flag to indicate network vs UI detection
 }
 
-export type ArtifactType = "audio" | "video" | "screenshots" | "diarization"
+export type ChatMessageData = {
+  text: string
+  sender_name: string
+  sender_id: number | null
+  timestamp: string
+  message_id: string
+  /** Internal: used for participant lookup (Meet), not persisted to artifact */
+  _device_id?: string
+}
+
+export type SendChatMessageParams = {
+  message: string
+}
+
+export type ArtifactType = "audio" | "video" | "screenshots" | "diarization" | "chat_messages"
 export type ArtifactErrorCode =
   | "FILE_NOT_FOUND"
   | "UPLOAD_FAILED"

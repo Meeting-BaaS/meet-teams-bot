@@ -9,7 +9,7 @@ import { PROTO_SCHEMA } from "./schema"
 // Re-export types
 export type { ChatMessage, NetworkPayload, NetworkUser } from "./types"
 
-import type { NetworkPayload } from "./types"
+import type { ChatMessage, NetworkPayload } from "./types"
 
 // Extend Window interface for network interception functions
 declare global {
@@ -23,6 +23,7 @@ declare global {
       timestamp: number
       source: string
     }) => void
+    onChatMessageReceived?: (message: ChatMessage) => void
     triggerNetworkBroadcast?: () => void
     __stopNetworkInterception?: () => void
   }
@@ -119,6 +120,24 @@ export async function enableNetworkInterception(
   }
 
   return setupNetworkInterceptionCallback(page, onSpeakersChange)
+}
+
+/**
+ * Setup chat message callback (can be called AFTER page.goto())
+ * Exposes onChatMessageReceived to the browser so the datachannel handler can call back to Node.js
+ */
+export async function setupChatMessageCallback(
+  page: Page,
+  onChatMessage: (msg: ChatMessage) => void
+): Promise<boolean> {
+  try {
+    await page.exposeFunction("onChatMessageReceived", onChatMessage)
+    console.log("[NetworkInterceptor] ✅ Chat message callback exposed")
+    return true
+  } catch (error) {
+    console.error("[NetworkInterceptor] Failed to expose chat callback:", error)
+    return false
+  }
 }
 
 // Send chat message using network/data channel (protobuf approach)

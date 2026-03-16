@@ -10,6 +10,32 @@ import { sleep } from "../utils/sleep"
 import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from "./teams/audio-capture"
 import { TEAMS_STATE_CONFIG } from "./teams-state-config"
 
+// Types for Teams chat API interception
+interface TeamsChatMessage {
+  clientMessageId?: string
+  from?: string
+  content?: string
+  imDisplayName?: string
+  renamedDisplayName?: string
+  originalArrivalTime?: string
+}
+
+interface TeamsBatchEventData {
+  data?: {
+    chatServiceBatchEvent?: Array<{ message?: TeamsChatMessage }>
+  }
+}
+
+interface TeamsChatWindow extends Window {
+  __teamsChatApiPatched?: boolean
+  onTeamsChatMessage?: (msg: {
+    text: string
+    senderName: string
+    timestamp: string
+    messageId: string
+  }) => void
+}
+
 // Create a singleton detector instance for Microsoft Teams
 const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
 
@@ -50,6 +76,76 @@ export class TeamsProvider implements MeetingProviderInterface {
         formatError(error)
       )
     }
+
+    // Install chat API interception BEFORE Teams JS loads.
+    // Monkey-patches Function.prototype.bind to intercept Teams' internal
+    // onMessageReceived handler and extract chat messages from chatServiceBatchEvent.
+    // window.onTeamsChatMessage is exposed later by TeamsChatObserver; messages
+    // received before that point are silently dropped (bot hasn't joined yet).
+    await page.addInitScript(() => {
+      const w = window as TeamsChatWindow
+      if (w.__teamsChatApiPatched) return
+      w.__teamsChatApiPatched = true
+
+      const originalBind = Function.prototype.bind
+
+      // Cache MRI ID → display name mappings learned from messages
+      const mriNameCache: Record<string, string> = {}
+
+      function stripHtml(html: string): string {
+        return html.replace(/<[^>]*>/g, "")
+      }
+
+      Function.prototype.bind = function (thisArg: unknown, ...args: unknown[]) {
+        if (this.name === "onMessageReceived") {
+          console.log("[TeamsChatAPI] Intercepted onMessageReceived.bind() — hook active")
+          const bound = originalBind.apply(this, [thisArg, ...args]) as (...a: unknown[]) => unknown
+          return function (...callArgs: unknown[]) {
+            try {
+              const eventData = callArgs[0] as TeamsBatchEventData | undefined
+              const batchEvents = eventData?.data?.chatServiceBatchEvent
+              if (Array.isArray(batchEvents)) {
+                for (const evt of batchEvents) {
+                  const message = evt?.message
+                  if (!message?.clientMessageId || !message?.from || !message?.content) continue
+
+                  const messageId = message.clientMessageId
+                  const text = stripHtml(message.content)
+                  if (!text) continue
+
+
+                  // Filter out Teams system/metadata messages
+                  if (text.includes("\n") && (text.includes("callEnded") || text.includes("api.flightproxy"))) {
+                    continue
+                  }
+
+                  // Resolve sender name: try imDisplayName/renamedDisplayName, then cached MRI lookup, then raw ID
+                  const fromId = message.from
+                  const displayName = message.imDisplayName || message.renamedDisplayName
+                  if (displayName && fromId) {
+                    mriNameCache[fromId] = displayName
+                  }
+                  const senderName = displayName || mriNameCache[fromId] || fromId || "Unknown"
+                  const timestamp = message.originalArrivalTime
+                    ? new Date(message.originalArrivalTime).toISOString()
+                    : new Date().toISOString()
+
+                  if (typeof w.onTeamsChatMessage === "function") {
+                    w.onTeamsChatMessage({ text, senderName, timestamp, messageId })
+                  }
+                }
+              }
+            } catch (e) {
+              console.error("[TeamsChatAPI] Error in interception:", e)
+            }
+            return bound.apply(this, callArgs)
+          }
+        }
+        return originalBind.apply(this, [thisArg, ...args])
+      }
+
+      console.log("[TeamsChatAPI] Function.prototype.bind monkey-patch installed")
+    })
 
     try {
       await page.goto(link, {
