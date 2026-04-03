@@ -112,15 +112,14 @@ export class InCallState extends BaseState {
       // Continue even if speakers observation fails
     }
 
-    // Start chat observation (non-critical)
-    try {
-      await this.startChatObservation()
-    } catch (error) {
-      console.error("Failed to start chat observation:", formatError(error))
-      // Continue even if chat observation fails
-    }
+    // Start chat observation + entry message (non-critical, non-blocking)
+    // Chat panel opening on Teams can take up to 25s of retries — must not block SETUP_TIMEOUT.
+    // Entry message is sent after chat observation is ready, so it benefits from the panel being open.
+    this.startChatObservationAndEntryMessage().catch((err) => {
+      console.error("Failed in chat observation/entry message:", formatError(err))
+    })
 
-    // Non-blocking: entry message and audio verification (Meet only)
+    // Non-blocking: audio verification (Meet only)
     this.performNonBlockingActions().catch((err) => {
       console.error("Error in non-blocking actions:", formatError(err))
     })
@@ -135,42 +134,68 @@ export class InCallState extends BaseState {
   }
 
   /**
-   * Non-blocking actions after critical setup: entry message (all platforms), audio verification (Meet only).
+   * Non-blocking actions after critical setup: audio verification (Meet only).
    */
   private async performNonBlockingActions(): Promise<void> {
     if (!this.context.playwrightPage) return
 
-    const platform = GLOBAL.get().meeting_platform
-
     // Meet-specific: verify audio capture
-    if (platform === "meet" && GLOBAL.get().streaming_output) {
+    if (GLOBAL.get().meeting_platform === "meet" && GLOBAL.get().streaming_output) {
       try {
         await verifyMeetAudioCapture(this.context.playwrightPage)
       } catch (error) {
         console.error("[Meet] Failed to verify audio capture post-join:", formatError(error))
       }
     }
+  }
 
-    // Entry message: works for both Meet and Teams via ChatManager
-    if (GLOBAL.get().entry_message) {
-      console.log(`Sending entry message via ChatManager (non-blocking, platform=${platform})...`)
-      ChatManager.getInstance()
-        .sendBotMessage(
+  /**
+   * Non-blocking: start chat observation, then send entry message once the observer is ready.
+   * On Teams, the observer opens the chat panel (with retries), so the entry message
+   * benefits from the panel already being open instead of racing to open it independently.
+   */
+  private async startChatObservationAndEntryMessage(): Promise<void> {
+    if (!this.context.playwrightPage) {
+      console.error("Playwright page not available for chat observation")
+      return
+    }
+
+    const platform = GLOBAL.get().meeting_platform
+
+    // Start chat observation
+    try {
+      console.log(`Starting chat observation for ${platform}`)
+      ChatManager.start()
+
+      const chatObserver = new ChatObserver(platform)
+      await chatObserver.startObserving(this.context.playwrightPage)
+      this.context.chatObserver = chatObserver
+      if (chatObserver.isChatDisabled()) {
+        console.warn("[InCallState] Chat is disabled for this meeting")
+      }
+    } catch (error) {
+      console.error("Failed to start chat observation:", formatError(error))
+      // Continue to entry message attempt even if observation setup failed
+    }
+
+    // Send entry message after chat observation is ready
+    if (GLOBAL.get().entry_message && this.context.playwrightPage) {
+      console.log(`Sending entry message via ChatManager (platform=${platform})...`)
+      try {
+        const result = await ChatManager.getInstance().sendBotMessage(
           this.context.playwrightPage,
           platform,
           GLOBAL.get().entry_message,
           this.context.chatObserver,
         )
-        .then((result) => {
-          if (result.success) {
-            console.log("[InCallState] Entry message sent successfully")
-          } else {
-            console.error("[InCallState] Entry message failed:", (result as { error: string }).error)
-          }
-        })
-        .catch((error) => {
-          console.error("Failed to send entry message:", formatError(error))
-        })
+        if (result.success) {
+          console.log("[InCallState] Entry message sent successfully")
+        } else {
+          console.error("[InCallState] Entry message failed:", (result as { error: string }).error)
+        }
+      } catch (error) {
+        console.error("Failed to send entry message:", formatError(error))
+      }
     }
   }
 
@@ -335,23 +360,6 @@ export class InCallState extends BaseState {
     await startUIBasedObserver(this.context.playwrightPage, this.context)
   }
 
-  private async startChatObservation(): Promise<void> {
-    if (!this.context.playwrightPage) {
-      console.error("Playwright page not available for chat observation")
-      return
-    }
-
-    console.log(`Starting chat observation for ${GLOBAL.get().meeting_platform}`)
-
-    ChatManager.start()
-
-    const chatObserver = new ChatObserver(GLOBAL.get().meeting_platform)
-    await chatObserver.startObserving(this.context.playwrightPage)
-    this.context.chatObserver = chatObserver
-    if (chatObserver.isChatDisabled()) {
-      console.warn("[InCallState] Chat is disabled for this meeting")
-    }
-  }
 
   private async startHtmlCleaning(): Promise<void> {
     if (!this.context.playwrightPage) {
