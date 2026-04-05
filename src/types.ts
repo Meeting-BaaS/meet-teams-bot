@@ -1,7 +1,7 @@
 import { BrowserContext, Page } from '@playwright/test'
 import { SimpleDialogObserver } from './services/dialog-observer/simple-dialog-observer'
 
-type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod'
+type SpeechToTextProvider = 'gladia' | 'deepgram' | 'assemblyai' | 'speechmatics' | 'soniox' | 'none'
 
 // Support both PascalCase and snake_case for recording_mode
 export type RecordingMode =
