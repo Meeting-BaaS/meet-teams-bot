@@ -8,6 +8,7 @@ import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
 import { formatError } from "../utils/Logger"
+import { humanClick, humanDelay, humanType } from "../utils/humanize"
 import {
   createStateDetector,
   type DenialPattern,
@@ -159,12 +160,13 @@ export class MeetProvider implements MeetingProviderInterface {
       assertOnMeetPage(page)
 
       await clickDismiss(page)
-      await sleep(300)
+      await humanDelay(800, 1500)
 
       console.log(
         "useWithoutAccountClicked:",
         await clickWithInnerText(page, "span", ["Use without an account"], 2)
       )
+      await humanDelay(500, 1200)
 
       // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
       for (let attempt = 1; attempt <= 10; attempt++) {
@@ -192,6 +194,9 @@ export class MeetProvider implements MeetingProviderInterface {
         }
       }
 
+      // Brief pause — human looks at the pre-join screen before toggling media
+      await humanDelay(1000, 2500)
+
       // Control microphone based on streaming_input
       if (GLOBAL.get().streaming_input) {
         await activateMicrophone(page)
@@ -205,6 +210,9 @@ export class MeetProvider implements MeetingProviderInterface {
       } else {
         await deactivateCamera(page)
       }
+
+      // Pause before clicking join — human reviews settings before joining
+      await humanDelay(1500, 3000)
 
       // Try to click join button - will retry continuously while waiting
       let lastJoinClickAt = 0
@@ -682,7 +690,7 @@ async function clickDismiss(page: Page): Promise<boolean> {
       const isEnabled = await button.isEnabled().catch(() => false)
 
       if (isVisible && isEnabled) {
-        await button.click()
+        await humanClick(page, button)
         return true
       }
     }
@@ -743,7 +751,7 @@ async function clickWithInnerText(
           if (count > 0) {
             console.log(`  - Found element with text "${text}" using selector "${sel}"`)
             if (shouldClick) {
-              await element.click()
+              await humanClick(page, element.first())
               console.log(`  - Clicked on element with text "${text}"`)
             }
             return true
@@ -820,7 +828,7 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
         const isEnabled = await locator.isEnabled().catch(() => false)
 
         if (isVisible && isEnabled) {
-          await locator.click({ timeout: 2000 })
+          await humanClick(page, locator)
           console.log(`Successfully clicked join button using selector: ${selector}`)
           return true
         }
@@ -903,11 +911,14 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   try {
     await page.waitForSelector(INPUT, { timeout: 1000 })
 
-    // Effacer le champ de texte existant
-    await page.fill(INPUT, "")
+    // Clear existing text with triple-click + backspace (more natural than fill(""))
+    await page.click(INPUT, { clickCount: 3 })
+    await humanDelay(50, 150)
+    await page.keyboard.press("Backspace")
+    await humanDelay(200, 400)
 
-    // Taper le nouveau nom
-    await page.fill(INPUT, BotNameTyped)
+    // Type bot name character by character with human-like timing
+    await humanType(page, INPUT, BotNameTyped)
 
     // Check that the text has been properly entered
     const inputValue = await page.inputValue(INPUT)
@@ -1003,7 +1014,8 @@ async function activateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await humanDelay(300, 800)
+      await humanClick(page, microphoneButton)
       console.log("Microphone activated successfully")
       return true
     }
@@ -1020,7 +1032,8 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await humanDelay(300, 800)
+      await humanClick(page, microphoneButton)
       console.log("Microphone deactivated successfully")
       return true
     }
@@ -1037,7 +1050,8 @@ async function deactivateCamera(page: Page): Promise<boolean> {
   try {
     const cameraButton = page.locator('div[aria-label="Turn off camera"]')
     if ((await cameraButton.count()) > 0) {
-      await cameraButton.click()
+      await humanDelay(400, 900)
+      await humanClick(page, cameraButton)
       console.log("Camera deactivated successfully")
       return true
     }
