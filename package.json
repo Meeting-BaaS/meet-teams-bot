@@ -18,7 +18,7 @@
         "@aws-sdk/client-s3": "^3.873.0",
         "@aws-sdk/client-sqs": "^3.873.0",
         "@aws-sdk/lib-storage": "^3.873.0",
-        "@playwright/test": "^1.53.0",
+        "@playwright/test": "npm:rebrowser-playwright@1.52.0",
         "async": "^3.2.6",
         "axios": "^1.13.5",
         "axios-retry": "^4.5.0",
