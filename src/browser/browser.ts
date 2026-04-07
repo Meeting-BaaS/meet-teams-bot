@@ -23,16 +23,27 @@ export async function openBrowser(): Promise<{ browser: BrowserContext }> {
 
     // Proxy configuration for residential IP routing
     const proxyUrl = envVars.BROWSER_PROXY_URL
-    if (proxyUrl) {
-      console.log(`🌐 Using browser proxy: ${proxyUrl.replace(/\/\/.*@/, "//***@")}`)
-    }
+    const proxyConfig = (() => {
+      if (!proxyUrl) return undefined
+      try {
+        const url = new URL(proxyUrl)
+        const server = `${url.protocol}//${url.hostname}:${url.port}`
+        const username = decodeURIComponent(url.username)
+        const password = decodeURIComponent(url.password)
+        console.log(`🌐 Using browser proxy: ${server} (user: ${username.slice(0, 20)}...)`)
+        return { server, username, password }
+      } catch {
+        console.error(`⚠️ Invalid BROWSER_PROXY_URL: ${proxyUrl}`)
+        return undefined
+      }
+    })()
 
     const context = await chromium.launchPersistentContext("", {
       headless: false,
       viewport: { width, height },
       executablePath: chromePath,
       locale: "en-US", // Set locale for Playwright context
-      ...(proxyUrl ? { proxy: { server: proxyUrl } } : {}),
+      ...(proxyConfig ? { proxy: proxyConfig } : {}),
       args: [
         // Window size and position - must match Xvfb display exactly
         `--window-size=${windowWidth},${windowHeight}`,
