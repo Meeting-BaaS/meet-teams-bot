@@ -21,11 +21,18 @@ export async function openBrowser(): Promise<{ browser: BrowserContext }> {
     const chromePath = envVars.CHROME_PATH
     console.log(`🔍 Using Chrome path: ${chromePath}`)
 
+    // Proxy configuration for residential IP routing
+    const proxyUrl = envVars.BROWSER_PROXY_URL
+    if (proxyUrl) {
+      console.log(`🌐 Using browser proxy: ${proxyUrl.replace(/\/\/.*@/, "//***@")}`)
+    }
+
     const context = await chromium.launchPersistentContext("", {
       headless: false,
       viewport: { width, height },
       executablePath: chromePath,
       locale: "en-US", // Set locale for Playwright context
+      ...(proxyUrl ? { proxy: { server: proxyUrl } } : {}),
       args: [
         // Window size and position - must match Xvfb display exactly
         `--window-size=${windowWidth},${windowHeight}`,

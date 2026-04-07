@@ -32,7 +32,9 @@ export const envVars = cleanEnv(process.env, {
   UPLOAD_AUDIO_CHUNKS: bool({ default: false }),
   UPLOAD_RAW_VIDEO: bool({ default: false }),
   // Override output directory for serverless mode (e.g., when using run_bot.sh)
-  OUTPUT_BASE_DIR: str({ default: "" })
+  OUTPUT_BASE_DIR: str({ default: "" }),
+  // Residential proxy for browser traffic (e.g., "http://user:pass@proxy:port" or "socks5://user:pass@proxy:port")
+  BROWSER_PROXY_URL: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars
