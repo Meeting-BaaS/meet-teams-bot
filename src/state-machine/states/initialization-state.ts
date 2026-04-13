@@ -9,6 +9,7 @@ import {
   warmUpCamera
 } from "../../branding"
 import { openBrowser } from "../../browser/browser"
+import { startToggleProxy } from "../../proxy/toggle-proxy"
 import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
 import { PathManager } from "../../utils/PathManager"
@@ -97,7 +98,18 @@ export class InitializationState extends BaseState {
         })
 
         // Execute the promise to open the browser with a timeout
-        const result = await Promise.race<BrowserResult>([openBrowser(), timeoutPromise])
+        // Start toggle proxy for residential IP routing during join phase (Google Meet only)
+        if (!this.context.proxyUrl && GLOBAL.get().meeting_platform === "meet") {
+          const proxyUrl = await startToggleProxy()
+          if (proxyUrl) {
+            this.context.proxyUrl = proxyUrl
+          }
+        }
+
+        const result = await Promise.race<BrowserResult>([
+          openBrowser(this.context.proxyUrl),
+          timeoutPromise
+        ])
 
         // If we get here, openBrowser has succeeded
         this.context.browserContext = result.browser

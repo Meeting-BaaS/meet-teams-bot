@@ -27,6 +27,7 @@
         "express": "^4.21.0",
         "pako": "^2.1.0",
         "protobufjs": "^7.5.4",
+        "proxy-chain": "^2.7.1",
         "ts-node": "^10.9.2",
         "tslib": "^2.8.1",
         "winston": "^3.17.0",
@@ -102,5 +103,6 @@
     },
     "volta": {
         "node": "20.18.0"
-    }
+    },
+    "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319"
 }

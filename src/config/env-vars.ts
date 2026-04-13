@@ -47,7 +47,10 @@ export const envVars = cleanEnv(process.env, {
   // `x-amz-tagging` header on PutObject/CreateMultipartUpload (via
   // `PutObjectCommand({ Tagging: "k=v" })` in JS and `.tagging("k=v")`
   // on the Rust aws-sdk-s3-transfer-manager), which GCS accepts.
-  DISABLE_S3_OBJECT_TAGGING: bool({ default: false })
+  DISABLE_S3_OBJECT_TAGGING: bool({ default: false }),
+  // Residential proxy URL for Google Meet bot detection mitigation (e.g., Bright Data)
+  // Format: http://username:password@host:port
+  RESIDENTIAL_PROXY_URL: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars

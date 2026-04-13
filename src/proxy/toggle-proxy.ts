@@ -1,0 +1,62 @@
+import { Server } from "proxy-chain"
+import { envVars } from "../config/env-vars"
+
+let server: Server | null = null
+let useUpstream = true
+
+export async function startToggleProxy(): Promise<string | null> {
+  const upstreamUrl = envVars.RESIDENTIAL_PROXY_URL
+  if (!upstreamUrl) {
+    console.log("[ToggleProxy] No RESIDENTIAL_PROXY_URL configured, skipping proxy")
+    return null
+  }
+
+  try {
+    server = new Server({
+      port: 0,
+      prepareRequestFunction: ({ request }) => {
+        // CONNECT requests use "host:port" format, not a full URL
+        const target = request.url.includes("://")
+          ? new URL(request.url).hostname
+          : request.url.split(":")[0]
+        if (useUpstream) {
+          console.log(`[ToggleProxy] PROXIED → ${target}`)
+          return { upstreamProxyUrl: upstreamUrl }
+        }
+        console.log(`[ToggleProxy] DIRECT  → ${target}`)
+        return {}
+      }
+    })
+
+    await server.listen()
+    const port = server.port
+    const proxyUrl = `http://127.0.0.1:${port}`
+    console.log(`[ToggleProxy] ✅ Started on ${proxyUrl} (upstream: Bright Data)`)
+    return proxyUrl
+  } catch (error) {
+    console.error(
+      `[ToggleProxy] ❌ Failed to start, proceeding without proxy: ${error instanceof Error ? error.message : String(error)}`
+    )
+    server = null
+    return null
+  }
+}
+
+export function setDirectMode(): void {
+  useUpstream = false
+  console.log("[ToggleProxy] Switched to direct mode (no upstream proxy)")
+}
+
+export async function stopToggleProxy(): Promise<void> {
+  if (server) {
+    try {
+      await server.close(true)
+      console.log("[ToggleProxy] Server stopped")
+    } catch (error) {
+      console.warn(
+        `[ToggleProxy] Error stopping server: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+    server = null
+  }
+}
