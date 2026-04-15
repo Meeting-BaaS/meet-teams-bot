@@ -12,7 +12,7 @@ import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
 import { MEETING_CONSTANTS } from "../constants"
-import { MeetingStateType, type StateExecuteResult } from "../types"
+import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
 
 export class InCallState extends BaseState {
@@ -23,6 +23,12 @@ export class InCallState extends BaseState {
     console.info(`[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`)
 
     try {
+      // Quick check: if stop was already requested before entering InCall, skip setup entirely
+      if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
+        console.info("[InCallState] Stop already requested — skipping setup")
+        return this.handleError(new Error("Stop requested before recording setup"))
+      }
+
       // Start with global timeout for setup
       await Promise.race([this.setupRecording(), this.createTimeout()])
 
@@ -127,6 +133,12 @@ export class InCallState extends BaseState {
     // Switch branding to recording image if bot_status mode
     if (GLOBAL.get().bot_image_config?.loop_mode === "bot_status") {
       switchToRecordingBranding()
+    }
+
+    // Final gate: if a stop request arrived during setup, bail out
+    // before firing the recording event and transitioning to Recording state
+    if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
+      throw new Error("Stop requested during recording setup — exiting before record")
     }
 
     // Notify that recording has started

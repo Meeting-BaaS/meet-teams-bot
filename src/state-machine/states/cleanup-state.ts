@@ -1,10 +1,9 @@
 import * as fs from "node:fs"
+import { ChatManager } from "../../chat-manager"
 import { envVars } from "../../config/env-vars"
 import { SoundContext, VideoContext } from "../../media_context"
-import { stopNetworkInterception } from "../../meeting/meet/network-interception"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
-import { ChatManager } from "../../chat-manager"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
@@ -34,7 +33,7 @@ export class CleanupState extends BaseState {
         // Continue to Terminated even if cleanup fails
       }
       console.info("🧹 Transitioning to Terminated state")
-      return this.transition(MeetingStateType.Terminated) // État final
+      return this.transition(MeetingStateType.Terminated)
     } catch (error) {
       console.error("🧹 Error during cleanup:", formatError(error))
       // Always transition to Terminated to avoid infinite loops
@@ -45,201 +44,78 @@ export class CleanupState extends BaseState {
 
   private async performCleanup(): Promise<void> {
     try {
-      // 1. Stop the dialog observer
-      console.info("🧹 Step 1/8: Stopping dialog observer. It would not block the cleanup")
+      // Step 0: Stop dialog observer (runs in Node, not in the page)
+      console.info("🧹 Step 0: Stopping dialog observer")
       try {
         this.stopDialogObserver()
       } catch (error) {
         console.warn("🧹 Dialog observer stop failed, continuing cleanup:", error)
       }
 
-      // 2. Finalize diarization BEFORE stopping ScreenRecorder (which uploads files)
-      console.info("🧹 Step 2/8: Finalizing diarization tracking")
+      // Step 1: Finalize diarization BEFORE stopping ScreenRecorder (which uploads files)
+      console.info("🧹 Step 1/6: Finalizing diarization tracking")
       await this.finalizeDiarization()
 
-      // 2b. Stop network interception early to silence the 5s broadcast timer.
-      // This is a lightweight page.evaluate() that sets a flag — no need to wait
-      // for ScreenRecorder upload to finish before silencing it.
-      if (GLOBAL.get().meeting_platform === "meet" && this.context.playwrightPage) {
-        try {
-          console.info("🧹 Stopping network interception (early, before ScreenRecorder)")
-          await stopNetworkInterception(this.context.playwrightPage)
-        } catch (error) {
-          console.warn(
-            "🧹 Early network interception stop failed, will retry later:",
-            formatError(error)
-          )
-        }
-      }
-
-      // 🎬 PRIORITY 3: Stop video recording immediately to avoid data loss
-      console.info("🧹 Step 3/8: Stopping ScreenRecorder (PRIORITY)")
-      await this.stopScreenRecorder()
-
-      // 4. Capture final DOM state before cleanup
+      // Step 2: Capture final DOM state while page is still alive
       if (this.context.playwrightPage) {
-        console.info("🧹 Step 4/8: Capturing final DOM state")
+        console.info("🧹 Step 2/6: Capturing final DOM state")
         const htmlSnapshot = HtmlSnapshotService.getInstance()
         await htmlSnapshot.captureSnapshot(this.context.playwrightPage, "cleanup_final_dom_state")
       }
 
-      // 🚀 PARALLEL CLEANUP: Independent steps that can run simultaneously
-      console.info(
-        "🧹 Steps 5-9: Running parallel cleanup (streaming + sound monitor + speakers + HTML + network interception)"
-      )
+      // Step 3: Close meeting page — bot leaves the meeting instantly.
+      // All injected JS (speakers observer, HTML cleaner, chat observer, network interception)
+      // dies with the page. No need to stop them separately with timeout wrappers.
+      // FFmpeg keeps recording the now-blank Xvfb display until we stop it.
+      console.info("🧹 Step 3/6: Closing meeting page (bot leaves meeting)")
+      try {
+        await this.context.playwrightPage?.close().catch(() => {})
+        this.context.playwrightPage = null
+      } catch (error) {
+        console.warn("🧹 Failed to close meeting page:", formatError(error))
+        this.context.playwrightPage = null
+      }
+
+      // Step 4: Stop Node-side services (streaming + sound monitor) + upload chat messages
+      console.info("🧹 Step 4/6: Stopping Node services and uploading chat messages")
       await Promise.allSettled([
-        // 5. Stop the streaming (waits for debug audio file finalization)
         (async () => {
-          console.info("🧹 Step 5/9: Stopping streaming service")
           if (this.context.streamingService) {
             await this.context.streamingService.stop()
           }
         })(),
-
-        // 6. Stop sound level monitor (critical for automatic leave)
         (async () => {
-          console.info("🧹 Step 6/9: Stopping sound level monitor")
-          // Use stopIfStarted to avoid instantiating if never used
           SoundLevelMonitor.stopIfStarted()
         })(),
-
-        // 7. Stop speakers observer (with 3s timeout)
         (async () => {
-          console.info("🧹 Step 7/9: Stopping speakers observer")
-          await this.stopSpeakersObserver()
-        })(),
-
-        // 8. Stop HTML cleaner (with 3s timeout)
-        (async () => {
-          console.info("🧹 Step 8/10: Stopping HTML cleaner")
-          await this.stopHtmlCleaner()
-        })(),
-
-        // 8b. Stop chat observer (with 3s timeout)
-        (async () => {
-          console.info("🧹 Step 8b/10: Stopping chat observer")
-          await this.stopChatObserver()
-        })(),
-
-        // 9. Stop network interception (Meet only)
-        (async () => {
-          console.info("🧹 Step 9/9: Stopping network interception")
-          if (GLOBAL.get().meeting_platform === "meet" && this.context.playwrightPage) {
-            try {
-              await stopNetworkInterception(this.context.playwrightPage)
-            } catch (error) {
-              console.error("🧹 Failed to stop network interception:", formatError(error))
-              // Don't throw - continue cleanup even if this fails
-            }
-          }
+          await this.uploadChatMessagesArtifact()
         })()
       ])
 
-      console.info("🧹 Parallel cleanup completed")
+      // Step 5: Stop ScreenRecorder (SIGINT FFmpeg → grace period → file processing)
+      console.info("🧹 Step 5/6: Stopping ScreenRecorder")
+      await this.stopScreenRecorder()
 
-      console.info("🧹 Step 10/10: Cleaning up browser resources")
-      // 10. Clean up browser resources (must be sequential after others)
+      // Step 6: Close browser context and remaining resources
+      console.info("🧹 Step 6/6: Cleaning up browser resources")
       await this.cleanupBrowserResources()
 
       console.info("🧹 All cleanup steps completed")
     } catch (error) {
       console.error("🧹 Cleanup error:", formatError(error))
       // Continue even if an error occurs
-      // Don't re-throw - errors are already handled
       return
     }
   }
 
-  private async stopSpeakersObserver(): Promise<void> {
+  private async finalizeDiarization(): Promise<void> {
     try {
-      if (this.context.speakersObserver) {
-        console.log("Stopping speakers observer from cleanup state...")
-
-        // Add 3-second timeout to prevent hanging
-        await Promise.race([
-          (async () => {
-            this.context.speakersObserver.stopObserving()
-            this.context.speakersObserver = null
-          })(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Speakers observer stop timeout")), 3000)
-          )
-        ])
-
-        console.log("Speakers observer stopped successfully")
-      } else {
-        console.log("Speakers observer not active, nothing to stop")
-      }
+      await SpeakerManager.finalize()
+      console.log("Diarization tracking finalized successfully")
     } catch (error) {
-      if (error instanceof Error && error.message?.includes("timeout")) {
-        console.warn("Speakers observer stop timed out after 3s, continuing cleanup")
-        // Force cleanup
-        this.context.speakersObserver = null
-      } else {
-        console.error("Error stopping speakers observer:", formatError(error))
-      }
-      // Don't throw as this is non-critical
+      console.error("Failed to finalize diarization:", formatError(error))
+      // Don't throw - continue cleanup even if diarization finalization fails
     }
-  }
-
-  private async stopHtmlCleaner(): Promise<void> {
-    try {
-      if (this.context.htmlCleaner) {
-        console.log("Stopping HTML cleaner from cleanup state...")
-
-        // Add 3-second timeout to prevent hanging
-        await Promise.race([
-          this.context.htmlCleaner.stop(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("HTML cleaner stop timeout")), 3000)
-          )
-        ])
-
-        this.context.htmlCleaner = undefined
-        console.log("HTML cleaner stopped successfully")
-      } else {
-        console.log("HTML cleaner not active, nothing to stop")
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message?.includes("timeout")) {
-        console.warn("HTML cleaner stop timed out after 3s, continuing cleanup")
-        // Force cleanup
-        this.context.htmlCleaner = undefined
-      } else {
-        console.error("Error stopping HTML cleaner:", formatError(error))
-      }
-      // Don't throw as this is non-critical
-    }
-  }
-
-  private async stopChatObserver(): Promise<void> {
-    try {
-      if (this.context.chatObserver) {
-        console.log("Stopping chat observer from cleanup state...")
-
-        await Promise.race([
-          (async () => {
-            this.context.chatObserver!.stopObserving()
-            this.context.chatObserver = undefined
-          })(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Chat observer stop timeout")), 3000)
-          )
-        ])
-
-        console.log("Chat observer stopped successfully")
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message?.includes("timeout")) {
-        console.warn("Chat observer stop timed out after 3s, continuing cleanup")
-        this.context.chatObserver = undefined
-      } else {
-        console.error("Error stopping chat observer:", formatError(error))
-      }
-    }
-
-    // Upload chat messages artifact to S3
-    await this.uploadChatMessagesArtifact()
   }
 
   private async uploadChatMessagesArtifact(): Promise<void> {
@@ -284,16 +160,6 @@ export class CleanupState extends BaseState {
     }
   }
 
-  private async finalizeDiarization(): Promise<void> {
-    try {
-      await SpeakerManager.finalize()
-      console.log("Diarization tracking finalized successfully")
-    } catch (error) {
-      console.error("Failed to finalize diarization:", formatError(error))
-      // Don't throw - continue cleanup even if diarization finalization fails
-    }
-  }
-
   private async stopScreenRecorder(): Promise<void> {
     try {
       if (ScreenRecorderManager.getInstance().isCurrentlyRecording()) {
@@ -306,8 +172,6 @@ export class CleanupState extends BaseState {
     } catch (error) {
       console.error("Error stopping ScreenRecorder:", formatError(error))
 
-      // Don't re-throw - errors are already handled
-
       // Don't throw error if recording was already stopped
       if (error instanceof Error && error.message && error.message.includes("not recording")) {
         console.log("ScreenRecorder was already stopped, continuing cleanup")
@@ -316,6 +180,16 @@ export class CleanupState extends BaseState {
       }
     }
   }
+
+  private stopDialogObserver() {
+    if (this.context.dialogObserver) {
+      console.info(`Stopping global dialog observer in state ${this.constructor.name}`)
+      this.context.dialogObserver.stopGlobalDialogObserver()
+    } else {
+      console.warn(`Global dialog observer not available in state ${this.constructor.name}`)
+    }
+  }
+
   private async cleanupBrowserResources(): Promise<void> {
     try {
       // 1. Stop branding
@@ -327,22 +201,10 @@ export class CleanupState extends BaseState {
       VideoContext.instance?.stop()
       SoundContext.instance?.stop()
 
-      // 3. Close pages and clean the browser
-      await Promise.all([
-        this.context.playwrightPage?.close().catch(() => {}),
-        this.context.browserContext?.close().catch(() => {})
-      ])
+      // 3. Close browser context (page already closed in step 4)
+      await this.context.browserContext?.close().catch(() => {})
     } catch (error) {
       console.error("Failed to cleanup browser resources:", formatError(error))
-    }
-  }
-
-  private stopDialogObserver() {
-    if (this.context.dialogObserver) {
-      console.info(`Stopping global dialog observer in state ${this.constructor.name}`)
-      this.context.dialogObserver.stopGlobalDialogObserver()
-    } else {
-      console.warn(`Global dialog observer not available in state ${this.constructor.name}`)
     }
   }
 }

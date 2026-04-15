@@ -369,6 +369,13 @@ export class TeamsProvider implements MeetingProviderInterface {
       }
     }
 
+    // Final stop check before the irreversible "Join now" click
+    if (cancelCheck()) {
+      console.log('Stop request detected before clicking Join now — aborting')
+      GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
+      throw new Error("Bot stopped before joining meeting")
+    }
+
     try {
       await typeBotName(page, GLOBAL.get().bot_name, 20)
       await clickWithInnerText(page, "button", "Join now", 20)
@@ -391,7 +398,10 @@ export class TeamsProvider implements MeetingProviderInterface {
 
       // Check if we should cancel
       if (cancelCheck()) {
-        GLOBAL.setError(MeetingEndReason.ApiRequest)
+        // Only set error if not already set by stopMeeting()
+        if (!GLOBAL.getEndReason()) {
+          GLOBAL.setError(MeetingEndReason.ApiRequest)
+        }
         throw new Error("API request to stop Teams recording")
       }
 
