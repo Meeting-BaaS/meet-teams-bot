@@ -206,6 +206,13 @@ export class MeetProvider implements MeetingProviderInterface {
         await deactivateCamera(page)
       }
 
+      // Final stop check before the irreversible join button click
+      if (cancelCheck()) {
+        console.log("Stop request detected before clicking Join — aborting")
+        GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
+        throw new Error("Bot stopped before joining meeting")
+      }
+
       // Try to click join button - will retry continuously while waiting
       let lastJoinClickAt = 0
       const joinRetryCooldownMs = 2000
@@ -226,7 +233,10 @@ export class MeetProvider implements MeetingProviderInterface {
       let leftWaitingRoomAt: number | null = null
       while (true) {
         if (cancelCheck()) {
-          GLOBAL.setError(MeetingEndReason.ApiRequest)
+          // Only set error if not already set by stopMeeting()
+          if (!GLOBAL.getEndReason()) {
+            GLOBAL.setError(MeetingEndReason.ApiRequest)
+          }
           throw new Error("API request to stop recording")
         }
 
@@ -496,7 +506,9 @@ export async function findShowEveryOne(page: Page, click: boolean, cancelCheck: 
       }
 
       if (cancelCheck()) {
-        GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+        if (!GLOBAL.getEndReason()) {
+          GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+        }
         throw new Error("Timeout waiting to start")
       }
 
