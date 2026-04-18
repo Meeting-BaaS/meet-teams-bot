@@ -6,6 +6,7 @@ import type { Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
+import { MeetingStateMachine } from "../state-machine/machine"
 import { MeetingEndReason } from "../state-machine/types"
 import { calculateVideoOffset } from "../utils/CalculVideoOffset"
 import { formatError } from "../utils/Logger"
@@ -909,8 +910,18 @@ export class ScreenRecorder extends EventEmitter {
       }
     }
 
-    // Upload diarization file
+    // Adjust diarization timestamps for pause windows (if any)
     const diarizationPath = `${PathManager.getInstance().getTempPath()}/diarization.jsonl`
+    const pauseContext = MeetingStateMachine.instance?.getContext()
+    if (pauseContext && pauseContext.pauseWindows.length > 0 && fs.existsSync(diarizationPath)) {
+      this.adjustDiarizationForPauseWindows(
+        diarizationPath,
+        pauseContext.pauseWindows,
+        this.meetingStartTime
+      )
+    }
+
+    // Upload diarization file
     try {
       if (fs.existsSync(diarizationPath)) {
         const stats = fs.statSync(diarizationPath)
@@ -1264,6 +1275,26 @@ export class ScreenRecorder extends EventEmitter {
     console.log(`📊 Final duration: ${finalDuration.toFixed(2)}s`)
     await this.finalTrimFromOffset(mergedPath, this.outputPath, calcOffsetVideo, finalDuration)
 
+    // 6.5. Trim pause windows (if any)
+    const context = MeetingStateMachine.instance?.getContext()
+    if (context && context.pauseWindows.length > 0) {
+      // Snap pause timestamps to keyframe boundaries so the video trim cuts
+      // exactly match the diarization adjustment. Without this, the ±1s
+      // keyframe snapping inside FFmpeg drifts the speaker labels out of
+      // sync with the video content. Mutating context.pauseWindows makes
+      // the later diarization adjustment use the same snapped values.
+      context.pauseWindows = await this.snapPauseWindowsToKeyframes(
+        this.outputPath,
+        context.pauseWindows,
+        this.meetingStartTime
+      )
+      await this.trimPauseWindows(
+        this.outputPath,
+        context.pauseWindows,
+        this.meetingStartTime
+      )
+    }
+
     // 7. Upload raw video for debugging (if enabled)
     if (UPLOAD_RAW_VIDEO && fs.existsSync(rawVideoPath) && S3Uploader.getInstance()) {
       try {
@@ -1477,6 +1508,260 @@ file '${absoluteInputPath}'`
     const estimatedSizeMB = this.estimateFileSizeMB(inputPath)
 
     await this.runFFmpeg(args, "finalTrimFromOffset", estimatedSizeMB)
+  }
+
+  /**
+   * Read the video's keyframe timestamps (in seconds, relative to stream start).
+   * Used to snap pause windows so FFmpeg concat cuts and diarization adjustments
+   * land on the same boundaries — otherwise the ±1s keyframe snap drifts speaker
+   * labels relative to the trimmed video.
+   */
+  private async getKeyframePositions(videoPath: string): Promise<number[]> {
+    const args = [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-skip_frame",
+      "nokey",
+      "-show_entries",
+      "frame=pts_time",
+      "-of",
+      "csv=p=0",
+      videoPath
+    ]
+    const result = await this.runFFprobe(args)
+    return result
+      .trim()
+      .split("\n")
+      .map((s) => Number.parseFloat(s))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => a - b)
+  }
+
+  /**
+   * Return the nearest value in a sorted array. Assumes `sorted` is non-empty.
+   */
+  private static snapToNearest(time: number, sorted: number[]): number {
+    if (time <= sorted[0]) return sorted[0]
+    if (time >= sorted[sorted.length - 1]) return sorted[sorted.length - 1]
+    let lo = 0
+    let hi = sorted.length - 1
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1
+      if (sorted[mid] < time) lo = mid
+      else hi = mid
+    }
+    return time - sorted[lo] <= sorted[hi] - time ? sorted[lo] : sorted[hi]
+  }
+
+  /**
+   * Snap every pause window start/end to the nearest keyframe timestamp.
+   * Returns new pause windows with adjusted absolute (ms) timestamps.
+   * When ffprobe returns no keyframes, returns the input unchanged.
+   */
+  private async snapPauseWindowsToKeyframes(
+    videoPath: string,
+    pauseWindows: Array<{ start: number; end: number | null }>,
+    meetingStartTime: number
+  ): Promise<Array<{ start: number; end: number | null }>> {
+    const keyframes = await this.getKeyframePositions(videoPath)
+    if (keyframes.length === 0) {
+      console.warn("⚠️ No keyframes found — skipping pause window snapping")
+      return pauseWindows
+    }
+
+    return pauseWindows.map((w) => {
+      const startS = (w.start - meetingStartTime) / 1000
+      const snappedStartS = ScreenRecorder.snapToNearest(startS, keyframes)
+      const snappedStart = Math.round(meetingStartTime + snappedStartS * 1000)
+
+      let snappedEnd: number | null = null
+      if (w.end !== null) {
+        const endS = (w.end - meetingStartTime) / 1000
+        const snappedEndS = ScreenRecorder.snapToNearest(endS, keyframes)
+        snappedEnd = Math.round(meetingStartTime + snappedEndS * 1000)
+      }
+
+      console.log(
+        `🎯 Pause window snapped: [${((w.start - meetingStartTime) / 1000).toFixed(3)}s, ${
+          w.end !== null ? ((w.end - meetingStartTime) / 1000).toFixed(3) + "s" : "end"
+        }] → [${((snappedStart - meetingStartTime) / 1000).toFixed(3)}s, ${
+          snappedEnd !== null ? ((snappedEnd - meetingStartTime) / 1000).toFixed(3) + "s" : "end"
+        }]`
+      )
+
+      return { start: snappedStart, end: snappedEnd }
+    })
+  }
+
+  /**
+   * Trim paused sections from the final video using the concat demuxer.
+   * Operates in-place: reads from outputPath, writes to a temp file, then replaces.
+   * Uses stream copy (-c:v copy -c:a copy) for speed — cuts snap to nearest keyframe (~1s).
+   */
+  private async trimPauseWindows(
+    outputPath: string,
+    pauseWindows: Array<{ start: number; end: number | null }>,
+    meetingStartTime: number
+  ): Promise<void> {
+    console.log(`✂️ Trimming ${pauseWindows.length} pause window(s) from recording`)
+
+    // Get video duration to handle open-ended windows
+    const videoDuration = await this.getDuration(outputPath)
+
+    // Convert absolute timestamps to offsets relative to meetingStartTime (in seconds)
+    const windows = pauseWindows.map((w) => ({
+      start: (w.start - meetingStartTime) / 1000,
+      end: w.end !== null ? (w.end - meetingStartTime) / 1000 : videoDuration
+    }))
+
+    // Build kept segments (non-paused sections)
+    const segments: Array<{ inpoint: number; outpoint: number }> = []
+    let cursor = 0
+    for (const w of windows) {
+      if (w.start > cursor) {
+        segments.push({ inpoint: cursor, outpoint: w.start })
+      }
+      cursor = w.end
+    }
+    if (cursor < videoDuration) {
+      segments.push({ inpoint: cursor, outpoint: videoDuration })
+    }
+
+    if (segments.length === 0) {
+      console.warn(
+        "⚠️ No kept segments after trimming pause windows — entire recording was paused. Producing minimal output."
+      )
+      // Produce a minimal valid MP4 (1 frame ≈ 33ms at 30fps) so downstream code
+      // has a valid artifact to work with. Leaving the full untrimmed recording
+      // would contradict the user's intent to pause the entire recording.
+      const trimmedPath = path.join(
+        PathManager.getInstance().getTempPath(),
+        "pause_trimmed.mp4"
+      )
+      const minimalArgs = [
+        "-i",
+        outputPath,
+        "-t",
+        "0.04",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
+        "-y",
+        trimmedPath
+      ]
+      await this.runFFmpeg(minimalArgs, "trimPauseWindowsEmpty", 1)
+      fs.copyFileSync(trimmedPath, outputPath)
+      fs.unlinkSync(trimmedPath)
+      return
+    }
+
+    // Build concat demuxer file
+    const tempDir = PathManager.getInstance().getTempPath()
+    const segmentsFile = path.join(tempDir, "pause_segments.txt")
+    const trimmedPath = path.join(tempDir, "pause_trimmed.mp4")
+    const absoluteOutputPath = path.resolve(outputPath)
+
+    const segmentsContent = segments
+      .map(
+        (s) =>
+          `file '${absoluteOutputPath}'\ninpoint ${s.inpoint.toFixed(3)}\noutpoint ${s.outpoint.toFixed(3)}`
+      )
+      .join("\n\n")
+
+    fs.writeFileSync(segmentsFile, segmentsContent, "utf8")
+    console.log(`📝 Created pause segments file with ${segments.length} segment(s)`)
+
+    const args = [
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      segmentsFile,
+      "-c:v",
+      "copy",
+      "-c:a",
+      "copy",
+      "-movflags",
+      "+faststart",
+      "-avoid_negative_ts",
+      "make_zero",
+      "-y",
+      trimmedPath
+    ]
+
+    const estimatedSizeMB = this.estimateFileSizeMB(outputPath)
+    await this.runFFmpeg(args, "trimPauseWindows", estimatedSizeMB)
+
+    // Replace original with trimmed version
+    fs.copyFileSync(trimmedPath, outputPath)
+    fs.unlinkSync(trimmedPath)
+    fs.unlinkSync(segmentsFile)
+
+    const trimmedDuration = await this.getDuration(outputPath)
+    const totalPauseDuration = windows.reduce((sum, w) => sum + (w.end - w.start), 0)
+    console.log(
+      `✅ Pause trimming complete: ${videoDuration.toFixed(1)}s → ${trimmedDuration.toFixed(1)}s (removed ${totalPauseDuration.toFixed(1)}s of paused content)`
+    )
+  }
+
+  /**
+   * Adjust diarization timestamps to account for trimmed pause windows.
+   * Discards entries that fall within pause windows, shifts remaining entries back.
+   */
+  private adjustDiarizationForPauseWindows(
+    diarizationPath: string,
+    pauseWindows: Array<{ start: number; end: number | null }>,
+    meetingStartTime: number
+  ): void {
+    // Convert to seconds relative to meetingStartTime
+    const windows = pauseWindows.map((w) => ({
+      start: (w.start - meetingStartTime) / 1000,
+      end: w.end !== null ? (w.end - meetingStartTime) / 1000 : Number.POSITIVE_INFINITY
+    }))
+
+    const content = fs.readFileSync(diarizationPath, "utf8")
+    const lines = content.trim().split("\n").filter(Boolean)
+    const adjusted: string[] = []
+
+    for (const line of lines) {
+      const segment = JSON.parse(line)
+      const adjustedStart = this.adjustTimestamp(segment.start_time, windows)
+      const adjustedEnd = this.adjustTimestamp(segment.end_time, windows)
+
+      // Discard if either timestamp falls within a pause window
+      if (adjustedStart === null || adjustedEnd === null) continue
+      // Discard if segment became zero-length or negative
+      if (adjustedEnd <= adjustedStart) continue
+
+      segment.start_time = adjustedStart
+      segment.end_time = adjustedEnd
+      adjusted.push(JSON.stringify(segment))
+    }
+
+    fs.writeFileSync(diarizationPath, adjusted.join("\n") + (adjusted.length > 0 ? "\n" : ""), "utf8")
+    console.log(
+      `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${lines.length - adjusted.length} removed)`
+    )
+  }
+
+  private adjustTimestamp(
+    t: number,
+    pauseWindows: Array<{ start: number; end: number }>
+  ): number | null {
+    // Pause windows are half-open intervals [start, end): t === end is the
+    // resume moment, which belongs to the post-resume timeline (kept & shifted).
+    let cumulativePause = 0
+    for (const w of pauseWindows) {
+      if (t >= w.start && t < w.end) return null
+      if (w.end <= t) cumulativePause += w.end - w.start
+    }
+    return t - cumulativePause
   }
 
   private async extractAudioFromVideo(videoPath: string, audioPath: string): Promise<void> {

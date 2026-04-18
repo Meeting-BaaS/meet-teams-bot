@@ -103,11 +103,6 @@ export class RecordingState extends BaseState {
           break
         }
 
-        // If pause requested, transition to Paused state
-        if (this.context.isPaused) {
-          return this.transition(MeetingStateType.Paused)
-        }
-
         await sleep(this.CHECK_INTERVAL)
       }
 
