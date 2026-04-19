@@ -11,7 +11,7 @@ import {
 
 export const RecordingModeSchema = zodEnum(["speaker_view", "audio_only", "gallery_view"])
 export const SpeechToTextProviderSchema = zodEnum([
-  "gladia", "deepgram", "assemblyai", "speechmatics", "soniox", "azure", "elevenlabs", "openai", "none"
+  "gladia", "deepgram", "assemblyai", "speechmatics", "soniox", "elevenlabs", "openai", "none"
 ])
 export const StreamingModeSchema = zodEnum(["audio", "transcription"])
 export const MeetingPlatformSchema = zodEnum(["zoom", "meet", "teams"])
