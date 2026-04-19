@@ -1,7 +1,9 @@
 import { BrowserContext, Page } from '@playwright/test'
 import { SimpleDialogObserver } from './services/dialog-observer/simple-dialog-observer'
 
-type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod'
+type SpeechToTextProvider = 'Default' | 'Gladia' | 'RunPod' | 'Deepgram' | 'AssemblyAI' | 'Speechmatics' | 'Soniox' | 'Azure' | 'ElevenLabs' | 'OpenAI'
+
+export type StreamingMode = 'audio' | 'transcription'
 
 // Support both PascalCase and snake_case for recording_mode
 export type RecordingMode =
@@ -58,9 +60,19 @@ export type MeetingParams = {
     translation_lang?: string
     speech_to_text_provider?: SpeechToTextProvider
     speech_to_text_api_key?: string
+    encrypted_speech_to_text_api_key?: string
+    speech_to_text_region?: string
+    speech_to_text_custom_params?: Record<string, unknown>
     streaming_input?: string
     streaming_output?: string
     streaming_audio_frequency?: number
+    streaming_mode?: StreamingMode
+    streaming_transcription?: {
+        provider: string
+        encrypted_api_key?: string
+        region?: string
+        custom_params?: Record<string, unknown>
+    }
     bot_uuid: string
     enter_message?: string
     bots_api_key: string
