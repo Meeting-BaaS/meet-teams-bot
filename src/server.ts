@@ -52,7 +52,7 @@ export async function server() {
         next()
     })
 
-    app.options('*', (_req, res) => {
+    app.options('{*path}', (_req, res) => {
         const origin = _req.headers.origin
         if (allowedOrigins.includes(origin)) {
             res.header('Access-Control-Allow-Origin', origin)
