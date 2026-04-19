@@ -71,6 +71,46 @@ class Global {
             throw new Error('Missing required parameter: bot_uuid')
         }
 
+        // Populate remote from env vars when not provided in the SQS message
+        if (meetingParams.remote == null) {
+            const apiServerBaseurl = process.env.API_SERVER_BASEURL || 'http://localhost:3001'
+            const s3VideoBucket = process.env.AWS_S3_ARTIFACTS_BUCKET || 'meeting-baas-artifacts'
+            const s3LogBucket = process.env.AWS_S3_LOGS_BUCKET || 'meeting-baas-logs'
+            meetingParams.remote = {
+                api_server_baseurl: apiServerBaseurl,
+                aws_s3_video_bucket: s3VideoBucket,
+                aws_s3_log_bucket: s3LogBucket,
+            }
+        }
+
+        // Bridge flat SQS message fields → nested MeetingParams shape.
+        // The v2 API server sends a flat message; this bot expects nested fields.
+        const raw = meetingParams as Record<string, unknown>
+
+        if (meetingParams.automatic_leave == null) {
+            meetingParams.automatic_leave = {
+                waiting_room_timeout: (raw['waiting_room_timeout'] as number) ?? 600,
+                noone_joined_timeout: (raw['no_one_joined_timeout'] as number) ?? 600,
+                silence_timeout: (raw['silence_timeout'] as number) ?? 600,
+            }
+        }
+
+        // Map entry_message (SQS) → enter_message (bot)
+        if (meetingParams.enter_message == null && raw['entry_message'] != null) {
+            meetingParams.enter_message = raw['entry_message'] as string
+        }
+
+        // Populate environ from env var
+        if (!meetingParams.environ) {
+            meetingParams.environ = process.env.ENVIRON || 'local'
+        }
+
+        // Populate aws_s3_temporary_audio_bucket from env var
+        if (!meetingParams.aws_s3_temporary_audio_bucket) {
+            meetingParams.aws_s3_temporary_audio_bucket =
+                process.env.AWS_S3_AUDIO_CHUNKS_BUCKET || 'meeting-baas-audio-chunks'
+        }
+
         // Normalize the recording mode before setting
         const normalizedParams = {
             ...meetingParams,
