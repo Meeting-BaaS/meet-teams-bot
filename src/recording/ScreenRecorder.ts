@@ -1288,11 +1288,7 @@ export class ScreenRecorder extends EventEmitter {
         context.pauseWindows,
         this.meetingStartTime
       )
-      await this.trimPauseWindows(
-        this.outputPath,
-        context.pauseWindows,
-        this.meetingStartTime
-      )
+      await this.trimPauseWindows(this.outputPath, context.pauseWindows, this.meetingStartTime)
     }
 
     // 7. Upload raw video for debugging (if enabled)
@@ -1586,9 +1582,9 @@ file '${absoluteInputPath}'`
 
       console.log(
         `🎯 Pause window snapped: [${((w.start - meetingStartTime) / 1000).toFixed(3)}s, ${
-          w.end !== null ? ((w.end - meetingStartTime) / 1000).toFixed(3) + "s" : "end"
+          w.end !== null ? `${((w.end - meetingStartTime) / 1000).toFixed(3)}s` : "end"
         }] → [${((snappedStart - meetingStartTime) / 1000).toFixed(3)}s, ${
-          snappedEnd !== null ? ((snappedEnd - meetingStartTime) / 1000).toFixed(3) + "s" : "end"
+          snappedEnd !== null ? `${((snappedEnd - meetingStartTime) / 1000).toFixed(3)}s` : "end"
         }]`
       )
 
@@ -1598,8 +1594,7 @@ file '${absoluteInputPath}'`
       if (snappedEnd !== null && snappedStart >= snappedEnd) {
         console.warn(
           `⚠️ Dropping post-snap zero-length pause window at ${(
-            (snappedStart - meetingStartTime) /
-            1000
+            (snappedStart - meetingStartTime) / 1000
           ).toFixed(3)}s (pre-snap duration: ${
             w.end !== null ? ((w.end - w.start) / 1000).toFixed(3) : "∞"
           }s)`
@@ -1663,10 +1658,7 @@ file '${absoluteInputPath}'`
       // Produce a minimal valid MP4 (1 frame ≈ 33ms at 30fps) so downstream code
       // has a valid artifact to work with. Leaving the full untrimmed recording
       // would contradict the user's intent to pause the entire recording.
-      const trimmedPath = path.join(
-        PathManager.getInstance().getTempPath(),
-        "pause_trimmed.mp4"
-      )
+      const trimmedPath = path.join(PathManager.getInstance().getTempPath(), "pause_trimmed.mp4")
       const minimalArgs = [
         "-i",
         outputPath,
@@ -1788,7 +1780,11 @@ file '${absoluteInputPath}'`
       adjusted.push(JSON.stringify(segment))
     }
 
-    fs.writeFileSync(diarizationPath, adjusted.join("\n") + (adjusted.length > 0 ? "\n" : ""), "utf8")
+    fs.writeFileSync(
+      diarizationPath,
+      adjusted.join("\n") + (adjusted.length > 0 ? "\n" : ""),
+      "utf8"
+    )
     console.log(
       `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${
         lines.length - adjusted.length
@@ -1804,10 +1800,7 @@ file '${absoluteInputPath}'`
    * the same post-shift value — straddling segments keep their pre- or
    * post-pause portion rather than being dropped outright.
    */
-  private adjustTimestamp(
-    t: number,
-    pauseWindows: Array<{ start: number; end: number }>
-  ): number {
+  private adjustTimestamp(t: number, pauseWindows: Array<{ start: number; end: number }>): number {
     let tAdj = t
     for (const w of pauseWindows) {
       if (tAdj >= w.start && tAdj < w.end) {
