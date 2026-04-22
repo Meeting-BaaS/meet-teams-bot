@@ -1,4 +1,4 @@
-import { execFile, execSync } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
 import express from 'express'
 import { unlinkSync } from 'fs'
 import * as path from 'path'
@@ -188,8 +188,12 @@ export async function server() {
                 extension === FileExtension.Png
             ) {
                 try {
-                    const command = `ffmpeg -y -i ${filename} -vf scale=${VideoContext.WIDTH}:${VideoContext.HEIGHT} -y resized_${filename}`
-                    const output = execSync(command)
+                    const output = execFileSync('ffmpeg', [
+                        '-y',
+                        '-i', filename,
+                        '-vf', `scale=${VideoContext.WIDTH}:${VideoContext.HEIGHT}`,
+                        '-y', `resized_${filename}`,
+                    ])
                     console.log(output.toString())
                 } catch (e) {
                     console.error(`Unexpected error when scaling image : ${e}`)
@@ -199,8 +203,18 @@ export async function server() {
                     return
                 }
                 try {
-                    const command = `ffmpeg -y -loop 1 -i resized_${filename} -c:v libx264 -preset ultrafast -tune stillimage -r 30 -t 1 -pix_fmt yuv420p ${filename}.mp4`
-                    const output = execSync(command)
+                    const output = execFileSync('ffmpeg', [
+                        '-y',
+                        '-loop', '1',
+                        '-i', `resized_${filename}`,
+                        '-c:v', 'libx264',
+                        '-preset', 'ultrafast',
+                        '-tune', 'stillimage',
+                        '-r', '30',
+                        '-t', '1',
+                        '-pix_fmt', 'yuv420p',
+                        `${filename}.mp4`,
+                    ])
                     console.log(output.toString())
                 } catch (e) {
                     console.error(
