@@ -1571,7 +1571,8 @@ file '${absoluteInputPath}'`
       return pauseWindows
     }
 
-    return pauseWindows.map((w) => {
+    const snapped: Array<{ start: number; end: number | null }> = []
+    for (const w of pauseWindows) {
       const startS = (w.start - meetingStartTime) / 1000
       const snappedStartS = ScreenRecorder.snapToNearest(startS, keyframes)
       const snappedStart = Math.round(meetingStartTime + snappedStartS * 1000)
@@ -1591,8 +1592,24 @@ file '${absoluteInputPath}'`
         }]`
       )
 
-      return { start: snappedStart, end: snappedEnd }
-    })
+      // Drop zero-length or inverted post-snap windows. Happens for very short
+      // pauses where both endpoints snap to the same keyframe — the window
+      // contributes nothing to the trim and can confuse downstream cursor logic.
+      if (snappedEnd !== null && snappedStart >= snappedEnd) {
+        console.warn(
+          `⚠️ Dropping post-snap zero-length pause window at ${(
+            (snappedStart - meetingStartTime) /
+            1000
+          ).toFixed(3)}s (pre-snap duration: ${
+            w.end !== null ? ((w.end - w.start) / 1000).toFixed(3) : "∞"
+          }s)`
+        )
+        continue
+      }
+
+      snapped.push({ start: snappedStart, end: snappedEnd })
+    }
+    return snapped
   }
 
   /**
@@ -1610,20 +1627,30 @@ file '${absoluteInputPath}'`
     // Get video duration to handle open-ended windows
     const videoDuration = await this.getDuration(outputPath)
 
-    // Convert absolute timestamps to offsets relative to meetingStartTime (in seconds)
-    const windows = pauseWindows.map((w) => ({
-      start: (w.start - meetingStartTime) / 1000,
-      end: w.end !== null ? (w.end - meetingStartTime) / 1000 : videoDuration
-    }))
+    // Convert absolute timestamps to offsets relative to meetingStartTime (in seconds),
+    // sort by start, and drop degenerate (start >= end) entries. Sort+filter is
+    // defensive — the server lock should produce non-overlapping windows in
+    // order, but recovery-mode replay or state corruption could still feed us
+    // unsorted or zero-length entries.
+    const windows = pauseWindows
+      .map((w) => ({
+        start: (w.start - meetingStartTime) / 1000,
+        end: w.end !== null ? (w.end - meetingStartTime) / 1000 : videoDuration
+      }))
+      .filter((w) => w.end > w.start)
+      .sort((a, b) => a.start - b.start)
 
-    // Build kept segments (non-paused sections)
+    // Build kept segments (non-paused sections). `cursor = Math.max(cursor, w.end)`
+    // prevents the cursor ever moving backward when two windows overlap (w2
+    // fully contained in w1), which would otherwise cause a later iteration
+    // to emit a segment covering paused content.
     const segments: Array<{ inpoint: number; outpoint: number }> = []
     let cursor = 0
     for (const w of windows) {
       if (w.start > cursor) {
         segments.push({ inpoint: cursor, outpoint: w.start })
       }
-      cursor = w.end
+      cursor = Math.max(cursor, w.end)
     }
     if (cursor < videoDuration) {
       segments.push({ inpoint: cursor, outpoint: videoDuration })
@@ -1728,15 +1755,32 @@ file '${absoluteInputPath}'`
     const content = fs.readFileSync(diarizationPath, "utf8")
     const lines = content.trim().split("\n").filter(Boolean)
     const adjusted: string[] = []
+    let parseFailures = 0
 
-    for (const line of lines) {
-      const segment = JSON.parse(line)
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      let segment: { start_time: number; end_time: number; [key: string]: unknown }
+      try {
+        segment = JSON.parse(line)
+      } catch (err) {
+        // A single malformed line shouldn't abort the whole adjustment and
+        // leave the file unadjusted — downstream would upload diarization
+        // with pre-trim wall-clock timestamps. Skip and keep going.
+        parseFailures++
+        console.warn(
+          `⚠️ Diarization line ${i} in ${diarizationPath} is malformed, skipping: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+        continue
+      }
+
       const adjustedStart = this.adjustTimestamp(segment.start_time, windows)
       const adjustedEnd = this.adjustTimestamp(segment.end_time, windows)
 
-      // Discard if either timestamp falls within a pause window
-      if (adjustedStart === null || adjustedEnd === null) continue
-      // Discard if segment became zero-length or negative
+      // Segment fully inside a pause window collapses to zero length here
+      // and is discarded below. Segments that straddle a pause boundary
+      // keep their pre-pause or post-resume portion.
       if (adjustedEnd <= adjustedStart) continue
 
       segment.start_time = adjustedStart
@@ -1746,22 +1790,35 @@ file '${absoluteInputPath}'`
 
     fs.writeFileSync(diarizationPath, adjusted.join("\n") + (adjusted.length > 0 ? "\n" : ""), "utf8")
     console.log(
-      `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${lines.length - adjusted.length} removed)`
+      `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${
+        lines.length - adjusted.length
+      } removed${parseFailures > 0 ? `, of which ${parseFailures} malformed` : ""})`
     )
   }
 
+  /**
+   * Map a timestamp onto the post-trim timeline. Any timestamp falling inside
+   * a pause window [ws, we) is clamped to `we`, then shifted by the total
+   * paused duration that occurred strictly before it. The entire pause window
+   * collapses to a single point in post-trim time, so both boundaries yield
+   * the same post-shift value — straddling segments keep their pre- or
+   * post-pause portion rather than being dropped outright.
+   */
   private adjustTimestamp(
     t: number,
     pauseWindows: Array<{ start: number; end: number }>
-  ): number | null {
-    // Pause windows are half-open intervals [start, end): t === end is the
-    // resume moment, which belongs to the post-resume timeline (kept & shifted).
+  ): number {
+    let tAdj = t
+    for (const w of pauseWindows) {
+      if (tAdj >= w.start && tAdj < w.end) {
+        tAdj = w.end
+      }
+    }
     let cumulativePause = 0
     for (const w of pauseWindows) {
-      if (t >= w.start && t < w.end) return null
-      if (w.end <= t) cumulativePause += w.end - w.start
+      if (w.end <= tAdj) cumulativePause += w.end - w.start
     }
-    return t - cumulativePause
+    return tAdj - cumulativePause
   }
 
   private async extractAudioFromVideo(videoPath: string, audioPath: string): Promise<void> {

@@ -173,13 +173,15 @@ export async function server() {
           return res.status(409).json({ error: "Recording is not paused" })
         }
 
-        // Close pause window
+        // Close pause window. Capture the end timestamp once so the value
+        // persisted into pauseWindows exactly matches the one in the log line.
+        const pauseEnd = Date.now()
         context.pauseWindows.push({
           start: context.currentPauseStart,
-          end: Date.now()
+          end: pauseEnd
         })
         console.log(
-          `[Server] Recording resumed. Pause window: ${context.currentPauseStart} - ${Date.now()}`
+          `[Server] Recording resumed. Pause window: ${context.currentPauseStart} - ${pauseEnd}`
         )
         context.currentPauseStart = null
 
