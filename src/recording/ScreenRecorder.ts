@@ -173,6 +173,13 @@ export class ScreenRecorder extends EventEmitter {
       this.setupFileSizeMonitoring()
 
       await sleep(FLASH_SCREEN_SLEEP_TIME)
+      if (page.isClosed()) {
+        // Cleanup closed the page before we reached the sync signal (pre-recording
+        // stop/rejection race). Abort the start quietly — the state machine already
+        // has an end_reason and will handle the failure via handleFailedRecording.
+        console.warn("[ScreenRecorder] Page closed before sync signal — aborting start")
+        return
+      }
       await generateSyncSignal(page, {
         duration: 800, // Much longer signal for reliable detection
         frequency: 1000, // Keep 1000Hz for consistency
@@ -187,6 +194,22 @@ export class ScreenRecorder extends EventEmitter {
     } catch (error) {
       console.error("Failed to start native recording:", formatError(error))
       this.isRecording = false
+      // If an end_reason is already set, the state machine has committed to failing
+      // for a real reason (botNotAccepted, exitingMeetingBeforeRecord, etc.).
+      // Emitting 'error' here would crash the process before handleFailedRecording
+      // runs, because RecordingState's listener is only attached once we reach it —
+      // which we won't, since cleanup is already in progress. Suppress the emit.
+      if (GLOBAL.getEndReason?.()) {
+        console.warn(
+          "[ScreenRecorder] Suppressing startError — end_reason already set:",
+          GLOBAL.getEndReason()
+        )
+        return
+      }
+      // No end_reason yet — unexpected. Set StreamingSetupFailed so the bot still
+      // reports a failure (rather than ending up as UNKNOWN_ERROR).
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      GLOBAL.setError(MeetingEndReason.StreamingSetupFailed, errorMessage)
       this.emit("error", { type: "startError", error })
     }
   }
