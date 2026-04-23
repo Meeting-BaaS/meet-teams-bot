@@ -6,9 +6,7 @@ import { ErrorState } from "./error-state"
 
 import { InCallState } from "./in-call-state"
 import { InitializationState } from "./initialization-state"
-import { PausedState } from "./paused-state"
 import { RecordingState } from "./recording-state"
-import { ResumingState } from "./resuming-state"
 import { TerminatedState } from "./terminated-state"
 import { WaitingRoomState } from "./waiting-room-state"
 
@@ -22,10 +20,6 @@ export function getStateInstance(type: MeetingStateType, context: MeetingContext
       return new InCallState(context, type)
     case MeetingStateType.Recording:
       return new RecordingState(context, type)
-    case MeetingStateType.Paused:
-      return new PausedState(context, type)
-    case MeetingStateType.Resuming:
-      return new ResumingState(context, type)
     case MeetingStateType.Cleanup:
       return new CleanupState(context, type)
     case MeetingStateType.Error:

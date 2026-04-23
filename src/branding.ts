@@ -185,6 +185,15 @@ export function switchToRecordingBranding() {
   switchToBrandingIndex(1)
 }
 
+/**
+ * Switch to the branding image for paused state (index 2 if available).
+ * Used when loop_mode is "bot_status" and recording is paused.
+ */
+export function switchToPausedBranding() {
+  if (brandingFileCount < 3) return
+  switchToBrandingIndex(2)
+}
+
 function switchToNextBranding() {
   const nextIndex = (currentBrandingIndex + 1) % brandingFileCount
   switchToBrandingIndex(nextIndex)

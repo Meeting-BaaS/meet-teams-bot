@@ -32,6 +32,8 @@ export class MeetingStateMachine {
 
     this.context = {
       provider: this.provider,
+      pauseWindows: [],
+      currentPauseStart: null,
       error: null
     } as MeetingContext
 
@@ -80,34 +82,6 @@ export class MeetingStateMachine {
 
     // Transition to error state - the main loop will handle the rest
     this.currentState = MeetingStateType.Error
-  }
-
-  public async pauseRecording(): Promise<void> {
-    if (this.currentState !== MeetingStateType.Recording) {
-      throw new Error("Cannot pause: meeting is not in recording state")
-    }
-
-    console.info("Pause requested")
-    this.context.isPaused = true
-    this.currentState = MeetingStateType.Paused
-  }
-
-  public async resumeRecording(): Promise<void> {
-    if (this.currentState !== MeetingStateType.Paused) {
-      throw new Error("Cannot resume: meeting is not paused")
-    }
-
-    console.info("Resume requested")
-    this.context.isPaused = false
-    this.currentState = MeetingStateType.Resuming
-  }
-
-  public isPaused(): boolean {
-    return this.currentState === MeetingStateType.Paused
-  }
-
-  public getPauseDuration(): number {
-    return this.context.totalPauseDuration || 0
   }
 
   public updateParticipantState(state: ParticipantState): void {

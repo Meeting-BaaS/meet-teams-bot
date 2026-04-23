@@ -10,8 +10,6 @@ export enum MeetingStateType {
   WaitingRoom = "waitingRoom",
   InCall = "inCall",
   Recording = "recording",
-  Paused = "paused",
-  Resuming = "resuming",
   Cleanup = "cleanup",
   Error = "error",
   Terminated = "terminated"
@@ -101,16 +99,9 @@ export interface MeetingContext {
   // PathManager
   pathManager?: PathManager
 
-  // Recording state (Play/Pause)
-  isPaused?: boolean
-  pauseStartTime?: number
-  totalPauseDuration?: number
-  lastRecordingState?: {
-    timestamp?: number
-    attendeesCount?: number
-    lastSpeakerTime?: number
-    noSpeakerDetectedTime?: number
-  }
+  // Pause/Resume — tracks which sections to trim in post-processing
+  pauseWindows: Array<{ start: number; end: number | null }>
+  currentPauseStart: number | null
 
   // Streaming
   streamingService?: Streaming

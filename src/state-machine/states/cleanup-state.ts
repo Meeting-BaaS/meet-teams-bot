@@ -44,6 +44,18 @@ export class CleanupState extends BaseState {
 
   private async performCleanup(): Promise<void> {
     try {
+      // Close any open pause window (meeting ended while paused)
+      if (this.context.currentPauseStart !== null) {
+        this.context.pauseWindows.push({
+          start: this.context.currentPauseStart,
+          end: null
+        })
+        console.log(
+          `[Cleanup] Closing open-ended pause window from ${this.context.currentPauseStart} (meeting ended while paused)`
+        )
+        this.context.currentPauseStart = null
+      }
+
       // Step 0: Stop dialog observer (runs in Node, not in the page)
       console.info("🧹 Step 0: Stopping dialog observer")
       try {
