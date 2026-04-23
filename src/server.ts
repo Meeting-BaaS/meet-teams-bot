@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from 'child_process'
+import { execFile } from 'child_process'
 import express from 'express'
 import { unlinkSync } from 'fs'
 import * as path from 'path'
@@ -155,7 +155,21 @@ export async function server() {
         const params: Upload = request.body
         console.log(params)
 
-        const extension = path.extname(params.url)
+        // Validate URL — reject anything that isn't a well-formed http(s) URL.
+        // Prevents `file://`, `ftp://`, and argv-starting-with-`-` tricks on curl.
+        let parsedUrl: URL
+        try {
+            parsedUrl = new URL(params.url)
+        } catch {
+            result.status(400).json({ error: 'Invalid URL' })
+            return
+        }
+        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+            result.status(400).json({ error: 'Unsupported URL scheme' })
+            return
+        }
+
+        const extension = path.extname(parsedUrl.pathname)
         if (
             !Object.values(FileExtension).includes(extension as FileExtension)
         ) {
@@ -164,7 +178,19 @@ export async function server() {
             })
             return
         }
-        const filename = path.basename(params.url)
+
+        const filename = path.basename(parsedUrl.pathname)
+        // Reject filenames that could be interpreted as CLI options (leading `-`)
+        // or path tricks (leading `.` / path separators). ffmpeg and curl both
+        // parse leading `-` on positional args as flags.
+        if (
+            !/^[A-Za-z0-9._-]+$/.test(filename) ||
+            filename.startsWith('-') ||
+            filename.startsWith('.')
+        ) {
+            result.status(400).json({ error: 'Invalid filename' })
+            return
+        }
 
         try {
             // Use curl with non-blocking execFile to avoid shell injection and event-loop blocking
@@ -177,8 +203,8 @@ export async function server() {
                 '-fS',
                 '-L',
                 '-o',
-                filename,
-                params.url,
+                `./${filename}`,
+                parsedUrl.toString(),
             ])
             console.log('Ressource downloaded @', filename)
 
@@ -188,13 +214,13 @@ export async function server() {
                 extension === FileExtension.Png
             ) {
                 try {
-                    const output = execFileSync('ffmpeg', [
+                    const { stdout, stderr } = await execFileAsync('ffmpeg', [
                         '-y',
-                        '-i', filename,
+                        '-i', `./${filename}`,
                         '-vf', `scale=${VideoContext.WIDTH}:${VideoContext.HEIGHT}`,
-                        '-y', `resized_${filename}`,
+                        `./resized_${filename}`,
                     ])
-                    console.log(output.toString())
+                    console.log(stdout, stderr)
                 } catch (e) {
                     console.error(`Unexpected error when scaling image : ${e}`)
                     result.status(400).json({
@@ -203,19 +229,19 @@ export async function server() {
                     return
                 }
                 try {
-                    const output = execFileSync('ffmpeg', [
+                    const { stdout, stderr } = await execFileAsync('ffmpeg', [
                         '-y',
                         '-loop', '1',
-                        '-i', `resized_${filename}`,
+                        '-i', `./resized_${filename}`,
                         '-c:v', 'libx264',
                         '-preset', 'ultrafast',
                         '-tune', 'stillimage',
                         '-r', '30',
                         '-t', '1',
                         '-pix_fmt', 'yuv420p',
-                        `${filename}.mp4`,
+                        `./${filename}.mp4`,
                     ])
-                    console.log(output.toString())
+                    console.log(stdout, stderr)
                 } catch (e) {
                     console.error(
                         `Unexpected error when generating video : ${e}`,
