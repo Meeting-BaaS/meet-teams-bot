@@ -406,12 +406,11 @@ async function performCriticalSetupActions(
         if (dialogObserver) {
           await dialogObserver.dismissVisibleDialogs()
         }
-        if (await changeLayout(page, attempt)) {
+        if (await changeLayout(page, attempt, maxAttempts)) {
           console.log(`Layout change successful on attempt ${attempt}`)
           break
         }
         if (attempt < maxAttempts) {
-          await clickOutsideModal(page)
           await page.waitForTimeout(300)
         }
       }
@@ -844,8 +843,11 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
   return false
 }
 
-async function changeLayout(page: Page, currentAttempt = 1, maxAttempts = 3): Promise<boolean> {
-  console.log(`Starting layout change process (attempt ${currentAttempt}/${maxAttempts})...`)
+// Single-attempt layout change. Retry is owned by performCriticalSetupActions
+// so that dialog dismissal runs between each attempt (see GH #131). The
+// `attempt` parameter is passed in for logging only.
+async function changeLayout(page: Page, attempt: number, maxAttempts: number): Promise<boolean> {
+  console.log(`Starting layout change process (attempt ${attempt}/${maxAttempts})...`)
 
   try {
     const inMeeting = await isInMeeting(page)
@@ -893,19 +895,14 @@ async function changeLayout(page: Page, currentAttempt = 1, maxAttempts = 3): Pr
     await clickOutsideModal(page)
     return true
   } catch (error) {
-    console.error(`Error in changeLayout attempt ${currentAttempt}:`, formatError(error))
+    console.error(`Error in changeLayout attempt ${attempt}:`, formatError(error))
 
     // Close the Adjust view dialog if we managed to open it. Leaving it up blocks
     // the More options button on subsequent attempts (its scrim intercepts pointer
-    // events — causing 30s click timeouts), and the dialog observer can't dismiss
-    // it afterwards because its Close button is icon-only.
+    // events — causing click timeouts) and the dialog observer can't dismiss it
+    // afterwards because its Close button is icon-only.
     await closeAdjustViewDialogIfOpen(page)
 
-    if (currentAttempt < maxAttempts) {
-      console.log(`Retrying layout change (attempt ${currentAttempt + 1}/${maxAttempts})...`)
-      await page.waitForTimeout(1000)
-      return changeLayout(page, currentAttempt + 1, maxAttempts)
-    }
     return false
   }
 }
