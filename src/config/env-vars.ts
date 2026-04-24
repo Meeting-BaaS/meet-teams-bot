@@ -32,7 +32,12 @@ export const envVars = cleanEnv(process.env, {
   UPLOAD_AUDIO_CHUNKS: bool({ default: false }),
   UPLOAD_RAW_VIDEO: bool({ default: false }),
   // Override output directory for serverless mode (e.g., when using run_bot.sh)
-  OUTPUT_BASE_DIR: str({ default: "" })
+  OUTPUT_BASE_DIR: str({ default: "" }),
+  // Skip object tagging on S3 uploads. lib-storage's Upload class fires a
+  // separate PutObjectTagging call after the body lands, which GCS's S3-compat
+  // XML API rejects as NotImplemented. Self-hosters on GCS/R2/other tagless
+  // S3-compat providers should set this to true.
+  DISABLE_S3_OBJECT_TAGGING: bool({ default: false })
 })
 
 export type EnvVars = typeof envVars

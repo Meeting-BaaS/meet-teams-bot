@@ -72,7 +72,12 @@ export class S3Uploader {
         })
       }
 
-      // Use Upload class for automatic multipart handling
+      // Use Upload class for automatic multipart handling.
+      // lib-storage fires a separate PutObjectTagging call after the body when
+      // `tags` is set. Some S3-compat providers (GCS XML API) reject that with
+      // NotImplemented even though the object body uploads fine — every upload
+      // then reports failure despite the data being in the bucket. Skip tags on
+      // those providers via DISABLE_S3_OBJECT_TAGGING.
       const upload = new Upload({
         client: this.s3Client,
         params: {
@@ -80,7 +85,7 @@ export class S3Uploader {
           Key: s3Path,
           Body: fs.createReadStream(filePath)
         },
-        tags: s3Tags
+        ...(envVars.DISABLE_S3_OBJECT_TAGGING ? {} : { tags: s3Tags })
       })
 
       let timeoutHandle: NodeJS.Timeout | null = null
