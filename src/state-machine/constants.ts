@@ -11,7 +11,16 @@ export const MEETING_CONSTANTS = {
   RECORDING_TIMEOUT: 3600 * 4 * 1000, // 4 heures
   INITIAL_WAIT_TIME: 1000 * 60 * 7, // 7 minutes
   EMPTY_MEETING_CONFIRMATION_MS: 45_000, // 45 seconds before confirming no attendees
-  CLEANUP_TIMEOUT: 1000 * 60 * 60, // 1 heure
+  // Outer cleanup timeout. Typical cleanup runs in 2–15 minutes; the headroom
+  // exists so pathologically slow object-store uploads don't cut cleanup short
+  // before it completes. If this does fire, cleanup-state mirrors the bot's
+  // working directory to EFS before transitioning to Terminated so a
+  // reconciliation job can push the built output files to S3 later.
+  //
+  // The outer process SIGKILL lives in sqs-consumer via the
+  // REDIS_SESSION_EXPIRATION_SEC env var (set from helm chart values); keep
+  // this timeout below that so our own EFS-mirror path gets a chance to run.
+  CLEANUP_TIMEOUT: 1000 * 60 * 60, // 1 hour
   RESUMING_TIMEOUT: 1000 * 60 * 60, // 1 heure
   DEFAULT_SILENCE_TIMEOUT_SECONDS: 600, // 10 minutes - default fallback when global value is nil
   DEFAULT_NOONE_JOINED_TIMEOUT_SECONDS: 600, // 10 minutes - default fallback matching API server default

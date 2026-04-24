@@ -7,6 +7,7 @@ import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
+import { PathManager } from "../../utils/PathManager"
 import { S3Uploader } from "../../utils/S3Uploader"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
 import { MEETING_CONSTANTS } from "../constants"
@@ -30,6 +31,11 @@ export class CleanupState extends BaseState {
         console.info("🧹 Cleanup completed successfully")
       } catch (error) {
         console.error("🧹 Cleanup failed or timed out:", formatError(error))
+        // Timeout or cleanup failure — mirror whatever the pipeline built
+        // locally to EFS so a later reconciliation job can push it to S3.
+        // Without this, hung uploads that outlast the outer timeout take
+        // output.mp4 / output.flac down with the pod's scratch disk.
+        await this.mirrorRecordingsToEFS()
         // Continue to Terminated even if cleanup fails
       }
       console.info("🧹 Transitioning to Terminated state")
@@ -117,6 +123,18 @@ export class CleanupState extends BaseState {
       console.error("🧹 Cleanup error:", formatError(error))
       // Continue even if an error occurs
       return
+    }
+  }
+
+  private async mirrorRecordingsToEFS(): Promise<void> {
+    try {
+      const uploader = S3Uploader.getInstance()
+      if (!uploader) return // serverless or not configured
+      const basePath = PathManager.getInstance().getBasePath()
+      await uploader.copyDirToEFS(basePath)
+    } catch (error) {
+      // copyDirToEFS already swallows its own errors, but guard anyway
+      console.error("🧹 EFS mirror after cleanup timeout failed:", formatError(error))
     }
   }
 
