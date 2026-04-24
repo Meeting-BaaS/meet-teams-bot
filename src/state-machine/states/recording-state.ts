@@ -38,6 +38,9 @@ const SPEAKER_OBSERVER_HEALTH_WINDOW_MS = 10 * 60 * 1000 // 10 minutes
 // and brief false-positive attendee counts can pass the participantsEverSeen gate.
 const ALONE_IN_MEETING_GRACE_PERIOD_MS = 5 * 60 * 1000
 
+// How many consecutive stale events trigger fallback to UI-based diarization - increased from 5 to 10 to avoid false positives
+const STALE_EVENT_THRESHOLD = 10
+
 export class RecordingState extends BaseState {
   private isProcessing = true
   private readonly CHECK_INTERVAL = 250
@@ -336,18 +339,21 @@ export class RecordingState extends BaseState {
       // Debouncing logic for fallback
       if (status.status === "stale") {
         this.consecutiveStaleCount++
-        console.log(`[DiarizationHealth] ⚠️ Stale event ${this.consecutiveStaleCount}/5`)
+        const meetingPlatform = GLOBAL.get().meeting_platform
+        console.log(
+          `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${STALE_EVENT_THRESHOLD}`
+        )
 
         // Check if we should trigger fallback (Meet only, network diarization active, 5 consecutive stale events)
         if (
-          this.consecutiveStaleCount >= 5 &&
-          GLOBAL.get().meeting_platform === "meet" &&
+          this.consecutiveStaleCount >= STALE_EVENT_THRESHOLD &&
+          meetingPlatform === "meet" &&
           !GLOBAL.hasNetworkInterceptionSetupFailed() &&
           !GLOBAL.hasDiarizationFallbackTriggered() &&
           this.context.playwrightPage
         ) {
           console.log(
-            "[DiarizationHealth] 🔄 Triggering fallback to UI-based diarization after 5 consecutive stale events"
+            `[DiarizationHealth] [${meetingPlatform}] 🔄 Triggering fallback to UI-based diarization after ${STALE_EVENT_THRESHOLD} consecutive stale events`
           )
 
           // Stop network interception to prevent duplicate logs

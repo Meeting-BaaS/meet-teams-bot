@@ -32,7 +32,22 @@ export const envVars = cleanEnv(process.env, {
   UPLOAD_AUDIO_CHUNKS: bool({ default: false }),
   UPLOAD_RAW_VIDEO: bool({ default: false }),
   // Override output directory for serverless mode (e.g., when using run_bot.sh)
-  OUTPUT_BASE_DIR: str({ default: "" })
+  OUTPUT_BASE_DIR: str({ default: "" }),
+  // Skip object tagging on S3 uploads. @aws-sdk/lib-storage's Upload class
+  // fires a separate PutObjectTagging API call after the body completes
+  // (for both single-shot PutObject and multipart paths). GCS's S3-compat
+  // XML API doesn't implement that endpoint, so every upload's body lands
+  // correctly in the bucket but Upload.done() rejects — the catch block
+  // then logs a failure and falls back to EFS even though the data is
+  // already in S3. Flip this to true on GCS/R2/other tagless S3-compat
+  // providers so lib-storage skips the post-upload tagging call.
+  //
+  // This is a lib-storage-specific quirk. Other services in the stack
+  // (api-server, zoom-bot) aren't affected because they pass tags as
+  // `x-amz-tagging` header on PutObject/CreateMultipartUpload (via
+  // `PutObjectCommand({ Tagging: "k=v" })` in JS and `.tagging("k=v")`
+  // on the Rust aws-sdk-s3-transfer-manager), which GCS accepts.
+  DISABLE_S3_OBJECT_TAGGING: bool({ default: false })
 })
 
 export type EnvVars = typeof envVars
