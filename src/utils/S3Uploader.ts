@@ -82,6 +82,11 @@ export class S3Uploader {
       // on PutObject/CreateMultipartUpload (x-amz-tagging header), which GCS
       // does accept — only lib-storage's Upload takes the separate-API-call
       // route. See env-vars.ts for the fuller rationale.
+      //
+      // Note: when DISABLE_S3_OBJECT_TAGGING is true the `data_retention_days`
+      // tag is no longer attached, so retention on that provider must be
+      // enforced out-of-band (e.g. GCS-native Object Lifecycle Management on
+      // the bucket, configured at deploy time to match the product's policy).
       const upload = new Upload({
         client: this.s3Client,
         params: {
@@ -115,6 +120,12 @@ export class S3Uploader {
       console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
       // Best-effort EFS mirror so a later reconciliation job can push to S3.
       await this.copyToEFS(filePath, s3Path)
+      // Rethrow so callers (ScreenRecorder, cleanup-state, uploadDirectory)
+      // can record the artifact as uploaded:false with UPLOAD_FAILED. Without
+      // this rethrow they'd see a successful return and mark metadata as
+      // uploaded:true with a valid s3Key even though the object is only on
+      // EFS — consumers fetching via s3Key would 404 until reconciliation.
+      throw error
     }
   }
 
