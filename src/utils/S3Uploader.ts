@@ -246,7 +246,16 @@ export class S3Uploader {
         return
       }
       const efsBase = PathManager.getInstance().getEfsPath()
-      const efsFilePath = path.join(efsBase, s3Path)
+      // efsBase already scopes to the bot UUID (/mnt/efs/<env>/s3_upload_fails/<uuid>).
+      // Callers' s3Path usually starts with `<uuid>/` (keys are built as
+      // `${identifier}/<subpath>`), which would produce `<uuid>/<uuid>/…` on join.
+      // Strip the redundant prefix so the on-disk layout matches sqs-consumer's
+      // fallbackToEfs and this module's copyDirToEFS (single-UUID nesting).
+      const botUuid = PathManager.getInstance().getIdentifier()
+      const relativeKey = s3Path.startsWith(`${botUuid}/`)
+        ? s3Path.slice(botUuid.length + 1)
+        : s3Path
+      const efsFilePath = path.join(efsBase, relativeKey)
       const efsDir = path.dirname(efsFilePath)
       await fs.promises.mkdir(efsDir, { recursive: true })
       await fs.promises.copyFile(filePath, efsFilePath)
