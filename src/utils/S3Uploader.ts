@@ -78,6 +78,10 @@ export class S3Uploader {
       // NotImplemented even though the object body uploads fine — every upload
       // then reports failure despite the data being in the bucket. Skip tags on
       // those providers via DISABLE_S3_OBJECT_TAGGING.
+      // api-server and zoom-bot aren't affected because they pass tags inline
+      // on PutObject/CreateMultipartUpload (x-amz-tagging header), which GCS
+      // does accept — only lib-storage's Upload takes the separate-API-call
+      // route. See env-vars.ts for the fuller rationale.
       const upload = new Upload({
         client: this.s3Client,
         params: {
