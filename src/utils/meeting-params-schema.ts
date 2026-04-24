@@ -56,12 +56,4 @@ export const BotMessageSchema = object({
   speech_to_text_region: string().nullable().optional().default(null),
   speech_to_text_custom_params: record(string(), zodUnknown()).nullable().optional().default(null),
   retry_count: number().int().nonnegative().default(0),
-  zoom_config: object({
-    sdk_id: string().optional(),
-    sdk_secret: string().optional(),
-    credential_id: uuid().optional(),
-    obf_token: string().optional(),
-    obf_token_url: url().optional(),
-    zak_token_url: url().optional()
-  }).nullable().optional().default(null)
 })
