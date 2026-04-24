@@ -1,21 +1,19 @@
-// Web Audio mixing for Microsoft Teams
+// Audio track layer for Microsoft Teams
 // Uses shared audio capture module
 
-import { type Page } from "@playwright/test"
+import type { Page } from "@playwright/test"
 import { teamsAudioCapture } from "../shared/audio-capture"
 
 /**
- * Enable Web Audio mixing for Teams
- * @param enableMixing - If false, only creates __audioTrackLayer (for network diarization)
- *                       If true, also enables audio mixing/streaming
- *                       Note: Teams doesn't use network diarization, so this is always true for teams
+ * Enable audio track layer for Teams.
+ * Audio streaming is handled by FFmpeg PulseAudio capture.
  */
-export async function enableTeamsAudioCapture(page: Page, enableMixing = true): Promise<void> {
-  return teamsAudioCapture.enable(page, enableMixing)
+export async function enableTeamsAudioCapture(page: Page): Promise<void> {
+  return teamsAudioCapture.enable(page)
 }
 
 /**
- * Stop the audio capture processor gracefully
+ * Stop the audio capture gracefully
  */
 export async function stopTeamsAudioCapture(page: Page): Promise<void> {
   return teamsAudioCapture.stop(page)

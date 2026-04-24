@@ -1,7 +1,6 @@
-import axios from "axios"
-import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { getErrorMessageFromCode, type MeetingEndReason } from "../state-machine/types"
+import axios from "./axios-instance"
 
 export class Api {
   public static instance: Api | null = null // Singleton class
@@ -11,8 +10,6 @@ export class Api {
       console.error("Class is singleton, constructor cannot be called multiple times.")
       return
     }
-    axios.defaults.baseURL = envVars.API_SERVER_BASEURL
-    axios.defaults.timeout = 30000 // 30 seconds
     Api.instance = this
   }
 
@@ -59,7 +56,6 @@ export class Api {
       await axios({
         method: "POST",
         url: "/bot-process/start-record-failed",
-        timeout: 10000,
         data: {
           meeting_url: GLOBAL.get().meeting_url,
           transformed_meeting_url: GLOBAL.get().transformed_meeting_url,
@@ -75,6 +71,36 @@ export class Api {
         "Unable to notify recording failure (continuing execution):",
         error instanceof Error ? error.message : error
       )
+    }
+  }
+
+  /**
+   * Lightweight check to see if a stop request has been issued for this bot.
+   * Called on startup before joining the meeting.
+   * Returns true if the bot should stop, false otherwise.
+   * Failures are non-fatal — if the server is unreachable, returns false to let the bot proceed.
+   */
+  public async checkStopRequest(): Promise<boolean> {
+    try {
+      const resp = await axios({
+        method: "GET",
+        url: "/bot-process/check-stop-request",
+        timeout: 10000,
+        params: { bot_id: GLOBAL.get().bot_id }
+      })
+      const isStopped = resp.data?.is_stopped === true
+      if (isStopped) {
+        console.log(
+          `Bot ${GLOBAL.get().bot_uuid} has a pending stop request — will not join meeting`
+        )
+      }
+      return isStopped
+    } catch (error) {
+      console.warn(
+        "check-stop-request failed (proceeding with join):",
+        error instanceof Error ? error.message : error
+      )
+      return false
     }
   }
 

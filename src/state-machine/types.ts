@@ -10,8 +10,6 @@ export enum MeetingStateType {
   WaitingRoom = "waitingRoom",
   InCall = "inCall",
   Recording = "recording",
-  Paused = "paused",
-  Resuming = "resuming",
   Cleanup = "cleanup",
   Error = "error",
   Terminated = "terminated"
@@ -22,8 +20,12 @@ export enum MeetingEndReason {
   BotRemoved = "botRemoved",
   NoAttendees = "noAttendees",
   NoSpeaker = "noSpeaker",
+  AllParticipantsLeft = "allParticipantsLeft",
   RecordingTimeout = "recordingTimeout",
   ApiRequest = "apiRequest",
+
+  // Pre-recording stop (bot exited before recording started)
+  ExitingMeetingBeforeRecord = "exitingMeetingBeforeRecord",
 
   // Error end reasons
   BotRemovedTooEarly = "botRemovedTooEarly",
@@ -45,10 +47,14 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "No attendees joined the meeting."
     case MeetingEndReason.NoSpeaker:
       return "No speakers detected during recording."
+    case MeetingEndReason.AllParticipantsLeft:
+      return "All participants left the meeting."
     case MeetingEndReason.RecordingTimeout:
       return "Recording timeout reached."
     case MeetingEndReason.ApiRequest:
       return "Recording stopped via API request."
+    case MeetingEndReason.ExitingMeetingBeforeRecord:
+      return "Bot exited before recording started."
     case MeetingEndReason.BotRemovedTooEarly:
       return "Bot was removed too early; the video is too short."
     case MeetingEndReason.BotNotAccepted:
@@ -93,22 +99,18 @@ export interface MeetingContext {
   // PathManager
   pathManager?: PathManager
 
-  // Recording state (Play/Pause)
-  isPaused?: boolean
-  pauseStartTime?: number
-  totalPauseDuration?: number
-  lastRecordingState?: {
-    timestamp?: number
-    attendeesCount?: number
-    lastSpeakerTime?: number
-    noSpeakerDetectedTime?: number
-  }
+  // Pause/Resume — tracks which sections to trim in post-processing
+  pauseWindows: Array<{ start: number; end: number | null }>
+  currentPauseStart: number | null
 
   // Streaming
   streamingService?: Streaming
 
   // Speakers observation
   speakersObserver?: import("../meeting/speakersObserver").SpeakersObserver
+
+  // Chat observation
+  chatObserver?: import("../meeting/chatObserver").ChatObserver
 
   // HTML cleanup
   htmlCleaner?: import("../meeting/htmlCleaner").HtmlCleaner

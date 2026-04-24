@@ -16,9 +16,8 @@ export function browserInterceptionLogic(schema: any[]) {
     ;(window as any).__networkInterceptorInitialized = true
 
     // Feature flag: Proactive datachannel creation
-    // Set to false by default - Google Meet creates "meet_messages" channel itself
-    // Only enable if passive listener fails to receive the channel
-    const ENABLE_PROACTIVE_MEET_CHANNEL = false
+    // Enabled — passive listener alone may miss the channel due to timing
+    const ENABLE_PROACTIVE_MEET_CHANNEL = true
 
     console.error("[NetworkInterceptor] ✅ Activated")
     console.error(
@@ -968,6 +967,28 @@ export function browserInterceptionLogic(schema: any[]) {
                       wrapper.userInfoListWrapperAndChatWrapper.userInfoListWrapper.userInfoList
                     updateUsers(userManager, users)
                     console.error(`[NetworkInterceptor] 👥 Updated ${users.length} users`)
+                  }
+
+                  // Extract chat messages
+                  const chatMessages = wrapper?.userInfoListWrapperAndChatWrapper?.chatMessageWrapper
+                  if (chatMessages && chatMessages.length > 0) {
+                    for (const chatMsgWrapper of chatMessages) {
+                      const chatMsg = chatMsgWrapper.chatMessage
+                      if (chatMsg && chatMsg.chatMessageContent?.text) {
+                        const senderUser = userManager.allUsersMap.get(chatMsg.deviceId)
+                        const senderName = senderUser ? decodeUserName(senderUser) : "Unknown"
+
+                        if (typeof (window as any).onChatMessageReceived === "function") {
+                          ;(window as any).onChatMessageReceived({
+                            messageId: chatMsg.messageId,
+                            deviceId: chatMsg.deviceId,
+                            timestamp: chatMsg.timestamp,
+                            text: chatMsg.chatMessageContent.text,
+                            senderName: senderName,
+                          })
+                        }
+                      }
+                    }
                   }
                 }
               } catch (e) {

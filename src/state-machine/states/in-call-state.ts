@@ -1,6 +1,9 @@
+import { switchToRecordingBranding } from "../../branding"
+import { ChatManager } from "../../chat-manager"
 import { Events } from "../../events"
+import { ChatObserver } from "../../meeting/chatObserver"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
-import { sendEntryMessage } from "../../meeting/meet"
+
 import { verifyMeetAudioCapture } from "../../meeting/meet/audio-capture"
 import type { NetworkPayload, NetworkUser } from "../../meeting/meet/network-interception/types"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
@@ -9,7 +12,7 @@ import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
 import { MEETING_CONSTANTS } from "../constants"
-import { MeetingStateType, type StateExecuteResult } from "../types"
+import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
 
 export class InCallState extends BaseState {
@@ -20,6 +23,12 @@ export class InCallState extends BaseState {
     console.info(`[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`)
 
     try {
+      // Quick check: if stop was already requested before entering InCall, skip setup entirely
+      if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
+        console.info("[InCallState] Stop already requested — skipping setup")
+        return this.handleError(new Error("Stop requested before recording setup"))
+      }
+
       // Start with global timeout for setup
       await Promise.race([this.setupRecording(), this.createTimeout()])
 
@@ -109,35 +118,96 @@ export class InCallState extends BaseState {
       // Continue even if speakers observation fails
     }
 
-    // Non-blocking: entry message and audio verification (Meet only)
+    // Start chat observation + entry message (non-critical, non-blocking)
+    // Chat panel opening on Teams can take up to 25s of retries — must not block SETUP_TIMEOUT.
+    // Entry message is sent after chat observation is ready, so it benefits from the panel being open.
+    this.startChatObservationAndEntryMessage().catch((err) => {
+      console.error("Failed in chat observation/entry message:", formatError(err))
+    })
+
+    // Non-blocking: audio verification (Meet only)
     this.performNonBlockingActions().catch((err) => {
       console.error("Error in non-blocking actions:", formatError(err))
     })
+
+    // Switch branding to recording image if bot_status mode
+    if (GLOBAL.get().bot_image_config?.loop_mode === "bot_status") {
+      switchToRecordingBranding()
+    }
+
+    // Final gate: if a stop request arrived during setup, bail out
+    // before firing the recording event and transitioning to Recording state
+    if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
+      throw new Error("Stop requested during recording setup — exiting before record")
+    }
 
     // Notify that recording has started
     Events.inCallRecording({ start_time: this.context.startTime })
   }
 
   /**
-   * Non-blocking actions after critical setup: entry message, audio verification (Meet only).
+   * Non-blocking actions after critical setup: audio verification (Meet only).
    */
   private async performNonBlockingActions(): Promise<void> {
     if (!this.context.playwrightPage) return
-    if (GLOBAL.get().meeting_platform !== "meet") return
 
-    if (GLOBAL.get().streaming_output) {
+    // Meet-specific: verify audio capture
+    if (GLOBAL.get().meeting_platform === "meet" && GLOBAL.get().streaming_output) {
       try {
         await verifyMeetAudioCapture(this.context.playwrightPage)
       } catch (error) {
         console.error("[Meet] Failed to verify audio capture post-join:", formatError(error))
       }
     }
+  }
 
-    if (GLOBAL.get().entry_message) {
-      console.log("Sending entry message (non-blocking)...")
-      sendEntryMessage(this.context.playwrightPage, GLOBAL.get().entry_message).catch((error) => {
+  /**
+   * Non-blocking: start chat observation, then send entry message once the observer is ready.
+   * On Teams, the observer opens the chat panel (with retries), so the entry message
+   * benefits from the panel already being open instead of racing to open it independently.
+   */
+  private async startChatObservationAndEntryMessage(): Promise<void> {
+    if (!this.context.playwrightPage) {
+      console.error("Playwright page not available for chat observation")
+      return
+    }
+
+    const platform = GLOBAL.get().meeting_platform
+
+    // Start chat observation
+    try {
+      console.log(`Starting chat observation for ${platform}`)
+      ChatManager.start()
+
+      const chatObserver = new ChatObserver(platform)
+      await chatObserver.startObserving(this.context.playwrightPage)
+      this.context.chatObserver = chatObserver
+      if (chatObserver.isChatDisabled()) {
+        console.warn("[InCallState] Chat is disabled for this meeting")
+      }
+    } catch (error) {
+      console.error("Failed to start chat observation:", formatError(error))
+      // Continue to entry message attempt even if observation setup failed
+    }
+
+    // Send entry message after chat observation is ready
+    if (GLOBAL.get().entry_message && this.context.playwrightPage) {
+      console.log(`Sending entry message via ChatManager (platform=${platform})...`)
+      try {
+        const result = await ChatManager.getInstance().sendBotMessage(
+          this.context.playwrightPage,
+          platform,
+          GLOBAL.get().entry_message,
+          this.context.chatObserver,
+        )
+        if (result.success) {
+          console.log("[InCallState] Entry message sent successfully")
+        } else {
+          console.error("[InCallState] Entry message failed:", (result as { error: string }).error)
+        }
+      } catch (error) {
         console.error("Failed to send entry message:", formatError(error))
-      })
+      }
     }
   }
 
@@ -301,6 +371,7 @@ export class InCallState extends BaseState {
 
     await startUIBasedObserver(this.context.playwrightPage, this.context)
   }
+
 
   private async startHtmlCleaning(): Promise<void> {
     if (!this.context.playwrightPage) {

@@ -32,6 +32,8 @@ export class MeetingStateMachine {
 
     this.context = {
       provider: this.provider,
+      pauseWindows: [],
+      currentPauseStart: null,
       error: null
     } as MeetingContext
 
@@ -82,34 +84,6 @@ export class MeetingStateMachine {
     this.currentState = MeetingStateType.Error
   }
 
-  public async pauseRecording(): Promise<void> {
-    if (this.currentState !== MeetingStateType.Recording) {
-      throw new Error("Cannot pause: meeting is not in recording state")
-    }
-
-    console.info("Pause requested")
-    this.context.isPaused = true
-    this.currentState = MeetingStateType.Paused
-  }
-
-  public async resumeRecording(): Promise<void> {
-    if (this.currentState !== MeetingStateType.Paused) {
-      throw new Error("Cannot resume: meeting is not paused")
-    }
-
-    console.info("Resume requested")
-    this.context.isPaused = false
-    this.currentState = MeetingStateType.Resuming
-  }
-
-  public isPaused(): boolean {
-    return this.currentState === MeetingStateType.Paused
-  }
-
-  public getPauseDuration(): number {
-    return this.context.totalPauseDuration || 0
-  }
-
   public updateParticipantState(state: ParticipantState): void {
     if (this.currentState === MeetingStateType.Recording) {
       this.context.attendeesCount = state.attendeesCount
@@ -142,6 +116,29 @@ export class MeetingStateMachine {
 
   public async stopMeeting(reason: MeetingEndReason): Promise<void> {
     console.info(`Stop meeting requested with reason: ${reason}`)
+
+    // If the bot hasn't started recording yet, use ExitingMeetingBeforeRecord
+    // instead of ApiRequest so the exit path correctly reflects that no
+    // recording was produced.
+    const preRecordingStates = [
+      MeetingStateType.Initialization,
+      MeetingStateType.WaitingRoom,
+      MeetingStateType.InCall
+    ]
+    if (
+      reason === MeetingEndReason.ApiRequest &&
+      preRecordingStates.includes(this.currentState)
+    ) {
+      console.info(
+        `Bot is in pre-recording state (${this.currentState}) — using ExitingMeetingBeforeRecord instead of ApiRequest`
+      )
+      GLOBAL.setError(
+        MeetingEndReason.ExitingMeetingBeforeRecord,
+        "Bot was stopped before recording started"
+      )
+      return
+    }
+
     GLOBAL.setEndReason(reason)
   }
 

@@ -1,4 +1,4 @@
-import axios from "axios"
+import axios from "./api/axios-instance"
 import { envVars } from "./config/env-vars"
 import { GLOBAL } from "./singleton"
 
@@ -122,8 +122,7 @@ export class Events {
     try {
       await axios({
         method: "POST",
-        url: `${envVars.API_SERVER_BASEURL}/bot-process/update-status`,
-        timeout: 30000,
+        url: "/bot-process/update-status",
         data: {
           bot_id: this.botId,
           bot_uuid: this.botUuid,

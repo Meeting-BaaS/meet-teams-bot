@@ -1,3 +1,4 @@
+import { notifyJoinReady } from "../../branding"
 import { Events } from "../../events"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
@@ -45,6 +46,16 @@ export class WaitingRoomState extends BaseState {
       // Open the meeting page
       await this.openMeetingPage(meetingLink)
 
+      // Start audio capture after page is open (avoids capturing pre-join beep/silence)
+      if (this.context.streamingService) {
+        this.context.streamingService.startAudioCapture()
+      }
+
+      // Signal that the meeting page is open and the platform has confirmed
+      // the camera works. If multi-image branding was deferred, this triggers
+      // the switch from warmup placeholder to real branding.
+      notifyJoinReady()
+
       // Start the dialog observer immediately after page is opened
       // This ensures it can start monitoring dialogs right away
       this.startDialogObserver()
@@ -59,11 +70,6 @@ export class WaitingRoomState extends BaseState {
       if (this.context.playwrightPage) {
         const htmlSnapshot = HtmlSnapshotService.getInstance()
         void htmlSnapshot.captureSnapshot(this.context.playwrightPage, "waiting_room_page_opened")
-      }
-
-      // Start streaming service (already initialized before openMeetingPage)
-      if (this.context.streamingService) {
-        this.context.streamingService.start()
       }
 
       ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
@@ -92,6 +98,8 @@ export class WaitingRoomState extends BaseState {
             return this.handleError(error as Error)
           case MeetingEndReason.ApiRequest:
             Events.apiRequestStop()
+            return this.handleError(error as Error)
+          case MeetingEndReason.ExitingMeetingBeforeRecord:
             return this.handleError(error as Error)
         }
       }
@@ -145,8 +153,29 @@ export class WaitingRoomState extends BaseState {
       throw new Error("Meeting page not initialized")
     }
 
-    // Handle timing control for precise meeting join times
-    const startTime = await handleTimingControl(GLOBAL.get().start_time)
+    // Handle timing control for precise meeting join times.
+    // While waiting, poll the page URL to detect if Google Meet denied/redirected
+    // (e.g. "You can't join this video call" → auto-redirect to workspace.google.com).
+    // Only check for Meet — Teams URLs are on a different domain and would false-positive.
+    const isMeet = GLOBAL.get().meeting_platform === "meet"
+    const startTime = await handleTimingControl(GLOBAL.get().start_time, isMeet ? async () => {
+      const url = this.context.playwrightPage?.url() ?? ""
+      if (url && !url.includes("meet.google.com")) {
+        console.log(`Page navigated away from Meet during timing wait: ${url}`)
+        GLOBAL.setShouldRetry(true)
+        GLOBAL.setError(
+          MeetingEndReason.BotNotAccepted,
+          "Google Meet denied entry - page redirected during scheduled wait"
+        )
+        return true
+      }
+      return false
+    } : undefined)
+
+    // If the abort check detected a denial during the wait, bail out immediately
+    if (GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted) {
+      throw new Error("Bot denied during timing control wait")
+    }
 
     // Store the actual start time for later use - It is sent to the backend at the end of the meeting
     GLOBAL.setStartTime(startTime)
@@ -170,7 +199,8 @@ export class WaitingRoomState extends BaseState {
       const checkStopSignal = setInterval(() => {
         if (
           GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
-          GLOBAL.getEndReason() === MeetingEndReason.LoginRequired
+          GLOBAL.getEndReason() === MeetingEndReason.LoginRequired ||
+          GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord
         ) {
           clearInterval(checkStopSignal)
           clearTimeout(timeout)
@@ -181,12 +211,15 @@ export class WaitingRoomState extends BaseState {
       this.context.provider
         .joinMeeting(
           this.context.playwrightPage,
-          () => GLOBAL.getEndReason() === MeetingEndReason.ApiRequest,
+          () =>
+            GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
+            GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord,
           // Add a callback to notify that the join succeeded
           () => {
             joinSuccessful = true
             console.log("Join successful notification received")
-          }
+          },
+          this.context.dialogObserver
         )
         .then(() => {
           clearInterval(checkStopSignal)

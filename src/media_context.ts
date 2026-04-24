@@ -175,13 +175,43 @@ export class VideoContext extends MediaContext {
   static readonly WIDTH: number = 1280
   static readonly HEIGHT: number = 720
 
+  /** Current file being fed to ffmpeg stdin (persistent mode) */
+  private currentFile: string | null = null
+  /** Abort controller for the feeder loop */
+  private feederAbort: AbortController | null = null
+  /** ffmpeg stdin stream (persistent mode) */
+  private ffmpegStdin: internal.Writable | null = null
+
   constructor() {
     super()
     VideoContext.instance = this
   }
 
   public default() {
-    VideoContext.instance.play("../branding.mjpeg", true)
+    VideoContext.instance.play("../branding_0.mjpeg", true)
+  }
+
+  /**
+   * Seamlessly switch to a new branding file without restarting ffmpeg.
+   * In persistent mode, this just updates the file the feeder reads from —
+   * no v4l2 gap, no camera dropout.
+   */
+  public async switchTo(pathname: string) {
+    if (!fs.existsSync(pathname)) {
+      console.log(`Video file not found: ${pathname}`)
+      return
+    }
+
+    if (this.ffmpegStdin && !this.ffmpegStdin.destroyed && this.currentFile) {
+      // Persistent mode: swap the source file, feeder picks it up next iteration
+      console.log(`Seamless branding switch: ${this.currentFile} -> ${pathname}`)
+      this.currentFile = pathname
+      return
+    }
+
+    // Fallback: full restart (e.g. first play or non-persistent mode)
+    await this.stop()
+    this.play(pathname, true)
   }
 
   public play(pathname: string, loop: boolean) {
@@ -191,15 +221,46 @@ export class VideoContext extends MediaContext {
       return
     }
 
-    // ffmpeg -stream_loop -1 -re -i branding.mjpeg -f v4l2 -vcodec mjpeg -q:v 5 -threads 0 /dev/video10
-    const args: string[] = []
     if (loop) {
-      args.push("-stream_loop", "-1")
+      this.playPersistent(pathname)
+    } else {
+      // Non-looping: original behavior (one-shot playback)
+      const args: string[] = [
+        "-re",
+        "-i",
+        pathname,
+        "-f",
+        "v4l2",
+        "-vcodec",
+        "mjpeg",
+        "-q:v",
+        "5",
+        "-threads",
+        "0",
+        CAMERA_DEVICE
+      ]
+      super.execute(args, this.default)
     }
-    args.push(
+  }
+
+  /**
+   * Start a single persistent ffmpeg process that reads MJPEG data from stdin.
+   * A feeder loop continuously writes the current file's data to stdin.
+   * Switching files just changes what the feeder reads — ffmpeg never restarts,
+   * v4l2 always has frames, Google Meet never sees a dead camera.
+   */
+  private playPersistent(pathname: string) {
+    this.currentFile = pathname
+
+    // ffmpeg reads raw MJPEG from stdin at 30fps, outputs to v4l2
+    const args: string[] = [
       "-re",
+      "-f",
+      "mjpeg",
+      "-r",
+      "30",
       "-i",
-      pathname,
+      "pipe:0",
       "-f",
       "v4l2",
       "-vcodec",
@@ -209,11 +270,76 @@ export class VideoContext extends MediaContext {
       "-threads",
       "0",
       CAMERA_DEVICE
-    )
-    super.execute(args, this.default)
+    ]
+
+    const proc = super.execute(args, this.default)
+    if (!proc) {
+      console.error("Failed to start persistent ffmpeg for video")
+      return
+    }
+
+    this.ffmpegStdin = proc.stdin
+    this.startFeeder()
+  }
+
+  /**
+   * Feeder loop: continuously reads the current MJPEG file and writes its
+   * contents to ffmpeg's stdin. ffmpeg's -re flag paces consumption at 30fps,
+   * creating natural backpressure through the pipe buffer.
+   *
+   * When switchTo() updates this.currentFile, the feeder picks up the new file
+   * on its next iteration — typically within 1 second (one MJPEG file duration).
+   */
+  private startFeeder() {
+    if (this.feederAbort) {
+      this.feederAbort.abort()
+    }
+    this.feederAbort = new AbortController()
+    const { signal } = this.feederAbort
+
+    const feed = async () => {
+      while (!signal.aborted && this.ffmpegStdin && !this.ffmpegStdin.destroyed) {
+        try {
+          const data = fs.readFileSync(this.currentFile!)
+          const canWrite = this.ffmpegStdin.write(data)
+          if (!canWrite && !signal.aborted) {
+            await new Promise<void>((resolve) => {
+              const onDrain = () => {
+                signal.removeEventListener("abort", onAbort)
+                resolve()
+              }
+              const onAbort = () => {
+                this.ffmpegStdin?.removeListener("drain", onDrain)
+                resolve()
+              }
+              this.ffmpegStdin!.once("drain", onDrain)
+              signal.addEventListener("abort", onAbort, { once: true })
+            })
+          }
+        } catch (e) {
+          if (!signal.aborted) {
+            console.error("Video feeder error:", e)
+          }
+          break
+        }
+      }
+    }
+
+    feed().catch((e) => {
+      if (!signal.aborted) {
+        console.error("Video feeder crashed:", e)
+      }
+    })
   }
 
   public async stop() {
+    // Stop feeder first so it doesn't write to a closing stdin
+    if (this.feederAbort) {
+      this.feederAbort.abort()
+      this.feederAbort = null
+    }
+    this.ffmpegStdin = null
+    this.currentFile = null
     await super.stop_process()
   }
 }

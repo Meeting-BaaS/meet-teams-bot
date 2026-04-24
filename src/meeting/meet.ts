@@ -1,5 +1,7 @@
 import type { BrowserContext, Page } from "@playwright/test"
+import { brandingReady } from "../branding"
 import { listenPage } from "../browser/page-logger"
+import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
@@ -20,6 +22,24 @@ import { MEET_STATE_CONFIG } from "./meet-state-config"
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
 const ENTRY_MESSAGE_TIMEOUT = 2000
 const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before checking if in meeting
+
+/**
+ * Checks that the page is still on meet.google.com.
+ * If the page navigated away (e.g. Google redirected to workspace.google.com
+ * after showing "You can't join this video call"), sets a retryable error and throws.
+ */
+function assertOnMeetPage(page: Page): void {
+  const url = page.url()
+  if (url && !url.includes("meet.google.com")) {
+    console.log(`Page is not on Google Meet: ${url}`)
+    GLOBAL.setShouldRetry(true)
+    GLOBAL.setError(
+      MeetingEndReason.BotNotAccepted,
+      `Google Meet denied entry - page redirected to: ${url}`
+    )
+    throw new Error("Page navigated away from Google Meet")
+  }
+}
 
 export class MeetProvider implements MeetingProviderInterface {
   async parseMeetingUrl(meeting_url: string) {
@@ -51,17 +71,10 @@ export class MeetProvider implements MeetingProviderInterface {
         await browserContext.grantPermissions(["camera"])
       }
 
-      // Always enable audio track layer (for network diarization)
-      // Only enable mixing/streaming if streaming_output is configured
-      const enableMixing = !!GLOBAL.get().streaming_output
-      await enableMeetAudioCapture(page, enableMixing)
-      if (enableMixing) {
-        console.log("[Meet] ✅ Web Audio capture enabled for streaming")
-      } else {
-        console.log(
-          "[Meet] ✅ Audio track layer enabled for network diarization (streaming disabled)"
-        )
-      }
+      // Audio track layer for network diarization
+      // Audio streaming is handled by FFmpeg PulseAudio capture
+      await enableMeetAudioCapture(page)
+      console.log("[Meet] Audio track layer enabled (streaming via FFmpeg)")
 
       // Setup network interception scripts BEFORE navigation
       // addInitScript must be called before page.goto() to work properly
@@ -134,12 +147,16 @@ export class MeetProvider implements MeetingProviderInterface {
   async joinMeeting(
     page: Page,
     cancelCheck: () => boolean,
-    onJoinSuccess: () => void
+    onJoinSuccess: () => void,
+    dialogObserver?: SimpleDialogObserver
   ): Promise<void> {
     try {
       // Capture DOM state before starting join process
       const htmlSnapshot = HtmlSnapshotService.getInstance()
       await htmlSnapshot.captureSnapshot(page, "meet_join_meeting_start")
+
+      // Bail out early if page already navigated away (e.g. denial during timing wait)
+      assertOnMeetPage(page)
 
       await clickDismiss(page)
       await sleep(300)
@@ -182,11 +199,18 @@ export class MeetProvider implements MeetingProviderInterface {
         await deactivateMicrophone(page)
       }
 
-      // Control camera based on bot_image (branding)
-      if (GLOBAL.get().bot_image) {
+      // Control camera based on whether branding was actually generated successfully
+      if (brandingReady) {
         console.log("Camera will be used for branding, keeping it on")
       } else {
         await deactivateCamera(page)
+      }
+
+      // Final stop check before the irreversible join button click
+      if (cancelCheck()) {
+        console.log("Stop request detected before clicking Join — aborting")
+        GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
+        throw new Error("Bot stopped before joining meeting")
       }
 
       // Try to click join button - will retry continuously while waiting
@@ -209,7 +233,10 @@ export class MeetProvider implements MeetingProviderInterface {
       let leftWaitingRoomAt: number | null = null
       while (true) {
         if (cancelCheck()) {
-          GLOBAL.setError(MeetingEndReason.ApiRequest)
+          // Only set error if not already set by stopMeeting()
+          if (!GLOBAL.getEndReason()) {
+            GLOBAL.setError(MeetingEndReason.ApiRequest)
+          }
           throw new Error("API request to stop recording")
         }
 
@@ -246,12 +273,17 @@ export class MeetProvider implements MeetingProviderInterface {
             console.log(
               `✅ Successfully confirmed we are in the meeting (grace period: ${!leftWaitingRoomAt ? "not in waiting room" : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`
             )
-            // Critical setup actions BEFORE state transition (People panel, layout, snapshot)
-            await performCriticalSetupActions(page)
+            // Signal join success immediately so the waiting room timeout is cleared.
+            // performCriticalSetupActions can take minutes if dialogs block it.
             onJoinSuccess()
+            // Critical setup actions BEFORE state transition (People panel, layout, snapshot)
+            await performCriticalSetupActions(page, dialogObserver)
             break
           }
         }
+
+        // Check page URL before text-based denial detection — catches redirects
+        assertOnMeetPage(page)
 
         if (await notAcceptedInMeeting(page)) {
           throw new Error("Bot not accepted into meeting")
@@ -337,7 +369,22 @@ async function openPeoplePanelWithShortcut(page: Page): Promise<boolean> {
 /**
  * Performs critical setup before state transition: People panel, layout, snapshot.
  */
-async function performCriticalSetupActions(page: Page): Promise<void> {
+async function performCriticalSetupActions(
+  page: Page,
+  dialogObserver?: SimpleDialogObserver
+): Promise<void> {
+  // Re-enforce camera/mic state — Google Meet resets devices during waiting room → in-call transition
+  if (brandingReady) {
+    await ensureCameraOn(page)
+  } else {
+    await ensureCameraOff(page)
+  }
+  if (GLOBAL.get().streaming_input) {
+    await ensureMicrophoneOn(page)
+  } else {
+    await ensureMicrophoneOff(page)
+  }
+
   const htmlSnapshot = HtmlSnapshotService.getInstance()
 
   if (GLOBAL.get().recording_mode !== "gallery_view") {
@@ -345,16 +392,31 @@ async function performCriticalSetupActions(page: Page): Promise<void> {
   }
 
   if (GLOBAL.get().recording_mode !== "audio_only") {
-    const maxAttempts = 3
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      if (await changeLayout(page, attempt)) {
-        console.log(`Layout change successful on attempt ${attempt}`)
-        break
+    // Pause the dialog observer while we interact with the layout dialog.
+    // The observer would detect the Change Layout dialog as generic_dismiss
+    // and race with our Playwright interactions, causing timeouts.
+    SimpleDialogObserver.pause()
+    try {
+      const maxAttempts = 3
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        // Manually dismiss any visible dialogs before attempting layout change.
+        // The observer is paused so it can't do this automatically — but dialogs
+        // like "Other people may see your video differently" block the More Options
+        // button with a scrim overlay.
+        if (dialogObserver) {
+          await dialogObserver.dismissVisibleDialogs()
+        }
+        if (await changeLayout(page, attempt)) {
+          console.log(`Layout change successful on attempt ${attempt}`)
+          break
+        }
+        if (attempt < maxAttempts) {
+          await clickOutsideModal(page)
+          await page.waitForTimeout(300)
+        }
       }
-      if (attempt < maxAttempts) {
-        await clickOutsideModal(page)
-        await page.waitForTimeout(300)
-      }
+    } finally {
+      SimpleDialogObserver.resume()
     }
   }
 
@@ -444,7 +506,9 @@ export async function findShowEveryOne(page: Page, click: boolean, cancelCheck: 
       }
 
       if (cancelCheck()) {
-        GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+        if (!GLOBAL.getEndReason()) {
+          GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+        }
         throw new Error("Timeout waiting to start")
       }
 
@@ -558,9 +622,16 @@ export async function sendEntryMessage(page: Page, enterMessage: string): Promis
     if ((await sendButton.count()) > 0) {
       await sendButton.click({ timeout: ENTRY_MESSAGE_TIMEOUT })
       console.log("Clicked on send button")
-      await page.click('button[aria-label="Chat with everyone"]', {
-        timeout: ENTRY_MESSAGE_TIMEOUT
-      })
+      // Close the chat panel - use evaluate click since the button may be invisible (opacity:0 from HTML cleaner)
+      try {
+        const chatToggle = page.locator('button[aria-label="Chat with everyone"]')
+        if ((await chatToggle.count()) > 0) {
+          await chatToggle.first().evaluate((el: HTMLElement) => el.click())
+          console.log("Closed chat panel")
+        }
+      } catch (e) {
+        console.log("Failed to close chat panel (message was still sent):", formatError(e))
+      }
       return true
     }
     console.log("Send button not found")
@@ -859,10 +930,89 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   }
 }
 
+// --- Camera/Mic state detection and control ---
+// Google Meet uses `data-is-muted="true"` on the toggle buttons and changes
+// the aria-label between "Turn on …" / "Turn off …".  We use both attributes
+// for reliable detection and keyboard shortcuts (Ctrl+E / Ctrl+D) as the
+// primary toggle mechanism with a DOM-click fallback.
+
+async function isCameraOff(page: Page): Promise<boolean> {
+  const btn = page.locator('button[aria-label="Turn on camera"][data-is-muted="true"]')
+  return (await btn.count()) > 0
+}
+
+async function isMicrophoneOff(page: Page): Promise<boolean> {
+  const btn = page.locator('button[aria-label="Turn on microphone"][data-is-muted="true"]')
+  return (await btn.count()) > 0
+}
+
+async function toggleCameraWithShortcut(page: Page): Promise<void> {
+  await page.keyboard.press("Control+KeyE")
+}
+
+async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
+  await page.keyboard.press("Control+KeyD")
+}
+
+async function ensureCameraOn(page: Page): Promise<void> {
+  try {
+    if (!(await isCameraOff(page))) return // already on
+    console.log("[Meet] Camera is off, enabling via keyboard shortcut (Ctrl+E)...")
+    await toggleCameraWithShortcut(page)
+    console.log("[Meet] Camera enable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to enable camera via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn on camera"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+async function ensureCameraOff(page: Page): Promise<void> {
+  try {
+    if (await isCameraOff(page)) return // already off
+    console.log("[Meet] Camera is on, disabling via keyboard shortcut (Ctrl+E)...")
+    await toggleCameraWithShortcut(page)
+    console.log("[Meet] Camera disable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to disable camera via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn off camera"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+async function ensureMicrophoneOn(page: Page): Promise<void> {
+  try {
+    if (!(await isMicrophoneOff(page))) return // already on
+    console.log("[Meet] Microphone is off, enabling via keyboard shortcut (Ctrl+D)...")
+    await toggleMicrophoneWithShortcut(page)
+    console.log("[Meet] Microphone enable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to enable mic via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn on microphone"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+async function ensureMicrophoneOff(page: Page): Promise<void> {
+  try {
+    if (await isMicrophoneOff(page)) return // already off
+    console.log("[Meet] Microphone is on, disabling via keyboard shortcut (Ctrl+D)...")
+    await toggleMicrophoneWithShortcut(page)
+    console.log("[Meet] Microphone disable shortcut sent")
+  } catch (error) {
+    console.error("[Meet] Failed to disable mic via shortcut, trying DOM click:", error)
+    const btn = page.locator('button[aria-label="Turn off microphone"]')
+    if ((await btn.count()) > 0) await btn.click()
+  }
+}
+
+// --- Pre-join lobby helpers (DOM click on div elements) ---
+// The pre-join/lobby page uses div[aria-label="..."] elements, not button[data-is-muted].
+// These are kept separate from the in-meeting ensure* functions above.
+
 async function activateMicrophone(page: Page): Promise<boolean> {
   console.log("Activating microphone...")
   try {
-    // Look for the microphone button that's turned off
     const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
     if ((await microphoneButton.count()) > 0) {
       await microphoneButton.click()
