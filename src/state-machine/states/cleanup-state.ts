@@ -5,6 +5,8 @@ import { MEETING_CONSTANTS } from '../constants'
 import { MeetingStateType, StateExecuteResult } from '../types'
 import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
+import { PathManager } from '../../utils/PathManager'
+import { S3Uploader } from '../../utils/S3Uploader'
 import { SoundLevelMonitor } from '../../utils/sound-level-monitor'
 
 export class CleanupState extends BaseState {
@@ -27,6 +29,11 @@ export class CleanupState extends BaseState {
                 console.info('🧹 Cleanup completed successfully')
             } catch (error) {
                 console.error('🧹 Cleanup failed or timed out:', formatError(error))
+                // Timeout or other cleanup failure — mirror whatever the pipeline
+                // did build locally to EFS so a later reconciliation job can
+                // push it to S3. Without this, hung uploads that outlast the
+                // outer timeout take output.mp4/output.wav down with the pod.
+                await this.mirrorRecordingsToEFS()
                 // Continue to Terminated even if cleanup fails
             }
             console.info('🧹 Transitioning to Terminated state')
@@ -36,6 +43,21 @@ export class CleanupState extends BaseState {
             // Always transition to Terminated to avoid infinite loops
             console.info('🧹 Forcing transition to Terminated despite error')
             return this.transition(MeetingStateType.Terminated)
+        }
+    }
+
+    private async mirrorRecordingsToEFS(): Promise<void> {
+        try {
+            const uploader = S3Uploader.getInstance()
+            if (!uploader) return // serverless or not configured
+            const basePath = PathManager.getInstance().getBasePath()
+            await uploader.copyDirToEFS(basePath)
+        } catch (error) {
+            // copyDirToEFS already swallows its own errors, but guard anyway
+            console.error(
+                '🧹 EFS mirror after cleanup timeout failed:',
+                formatError(error),
+            )
         }
     }
 

@@ -12,6 +12,13 @@ let instance: S3Uploader | null = null
 // Controlled concurrency: process files in batches to avoid overwhelming the system
 const MAX_CONCURRENT_UPLOADS = 100 // Limit concurrent uploads
 
+// Wall-clock cap on a single S3 upload. AWS SDK v3's Upload class has no
+// total-time option; per-chunk request timeouts aren't enough because a hung
+// peer (e.g. Scaleway's 2026-04-22 incident) will keep retrying parts
+// indefinitely. Hitting this threshold aborts the in-flight multipart upload
+// and throws, which lets the catch-block EFS fallback fire.
+const UPLOAD_TIMEOUT_MS = 25 * 60 * 1000 // 25 minutes
+
 export class S3Uploader {
     private s3Client: S3Client
 
@@ -63,7 +70,33 @@ export class S3Uploader {
                 ...(s3Tags && { tags: s3Tags }),
             })
 
-            await upload.done()
+            let timeoutHandle: NodeJS.Timeout | null = null
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                timeoutHandle = setTimeout(() => {
+                    upload.abort().catch((abortErr) => {
+                        // Best-effort — the reject below is what actually
+                        // signals the timeout. If abort itself fails, there
+                        // may be a lingering multipart upload on the bucket
+                        // (Scaleway's 7-day incomplete-multipart cleanup will
+                        // eventually reap it) so log for investigation rather
+                        // than swallow.
+                        console.warn(
+                            `⚠️ upload.abort() failed for ${s3Path}: ${abortErr}`,
+                        )
+                    })
+                    reject(
+                        new Error(
+                            `S3 upload exceeded ${UPLOAD_TIMEOUT_MS}ms for ${s3Path}`,
+                        ),
+                    )
+                }, UPLOAD_TIMEOUT_MS)
+            })
+
+            try {
+                await Promise.race([upload.done(), timeoutPromise])
+            } finally {
+                if (timeoutHandle) clearTimeout(timeoutHandle)
+            }
             console.log(
                 `✅ S3 upload successful: ${s3Path}${tags ? ` (with tags: ${JSON.stringify(tags)})` : ''}`,
             )
@@ -236,6 +269,95 @@ export class S3Uploader {
             throw error
         }
     }
+
+    /**
+     * Recursively copy an entire directory (typically the bot's `recordings/{uuid}/`
+     * working dir) to EFS under `s3_upload_fails/{bot_uuid}/`. Used as a
+     * last-resort safety net when cleanup hits its overall timeout and we need
+     * to preserve whatever artifacts were built locally before the pod
+     * terminates. Same prefix as per-file copyToEFS above, so a downstream
+     * reconciliation job that scans s3_upload_fails/ handles both uniformly.
+     *
+     * No-op in local/dev environments. Errors are logged but swallowed so the
+     * caller can continue into Terminated without blocking.
+     */
+    public async copyDirToEFS(localDir: string): Promise<void> {
+        try {
+            const global = GLOBAL.get()
+            if (global.environ === 'dev' || global.environ === 'local') {
+                console.warn(
+                    `⚠️ EFS not available in ${global.environ} environment - skipping dir copy`,
+                )
+                return
+            }
+
+            let efsEnvPath: string
+            switch (global.environ) {
+                case 'prod':
+                    efsEnvPath = 'prod'
+                    break
+                case 'preprod':
+                    efsEnvPath = 'preprod'
+                    break
+                default:
+                    console.warn(
+                        `⚠️ Unknown environment ${global.environ} - skipping EFS dir copy`,
+                    )
+                    return
+            }
+
+            if (!fs.existsSync(localDir)) {
+                console.warn(`⚠️ Local dir does not exist, skipping EFS copy: ${localDir}`)
+                return
+            }
+
+            const efsBasePath = path.join(
+                EFS_MOUNT_POINT,
+                efsEnvPath,
+                's3_upload_fails',
+                global.bot_uuid,
+            )
+            console.log(
+                `📁 Copying ${localDir} → ${efsBasePath} (cleanup-timeout safety net)`,
+            )
+            await fs.promises.mkdir(efsBasePath, { recursive: true })
+            const copied = await copyDirRecursive(localDir, efsBasePath)
+            console.log(
+                `📁 Directory copied to EFS: ${efsBasePath} (${copied} files)`,
+            )
+        } catch (error) {
+            // Best-effort — don't let an EFS failure block termination
+            console.error(`❌ Failed to copy dir to EFS: ${error}`)
+        }
+    }
+}
+
+/**
+ * Recursively copy `src` into `dst`, creating sub-directories as needed.
+ * Manual walk because the project's pinned @types/node (14.x) predates
+ * `fs.promises.cp`. Returns the number of files copied.
+ */
+async function copyDirRecursive(src: string, dst: string): Promise<number> {
+    let count = 0
+    const entries = await fs.promises.readdir(src, { withFileTypes: true })
+    await fs.promises.mkdir(dst, { recursive: true })
+    for (const entry of entries) {
+        const srcPath = path.join(src, entry.name)
+        const dstPath = path.join(dst, entry.name)
+        if (entry.isDirectory()) {
+            count += await copyDirRecursive(srcPath, dstPath)
+        } else if (entry.isFile()) {
+            try {
+                await fs.promises.copyFile(srcPath, dstPath)
+                count++
+            } catch (error) {
+                // Log and continue — best-effort
+                console.warn(`  skipped ${srcPath}: ${error}`)
+            }
+        }
+        // Symlinks, sockets, etc. are skipped.
+    }
+    return count
 }
 
 // Export utility functions that use the singleton instance
