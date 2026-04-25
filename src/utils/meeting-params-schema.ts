@@ -43,7 +43,6 @@ export const BotMessageSchema = object({
   streaming_transcription: object({
     provider: string(),
     encrypted_api_key: string().nullable(),
-    region: string().nullable(),
     custom_params: record(string(), zodUnknown()).nullable()
   }).nullable().optional().default(null),
   start_time: number().int().default(0),
@@ -53,7 +52,6 @@ export const BotMessageSchema = object({
   silence_timeout: number().int().positive().default(600),
   speech_to_text_provider: SpeechToTextProviderSchema.default("none"),
   encrypted_speech_to_text_api_key: string().nullable().optional().default(null),
-  speech_to_text_region: string().nullable().optional().default(null),
   speech_to_text_custom_params: record(string(), zodUnknown()).nullable().optional().default(null),
   retry_count: number().int().nonnegative().default(0),
 })
