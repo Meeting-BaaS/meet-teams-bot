@@ -254,7 +254,15 @@ export class S3Uploader {
                 efsEnvPath,
                 global.bot_uuid,
             )
-            const efsFilePath = path.join(efsBasePath, s3Path)
+            // efsBasePath already scopes to the bot UUID
+            // (/mnt/efs/<env>/<uuid>). Callers' s3Path usually starts with
+            // `<uuid>/` (keys are built as `${identifier}/<subpath>`), which
+            // would produce `<uuid>/<uuid>/…` on join. Strip the redundant
+            // prefix so the on-disk layout has a single UUID nesting.
+            const relativeKey = s3Path.startsWith(`${global.bot_uuid}/`)
+                ? s3Path.slice(global.bot_uuid.length + 1)
+                : s3Path
+            const efsFilePath = path.join(efsBasePath, relativeKey)
             const efsDir = path.dirname(efsFilePath)
 
             // Create EFS directory structure
