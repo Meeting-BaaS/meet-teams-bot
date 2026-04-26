@@ -433,6 +433,29 @@ export class SimpleDialogObserver {
                     await parentButton.evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
                     return true
                 }
+
+                // Try aria-label (for icon-only buttons like Meet's "Close" X on the
+                // Adjust view dialog, which has aria-label="Close" but no visible text).
+                // Case-insensitive to tolerate Meet UI variants.
+                button = modal.locator(
+                    `button[aria-label="${buttonText}" i]`,
+                )
+                buttonCount = await button.count()
+
+                if (
+                    buttonCount > 0 &&
+                    (await button
+                        .first()
+                        .isVisible({ timeout: timeouts.VISIBLE_TIMEOUT }))
+                ) {
+                    console.info(
+                        `[SimpleDialogObserver] Clicking button (aria-label): "${buttonText}"`,
+                    )
+                    await button
+                        .first()
+                        .evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
+                    return true
+                }
             } catch (error) {
                 console.warn(
                     `[SimpleDialogObserver] Error trying button "${buttonText}": ${error}`,

@@ -195,6 +195,15 @@ export class ScreenRecorder extends EventEmitter {
             this.setupFileSizeMonitoring()
 
             await sleep(FLASH_SCREEN_SLEEP_TIME)
+            if (page.isClosed()) {
+                // Cleanup closed the page before we reached the sync signal (pre-recording
+                // stop/rejection race). Abort the start quietly — the state machine already
+                // has an end_reason and will handle the failure via handleFailedRecording.
+                console.warn(
+                    '[ScreenRecorder] Page closed before sync signal — aborting start',
+                )
+                return
+            }
             await generateSyncSignal(page, {
                 duration: 800, // Much longer signal for reliable detection
                 frequency: 1000, // Keep 1000Hz for consistency
@@ -212,6 +221,26 @@ export class ScreenRecorder extends EventEmitter {
                 formatError(error),
             )
             this.isRecording = false
+            // If an end_reason is already set, the state machine has committed to failing
+            // for a real reason (botNotAccepted, exitingMeetingBeforeRecord, etc.).
+            // Emitting 'error' here would crash the process before handleFailedRecording
+            // runs, because RecordingState's listener is only attached once we reach it —
+            // which we won't, since cleanup is already in progress. Suppress the emit.
+            if (GLOBAL.getEndReason?.()) {
+                console.warn(
+                    '[ScreenRecorder] Suppressing startError — end_reason already set:',
+                    GLOBAL.getEndReason(),
+                )
+                return
+            }
+            // No end_reason yet — unexpected. Set StreamingSetupFailed so the bot still
+            // reports a failure (rather than ending up as UNKNOWN_ERROR).
+            const errorMessage =
+                error instanceof Error ? error.message : String(error)
+            GLOBAL.setError(
+                MeetingEndReason.StreamingSetupFailed,
+                errorMessage,
+            )
             this.emit('error', { type: 'startError', error })
         }
     }
@@ -1075,16 +1104,18 @@ export class ScreenRecorder extends EventEmitter {
                     error.message.includes('FFprobe failed') ||
                     error.message.includes('FFmpeg failed')
                 ) {
-                    // Check if we already have a BotNotAccepted error (higher priority)
-                    if (
-                        GLOBAL.hasError() &&
-                        GLOBAL.getEndReason() ===
-                            MeetingEndReason.BotNotAccepted
-                    ) {
+                    // Preserve any terminal end_reason already set by the
+                    // state machine (TimeoutWaitingToStart, BotNotAccepted,
+                    // LoginRequired, ApiRequest, InvalidMeetingUrl,
+                    // ExitingMeetingBeforeRecord, etc). Recording
+                    // post-processing failures shouldn't clobber the real
+                    // cause of the failure that the state machine already
+                    // identified.
+                    if (GLOBAL.hasError()) {
                         console.log(
-                            'Preserving existing BotNotAccepted error instead of creating BotRemovedTooEarly',
+                            `Preserving existing end_reason ${GLOBAL.getEndReason()} instead of creating BotRemovedTooEarly`,
                         )
-                        throw error // Re-throw the original error to preserve BotNotAccepted
+                        throw error
                     }
 
                     console.log(
@@ -1335,10 +1366,34 @@ export class ScreenRecorder extends EventEmitter {
             console.warn(
                 `⚠️ Audio extraction failed (likely due to bot removal): ${error}`,
             )
+            if (GLOBAL.get().recording_mode === 'audio_only') {
+                // Audio-only mode with no extractable audio = nothing to deliver.
+                // Mark the failure here so the bot emits recording_failed instead
+                // of reporting silent success with an empty manifest — don't rely
+                // on handleSuccessfulRecording's "FFmpeg failed" string match,
+                // since the thrown error could be a non-FFmpeg error (disk, OOM,
+                // permission) that wouldn't trip that check.
+                //
+                // Preserve any terminal end_reason already set by the state
+                // machine (e.g. TimeoutWaitingToStart from waiting-room-state):
+                // post-processing failure shouldn't clobber the real cause.
+                console.warn(
+                    '❌ Audio-only recording produced no audio; marking bot-removed-too-early',
+                )
+                if (!GLOBAL.hasError()) {
+                    GLOBAL.setError(MeetingEndReason.BotRemovedTooEarly)
+                } else {
+                    console.log(
+                        `Preserving existing end_reason ${GLOBAL.getEndReason()} instead of overriding with BotRemovedTooEarly`,
+                    )
+                }
+                throw error
+            }
             console.warn(
-                `⚠️ Continuing without audio extraction to prevent bot hang`,
+                `⚠️ Continuing without audio extraction to prevent bot hang (video mode)`,
             )
-            // Don't throw - allow cleanup to continue
+            // Don't throw - the video mp4 is still deliverable on its own in
+            // speaker_view / gallery_view modes
         }
 
         // 10. Cleanup temporary files

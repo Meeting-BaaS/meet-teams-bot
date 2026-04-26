@@ -936,12 +936,11 @@ async function performCriticalSetupActions(
                 if (dialogObserver) {
                     await dialogObserver.dismissVisibleDialogs()
                 }
-                if (await changeLayout(page, attempt)) {
+                if (await changeLayout(page, attempt, maxAttempts)) {
                     console.log(`Layout change successful on attempt ${attempt}`)
                     break
                 }
                 if (attempt < maxAttempts) {
-                    await clickOutsideModal(page)
                     await page.waitForTimeout(300)
                 }
             }
@@ -954,13 +953,16 @@ async function performCriticalSetupActions(
     void htmlSnapshot.captureSnapshot(page, 'meet_join_meeting_success')
 }
 
+// Single-attempt layout change. Retry is owned by performCriticalSetupActions
+// so that dialog dismissal runs between each attempt (see GH #131). The
+// `attempt` parameter is passed in for logging only.
 async function changeLayout(
     page: Page,
-    currentAttempt = 1,
-    maxAttempts = 3,
+    attempt: number,
+    maxAttempts: number,
 ): Promise<boolean> {
     console.log(
-        `Starting layout change process (attempt ${currentAttempt}/${maxAttempts})...`,
+        `Starting layout change process (attempt ${attempt}/${maxAttempts})...`,
     )
 
     try {
@@ -980,13 +982,18 @@ async function changeLayout(
         // OPTIMIZATION: Remove networkidle wait (unnecessary for UI clicks)
         // await page.waitForLoadState('networkidle', { timeout: 5000 })  // REMOVED
 
+        // Explicit click timeouts: the Playwright default is 30s, which is absurd
+        // for a static call-controls button. If an overlay/scrim intercepts the
+        // click, fail fast so the outer loop can recover in a useful amount of time.
+        const CLICK_TIMEOUT_MS = 3000
+
         // 1. Click More options button
         console.log('Looking for More options button in call controls...')
         const moreOptionsButton = page.locator(
             'div[role="region"][aria-label="Call controls"] button[aria-label="More options"]',
         )
         await moreOptionsButton.waitFor({ state: 'visible', timeout: 3000 })
-        await moreOptionsButton.click()
+        await moreOptionsButton.click({ timeout: CLICK_TIMEOUT_MS })
 
         // OPTIMIZATION: Wait for menu to appear instead of fixed timeout
         await page.waitForSelector('[role="menu"]', {
@@ -1004,7 +1011,7 @@ async function changeLayout(
             '[role="menu"] [role="menuitem"]:has(span:has-text("Change layout"), span:has-text("Adjust view"))',
         )
         await changeLayoutItem.waitFor({ state: 'visible', timeout: 3000 })
-        await changeLayoutItem.click()
+        await changeLayoutItem.click({ timeout: CLICK_TIMEOUT_MS })
 
         // OPTIMIZATION: Wait for layout menu to appear instead of fixed timeout
         await page.waitForSelector('label:has-text("Spotlight")', {
@@ -1028,7 +1035,7 @@ async function changeLayout(
             )
             .first() // Use first() to handle cases where multiple Spotlight labels exist
         await spotlightOption.waitFor({ state: 'visible', timeout: 3000 })
-        await spotlightOption.click()
+        await spotlightOption.click({ timeout: CLICK_TIMEOUT_MS })
 
         // OPTIMIZATION: Wait for layout to change instead of fixed timeout
         await page.waitForTimeout(300) // Reduced from 500ms
@@ -1039,18 +1046,54 @@ async function changeLayout(
         return true
     } catch (error) {
         console.error(
-            `Error in changeLayout attempt ${currentAttempt}:`,
+            `Error in changeLayout attempt ${attempt}:`,
             formatError(error),
         )
 
-        if (currentAttempt < maxAttempts) {
-            console.log(
-                `Retrying layout change (attempt ${currentAttempt + 1}/${maxAttempts})...`,
-            )
-            await page.waitForTimeout(1000)
-            return changeLayout(page, currentAttempt + 1, maxAttempts)
-        }
+        // Close the Adjust view dialog if we managed to open it. Leaving it up blocks
+        // the More options button on subsequent attempts (its scrim intercepts pointer
+        // events — causing click timeouts) and the dialog observer can't dismiss it
+        // afterwards because its Close button is icon-only.
+        await closeAdjustViewDialogIfOpen(page)
+
         return false
+    }
+}
+
+async function closeAdjustViewDialogIfOpen(page: Page): Promise<void> {
+    try {
+        // Meet's Adjust view dialog: aria-modal with an icon-only Close button.
+        const closeBtn = page
+            .locator(
+                'div[role="dialog"][aria-modal="true"] button[aria-label="Close" i]',
+            )
+            .first()
+        if (
+            (await closeBtn.count()) > 0 &&
+            (await closeBtn.isVisible({ timeout: 200 }))
+        ) {
+            console.log(
+                'Closing leftover Adjust view dialog via its Close button',
+            )
+            await closeBtn.evaluate((el: HTMLElement) => el.click(), {
+                timeout: 1000,
+            })
+            return
+        }
+    } catch (error) {
+        // Fall through to mouse-click fallback
+        console.warn(
+            'Close-button path failed, falling back to clickOutsideModal:',
+            formatError(error),
+        )
+    }
+    try {
+        await clickOutsideModal(page)
+    } catch (error) {
+        console.warn(
+            'clickOutsideModal fallback also failed:',
+            formatError(error),
+        )
     }
 }
 
