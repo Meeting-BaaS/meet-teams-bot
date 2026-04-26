@@ -226,7 +226,7 @@ export class ScreenRecorder extends EventEmitter {
             // Emitting 'error' here would crash the process before handleFailedRecording
             // runs, because RecordingState's listener is only attached once we reach it —
             // which we won't, since cleanup is already in progress. Suppress the emit.
-            if (GLOBAL.getEndReason?.()) {
+            if (GLOBAL.getEndReason()) {
                 console.warn(
                     '[ScreenRecorder] Suppressing startError — end_reason already set:',
                     GLOBAL.getEndReason(),

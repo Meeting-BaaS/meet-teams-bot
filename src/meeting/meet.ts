@@ -1068,18 +1068,12 @@ async function closeAdjustViewDialogIfOpen(page: Page): Promise<void> {
                 'div[role="dialog"][aria-modal="true"] button[aria-label="Close" i]',
             )
             .first()
-        if (
-            (await closeBtn.count()) > 0 &&
-            (await closeBtn.isVisible({ timeout: 200 }))
-        ) {
-            console.log(
-                'Closing leftover Adjust view dialog via its Close button',
-            )
-            await closeBtn.evaluate((el: HTMLElement) => el.click(), {
-                timeout: 1000,
-            })
-            return
-        }
+        await closeBtn.waitFor({ state: 'visible', timeout: 200 })
+        console.log('Closing leftover Adjust view dialog via its Close button')
+        await closeBtn.evaluate((el: HTMLElement) => el.click(), {
+            timeout: 1000,
+        })
+        return
     } catch (error) {
         // Fall through to mouse-click fallback
         console.warn(
