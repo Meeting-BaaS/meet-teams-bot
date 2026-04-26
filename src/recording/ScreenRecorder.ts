@@ -1181,12 +1181,16 @@ export class ScreenRecorder extends EventEmitter {
 
       if (error instanceof Error) {
         if (error.message.includes("FFprobe failed") || error.message.includes("FFmpeg failed")) {
-          // Check if we already have a BotNotAccepted error (higher priority)
-          if (GLOBAL.hasError() && GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted) {
+          // Preserve any terminal end_reason already set by the state machine
+          // (TimeoutWaitingToStart, BotNotAccepted, LoginRequired, ApiRequest,
+          // InvalidMeetingUrl, ExitingMeetingBeforeRecord, etc). Recording
+          // post-processing failures shouldn't clobber the real cause of the
+          // failure that the state machine already identified.
+          if (GLOBAL.hasError()) {
             console.log(
-              "Preserving existing BotNotAccepted error instead of creating BotRemovedTooEarly"
+              `Preserving existing end_reason ${GLOBAL.getEndReason()} instead of creating BotRemovedTooEarly`
             )
-            throw error // Re-throw the original error to preserve BotNotAccepted
+            throw error
           }
 
           console.log("Converting FFprobe/FFmpeg error to BotRemovedTooEarly")
@@ -1357,11 +1361,16 @@ export class ScreenRecorder extends EventEmitter {
         // since the thrown error could be a non-FFmpeg error (disk, OOM,
         // permission) that wouldn't trip that check.
         //
-        // Preserve a higher-priority BotNotAccepted error if one is
-        // already set, mirroring the precedence in the outer catch below.
+        // Preserve any terminal end_reason already set by the state
+        // machine (e.g. TimeoutWaitingToStart from waiting-room-state):
+        // post-processing failure shouldn't clobber the real cause.
         console.warn("❌ Audio-only recording produced no audio; marking bot-removed-too-early")
-        if (!(GLOBAL.hasError() && GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted)) {
+        if (!GLOBAL.hasError()) {
           GLOBAL.setError(MeetingEndReason.BotRemovedTooEarly)
+        } else {
+          console.log(
+            `Preserving existing end_reason ${GLOBAL.getEndReason()} instead of overriding with BotRemovedTooEarly`
+          )
         }
         throw error
       }
