@@ -148,10 +148,23 @@ export class TeamsProvider implements MeetingProviderInterface {
     })
 
     try {
-      await page.goto(link, {
+      const response = await page.goto(link, {
         waitUntil: "load",
         timeout: 15000
       })
+
+      // Catch transient Microsoft edge failures (503/502/504): the page resolves
+      // with an HTML error body, the join inputs never appear, and we'd otherwise
+      // burn ~12 minutes inside typeBotName before giving up as "Unknown error".
+      // Triggering bot: b8dde4b5-18a1-4992-b758-207b4f2183d9 (hit a 62-byte
+      // "503 Service Unavailable" page on 2026-04-27 ~13:56 UTC).
+      if (response && response.status() >= 500) {
+        GLOBAL.setError(
+          MeetingEndReason.CannotJoinMeeting,
+          `Teams returned HTTP ${response.status()} - service unavailable`
+        )
+        throw new Error(`Teams page returned HTTP ${response.status()}`)
+      }
 
       // Check for page freeze after goto
       let pageFrozen = false
