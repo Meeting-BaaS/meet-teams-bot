@@ -79,11 +79,21 @@ export class MeetProvider implements MeetingProviderInterface {
             }
 
             console.log(`Navigating to ${link}...`)
-            await page.goto(link, {
+            const response = await page.goto(link, {
                 waitUntil: 'networkidle',
                 timeout: 30000,
             })
             console.log('Navigation completed')
+
+            // Catch transient Google edge failures (503/502/504): the page resolves with
+            // an HTML error body and the join UI never appears.
+            if (response && response.status() >= 500) {
+                GLOBAL.setError(
+                    MeetingEndReason.CannotJoinMeeting,
+                    `Google Meet returned HTTP ${response.status()} - service unavailable`,
+                )
+                throw new Error(`Google Meet page returned HTTP ${response.status()}`)
+            }
 
             // Check for page freeze after goto (same as Teams)
             let pageFrozen = false
