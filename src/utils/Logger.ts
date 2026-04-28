@@ -312,20 +312,7 @@ export async function uploadLogsToS3(options: {
                     )
                     logger.info('Screenshots uploaded to S3')
                 } catch (error) {
-                    logger.error(
-                        'Directory sync failed, falling back to individual uploads:',
-                        error,
-                    )
-                    // Fallback to individual uploads
-                    for (const filename of screenshotFiles) {
-                        const screenshotPath = path.join(
-                            screenshotsPath,
-                            filename,
-                        )
-                        const s3ScreenshotPath = `${s3ScreenshotsPath}/${filename}`
-                        await s3cp(screenshotPath, s3ScreenshotPath)
-                    }
-                    logger.info('Screenshots uploaded to S3 (fallback)')
+                    logger.error('Directory sync failed:', error)
                 }
             } else {
                 console.log(
@@ -354,23 +341,17 @@ export async function uploadLogsToS3(options: {
                         htmlSnapshotsPath,
                         GLOBAL.get().remote?.aws_s3_log_bucket!,
                         s3HtmlSnapshotsPath,
+                        // HTML snapshots are debug-grade artifacts. Skip EFS
+                        // fallback to avoid burning EFS storage and per-file
+                        // fallback log noise on transient S3 failures.
+                        { skipEfsFallback: true },
                     )
                     logger.info('HTML snapshots uploaded to S3')
                 } catch (error) {
                     logger.error(
-                        'HTML snapshots directory sync failed, falling back to individual uploads:',
+                        'HTML snapshots directory sync failed:',
                         error,
                     )
-                    // Fallback to individual uploads
-                    for (const filename of htmlSnapshotFiles) {
-                        const htmlSnapshotPath = path.join(
-                            htmlSnapshotsPath,
-                            filename,
-                        )
-                        const s3HtmlSnapshotPath = `${s3HtmlSnapshotsPath}/${filename}`
-                        await s3cp(htmlSnapshotPath, s3HtmlSnapshotPath)
-                    }
-                    logger.info('HTML snapshots uploaded to S3 (fallback)')
                 }
             } else {
                 console.log(
