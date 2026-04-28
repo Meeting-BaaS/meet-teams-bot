@@ -247,7 +247,11 @@ export async function uploadScreenshotsToS3(): Promise<void> {
           await S3Uploader.getInstance()?.uploadDirectory(
             screenshotsPath,
             envVars.AWS_S3_ARTIFACTS_BUCKET, // Screenshots are considered artifacts, storing them in the artifacts bucket
-            s3ScreenshotsPath
+            s3ScreenshotsPath,
+            // Screenshots are debug-grade artifacts. Skip EFS fallback to avoid
+            // burning EFS storage and per-file fallback log noise on transient
+            // S3 failures (e.g. occasional Scaleway NoSuchVersion responses).
+            { skipEfsFallback: true }
           )
           GLOBAL.addArtifactKey({
             s3Key: s3ScreenshotsPath,
