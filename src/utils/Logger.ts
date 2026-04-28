@@ -360,26 +360,19 @@ export async function uploadLogsToS3(): Promise<void> {
       if (htmlSnapshotFiles.length > 0) {
         logger.info(`Uploading ${htmlSnapshotFiles.length} HTML snapshots to S3...`)
 
-        // Use directory sync for better performance
         try {
           await S3Uploader.getInstance()?.uploadDirectory(
             htmlSnapshotsPath,
             envVars.AWS_S3_LOGS_BUCKET,
-            s3HtmlSnapshotsPath
+            s3HtmlSnapshotsPath,
+            // HTML snapshots are debug-grade artifacts. Skip EFS fallback to
+            // avoid burning EFS storage and per-file fallback log noise on
+            // transient S3 failures.
+            { skipEfsFallback: true }
           )
           logger.info("HTML snapshots uploaded to S3")
         } catch (error) {
-          logger.error(
-            "HTML snapshots directory sync failed, falling back to individual uploads:",
-            error
-          )
-          // Fallback to individual uploads
-          for (const filename of htmlSnapshotFiles) {
-            const htmlSnapshotPath = path.join(htmlSnapshotsPath, filename)
-            const s3HtmlSnapshotPath = `${s3HtmlSnapshotsPath}/${filename}`
-            await s3cp(htmlSnapshotPath, s3HtmlSnapshotPath)
-          }
-          logger.info("HTML snapshots uploaded to S3 (fallback)")
+          logger.error("HTML snapshots directory sync failed:", error)
         }
       } else {
         console.log("HTML snapshots directory exists but is empty:", htmlSnapshotsPath)
