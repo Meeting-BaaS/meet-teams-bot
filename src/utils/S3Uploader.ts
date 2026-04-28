@@ -46,7 +46,8 @@ export class S3Uploader {
     filePath: string,
     bucketName: string,
     s3Path: string,
-    tags?: Record<string, string>
+    tags?: Record<string, string>,
+    options?: { skipEfsFallback?: boolean }
   ): Promise<void> {
     if (GLOBAL.isServerless()) {
       console.log("Skipping S3 upload - serverless mode")
@@ -117,9 +118,15 @@ export class S3Uploader {
         if (timeoutHandle) clearTimeout(timeoutHandle)
       }
     } catch (error) {
-      console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
-      // Best-effort EFS mirror so a later reconciliation job can push to S3.
-      await this.copyToEFS(filePath, s3Path)
+      if (options?.skipEfsFallback) {
+        // Caller (e.g. screenshots) opted out of EFS preservation. These
+        // artifacts are debug-grade and not worth the EFS storage / log noise.
+        console.warn(`❌ S3 upload failed (no EFS fallback): ${s3Path} — ${error}`)
+      } else {
+        console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
+        // Best-effort EFS mirror so a later reconciliation job can push to S3.
+        await this.copyToEFS(filePath, s3Path)
+      }
       // Rethrow so callers (ScreenRecorder, cleanup-state, uploadDirectory)
       // can record the artifact as uploaded:false with UPLOAD_FAILED. Without
       // this rethrow they'd see a successful return and mark metadata as
@@ -146,7 +153,8 @@ export class S3Uploader {
   public async uploadDirectory(
     localDir: string,
     bucketName: string,
-    s3Path: string
+    s3Path: string,
+    options?: { skipEfsFallback?: boolean }
   ): Promise<void> {
     if (GLOBAL.isServerless()) {
       console.log("Skipping S3 upload - serverless mode")
@@ -189,7 +197,7 @@ export class S3Uploader {
           const s3Key = `${s3Path}/${filename}`
 
           try {
-            await this.uploadFile(file, bucketName, s3Key)
+            await this.uploadFile(file, bucketName, s3Key, undefined, options)
             return { success: true, file: filename }
           } catch (error) {
             // Error is already logged in uploadFile
