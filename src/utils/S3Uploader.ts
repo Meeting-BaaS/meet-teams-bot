@@ -47,6 +47,7 @@ export class S3Uploader {
         bucketName: string,
         s3Path: string,
         tags?: Record<string, string>,
+        options?: { skipEfsFallback?: boolean },
     ): Promise<void> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
@@ -101,10 +102,18 @@ export class S3Uploader {
                 `✅ S3 upload successful: ${s3Path}${tags ? ` (with tags: ${JSON.stringify(tags)})` : ''}`,
             )
         } catch (error) {
-            console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
+            if (options?.skipEfsFallback) {
+                // Caller (e.g. screenshots) opted out of EFS preservation. These
+                // artifacts are debug-grade and not worth the EFS storage / log noise.
+                console.warn(
+                    `❌ S3 upload failed (no EFS fallback): ${s3Path} — ${error}`,
+                )
+            } else {
+                console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
 
-            // Fallback to EFS with the same structure
-            await this.copyToEFS(filePath, s3Path)
+                // Fallback to EFS with the same structure
+                await this.copyToEFS(filePath, s3Path)
+            }
         }
     }
 
@@ -131,6 +140,7 @@ export class S3Uploader {
         localDir: string,
         bucketName: string,
         s3Path: string,
+        options?: { skipEfsFallback?: boolean },
     ): Promise<void> {
         if (GLOBAL.isServerless()) {
             console.log('Skipping S3 upload - serverless mode')
@@ -177,7 +187,7 @@ export class S3Uploader {
                     const s3Key = `${s3Path}/${filename}`
 
                     try {
-                        await this.uploadFile(file, bucketName, s3Key)
+                        await this.uploadFile(file, bucketName, s3Key, undefined, options)
                         return { success: true, file: filename }
                     } catch (error: any) {
                         // Error is already logged in uploadFile

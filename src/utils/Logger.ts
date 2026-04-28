@@ -304,6 +304,11 @@ export async function uploadLogsToS3(options: {
                         screenshotsPath,
                         GLOBAL.get().remote?.aws_s3_log_bucket!,
                         s3ScreenshotsPath,
+                        // Screenshots are debug-grade artifacts. Skip EFS fallback
+                        // to avoid burning EFS storage and per-file fallback log
+                        // noise on transient S3 failures (e.g. occasional Scaleway
+                        // NoSuchVersion responses).
+                        { skipEfsFallback: true },
                     )
                     logger.info('Screenshots uploaded to S3')
                 } catch (error) {
