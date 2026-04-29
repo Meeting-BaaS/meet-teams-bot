@@ -31,7 +31,7 @@ export async function startToggleProxy(): Promise<string | null> {
     await server.listen()
     const port = server.port
     const proxyUrl = `http://127.0.0.1:${port}`
-    console.log(`[ToggleProxy] ✅ Started on ${proxyUrl} (upstream: Bright Data)`)
+    console.log(`[ToggleProxy] ✅ Started on ${proxyUrl}`)
     return proxyUrl
   } catch (error) {
     console.error(
