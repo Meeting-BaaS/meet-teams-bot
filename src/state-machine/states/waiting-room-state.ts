@@ -219,10 +219,7 @@ export class WaitingRoomState extends BaseState {
           () => {
             joinSuccessful = true
             console.log("Join successful notification received")
-            // Keep proxy active through the entire session — flipping to direct
-            // post-admission risks Google re-validating IP on control-plane calls
-            // and kicking the bot. Dedicated ISP plans are unmetered, so no cost penalty.
-            // setDirectMode()
+            setDirectMode()
           },
           this.context.dialogObserver
         )
