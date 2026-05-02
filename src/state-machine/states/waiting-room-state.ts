@@ -142,12 +142,6 @@ export class WaitingRoomState extends BaseState {
       // so we can see logs from init scripts. BaseState.setupPageLoggers() runs
       // too early (page doesn't exist yet) and would miss init script logs.
       console.info("Meeting page opened successfully")
-
-      // Aggressive proxy deactivation: drop upstream as soon as the page is loaded,
-      // before any interactions. Theory says the join POST is the decisive moment for
-      // threat-queue classification, so this could fail — but if it works, it cuts
-      // residential bandwidth dramatically (only the SPA bundle goes proxied).
-      setDirectMode()
     } catch (error) {
       console.error("Failed to open meeting page:", formatError(error))
 
