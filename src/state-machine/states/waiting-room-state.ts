@@ -180,8 +180,11 @@ export class WaitingRoomState extends BaseState {
     // Store the actual start time for later use - It is sent to the backend at the end of the meeting
     GLOBAL.setStartTime(startTime)
 
-    const timeoutMs = GLOBAL.get().waiting_room_timeout * 1000
-    console.info(`Setting waiting room timeout to ${timeoutMs}ms`)
+    const waitingRoomGracePeriodMs = (GLOBAL.get().grace_period ?? 0) * 1000
+    const timeoutMs = GLOBAL.get().waiting_room_timeout * 1000 + waitingRoomGracePeriodMs
+    console.info(
+      `Setting waiting room timeout to ${timeoutMs}ms (includes ${waitingRoomGracePeriodMs}ms grace period)`
+    )
 
     let joinSuccessful = false // Flag indicating we joined the meeting
 
