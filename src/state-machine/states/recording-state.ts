@@ -53,6 +53,8 @@ export class RecordingState extends BaseState {
   private lastDiarizationHealthCheckTime = 0
   private consecutiveStaleCount = 0
   private aloneInMeetingSince: number | null = null
+  private gracePeriodStartLogged = false
+  private wasInGracePeriod = false
 
   async execute(): StateExecuteResult {
     try {
@@ -128,6 +130,19 @@ export class RecordingState extends BaseState {
       isSoundLevelMonitorActive: SoundLevelMonitor.peekInstance()?.getIsActive() ?? false
     })
 
+    const gracePeriodSec = GLOBAL.get().grace_period ?? 0
+    const silenceTimeoutSec = GLOBAL.get().silence_timeout ?? MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS
+    const noOneJoinedSec = GLOBAL.get().no_one_joined_timeout ?? MEETING_CONSTANTS.DEFAULT_NOONE_JOINED_TIMEOUT_SECONDS
+    if (gracePeriodSec > 0) {
+      console.info(
+        `[Grace-Period] Configured: ${gracePeriodSec}s — bot will not exit for ${gracePeriodSec}s regardless of silence or empty meeting. After grace period: silence_timeout=${silenceTimeoutSec}s, no_one_joined_timeout=${noOneJoinedSec}s`
+      )
+    } else {
+      console.info(
+        `[Grace-Period] Not configured (grace_period=0). silence_timeout=${silenceTimeoutSec}s, no_one_joined_timeout=${noOneJoinedSec}s`
+      )
+    }
+
     // Configure listeners
     await this.setupEventListeners()
     console.info("Recording initialized successfully")
@@ -186,10 +201,35 @@ export class RecordingState extends BaseState {
   }> {
     try {
       const now = Date.now()
-
-      // Check if stop was requested via state machine
+      // Check if stop was requested via state machine (API request always wins)
       if (GLOBAL.getEndReason()) {
         return { shouldEnd: true, reason: GLOBAL.getEndReason() }
+      }
+
+      // During grace period the bot must stay in the meeting unconditionally —
+      // even if all participants leave or the platform signals bot removal.
+      // Keep lastSoundActivity fresh so the silence clock only starts after
+      // the grace period ends.
+      if (this.isInGracePeriod(now)) {
+        if (!this.gracePeriodStartLogged) {
+          const gracePeriodMs = (GLOBAL.get().grace_period ?? 0) * 1000
+          console.info(
+            `[Grace-Period] Started — bot will not exit for ${gracePeriodMs / 1000}s. All exit conditions suppressed.`
+          )
+          this.gracePeriodStartLogged = true
+        }
+        this.wasInGracePeriod = true
+        this.lastSoundActivity = now
+        return { shouldEnd: false }
+      }
+
+      if (this.wasInGracePeriod) {
+        const gracePeriodMs = (GLOBAL.get().grace_period ?? 0) * 1000
+        console.info(
+          `[Grace-Period] Expired after ${gracePeriodMs / 1000}s — resuming normal exit checks. silence_timeout=${GLOBAL.get().silence_timeout ?? MEETING_CONSTANTS.DEFAULT_SILENCE_TIMEOUT_SECONDS}s`
+        )
+        this.wasInGracePeriod = false
+        this.lastSoundActivity = now // reset silence clock from this moment
       }
 
       // Check if bot was removed (with timeout protection)
@@ -271,7 +311,7 @@ export class RecordingState extends BaseState {
       }
 
       // No one joined period is over - check silence timeout
-      if (await this.checkNoSpeaker(now)) {
+      if (this.checkNoSpeaker(now)) {
         return { shouldEnd: true, reason: MeetingEndReason.NoSpeaker }
       }
 
@@ -448,6 +488,19 @@ export class RecordingState extends BaseState {
     }
   }
 
+  /**
+   * True while we are within the configured grace period after the bot joined.
+   * During this window the bot must not exit for any automatic reason
+   * (silence, alone-in-meeting, bot removed). Only an explicit API stop wins.
+   */
+  private isInGracePeriod(now: number): boolean {
+    const gracePeriodSec = GLOBAL.get().grace_period ?? 0
+    if (gracePeriodSec <= 0) return false
+    const startTime = this.context.startTime
+    if (!startTime) return false
+    return now - startTime < gracePeriodSec * 1000
+  }
+
   private async checkBotRemoved(): Promise<boolean> {
     if (!this.context.playwrightPage) {
       console.error("Playwright page not available")
@@ -475,6 +528,12 @@ export class RecordingState extends BaseState {
     shouldEnd: boolean
     reason?: MeetingEndReason
   } {
+    // Never end with NoAttendees during the grace period, and don't start
+    // the no_one_joined timeout countdown until the grace period has finished.
+    if (this.isInGracePeriod(now)) {
+      return { shouldEnd: false }
+    }
+
     const startTime = this.context.startTime
     if (!startTime) {
       return { shouldEnd: false }
@@ -506,14 +565,17 @@ export class RecordingState extends BaseState {
     // Use noone_joined_timeout from config, with fallback to default
     const nooneJoinedTimeoutSeconds =
       GLOBAL.get().no_one_joined_timeout ?? MEETING_CONSTANTS.DEFAULT_NOONE_JOINED_TIMEOUT_SECONDS
-    const gracePeriodMs = nooneJoinedTimeoutSeconds * 1000
-    const elapsed = now - startTime
+    const configuredGracePeriodMs = (GLOBAL.get().grace_period ?? 0) * 1000
+    const noOneJoinedTimeoutMs = nooneJoinedTimeoutSeconds * 1000
+    const noOneJoinedTimeoutStartTime = startTime + configuredGracePeriodMs
+    const elapsed = Math.max(0, now - noOneJoinedTimeoutStartTime)
 
-    // If grace period hasn't elapsed yet, continue waiting
-    if (elapsed < gracePeriodMs) {
+    // If the no_one_joined timeout hasn't elapsed yet, continue waiting.
+    // This countdown starts only after the configured grace period ends.
+    if (elapsed < noOneJoinedTimeoutMs) {
       // Log at most every 30 seconds to avoid noisy logs
       if (now - this.lastNoOneJoinedPeriodLog >= 30_000) {
-        const remainingSeconds = Math.ceil((gracePeriodMs - elapsed) / 1000)
+        const remainingSeconds = Math.ceil((noOneJoinedTimeoutMs - elapsed) / 1000)
         console.log(
           `[noone-joined] Waiting for first sound or attendees... ${remainingSeconds}s remaining before timeout`
         )
@@ -522,9 +584,9 @@ export class RecordingState extends BaseState {
       return { shouldEnd: false }
     }
 
-    // Grace period elapsed and no sound/attendees detected - exit with NoAttendees
+    // no_one_joined timeout elapsed after the configured grace period with no sound/attendees.
     console.log(
-      `[noone-joined] No sound or attendees detected during ${nooneJoinedTimeoutSeconds}s grace period, ending meeting with NoAttendees`
+      `[noone-joined] No sound or attendees detected during ${nooneJoinedTimeoutSeconds}s no_one_joined timeout after the configured grace period, ending meeting with NoAttendees`
     )
     return { shouldEnd: true, reason: MeetingEndReason.NoAttendees }
   }
@@ -535,6 +597,12 @@ export class RecordingState extends BaseState {
    * @returns true if the meeting should end due to absence of sound
    */
   private checkNoSpeaker(now: number): boolean {
+    // Never report silence-timeout end during grace period,
+    // even if the upstream early-return was somehow bypassed.
+    if (this.isInGracePeriod(now)) {
+      return false
+    }
+
     // Check if the silence period has exceeded the timeout
     const silenceDurationSeconds = Math.floor((now - this.lastSoundActivity) / 1000)
     // Use the silence timeout from API (in seconds), or fallback to default if not provided
@@ -588,6 +656,11 @@ export class RecordingState extends BaseState {
     now: number,
     currentSoundLevel: number
   ): { shouldEnd: boolean; reason?: MeetingEndReason } {
+    // Never trigger alone-in-meeting during the configured grace period.
+    if (this.isInGracePeriod(now)) {
+      return { shouldEnd: false }
+    }
+
     const attendeesCount = this.context.attendeesCount || 0
 
     // Don't activate alone-in-meeting within the first 5 minutes of recording.
