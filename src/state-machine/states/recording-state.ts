@@ -528,7 +528,8 @@ export class RecordingState extends BaseState {
     shouldEnd: boolean
     reason?: MeetingEndReason
   } {
-    // Never end with NoAttendees during the grace period.
+    // Never end with NoAttendees during the grace period, and don't start
+    // the no_one_joined timeout countdown until the grace period has finished.
     if (this.isInGracePeriod(now)) {
       return { shouldEnd: false }
     }
@@ -564,14 +565,17 @@ export class RecordingState extends BaseState {
     // Use noone_joined_timeout from config, with fallback to default
     const nooneJoinedTimeoutSeconds =
       GLOBAL.get().no_one_joined_timeout ?? MEETING_CONSTANTS.DEFAULT_NOONE_JOINED_TIMEOUT_SECONDS
-    const gracePeriodMs = nooneJoinedTimeoutSeconds * 1000
-    const elapsed = now - startTime
+    const configuredGracePeriodMs = (GLOBAL.get().grace_period ?? 0) * 1000
+    const noOneJoinedTimeoutMs = nooneJoinedTimeoutSeconds * 1000
+    const noOneJoinedTimeoutStartTime = startTime + configuredGracePeriodMs
+    const elapsed = Math.max(0, now - noOneJoinedTimeoutStartTime)
 
-    // If grace period hasn't elapsed yet, continue waiting
-    if (elapsed < gracePeriodMs) {
+    // If the no_one_joined timeout hasn't elapsed yet, continue waiting.
+    // This countdown starts only after the configured grace period ends.
+    if (elapsed < noOneJoinedTimeoutMs) {
       // Log at most every 30 seconds to avoid noisy logs
       if (now - this.lastNoOneJoinedPeriodLog >= 30_000) {
-        const remainingSeconds = Math.ceil((gracePeriodMs - elapsed) / 1000)
+        const remainingSeconds = Math.ceil((noOneJoinedTimeoutMs - elapsed) / 1000)
         console.log(
           `[noone-joined] Waiting for first sound or attendees... ${remainingSeconds}s remaining before timeout`
         )
@@ -580,9 +584,9 @@ export class RecordingState extends BaseState {
       return { shouldEnd: false }
     }
 
-    // Grace period elapsed and no sound/attendees detected - exit with NoAttendees
+    // no_one_joined timeout elapsed after the configured grace period with no sound/attendees.
     console.log(
-      `[noone-joined] No sound or attendees detected during ${nooneJoinedTimeoutSeconds}s grace period, ending meeting with NoAttendees`
+      `[noone-joined] No sound or attendees detected during ${nooneJoinedTimeoutSeconds}s no_one_joined timeout after the configured grace period, ending meeting with NoAttendees`
     )
     return { shouldEnd: true, reason: MeetingEndReason.NoAttendees }
   }

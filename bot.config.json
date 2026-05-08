@@ -4,7 +4,7 @@
     "bot_name": "Recording Bot",
     "bot_image": "https://i.ibb.co/N9YtnDZ/ducobu.jpg",
     "meeting_url": "https://teams.live.com/meet/9386940156190?p=WYXhwRAGcNgSvlLgtH",
-    "meeting_platform": "meet",
+    "meeting_platform": "teams",
     "entry_message": "Recording bot has joined the meeting",
     "recording_mode": "speaker_view",
     "data_retention_days": 30,
