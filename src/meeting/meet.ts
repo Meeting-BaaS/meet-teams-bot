@@ -1,12 +1,13 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import { brandingReady } from "../branding"
-import { listenPage } from "../browser/page-logger"
+import { listenPage, setupBrowserLogBridge } from "../browser/page-logger"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
+import { humanClick, humanKey, humanType } from "../utils/human-input"
 import { formatError } from "../utils/Logger"
 import {
   createStateDetector,
@@ -60,8 +61,13 @@ export class MeetProvider implements MeetingProviderInterface {
       console.log("Creating new page in existing context...")
       const page = await browserContext.newPage()
 
-      // Set up page logger IMMEDIATELY so we can see logs from injected scripts
+      // Set up page logger IMMEDIATELY so we can see logs from injected scripts.
+      // listenPage attaches page.on("console") (legacy path, suppressed by
+      // rebrowser-playwright); setupBrowserLogBridge installs an exposeFunction
+      // + addInitScript monkey-patch that survives the rebrowser patch and
+      // surfaces ALL browser-side console.* + uncaught errors to Node.
       listenPage(page)
+      await setupBrowserLogBridge(page)
       console.log("[Meet] Page logger set up")
 
       // Set permissions based on streaming_input
@@ -79,7 +85,9 @@ export class MeetProvider implements MeetingProviderInterface {
       // Setup network interception scripts BEFORE navigation
       // addInitScript must be called before page.goto() to work properly
       try {
-        const { setupNetworkInterceptionScripts } = await import("./meet/network-interception")
+        const { setupNetworkInterceptionScripts, setupBotDetectionRoute } = await import(
+          "./meet/network-interception"
+        )
         const success = await setupNetworkInterceptionScripts(page)
         if (success) {
           console.log("[Meet] ✅ Network interception scripts set up")
@@ -89,6 +97,20 @@ export class MeetProvider implements MeetingProviderInterface {
           )
           GLOBAL.setNetworkInterceptionSetupFailed()
         }
+        // Wire the bot-detection observer via page.route() (Node-side). Must
+        // be installed before page.goto() so the route is in place when the
+        // first CreateMeetingDevice request fires during the join handshake.
+        await setupBotDetectionRoute(page, (signal) => {
+          if (signal.detectedAsBot) {
+            console.error(
+              `[Meet] 🚨 Meet flagged this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`
+            )
+          } else {
+            console.log(
+              `[Meet] ✅ Meet did NOT flag this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`
+            )
+          }
+        })
       } catch (error) {
         console.warn(
           "[Meet] ⚠️ Failed to setup network interception scripts, will fallback to UI-based detection:",
@@ -167,6 +189,14 @@ export class MeetProvider implements MeetingProviderInterface {
 
       // Bail out early if page already navigated away (e.g. denial during timing wait)
       assertOnMeetPage(page)
+
+      // Fail-fast: if Meet has already rendered a denial page ("You can't join
+      // this video call", anti-bot block, etc.) before we touch any UI, skip
+      // the 30s typeBotName retry loop. notAcceptedInMeeting() sets the
+      // appropriate end-reason and retry flag internally.
+      if (await notAcceptedInMeeting(page)) {
+        throw new Error("Bot not accepted into meeting - denied at page load")
+      }
 
       await clickDismiss(page)
       await sleep(300)
@@ -703,13 +733,13 @@ async function clickDismiss(page: Page): Promise<boolean> {
       const isEnabled = await button.isEnabled().catch(() => false)
 
       if (isVisible && isEnabled) {
-        await button.click()
+        await humanClick(button)
         return true
       }
     }
     return false
   } catch (e) {
-    console.error("[joinMeeting] meet find dismiss", e)
+    console.error("[joinMeeting] meet find dismiss", formatError(e))
     return false
   }
 }
@@ -764,7 +794,7 @@ async function clickWithInnerText(
           if (count > 0) {
             console.log(`  - Found element with text "${text}" using selector "${sel}"`)
             if (shouldClick) {
-              await element.click()
+              await humanClick(element.first())
               console.log(`  - Clicked on element with text "${text}"`)
             }
             return true
@@ -826,7 +856,7 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
 
   try {
     // Press Escape first to close any modal that might be blocking
-    await page.keyboard.press("Escape")
+    await humanKey("Escape", page)
     await page.waitForTimeout(100)
 
     for (const selector of joinSelectors) {
@@ -841,7 +871,7 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
         const isEnabled = await locator.isEnabled().catch(() => false)
 
         if (isVisible && isEnabled) {
-          await locator.click({ timeout: 2000 })
+          await humanClick(locator)
           console.log(`Successfully clicked join button using selector: ${selector}`)
           return true
         }
@@ -943,12 +973,16 @@ async function closeAdjustViewDialogIfOpen(page: Page): Promise<void> {
 }
 
 async function clickOutsideModal(page: Page) {
+  // Triple-tap Escape via xdotool — handles stacked modals (Sign-in prompt,
+  // Adjust view, transient errors). Replaces the prior page.mouse.click at
+  // (10, 10) x3 which dispatched via CDP and was a pre-join automation tell.
+  // `page` is forwarded so humanKey can fall back when xdotool is unavailable.
   await sleep(500)
-  await page.mouse.click(10, 10)
-  await sleep(10)
-  await page.mouse.click(10, 10)
-  await sleep(10)
-  await page.mouse.click(10, 10)
+  await humanKey("Escape", page)
+  await sleep(80)
+  await humanKey("Escape", page)
+  await sleep(80)
+  await humanKey("Escape", page)
 }
 
 async function typeBotName(page: Page, botName: string): Promise<boolean> {
@@ -958,13 +992,14 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   try {
     await page.waitForSelector(INPUT, { timeout: 1000 })
 
-    // Effacer le champ de texte existant
-    await page.fill(INPUT, "")
+    // OS-level humanized typing: click the field, select-all + delete to clear
+    // any pre-existing content, then type each character with randomized
+    // inter-key delays. Replaces the prior page.fill() which used CDP
+    // Input.insertText — that path doesn't dispatch keydown/keypress at all
+    // and is a well-known automation tell.
+    const input = page.locator(INPUT).first()
+    await humanType(input, BotNameTyped)
 
-    // Taper le nouveau nom
-    await page.fill(INPUT, BotNameTyped)
-
-    // Check that the text has been properly entered
     const inputValue = await page.inputValue(INPUT)
     return inputValue.includes(BotNameTyped)
   } catch (e) {
@@ -990,11 +1025,14 @@ async function isMicrophoneOff(page: Page): Promise<boolean> {
 }
 
 async function toggleCameraWithShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Control+KeyE")
+  // OS-level Ctrl+E dispatch — CDP keyboard events are a fingerprint surface
+  // in the pre-join window. `page` is passed so humanKey can fall back to
+  // keyboard.press when xdotool is unavailable.
+  await humanKey("ctrl+e", page)
 }
 
 async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Control+KeyD")
+  await humanKey("ctrl+d", page)
 }
 
 async function ensureCameraOn(page: Page): Promise<void> {
@@ -1006,7 +1044,7 @@ async function ensureCameraOn(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to enable camera via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn on camera"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1019,7 +1057,7 @@ async function ensureCameraOff(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to disable camera via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn off camera"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1032,7 +1070,7 @@ async function ensureMicrophoneOn(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to enable mic via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn on microphone"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1045,7 +1083,7 @@ async function ensureMicrophoneOff(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to disable mic via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn off microphone"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1056,9 +1094,9 @@ async function ensureMicrophoneOff(page: Page): Promise<void> {
 async function activateMicrophone(page: Page): Promise<boolean> {
   console.log("Activating microphone...")
   try {
-    const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
+    const microphoneButton = page.locator('div[aria-label="Turn on microphone"]').first()
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await humanClick(microphoneButton)
       console.log("Microphone activated successfully")
       return true
     }
@@ -1073,9 +1111,9 @@ async function activateMicrophone(page: Page): Promise<boolean> {
 async function deactivateMicrophone(page: Page): Promise<boolean> {
   console.log("Deactivating microphone...")
   try {
-    const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
+    const microphoneButton = page.locator('div[aria-label="Turn off microphone"]').first()
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await humanClick(microphoneButton)
       console.log("Microphone deactivated successfully")
       return true
     }
@@ -1090,9 +1128,9 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
 async function deactivateCamera(page: Page): Promise<boolean> {
   console.log("Deactivating camera...")
   try {
-    const cameraButton = page.locator('div[aria-label="Turn off camera"]')
+    const cameraButton = page.locator('div[aria-label="Turn off camera"]').first()
     if ((await cameraButton.count()) > 0) {
-      await cameraButton.click()
+      await humanClick(cameraButton)
       console.log("Camera deactivated successfully")
       return true
     }

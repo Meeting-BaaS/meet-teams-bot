@@ -174,4 +174,7 @@ export const PROTO_SCHEMA = [
       }
     ]
   }
+  // NOTE: CreateMeetingDeviceResponse (varint field 36 = detectedAsBot) is
+  // decoded Node-side in network-interception/index.ts via page.route(), so
+  // it does not need a browser-bundle schema entry.
 ]

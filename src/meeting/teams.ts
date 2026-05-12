@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from "@playwright/test"
+import { setupBrowserLogBridge } from "../browser/page-logger"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
@@ -55,6 +56,11 @@ export class TeamsProvider implements MeetingProviderInterface {
   ): Promise<Page> {
     const url = new URL(link)
     const page = await browserContext.newPage()
+
+    // Bridge browser-side console.* + uncaught errors back to Node (necessary
+    // because rebrowser-playwright suppresses Runtime.consoleAPICalled).
+    // Must be installed before page.goto() so the init script is in place.
+    await setupBrowserLogBridge(page)
 
     page.setDefaultTimeout(30000)
     page.setDefaultNavigationTimeout(30000)

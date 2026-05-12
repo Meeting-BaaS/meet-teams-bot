@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test"
 import type { MeetingEndReason } from "../state-machine/types"
+import { formatError } from "./Logger"
 
 /**
  * Generic Meeting State Detection Utility
@@ -111,7 +112,10 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
         }
         return { state: "denied", matched: false }
       } catch (error) {
-        console.error(`[${config.providerName}] Error checking denied state:`, error)
+        console.error(
+          `[${config.providerName}] Error checking denied state:`,
+          formatError(error)
+        )
         return { state: "denied", matched: false }
       }
     },
@@ -144,7 +148,10 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
           pattern
         }
       } catch (error) {
-        console.error(`[${config.providerName}] Error checking waiting room:`, error)
+        console.error(
+          `[${config.providerName}] Error checking waiting room:`,
+          formatError(error)
+        )
         return { state: "waiting_room", matched: false }
       }
     },
@@ -173,7 +180,10 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
           pattern
         }
       } catch (error) {
-        console.error(`[${config.providerName}] Error checking in meeting:`, error)
+        console.error(
+          `[${config.providerName}] Error checking in meeting:`,
+          formatError(error)
+        )
         return { state: "in_meeting", matched: false }
       }
     },

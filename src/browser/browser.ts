@@ -1,4 +1,10 @@
-import { type BrowserContext, chromium } from "@playwright/test"
+import type { BrowserContext } from "@playwright/test"
+// rebrowser-playwright is a drop-in for playwright/chromium with anti-detect
+// patches applied (navigator.webdriver hidden, CDP runtime indicators removed,
+// other Playwright tells stripped). We only swap the runtime entry point —
+// types continue to come from @playwright/test so the rest of the codebase
+// is untouched.
+import { chromium } from "rebrowser-playwright"
 import { envVars } from "../config/env-vars"
 import { formatError } from "../utils/Logger"
 
@@ -53,7 +59,13 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         "--enable-webrtc-capture-audio", // Ensure WebRTC can capture audio
         "--force-webrtc-ip-handling-policy=default", // Better WebRTC handling
 
-        // Performance and resource management optimizations
+        // Disable the Blink feature that exposes navigator.webdriver=true.
+        // rebrowser-playwright DOES NOT remove --enable-automation from
+        // Playwright's default args and DOES NOT patch navigator.webdriver
+        // (verified in rebrowser-playwright-core@1.52: chromiumSwitches.js:87
+        // still lists --enable-automation; no webdriver references in lib/).
+        // Its main patch is hiding CDP Runtime.enable — a separate detection
+        // surface. We still need this flag to keep navigator.webdriver hidden.
         "--disable-blink-features=AutomationControlled",
         "--disable-background-timer-throttling",
         "--enable-features=SharedArrayBuffer",
@@ -76,10 +88,12 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         "--disable-features=TrustedScriptTypes",
         "--disable-features=TrustedHTML",
 
-        // Additional audio debugging (remove in production)
-        "--enable-logging=stderr",
-        "--log-level=1",
-        "--vmodule=*audio*=3", // Enable audio debug logging
+        // Audio debugging — dev-only. In prod these stderr fingerprints are a
+        // bot tell that scoring scripts can probe for, so they're gated off
+        // outside development.
+        ...(envVars.NODE_ENV === "development"
+          ? ["--enable-logging=stderr", "--log-level=1", "--vmodule=*audio*=3"]
+          : []),
 
         // Proxy configuration (added dynamically if proxy is active)
         ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : [])
@@ -92,7 +106,17 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
     })
 
     console.log("✅ Chromium launched with PulseAudio configuration")
-    return { browser: context }
+    // rebrowser-playwright pins to 1.52 while @playwright/test resolves to a
+    // newer minor. The runtime BrowserContext is the same playwright-core
+    // class — the cast through unknown is only because the two .d.ts trees
+    // live in different node_modules paths and TS treats them as distinct.
+    //
+    // What this hides: any 1.56-only API we start calling against this
+    // context will throw at runtime, not at compile time. When bumping
+    // @playwright/test, check rebrowser-playwright's release tags
+    // (https://github.com/rebrowser/rebrowser-patches) and bump rebrowser
+    // to match, OR limit usage in this file to 1.52-era surface.
+    return { browser: context as unknown as BrowserContext }
   } catch (error) {
     console.error("Failed to open browser:", formatError(error))
     throw error

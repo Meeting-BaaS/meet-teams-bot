@@ -1205,6 +1205,12 @@ export function browserInterceptionLogic(schema: any[]) {
             })
           }
         }
+        // NOTE: bot-detection signal (CreateMeetingDeviceResponse field 36)
+        // is intercepted Node-side via page.route() in
+        // network-interception/index.ts:setupBotDetectionRoute. We don't
+        // duplicate the decode here — rebrowser-playwright's Runtime.enable
+        // patch suppresses browser console events, and a window.fetch override
+        // misses XHR traffic.
       } catch (fetchError) {
         // Log fetch/runtime errors (no response body or PII)
         const errorMsg = fetchError instanceof Error ? fetchError.message : "Unknown fetch error"
