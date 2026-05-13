@@ -12,6 +12,16 @@ export const TEAMS_STATE_CONFIG: StateDetectionConfig = {
       reason: MeetingEndReason.BotNotAccepted,
       logPrefix: "XXXXXXXXXXXXXXXXXX Teams has denied entry",
       errorMessage: "Teams has denied entry"
+    },
+    {
+      // In-page anonymous-join verification modal. Teams renders this over the
+      // pre-join screen instead of redirecting to login.microsoft.com, so the
+      // URL-based isOnMicrosoftLoginPage check never trips and the bot would
+      // otherwise sit at pre-join until the 600s waiting-room timer fires.
+      texts: ["We need to verify your info before you can join"],
+      reason: MeetingEndReason.LoginRequired,
+      logPrefix: "XXXXXXXXXXXXXXXXXX Teams requires sign-in to join",
+      errorMessage: "Teams requires participants to be authenticated before joining"
     }
   ],
   // Teams doesn't have a distinct waiting room pattern detection
