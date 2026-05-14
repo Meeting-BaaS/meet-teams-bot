@@ -15,12 +15,14 @@ const PROXY_BYPASS_HOSTS = new Set([
 let server: Server | null = null
 let useUpstream = true
 
-export async function startToggleProxy(): Promise<string | null> {
-  const upstreamUrl = envVars.RESIDENTIAL_PROXY_URL
-  if (!upstreamUrl) {
-    console.log("[ToggleProxy] No RESIDENTIAL_PROXY_URL configured, skipping proxy")
+export async function startToggleProxy(sessionId: string): Promise<string | null> {
+  if (!envVars.RESIDENTIAL_PROXY_TEMPLATE) {
+    console.log("[ToggleProxy] No RESIDENTIAL_PROXY_TEMPLATE configured, skipping proxy")
     return null
   }
+  // Decodo session labels must be alphanumeric; bot UUIDs have hyphens.
+  const session = sessionId.replace(/-/g, "")
+  const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session)
 
   try {
     server = new Server({
