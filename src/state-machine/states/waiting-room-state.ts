@@ -1,5 +1,6 @@
 import { notifyJoinReady } from "../../branding"
 import { Events } from "../../events"
+import { setDirectMode } from "../../proxy/toggle-proxy"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import { GLOBAL } from "../../singleton"
@@ -218,6 +219,7 @@ export class WaitingRoomState extends BaseState {
           () => {
             joinSuccessful = true
             console.log("Join successful notification received")
+            setDirectMode()
           },
           this.context.dialogObserver
         )

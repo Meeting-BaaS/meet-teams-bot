@@ -2,7 +2,7 @@ import { type BrowserContext, chromium } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { formatError } from "../utils/Logger"
 
-export async function openBrowser(): Promise<{ browser: BrowserContext }> {
+export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
   // Defaults to 720p if RESOLUTION is not set or invalid
   const resolution = envVars.RESOLUTION
@@ -79,7 +79,10 @@ export async function openBrowser(): Promise<{ browser: BrowserContext }> {
         // Additional audio debugging (remove in production)
         "--enable-logging=stderr",
         "--log-level=1",
-        "--vmodule=*audio*=3" // Enable audio debug logging
+        "--vmodule=*audio*=3", // Enable audio debug logging
+
+        // Proxy configuration (added dynamically if proxy is active)
+        ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : [])
       ],
       permissions: ["microphone", "camera"],
       ignoreHTTPSErrors: true,

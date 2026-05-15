@@ -47,7 +47,15 @@ export const envVars = cleanEnv(process.env, {
   // `x-amz-tagging` header on PutObject/CreateMultipartUpload (via
   // `PutObjectCommand({ Tagging: "k=v" })` in JS and `.tagging("k=v")`
   // on the Rust aws-sdk-s3-transfer-manager), which GCS accepts.
-  DISABLE_S3_OBJECT_TAGGING: bool({ default: false })
+  DISABLE_S3_OBJECT_TAGGING: bool({ default: false }),
+  // Decodo (and similar) backconnect-style residential proxy template. The
+  // {SESSION} placeholder is substituted at runtime with the bot's UUID
+  // (hyphens stripped) so each bot pod gets a sticky residential IP while
+  // different bots naturally land on different IPs from the pool.
+  // Format example:
+  //   http://user-<USER>-continent-eu-session-{SESSION}:<PASS>@gate.decodo.com:7000
+  // Leave empty to disable residential proxy.
+  RESIDENTIAL_PROXY_TEMPLATE: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars

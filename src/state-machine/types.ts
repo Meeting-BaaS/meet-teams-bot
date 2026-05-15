@@ -117,6 +117,9 @@ export interface MeetingContext {
 
   // Dialog observer
   dialogObserver?: SimpleDialogObserver
+
+  // Proxy
+  proxyUrl?: string
 }
 
 export interface StateTransition {
