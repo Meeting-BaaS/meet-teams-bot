@@ -79,7 +79,9 @@ export class MeetProvider implements MeetingProviderInterface {
       // Setup network interception scripts BEFORE navigation
       // addInitScript must be called before page.goto() to work properly
       try {
-        const { setupNetworkInterceptionScripts } = await import("./meet/network-interception")
+        const { setupNetworkInterceptionScripts, setupBotDetectionRoute } = await import(
+          "./meet/network-interception"
+        )
         const success = await setupNetworkInterceptionScripts(page)
         if (success) {
           console.log("[Meet] ✅ Network interception scripts set up")
@@ -89,6 +91,20 @@ export class MeetProvider implements MeetingProviderInterface {
           )
           GLOBAL.setNetworkInterceptionSetupFailed()
         }
+        // Wire the Meet bot-detection observer (page.on('response') on the
+        // CreateMeetingDevice RPC). Must be installed before page.goto so the
+        // response listener is in place when the join handshake fires.
+        await setupBotDetectionRoute(page, (signal) => {
+          if (signal.detectedAsBot) {
+            console.error(
+              `[Meet] 🚨 Meet flagged this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`
+            )
+          } else {
+            console.log(
+              `[Meet] ✅ Meet did NOT flag this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`
+            )
+          }
+        })
       } catch (error) {
         console.warn(
           "[Meet] ⚠️ Failed to setup network interception scripts, will fallback to UI-based detection:",
