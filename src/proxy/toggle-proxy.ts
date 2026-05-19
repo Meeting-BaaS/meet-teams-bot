@@ -151,10 +151,14 @@ export async function startToggleProxy(sessionId: string): Promise<string | null
     const port = server.port
     const proxyUrl = `http://127.0.0.1:${port}`
     console.log(`[ToggleProxy] ✅ Started on ${proxyUrl}`)
-    // One-shot exit-IP probe. Goes straight to the residential upstream
-    // (bypasses our local toggle) so we always see the IP regardless of
-    // useUpstream state. Fails soft if the upstream is unreachable.
-    await logExitIp(upstreamUrl)
+    // Verify the upstream is reachable. If not (wrong credentials, server
+    // down, etc.), tear down and let the bot run direct.
+    const upstreamOk = await logExitIp(upstreamUrl)
+    if (!upstreamOk) {
+      await server.close(true).catch(() => { })
+      server = null
+      return null
+    }
     return proxyUrl
   } catch (error) {
     console.error(
@@ -172,7 +176,7 @@ export async function startToggleProxy(sessionId: string): Promise<string | null
  * state, and runs once at startup before we've decided whether to flip the
  * toggle on. Bounded to 5s; fails soft on any error.
  */
-async function logExitIp(upstreamProxyUrl: string): Promise<void> {
+async function logExitIp(upstreamProxyUrl: string): Promise<boolean> {
   try {
     // axios's `proxy` config doesn't tunnel HTTPS targets through an HTTP
     // proxy via CONNECT correctly. HttpsProxyAgent as `httpsAgent` (with
@@ -194,9 +198,11 @@ async function logExitIp(upstreamProxyUrl: string): Promise<void> {
     const geo = `${d.country?.code ?? "?"}/${d.city?.name ?? "?"}`
     const isp = `${d.isp?.isp ?? "?"} (AS${d.isp?.asn ?? "?"})`
     console.log(`[ToggleProxy] 🌍 Exit IP: ${ip} | ${geo} | ${isp}`)
+    return true
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    console.warn(`[ToggleProxy] Could not verify exit IP: ${msg}`)
+    console.warn(`[ToggleProxy] ⚠️  Upstream proxy unreachable (${msg}) — continuing without proxy`)
+    return false
   }
 }
 
