@@ -48,12 +48,13 @@ let server: Server | null = null
 let useUpstream = true
 let exitIp: string | null = null
 
-// Accumulated byte counts from closed connections, reset on each startToggleProxy call.
-// srcTx/srcRx = bytes between Chrome and local proxy; trgTx/trgRx = bytes between local
-// proxy and the upstream residential proxy (or target when in direct mode).
+// Set of connectionIds that were routed through the residential upstream.
+// Used to filter stats so only Decodo-billed traffic is counted.
+const proxiedConnectionIds = new Set<number>()
+
+// Accumulated byte counts from closed upstream-proxied connections only.
+// trgTxBytes/trgRxBytes are the bytes over the Decodo link (what Decodo bills).
 const stats = {
-  srcTxBytes: 0,
-  srcRxBytes: 0,
   trgTxBytes: 0,
   trgRxBytes: 0,
   connectionCount: 0
@@ -66,21 +67,17 @@ function formatBytes(bytes: number): string {
 }
 
 function logStats(label: string): void {
-  // Start with bytes from already-closed connections
-  let srcTx = stats.srcTxBytes
-  let srcRx = stats.srcRxBytes
+  // Start with bytes from already-closed proxied connections
   let trgTx = stats.trgTxBytes
   let trgRx = stats.trgRxBytes
   let count = stats.connectionCount
 
-  // Add bytes from connections still open at log time — these are long-lived
-  // keep-alive/H2 tunnels that carry most of the traffic but haven't closed yet.
+  // Add bytes from proxied connections still open at log time — long-lived
+  // keep-alive/H2 tunnels carry most traffic but may not have closed yet.
   if (server) {
-    for (const id of server.getConnectionIds()) {
+    for (const id of proxiedConnectionIds) {
       const cs = server.getConnectionStats(id)
       if (cs) {
-        srcTx += cs.srcTxBytes
-        srcRx += cs.srcRxBytes
         trgTx += cs.trgTxBytes ?? 0
         trgRx += cs.trgRxBytes ?? 0
         count++
@@ -88,15 +85,14 @@ function logStats(label: string): void {
     }
   }
 
+  // trgTx + trgRx = bytes over the Decodo residential link — matches dashboard billing
   const ipSuffix = exitIp ? ` | exit IP: ${exitIp}` : ""
   console.log(
     `[ToggleProxy] 📊 ${label} | ` +
-      `connections: ${count} | ` +
-      `client→proxy: ${formatBytes(srcTx)} | ` +
-      `proxy→client: ${formatBytes(srcRx)} | ` +
-      `proxy→target: ${formatBytes(trgTx)} | ` +
-      `target→proxy: ${formatBytes(trgRx)} | ` +
-      `total: ${formatBytes(srcTx + srcRx)}` +
+      `proxied connections: ${count} | ` +
+      `→ Decodo: ${formatBytes(trgTx)} | ` +
+      `← Decodo: ${formatBytes(trgRx)} | ` +
+      `total (Decodo billed): ${formatBytes(trgTx + trgRx)}` +
       ipSuffix
   )
 }
@@ -110,18 +106,17 @@ export async function startToggleProxy(sessionId: string): Promise<string | null
   const session = sessionId.replace(/-/g, "")
   const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session)
 
-  // Reset stats and exit IP for this new session
-  stats.srcTxBytes = 0
-  stats.srcRxBytes = 0
+  // Reset stats, proxied-connection tracking, and exit IP for this new session
   stats.trgTxBytes = 0
   stats.trgRxBytes = 0
   stats.connectionCount = 0
+  proxiedConnectionIds.clear()
   exitIp = null
 
   try {
     server = new Server({
       port: 0,
-      prepareRequestFunction: ({ request }) => {
+      prepareRequestFunction: ({ connectionId, request }) => {
         // CONNECT requests use "host:port" format, not a full URL
         const target = request.url.includes("://")
           ? new URL(request.url).hostname
@@ -131,6 +126,7 @@ export async function startToggleProxy(sessionId: string): Promise<string | null
           return {}
         }
         if (useUpstream) {
+          proxiedConnectionIds.add(connectionId)
           console.log(`[ToggleProxy] PROXIED → ${target}`)
           return { upstreamProxyUrl: upstreamUrl }
         }
@@ -143,10 +139,10 @@ export async function startToggleProxy(sessionId: string): Promise<string | null
     // The local proxy server must stay running after joining (Chrome was launched
     // with --proxy-server pointing here), but setDirectMode() stops routing through
     // the upstream residential proxy — so stats at that point reflect residential usage.
-    server.on("connectionClosed", ({ stats: cs }: { connectionId: number; stats: ConnectionStats }) => {
+    server.on("connectionClosed", ({ connectionId, stats: cs }: { connectionId: number; stats: ConnectionStats }) => {
+      if (!proxiedConnectionIds.has(connectionId)) return
+      proxiedConnectionIds.delete(connectionId)
       stats.connectionCount++
-      stats.srcTxBytes += cs.srcTxBytes
-      stats.srcRxBytes += cs.srcRxBytes
       stats.trgTxBytes += cs.trgTxBytes ?? 0
       stats.trgRxBytes += cs.trgRxBytes ?? 0
     })
