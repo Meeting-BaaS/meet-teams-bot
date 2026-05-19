@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import { ChatManager } from "../../chat-manager"
 import { envVars } from "../../config/env-vars"
 import { SoundContext, VideoContext } from "../../media_context"
+import { stopToggleProxy } from "../../proxy/toggle-proxy"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import { GLOBAL } from "../../singleton"
@@ -62,7 +63,14 @@ export class CleanupState extends BaseState {
         this.context.currentPauseStart = null
       }
 
-      // Step 0: Stop dialog observer (runs in Node, not in the page)
+      // Step 0a: Stop toggle proxy (no longer needed after meeting)
+      try {
+        await stopToggleProxy()
+      } catch (error) {
+        console.warn("🧹 Toggle proxy stop failed, continuing cleanup:", error)
+      }
+
+      // Step 0b: Stop dialog observer (runs in Node, not in the page)
       console.info("🧹 Step 0: Stopping dialog observer")
       try {
         this.stopDialogObserver()
