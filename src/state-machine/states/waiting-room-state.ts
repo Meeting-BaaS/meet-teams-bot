@@ -33,12 +33,15 @@ export class WaitingRoomState extends BaseState {
       )
 
       // Initialize streaming service BEFORE opening meeting page
-      // so that Teams/Meet can detect it and enable audio capture
-      // Only initialize if streaming_output is configured (off by default)
-      if (GLOBAL.get().streaming_output) {
+      // so that Teams/Meet can detect it and enable audio capture.
+      // Output-only, input-only, and bidirectional streaming are all supported;
+      // input-only must still construct Streaming so the bot connects to input_url.
+      const streamingOut = GLOBAL.get().streaming_output
+      const streamingIn = GLOBAL.get().streaming_input
+      if (streamingOut || streamingIn) {
         this.context.streamingService = new Streaming(
-          GLOBAL.get().streaming_input,
-          GLOBAL.get().streaming_output,
+          streamingIn,
+          streamingOut,
           GLOBAL.get().streaming_audio_frequency,
           GLOBAL.get().bot_uuid
         )
@@ -47,8 +50,9 @@ export class WaitingRoomState extends BaseState {
       // Open the meeting page
       await this.openMeetingPage(meetingLink)
 
-      // Start audio capture after page is open (avoids capturing pre-join beep/silence)
-      if (this.context.streamingService) {
+      // Start Pulse → output WebSocket capture only when output streaming is enabled.
+      // Input-only bots still need Streaming (for input WebSocket) but must not run FFmpeg capture.
+      if (this.context.streamingService && GLOBAL.get().streaming_output) {
         this.context.streamingService.startAudioCapture()
       }
 

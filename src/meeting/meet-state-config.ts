@@ -55,6 +55,7 @@ export const MEET_STATE_CONFIG: StateDetectionConfig = {
       'nav button[aria-label="Show everyone"][role="button"]',
       'nav button[data-panel-id="1"][role="button"]',
       'button[aria-label="Chat with everyone"]',
+      'button[aria-label="Chat with everyone - New message"]',
       "[data-participant-id]",
       "[data-self-name]",
       "div[data-participant-id]"
