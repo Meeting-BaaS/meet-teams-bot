@@ -97,13 +97,14 @@ function logStats(label: string): void {
   )
 }
 
-export async function startToggleProxy(sessionId: string): Promise<string | null> {
+export async function startToggleProxy(sessionId: string, retryCount = 0): Promise<string | null> {
   if (!envVars.RESIDENTIAL_PROXY_TEMPLATE) {
     console.log("[ToggleProxy] No RESIDENTIAL_PROXY_TEMPLATE configured, skipping proxy")
     return null
   }
   // Decodo session labels must be alphanumeric; bot UUIDs have hyphens.
-  const session = sessionId.replace(/-/g, "")
+  // Append retry count so each SQS retry lands on a different residential IP.
+  const session = `${sessionId.replace(/-/g, "")}${retryCount}`
   const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session)
 
   // Reset stats, proxied-connection tracking, and exit IP for this new session
