@@ -151,7 +151,7 @@ export async function startToggleProxy(sessionId: string, retryCount = 0): Promi
     await server.listen()
     const port = server.port
     const proxyUrl = `http://127.0.0.1:${port}`
-    console.log(`[ToggleProxy] ✅ Started on ${proxyUrl}`)
+    console.log(`[ToggleProxy] ✅ Started on ${proxyUrl} (attempt ${retryCount + 1})`)
     // Verify the upstream is reachable. If not (wrong credentials, server
     // down, etc.), tear down and let the bot run direct.
     const upstreamOk = await logExitIp(upstreamUrl)
