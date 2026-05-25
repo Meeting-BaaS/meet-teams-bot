@@ -10,6 +10,7 @@ import {
 } from "../../branding"
 import { openBrowser } from "../../browser/browser"
 import { startToggleProxy } from "../../proxy/toggle-proxy"
+import { MAX_RETRY_COUNT } from "../../utils/retry-handler"
 import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
 import { PathManager } from "../../utils/PathManager"
@@ -103,9 +104,14 @@ export class InitializationState extends BaseState {
         // bots land on different residential IPs, same bot keeps one IP throughout
         // the join.
         if (!this.context.proxyUrl && GLOBAL.get().meeting_platform === "meet") {
-          const proxyUrl = await startToggleProxy(GLOBAL.get().bot_uuid)
-          if (proxyUrl) {
-            this.context.proxyUrl = proxyUrl
+          const retryCount = GLOBAL.getRetryCount()
+          if (retryCount >= MAX_RETRY_COUNT) {
+            console.log("[InitializationState] Last retry attempt — running without proxy")
+          } else {
+            const proxyUrl = await startToggleProxy(GLOBAL.get().bot_uuid, retryCount)
+            if (proxyUrl) {
+              this.context.proxyUrl = proxyUrl
+            }
           }
         }
 
