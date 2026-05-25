@@ -56,9 +56,14 @@ export const MEET_STATE_CONFIG: StateDetectionConfig = {
       'nav button[data-panel-id="1"][role="button"]',
       'button[aria-label="Chat with everyone"]',
       'button[aria-label="Chat with everyone - New message"]',
-      "[data-participant-id]",
-      "[data-self-name]",
-      "div[data-participant-id]"
+      '[data-participant-id]',
+      '[data-self-name]',
+      'div[data-participant-id]',
+      'button[aria-label*="Raise hand"]',
+      'button[aria-label="Send a reaction"]',
+      'button[aria-label="Share screen"]',
+      'button[aria-label="Meeting details"]',
+      'button[aria-label="Meeting tools"]',
     ],
     threshold: 4, // Increased from 3 to 4 to require chat button (prevents false positives in waiting room)
     checkVisibility: true // Check DOM presence only, not visibility - helps with fast admissions
