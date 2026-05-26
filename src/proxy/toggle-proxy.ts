@@ -129,7 +129,7 @@ export async function startToggleProxy(sessionId: string, retryCount = 0): Promi
         if (useUpstream) {
           proxiedConnectionIds.add(connectionId)
           console.log(`[ToggleProxy] PROXIED → ${target}`)
-          return { upstreamProxyUrl: upstreamUrl }
+          return { upstreamProxyUrl: upstreamUrl, ignoreUpstreamProxyCertificate: true }
         }
         console.log(`[ToggleProxy] DIRECT  → ${target} (post-admission)`)
         return {}
