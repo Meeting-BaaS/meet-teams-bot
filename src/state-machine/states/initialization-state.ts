@@ -1,8 +1,10 @@
 import { generateBranding, playBranding } from '../../branding'
 import { openBrowser } from '../../browser/browser'
+import { startToggleProxy } from '../../proxy/toggle-proxy'
 import { GLOBAL } from '../../singleton'
 
 import { PathManager } from '../../utils/PathManager'
+import { MAX_RETRY_COUNT } from '../../utils/retry-handler'
 import {
     MeetingEndReason,
     MeetingStateType,
@@ -95,9 +97,35 @@ export class InitializationState extends BaseState {
                     },
                 )
 
+                // Start toggle proxy for residential IP routing during join phase
+                // (Google Meet only — Teams doesn't have the same dual-queue lobby
+                // flagging). Pass bot_uuid so the per-bot sticky session label is
+                // unique — different bots land on different residential IPs, same
+                // bot keeps one IP throughout the join. On the last SQS retry we
+                // skip the proxy and run direct (last-chance fallback).
+                if (
+                    !this.context.proxyUrl &&
+                    GLOBAL.get().meetingProvider === 'Meet'
+                ) {
+                    const retryCount = GLOBAL.getRetryCount()
+                    if (retryCount >= MAX_RETRY_COUNT) {
+                        console.log(
+                            '[InitializationState] Last retry attempt — running without proxy',
+                        )
+                    } else {
+                        const proxyUrl = await startToggleProxy(
+                            GLOBAL.get().bot_uuid,
+                            retryCount,
+                        )
+                        if (proxyUrl) {
+                            this.context.proxyUrl = proxyUrl
+                        }
+                    }
+                }
+
                 // Execute the promise to open the browser with a timeout
                 const result = await Promise.race<BrowserResult>([
-                    openBrowser(false),
+                    openBrowser(false, this.context.proxyUrl),
                     timeoutPromise,
                 ])
 

@@ -123,6 +123,11 @@ export interface MeetingContext {
 
     // Dialog observer
     dialogObserver?: SimpleDialogObserver
+
+    // Residential toggle proxy URL (loopback http://127.0.0.1:<port>) when
+    // running through Decodo during Meet join phase. Undefined when proxy is
+    // disabled, unreachable, or on the last SQS retry.
+    proxyUrl?: string
 }
 
 export interface StateTransition {

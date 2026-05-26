@@ -78,6 +78,34 @@ export class MeetProvider implements MeetingProviderInterface {
                 console.log('[Meet] ✅ Web Audio capture enabled for streaming')
             }
 
+            // Wire the Meet bot-detection observer (page.on('response') on the
+            // CreateMeetingDevice RPC). Must be installed before page.goto so
+            // the response listener is in place when the join handshake fires.
+            // Detection-only — does not change avoidance behavior; the output
+            // is used to correlate proxy/IP/anti-detection changes with the
+            // observed flag rate.
+            try {
+                const { setupBotDetectionRoute } = await import(
+                    './meet/bot-detection'
+                )
+                await setupBotDetectionRoute(page, (signal) => {
+                    if (signal.detectedAsBot) {
+                        console.error(
+                            `[Meet] 🚨 Meet flagged this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`,
+                        )
+                    } else {
+                        console.log(
+                            `[Meet] ✅ Meet did NOT flag this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`,
+                        )
+                    }
+                })
+            } catch (error) {
+                console.warn(
+                    '[Meet] ⚠️ Failed to install bot-detection observer:',
+                    formatError(error),
+                )
+            }
+
             console.log(`Navigating to ${link}...`)
             const response = await page.goto(link, {
                 waitUntil: 'networkidle',
