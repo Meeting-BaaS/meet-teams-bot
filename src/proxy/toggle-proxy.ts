@@ -136,7 +136,18 @@ export async function startToggleProxy(
                 if (useUpstream) {
                     proxiedConnectionIds.add(connectionId)
                     console.log(`[ToggleProxy] PROXIED → ${target}`)
-                    return { upstreamProxyUrl: upstreamUrl }
+                    // ignoreUpstreamProxyCertificate works around a
+                    // proxy-chain quirk: its chain.js does
+                    // https.request(proxy.origin, ...) without explicitly
+                    // setting servername, so SNI/cert verification rejects
+                    // Decodo's otherwise-valid Let's Encrypt cert (curl and
+                    // HttpsProxyAgent accept it fine). TLS still encrypts
+                    // the upstream connection — we just stop verifying who
+                    // is on the other end of the pod→Decodo leg.
+                    return {
+                        upstreamProxyUrl: upstreamUrl,
+                        ignoreUpstreamProxyCertificate: true,
+                    }
                 }
                 console.log(
                     `[ToggleProxy] DIRECT  → ${target} (post-admission)`,
