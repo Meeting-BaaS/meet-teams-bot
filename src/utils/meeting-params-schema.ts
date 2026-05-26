@@ -10,7 +10,15 @@ import {
 } from "zod"
 
 export const RecordingModeSchema = zodEnum(["speaker_view", "audio_only", "gallery_view"])
-export const SpeechToTextProviderSchema = zodEnum(["gladia", "assembly", "none"])
+export const SpeechToTextProviderSchema = zodEnum([
+  "gladia",
+  "deepgram",
+  "assemblyai",
+  "speechmatics",
+  "soniox",
+  "none"
+])
+export const StreamingModeSchema = zodEnum(["audio", "transcription"])
 export const MeetingPlatformSchema = zodEnum(["zoom", "meet", "teams"])
 
 /**
@@ -36,6 +44,15 @@ export const BotMessageSchema = object({
   streaming_input: url().nullable(),
   streaming_output: url().nullable(),
   streaming_audio_frequency: number().int().positive().default(24000),
+  streaming_mode: StreamingModeSchema.nullable().optional().default(null),
+  streaming_transcription: object({
+    provider: string(),
+    encrypted_api_key: string().nullable(),
+    custom_params: record(string(), zodUnknown()).nullable()
+  })
+    .nullable()
+    .optional()
+    .default(null),
   start_time: number().int().default(0),
   exit_time: number().int().default(0),
   waiting_room_timeout: number().int().positive().default(600),
@@ -43,5 +60,7 @@ export const BotMessageSchema = object({
   silence_timeout: number().int().positive().default(600),
   grace_period: number().int().nonnegative().default(0),
   speech_to_text_provider: SpeechToTextProviderSchema.default("none"),
+  encrypted_speech_to_text_api_key: string().nullable().optional().default(null),
+  speech_to_text_custom_params: record(string(), zodUnknown()).nullable().optional().default(null),
   retry_count: number().int().nonnegative().default(0)
 })
