@@ -1,4 +1,5 @@
 import { SoundContext, VideoContext } from '../../media_context'
+import { stopToggleProxy } from '../../proxy/toggle-proxy'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
 import { MEETING_CONSTANTS } from '../constants'
@@ -63,7 +64,19 @@ export class CleanupState extends BaseState {
 
     private async performCleanup(): Promise<void> {
         try {
-            // Step 0: Stop dialog observer (runs in Node, not in the page)
+            // Step 0a: Stop toggle proxy (no longer needed after meeting). Safe
+            // to call even if the proxy was never started or was torn down on
+            // an unreachable upstream.
+            try {
+                await stopToggleProxy()
+            } catch (error) {
+                console.warn(
+                    '🧹 Toggle proxy stop failed, continuing cleanup:',
+                    error,
+                )
+            }
+
+            // Step 0b: Stop dialog observer (runs in Node, not in the page)
             console.info('🧹 Step 0: Stopping dialog observer')
             try {
                 this.stopDialogObserver()
