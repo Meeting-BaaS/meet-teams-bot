@@ -3,6 +3,7 @@ import { formatError } from '../utils/Logger'
 
 export async function openBrowser(
     slowMo: boolean = false,
+    proxyUrl?: string | null,
 ): Promise<{ browser: BrowserContext }> {
     // Resolution configuration from environment variable
     // Defaults to 720p if RESOLUTION is not set or invalid
@@ -83,6 +84,12 @@ export async function openBrowser(
                 '--enable-logging=stderr',
                 '--log-level=1',
                 '--vmodule=*audio*=3', // Enable audio debug logging
+
+                // Route browser traffic through the local toggle proxy when
+                // running with a residential upstream. The local proxy is on
+                // 127.0.0.1; allowlist + setDirectMode() decide what actually
+                // hits the upstream.
+                ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : []),
             ],
             slowMo: slowMo ? 100 : undefined,
             permissions: ['microphone', 'camera'],

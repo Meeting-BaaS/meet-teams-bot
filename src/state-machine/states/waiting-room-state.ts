@@ -1,4 +1,5 @@
 import { Events } from '../../events'
+import { setDirectMode } from '../../proxy/toggle-proxy'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
 import { GLOBAL } from '../../singleton'
@@ -35,12 +36,16 @@ export class WaitingRoomState extends BaseState {
             )
 
             // Initialize streaming service BEFORE opening meeting page
-            // so that Teams/Meet can detect it and enable audio capture
-            // Only initialize if streaming_output is configured (off by default)
-            if (GLOBAL.get().streaming_output) {
+            // so that Teams/Meet can detect it and enable audio capture.
+            // Output-only, input-only, and bidirectional streaming are all
+            // supported; input-only must still construct Streaming so the
+            // bot connects to input_url.
+            const streamingOut = GLOBAL.get().streaming_output
+            const streamingIn = GLOBAL.get().streaming_input
+            if (streamingOut || streamingIn) {
                 this.context.streamingService = new Streaming(
-                    GLOBAL.get().streaming_input,
-                    GLOBAL.get().streaming_output,
+                    streamingIn,
+                    streamingOut,
                     GLOBAL.get().streaming_audio_frequency,
                     GLOBAL.get().bot_uuid,
                 )
@@ -62,7 +67,10 @@ export class WaitingRoomState extends BaseState {
                 )
             }
 
-            // Start streaming service (already initialized before openMeetingPage)
+            // Start streaming service. Streaming.start() decides internally
+            // which WebSockets to open based on which of input_url /
+            // output_url is configured — safe to call for input-only,
+            // output-only, or bidirectional configurations.
             if (this.context.streamingService) {
                 this.context.streamingService.start()
             }
@@ -218,6 +226,10 @@ export class WaitingRoomState extends BaseState {
                     () => {
                         joinSuccessful = true
                         console.log('Join successful notification received')
+                        // Stop routing through the residential upstream now
+                        // that we're admitted — the rest of the session goes
+                        // direct from the pod IP.
+                        setDirectMode()
                     },
                     this.context.dialogObserver,
                 )

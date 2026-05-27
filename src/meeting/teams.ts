@@ -390,10 +390,10 @@ export class TeamsProvider implements MeetingProviderInterface {
         let inMeeting = false
 
         while (!inMeeting) {
-            // Check if we have been refused
-            const botNotAccepted = await isBotNotAccepted(page)
-            if (botNotAccepted) {
-                GLOBAL.setError(MeetingEndReason.BotNotAccepted)
+            // Check if we have been refused (or sign-in is required). isBotNotAccepted
+            // sets the precise end reason (BotNotAccepted, LoginRequired, …) from the
+            // matched denial pattern, so we just need to bail out here.
+            if (await isBotNotAccepted(page)) {
                 throw new Error('Bot not accepted into Teams meeting')
             }
 
@@ -742,7 +742,11 @@ async function isBotNotAccepted(page: Page): Promise<boolean> {
     // Use unified state detector
     const result = await teamsStateDetector.isDenied(page)
     if (result.matched) {
-        console.log(`Teams denial detected: "${result.matchedText}"`)
+        const reason =
+            (result.pattern && 'reason' in result.pattern ? result.pattern.reason : undefined) ??
+            MeetingEndReason.BotNotAccepted
+        console.log(`Teams denial detected: "${result.matchedText}" -> ${reason}`)
+        GLOBAL.setError(reason)
         return true
     }
 
