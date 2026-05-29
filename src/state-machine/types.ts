@@ -35,6 +35,10 @@ export enum MeetingEndReason {
   InvalidMeetingUrl = "invalidMeetingUrl",
   StreamingSetupFailed = "streamingSetupFailed",
   LoginRequired = "loginRequired",
+  // Authenticated Meet bot (SAML SSO) — failure modes the api-server distinguishes.
+  // SamlRejected triggers workspace-level auto-disable; Timeout is treated as transient.
+  MeetLoginFailedSamlRejected = "meetLoginFailedSamlRejected",
+  MeetLoginFailedTimeout = "meetLoginFailedTimeout",
   Internal = "internalError"
 }
 
@@ -69,6 +73,10 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "Failed to set up streaming audio."
     case MeetingEndReason.LoginRequired:
       return "Login required to access the meeting."
+    case MeetingEndReason.MeetLoginFailedSamlRejected:
+      return "Google rejected our SAML assertion (cert mismatch most likely). Workspace auto-disabled."
+    case MeetingEndReason.MeetLoginFailedTimeout:
+      return "SAML round-trip with Google did not complete in time."
     case MeetingEndReason.Internal:
       return "Internal error occurred during recording."
     default:

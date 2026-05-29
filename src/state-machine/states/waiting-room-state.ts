@@ -10,6 +10,7 @@ import { handleTimingControl } from "../../utils/timing-control"
 
 import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
+import { loginToGoogleMeetWithSso, MeetSsoLoginError } from "./google-meet-sso-login"
 
 export class WaitingRoomState extends BaseState {
   async execute(): StateExecuteResult {
@@ -45,6 +46,37 @@ export class WaitingRoomState extends BaseState {
           GLOBAL.get().streaming_audio_frequency,
           GLOBAL.get().bot_uuid
         )
+      }
+
+      // Authenticated Meet bot: sign in via SAML SSO BEFORE opening the meeting page.
+      // Google auth cookies set on the browser context persist for the meet.google.com
+      // navigation that follows.
+      const ssoConfig = GLOBAL.get().meet_sso_config
+      const isMeet = GLOBAL.get().meeting_platform === "meet"
+      if (isMeet && ssoConfig) {
+        if (!this.context.browserContext) {
+          throw new Error("Browser context not initialized for SSO login")
+        }
+        try {
+          await loginToGoogleMeetWithSso(this.context.browserContext, ssoConfig)
+        } catch (err) {
+          if (err instanceof MeetSsoLoginError) {
+            console.error(
+              `[meet-sso] login failed (${err.code}): ${err.message}. ` +
+                "Reporting failure to api-server; will not attempt anonymous join."
+            )
+            // Plumb the structured SSO failure code to api-server via MeetingEndReason.
+            // SAML_REJECTED → api-server auto-disables the parent workspace.
+            // TIMEOUT → no auto-disable (treated as transient).
+            const reason =
+              err.code === "MEET_LOGIN_FAILED_SAML_REJECTED"
+                ? MeetingEndReason.MeetLoginFailedSamlRejected
+                : MeetingEndReason.MeetLoginFailedTimeout
+            GLOBAL.setError(reason)
+            throw err
+          }
+          throw err
+        }
       }
 
       // Open the meeting page
