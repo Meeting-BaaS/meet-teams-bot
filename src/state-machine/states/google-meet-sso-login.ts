@@ -1,4 +1,4 @@
-import type { BrowserContext } from "@playwright/test"
+import type { BrowserContext, Cookie, Page } from "@playwright/test"
 
 /**
  * Google Meet SAML SSO login flow — runs before joining a Meet meeting when
@@ -78,13 +78,33 @@ export async function loginToGoogleMeetWithSso(
   browserContext: BrowserContext,
   config: MeetSsoConfig
 ): Promise<void> {
+  // Inject previously saved cookies so Google sees a "known device" and skips
+  // identity challenges (2FA prompts, "verify it's you" pages). We still run the
+  // full SAML round-trip afterwards — injected cookies from a prior Playwright
+  // session are not trusted by Google Meet as a live session in a new browser
+  // instance, so we always need fresh ACS-issued cookies for this context.
+  await injectSavedCookies(browserContext, config.set_cookie_url)
+
   const page = await browserContext.newPage()
 
   try {
     console.info(`[meet-sso] starting SSO login for ${config.login_email}`)
 
+    // Force English locale so Google serves all sign-in pages in English.
+    // Without this, Google geo-locates the bot IP.
+    await page.setExtraHTTPHeaders({
+      "Accept-Language": "en-US,en;q=0.9"
+    })
+
     // 1. Set the routing cookie BEFORE going to Google.
-    await page.goto(config.set_cookie_url, { waitUntil: "domcontentloaded", timeout: 15_000 })
+    //    A non-2xx response means the session_id is expired or unknown — fail fast.
+    const cookieResponse = await page.goto(config.set_cookie_url, { waitUntil: "domcontentloaded", timeout: 15_000 })
+    if (cookieResponse && !cookieResponse.ok()) {
+      throw new MeetSsoLoginError(
+        "MEET_LOGIN_FAILED_TIMEOUT",
+        `set-cookie endpoint returned ${cookieResponse.status()} — session may be expired or invalid`
+      )
+    }
 
     // 2. Workspace-domain SSO entry: AccountChooser with hd= forces Google to
     //    treat this as a Workspace-managed login and apply our SSO redirect.
@@ -99,24 +119,106 @@ export async function loginToGoogleMeetWithSso(
 
     const accountChooserUrl = `https://accounts.google.com/AccountChooser?hd=${encodeURIComponent(workspaceDomain)}`
     await page.goto(accountChooserUrl, { waitUntil: "domcontentloaded", timeout: 15_000 })
+    const landedUrl = page.url()
 
-    // 3. Type the bot user's email. Google's email input is identifier#identifierId.
-    //    We use a robust selector matching either input[type="email"] or that ID.
-    const emailInput = page.locator('input[type="email"], #identifierId').first()
-    await emailInput.waitFor({ state: "visible", timeout: 15_000 })
-    await emailInput.fill(config.login_email)
+    // 3. Type the bot user's email — but only if Google didn't already skip straight
+    //    to the SSO round-trip. This happens when the browser context has existing
+    //    Google cookies: AccountChooser immediately fires the SSO redirect without
+    //    showing the email identifier page. Detect by checking whether we're still
+    //    on a Google sign-in identifier URL.
+    //    myaccount.google.com means the session is already active (injected cookies
+    //    accepted by Google) — auth cookies are present, no email step needed.
+    const onIdentifierPage = landedUrl.includes("accounts.google.com") &&
+      (landedUrl.includes("/signin") || landedUrl.includes("/AccountChooser") || landedUrl.includes("ServiceLogin"))
 
-    // Click Next — typically a button with "Next" or id="identifierNext".
-    const nextButton = page
-      .locator('#identifierNext button, button:has-text("Next"), button:has-text("Continue")')
-      .first()
-    await nextButton.click({ timeout: 10_000 })
+    const sessionAlreadyActive = landedUrl.includes("myaccount.google.com")
 
-    // 4. From here Google redirects to api-server's /v2/meet-sso/sign-in, which
-    //    returns the auto-POST form. The form submits to Google's ACS. We don't
-    //    interact with these intermediate pages — just wait for the Google auth
-    //    cookies to appear.
-    await waitForGoogleAuthCookies(browserContext, 30_000)
+    if (onIdentifierPage) {
+      const emailInput = page.locator('input[type="email"], #identifierId').first()
+      await emailInput.waitFor({ state: "visible", timeout: 15_000 })
+      console.info(`[meet-sso] email input found, page URL: ${page.url()}`)
+      await emailInput.fill(config.login_email)
+
+      // Click Next — typically a button with "Next" or id="identifierNext".
+      const nextButton = page
+        .locator('#identifierNext button, button:has-text("Next"), button:has-text("Continue")')
+        .first()
+      await nextButton.click({ timeout: 10_000 })
+    } else {
+      console.info(`[meet-sso] AccountChooser already fired SSO redirect — skipping email input step`)
+    }
+
+    // 4. Only run email-submission diagnostics when we went through the email step.
+    //    When AccountChooser fired SSO immediately (onIdentifierPage=false), we skip
+    //    these checks — the browser is already in the middle of the SAML round-trip.
+    if (onIdentifierPage) {
+      const urlBeforeNext = page.url()
+      try {
+        await page.waitForFunction(
+          (beforeUrl: string) =>
+            window.location.href !== beforeUrl ||
+            !!document.querySelector('input[type="password"]') ||
+            !!document.querySelector('[data-error-code], [aria-live="assertive"] [jsname]'),
+          urlBeforeNext,
+          { timeout: 8_000 }
+        )
+      } catch {
+      }
+
+      const urlAfterNext = page.url()
+
+      // Detect password page — means Google did not redirect to our IdP.
+      const passwordInput = page.locator('input[type="password"]').first()
+      const passwordVisible = await passwordInput.isVisible().catch(() => false)
+      if (passwordVisible) {
+        throw new MeetSsoLoginError(
+          "MEET_LOGIN_FAILED_TIMEOUT",
+          `Google showed a password prompt instead of redirecting to SSO (URL: ${urlAfterNext}). ` +
+          "Check that the Legacy SSO profile is created and assigned to all users in Google Admin Console."
+        )
+      }
+
+      // Detect "Couldn't find your Google Account" or similar error message.
+      const pageText = await page.locator("body").innerText().catch(() => "")
+      if (
+        pageText.includes("Couldn't find your Google Account") ||
+        pageText.includes("couldn't find your account") ||
+        pageText.includes("No account found")
+      ) {
+        throw new MeetSsoLoginError(
+          "MEET_LOGIN_FAILED_TIMEOUT",
+          `Google could not find the account '${config.login_email}'. Verify the user exists in the Workspace. (URL: ${urlAfterNext})`
+        )
+      }
+
+      // If URL still matches the identifier page after 8s, SSO redirect never fired.
+      if (urlAfterNext === urlBeforeNext) {
+        console.warn(
+          `[meet-sso] URL unchanged after Next click — Legacy SSO may not be assigned to ${config.login_email}. ` +
+          "Check Google Admin Console: Security → Authentication → SSO with third-party IdP → Manage SSO profile assignments."
+        )
+      }
+    }
+
+    // 5. From here Google redirects to api-server's /v2/meet-sso/sign-in, which
+    //    returns the auto-POST form. The form submits to Google's ACS. Google may
+    //    show a "samlconfirmaccount" speedbump before setting cookies — we watch
+    //    for it concurrently and auto-click Continue so the bot never stalls.
+    //    When the session is already active (myaccount.google.com), the SAML round-
+    //    trip was skipped, so samlconfirmaccount will never appear — skip the watcher
+    //    to avoid a 40-second silent timeout.
+    if (sessionAlreadyActive) {
+      console.info(`[meet-sso] session already active from injected cookies — skipping SAML watcher`)
+      await waitForGoogleAuthCookies(browserContext, 45_000, page)
+    } else {
+      const confirmWatcher = watchAndClickSamlConfirm(page)
+      await waitForGoogleAuthCookies(browserContext, 45_000, page)
+      await confirmWatcher
+    }
+
+    // Persist cookies so the next bot run for this login can skip SSO entirely
+    // and Google won't treat it as a new device (avoiding identity challenges).
+    await persistCookies(browserContext, config.set_cookie_url)
 
     console.info(`[meet-sso] SSO login successful for ${config.login_email}`)
   } catch (err) {
@@ -144,30 +246,171 @@ export async function loginToGoogleMeetWithSso(
 
     throw new MeetSsoLoginError(code, `${message} (last URL: ${currentUrl})`)
   } finally {
-    await page.close().catch(() => {})
+    await page.close().catch(() => { })
+  }
+}
+
+/**
+ * Watch for Google's "samlconfirmaccount" speedbump page and auto-click Continue.
+ * Runs concurrently with waitForGoogleAuthCookies — resolves silently either way.
+ */
+async function watchAndClickSamlConfirm(page: Page): Promise<void> {
+  try {
+    // waitForURL waits for the NEXT navigation matching the pattern — it misses
+    // the page if it's already loaded by the time we call it. Check current URL
+    // first and skip the wait if we're already there.
+    if (!page.url().includes("samlconfirmaccount")) {
+      await page.waitForURL(/samlconfirmaccount/, { timeout: 40_000 })
+    }
+
+    await page.waitForLoadState("domcontentloaded")
+
+    // Use page.evaluate() to click directly in the DOM — more reliable than
+    // Playwright locators when Google renders buttons as non-standard elements
+    // (Material Design divs, shadow DOM wrappers, etc.).
+    const clicked = await page.evaluate((): boolean => {
+      const all = Array.from(
+        document.querySelectorAll<HTMLElement>('button, [role="button"], a[jsaction]')
+      )
+      // Prefer a button whose text contains "Continue" / "Devam" / "Proceed"
+      const match = all.find((el) =>
+        /continue|devam|proceed/i.test((el.innerText || el.textContent || "").trim())
+      )
+      const target = match ?? all[all.length - 1]
+      if (target) {
+        target.click()
+        return true
+      }
+      return false
+    })
+
+    if (!clicked) {
+      await page.keyboard.press("Enter")
+    }
+
+    console.info(`[meet-sso] Clicked Continue on SAML confirm page (evaluate=${clicked})`)
+  } catch {
   }
 }
 
 async function waitForGoogleAuthCookies(
   browserContext: BrowserContext,
-  timeoutMs: number
+  timeoutMs: number,
+  page?: Page
 ): Promise<void> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
-    const cookies = await browserContext.cookies(["https://accounts.google.com", "https://google.com"])
-    const present = new Set(cookies.map((c) => c.name))
-    let foundAny = false
-    for (const required of GOOGLE_AUTH_COOKIE_NAMES) {
-      if (present.has(required)) {
-        foundAny = true
-        break
+    // Detect Google's "Verify it's you" / identity challenge page. This fires
+    // when Google's risk model wants 2FA/phone verification after SSO — it cannot
+    // be automated. The fix is in Google Admin Console (disable 2SV for the bot OU).
+    if (page) {
+      const url = page.url()
+      if (url.includes("/signin/challenge") || url.includes("/v3/signin/challenge")) {
+        throw new MeetSsoLoginError(
+          "MEET_LOGIN_FAILED_TIMEOUT",
+          `Google is requesting identity verification (2FA/phone) after SSO — URL: ${url}. ` +
+          "Fix in Google Admin Console: Security → 2-Step Verification → turn OFF for the bot account's OU."
+        )
+      }
+      // Detect Google's SAML rejection page immediately instead of waiting for the
+      // 45-second auth-cookie timeout. rrk=21 = assertion verification failed (cert
+      // mismatch or malformed assertion). Classify as SAML_REJECTED so the workspace
+      // gets auto-disabled — all sibling logins share the same broken cert.
+      if (url.includes("/v3/signin/rejected") || url.includes("rrk=")) {
+        throw new MeetSsoLoginError(
+          "MEET_LOGIN_FAILED_SAML_REJECTED",
+          `Google rejected the SAML assertion (${url}). ` +
+          "Verify the signing cert in your meet workspace matches the Verification certificate in Google Admin Console."
+        )
       }
     }
-    if (foundAny) return
+
+    const cookies = await browserContext.cookies(["https://accounts.google.com", "https://google.com"])
+    const present = new Set(cookies.map((c) => c.name))
+    for (const required of GOOGLE_AUTH_COOKIE_NAMES) {
+      if (present.has(required)) return
+    }
     await new Promise((r) => setTimeout(r, 500))
   }
 
   throw new Error(
     `Google auth cookies did not appear within ${timeoutMs}ms — SSO round-trip likely failed`
   )
+}
+
+// ---------------------------------------------------------------------------
+// Cookie persistence via api-server (Redis-backed, shared across all pods).
+// The cookies URL is derived from set_cookie_url — same host/session_id, just
+// a different path segment.
+// ---------------------------------------------------------------------------
+
+function cookiesApiUrl(setCookieUrl: string): string {
+  return setCookieUrl.replace("/set-cookie", "/cookies")
+}
+
+/**
+ * Fetch previously stored Google cookies from api-server and inject the
+ * non-auth subset into the browser context as a "known device" hint.
+ *
+ * We deliberately filter out the Google auth session cookies (SID, HSID, etc.).
+ * Injecting those makes AccountChooser detect an "active session" and skip the
+ * SAML round-trip entirely, landing on myaccount.google.com instead of going
+ * through our IdP. Without a fresh ACS-issued assertion, navigations to
+ * meet.google.com also redirect to myaccount.google.com.
+ *
+ * Device/preference cookies (GAPS, NID, 1P_JAR, etc.) are safe to inject —
+ * they help Google recognise the device and suppress identity challenges (2FA,
+ * "verify it's you" prompts) without establishing a session.
+ */
+async function injectSavedCookies(
+  browserContext: BrowserContext,
+  setCookieUrl: string
+): Promise<void> {
+  try {
+    const res = await fetch(cookiesApiUrl(setCookieUrl))
+    if (!res.ok) return
+
+    const body = (await res.json()) as { cookies: Cookie[] }
+    const nowSec = Date.now() / 1000
+    // Filter out expired cookies AND auth session cookies that would bypass SAML.
+    const hint = body.cookies.filter(
+      (c) =>
+        (!c.expires || c.expires === -1 || c.expires > nowSec) &&
+        !GOOGLE_AUTH_COOKIE_NAMES.has(c.name)
+    )
+    if (hint.length === 0) return
+
+    await browserContext.addCookies(hint)
+    console.info(`[meet-sso] injected ${hint.length} non-auth cookies as known-device hint`)
+  } catch {
+    // Non-fatal — fall through to full SSO without cached cookies.
+  }
+}
+
+/**
+ * POST all browser context cookies to api-server so subsequent bot runs (on
+ * any pod) can reuse them and skip the SSO flow + identity challenges.
+ */
+async function persistCookies(
+  browserContext: BrowserContext,
+  setCookieUrl: string
+): Promise<void> {
+  try {
+    const cookies = await browserContext.cookies()
+    const res = await fetch(cookiesApiUrl(setCookieUrl), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true"
+      },
+      body: JSON.stringify({ cookies })
+    })
+    if (res.ok) {
+      console.info(`[meet-sso] persisted ${cookies.length} cookies to api-server`)
+    } else {
+      console.warn(`[meet-sso] failed to persist cookies: ${res.status}`)
+    }
+  } catch (err) {
+    console.warn(`[meet-sso] failed to persist cookies: ${err}`)
+  }
 }
