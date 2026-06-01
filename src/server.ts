@@ -10,6 +10,17 @@ import type { SendChatMessageParams, StopRecordParams } from "./types"
 import { formatError } from "./utils/Logger"
 
 const HOST = envVars.HOST
+
+const MAX_MESSAGE_LENGTH = 4096
+
+function graphemeCount(val: string): number {
+  let count = 0
+  for (const _ of new Intl.Segmenter("en", { granularity: "grapheme" }).segment(val)) {
+    count++
+  }
+  return count
+}
+
 const PORT = envVars.PORT
 
 async function getAllowedOrigins(): Promise<string[]> {
@@ -238,8 +249,8 @@ export async function server() {
         return res.status(400).json({ error: "Missing required field: message" })
       }
 
-      if (data.message.length > 500) {
-        return res.status(400).json({ error: "Message exceeds maximum length of 500 characters" })
+      if (graphemeCount(data.message) > MAX_MESSAGE_LENGTH) {
+        return res.status(400).json({ error: `Message exceeds maximum length of ${MAX_MESSAGE_LENGTH} characters` })
       }
 
       const meetingHandle = MeetingStateMachine.instance

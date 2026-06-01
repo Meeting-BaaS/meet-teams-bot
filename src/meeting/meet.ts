@@ -184,6 +184,14 @@ export class MeetProvider implements MeetingProviderInterface {
       // Bail out early if page already navigated away (e.g. denial during timing wait)
       assertOnMeetPage(page)
 
+      // Fail-fast: if Meet has already rendered a denial page ("You can't join
+      // this video call", anti-bot block, etc.) before we touch any UI, skip
+      // the 10-attempt typeBotName loop. notAcceptedInMeeting() sets the
+      // appropriate end-reason (and retry flag for the anti-bot text) internally.
+      if (await notAcceptedInMeeting(page)) {
+        throw new Error("Bot not accepted into meeting - denied at page load")
+      }
+
       await clickDismiss(page)
       await sleep(300)
 
