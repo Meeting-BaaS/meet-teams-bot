@@ -115,8 +115,12 @@ export class MeetProvider implements MeetingProviderInterface {
       }
 
       console.log(`Navigating to ${link}...`)
+      // For SSO bots: use domcontentloaded so we can detect a myaccount.google.com
+      // redirect before waiting for that heavy page to reach networkidle (~20-30s).
+      // For unauthenticated bots: networkidle as before.
+      const isSsoBot = !!GLOBAL.get().meet_sso_config
       const response = await page.goto(link, {
-        waitUntil: "networkidle",
+        waitUntil: isSsoBot ? "domcontentloaded" : "networkidle",
         timeout: 30000
       })
       console.log("Navigation completed")
@@ -129,6 +133,20 @@ export class MeetProvider implements MeetingProviderInterface {
           `Google Meet returned HTTP ${response.status()} - service unavailable`
         )
         throw new Error(`Google Meet page returned HTTP ${response.status()}`)
+      }
+
+      if (isSsoBot) {
+        // Keep navigating until we land on meet.google.com (max 3 attempts).
+        // domcontentloaded is used throughout — waiting for networkidle on
+        // myaccount.google.com takes 20-30s and achieves nothing useful.
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const landedUrl = page.url()
+          if (landedUrl.includes("meet.google.com")) break
+          console.log(`[Meet][SSO] Landed on ${landedUrl} — navigating to meeting URL (attempt ${attempt}/3)`)
+          await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 })
+        }
+        // Settled on Meet — wait for the page to fully load.
+        await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => { })
       }
 
       // Check for page freeze after goto (same as Teams)
@@ -195,33 +213,37 @@ export class MeetProvider implements MeetingProviderInterface {
       await clickDismiss(page)
       await sleep(300)
 
-      console.log(
-        "useWithoutAccountClicked:",
-        await clickWithInnerText(page, "span", ["Use without an account"], 2)
-      )
+      // Authenticated bots (SSO) already have a Google identity — no "Use without an
+      // account" prompt appears and no name entry is needed.
+      if (!GLOBAL.get().meet_sso_config) {
+        console.log(
+          "useWithoutAccountClicked:",
+          await clickWithInnerText(page, "span", ["Use without an account"], 2)
+        )
 
-      // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
-      for (let attempt = 1; attempt <= 10; attempt++) {
-        if (await typeBotName(page, GLOBAL.get().bot_name)) {
-          console.log("Bot name typed at attempt", attempt)
-          break
-        }
+        // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
+        for (let attempt = 1; attempt <= 10; attempt++) {
+          if (await typeBotName(page, GLOBAL.get().bot_name)) {
+            console.log("Bot name typed at attempt", attempt)
+            break
+          }
 
-        if (attempt < 10) {
-          // Don't wait after last attempt
-          await clickOutsideModal(page)
+          if (attempt < 10) {
+            // Don't wait after last attempt
+            await clickOutsideModal(page)
 
-          if (attempt < 5) {
-            // Fast path: 500ms fixed delay for attempts 1-4
-            await page.waitForTimeout(500)
-          } else {
-            // Slow path: exponential backoff for attempts 5-9 (handles dialog cases, page temporarily frozen)
-            // Attempt 5: 500ms, attempts 6-9: 1s, 2s, 4s, 8s
-            const exponentialDelay = 1000 * 2 ** (attempt - 6)
-            console.log(
-              `Bot name typing failed at attempt ${attempt}, waiting ${exponentialDelay}ms before retry (exponential backoff)`
-            )
-            await page.waitForTimeout(exponentialDelay)
+            if (attempt < 5) {
+              // Fast path: 500ms fixed delay for attempts 1-4
+              await page.waitForTimeout(500)
+            } else {
+              // Slow path: exponential backoff for attempts 5-9 (handles dialog cases, page temporarily frozen)
+              // Attempt 5: 500ms, attempts 6-9: 1s, 2s, 4s, 8s
+              const exponentialDelay = 1000 * 2 ** (attempt - 6)
+              console.log(
+                `Bot name typing failed at attempt ${attempt}, waiting ${exponentialDelay}ms before retry (exponential backoff)`
+              )
+              await page.waitForTimeout(exponentialDelay)
+            }
           }
         }
       }
