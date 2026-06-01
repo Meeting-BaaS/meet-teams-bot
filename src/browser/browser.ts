@@ -53,6 +53,19 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         "--enable-webrtc-capture-audio", // Ensure WebRTC can capture audio
         "--force-webrtc-ip-handling-policy=default", // Better WebRTC handling
 
+        // Suppress Chrome's "Sign in to Chrome?" / "Turn on sync" dialogs that
+        // appear when a Workspace account authenticates. These are native Chrome UI
+        // dialogs unreachable by Playwright automation.
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-sync",
+        "--disable-component-update",
+        // SigninInterception = DICE web sign-in intercept bubble ("Sign in to Chrome?")
+        // IdentityConsistency = browser auto-linking cookie-jar identity to a Chrome profile
+        // --disable-signin = fully disables browser sign-in at the policy level
+        "--disable-signin",
+        "--disable-features=SigninInterception,IdentityConsistency,ChromeBrowserCloudManagement,SignInPromo,ChromeWhatsNewUI,AccountConsistency",
+
         // Performance and resource management optimizations
         "--disable-blink-features=AutomationControlled",
         "--disable-background-timer-throttling",
