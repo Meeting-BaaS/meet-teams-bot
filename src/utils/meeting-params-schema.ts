@@ -54,7 +54,8 @@ export const BotMessageSchema = object({
       object({
         session_id: uuid(),
         login_email: string().email(),
-        set_cookie_url: url()
+        set_cookie_url: url(),
+        fallback: zodEnum(["fail", "anonymous"]).default("anonymous")
       })
     )
   ).default(null)

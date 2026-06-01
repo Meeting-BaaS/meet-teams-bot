@@ -164,6 +164,12 @@ class Global {
     this.errorMessage = null
   }
 
+  public clearMeetSsoConfig(): void {
+    if (this.meetingParams) {
+      this.meetingParams.meet_sso_config = null
+    }
+  }
+
   // NEW: Retry flag methods
   public setShouldRetry(value: boolean): void {
     this.shouldRetry = value

@@ -59,6 +59,7 @@ export interface MeetSsoConfig {
   session_id: string
   login_email: string
   set_cookie_url: string
+  fallback: "fail" | "anonymous"
 }
 
 /**

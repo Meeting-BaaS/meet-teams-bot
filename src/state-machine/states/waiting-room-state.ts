@@ -61,21 +61,26 @@ export class WaitingRoomState extends BaseState {
           await loginToGoogleMeetWithSso(this.context.browserContext, ssoConfig)
         } catch (err) {
           if (err instanceof MeetSsoLoginError) {
-            console.error(
-              `[meet-sso] login failed (${err.code}): ${err.message}. ` +
-                "Reporting failure to api-server; will not attempt anonymous join."
-            )
-            // Plumb the structured SSO failure code to api-server via MeetingEndReason.
-            // SAML_REJECTED → api-server auto-disables the parent workspace.
-            // TIMEOUT → no auto-disable (treated as transient).
-            const reason =
-              err.code === "MEET_LOGIN_FAILED_SAML_REJECTED"
-                ? MeetingEndReason.MeetLoginFailedSamlRejected
-                : MeetingEndReason.MeetLoginFailedTimeout
-            GLOBAL.setError(reason)
+            if (ssoConfig.fallback === "anonymous") {
+              console.warn(
+                `[meet-sso] login failed (${err.code}): ${err.message}. Falling back to anonymous join.`
+              )
+              GLOBAL.clearMeetSsoConfig()
+              // Continue — openMeetingPage runs next as an unauthenticated bot.
+            } else {
+              console.error(
+                `[meet-sso] login failed (${err.code}): ${err.message}. Reporting failure to api-server.`
+              )
+              const reason =
+                err.code === "MEET_LOGIN_FAILED_SAML_REJECTED"
+                  ? MeetingEndReason.MeetLoginFailedSamlRejected
+                  : MeetingEndReason.MeetLoginFailedTimeout
+              GLOBAL.setError(reason)
+              throw err
+            }
+          } else {
             throw err
           }
-          throw err
         }
       }
 
