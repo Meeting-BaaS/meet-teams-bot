@@ -196,6 +196,20 @@ export class MeetProvider implements MeetingProviderInterface {
             // Bail out early if page already navigated away (e.g. denial during timing wait)
             assertOnMeetPage(page)
 
+            // Fail-fast: if Meet has already rendered a denial page before we touch
+            // any UI, skip the 10-attempt typeBotName loop. The bot hasn't interacted
+            // with the meeting yet, so any denial here is treated as transient and
+            // retried — covers the anti-bot block ("You can't join this video call")
+            // and races where only a partial denial substring has rendered when the
+            // detector runs (notAcceptedInMeeting's text-match would otherwise pick
+            // the shorter pattern and skip the retry flag).
+            if (await notAcceptedInMeeting(page)) {
+                GLOBAL.setShouldRetry(true)
+                throw new Error(
+                    'Bot not accepted into meeting - denied at page load',
+                )
+            }
+
             // Seed the cursor to a realistic start position so the humanised (mocap)
             // click replays begin from a natural spot. No-op when mocap is inactive.
             await positionMouseForHumanizedInteraction()
