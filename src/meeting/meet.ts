@@ -7,7 +7,12 @@ import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
-import { humanClick, humanKey, humanType } from "../utils/human-input"
+import {
+  humanClick,
+  humanKey,
+  humanType,
+  positionMouseForHumanizedInteraction
+} from "../utils/human-input"
 import { formatError } from "../utils/Logger"
 import {
   createStateDetector,
@@ -216,6 +221,10 @@ export class MeetProvider implements MeetingProviderInterface {
         GLOBAL.setShouldRetry(true)
         throw new Error("Bot not accepted into meeting - denied at page load")
       }
+
+      // Seed the cursor to a realistic start position so the humanised (mocap)
+      // click replays begin from a natural spot. No-op when mocap is inactive.
+      await positionMouseForHumanizedInteraction()
 
       await clickDismiss(page)
       await sleep(300)

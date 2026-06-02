@@ -57,6 +57,8 @@ RUN npm run build:bundle
 RUN npm run build
 # Copy bundle directory to build output (TypeScript doesn't copy non-TS files)
 RUN cp -r src/meeting/meet/network-interception/bundle build/src/meeting/meet/network-interception/
+# Copy mocap recordings to build output (TypeScript doesn't copy non-TS files)
+RUN cp -r src/utils/mocap build/src/utils/
 
 # Environment configuration
 ENV NODE_OPTIONS="--max-old-space-size=2048"
