@@ -263,6 +263,44 @@ export type ClickOptions = {
   preferMocap?: boolean
 }
 
+// Fast OS-level (X11) click at the locator's centre: a few quick xdotool moves
+// then a click. No recorded trajectory, but the click is dispatched via xdotool
+// — so it avoids the CDP-input detection surface that Playwright's .click()
+// exposes (Meet's reCAPTCHA Enterprise scoring distinguishes the two). Used when
+// mocap has no landing gesture: we keep the X11 dispatch (the part that matters
+// for evasion) and only drop the latency-heavy synthesised trajectory. Returns
+// false if the box or xdotool is unavailable, so the caller falls back to
+// Playwright.
+async function xdoFastClick(locator: Locator): Promise<boolean> {
+  const box = await locator.boundingBox()
+  if (!box || box.width <= 0 || box.height <= 0) return false
+
+  // Off-centre target (humans don't click pixel-perfect centre), in screen coords.
+  const targetX = Math.round(box.x + box.width / 2 + rand(-box.width * 0.2, box.width * 0.2))
+  const targetY = Math.round(
+    box.y + box.height / 2 + rand(-box.height * 0.2, box.height * 0.2) + CHROME_TOP_OFFSET
+  )
+
+  const start = await getMouseLocation()
+  if (start) {
+    // A few short steps rather than a single teleport — cheap, but not instant.
+    const steps = 4
+    for (let i = 1; i <= steps; i++) {
+      const x = Math.round(start.x + ((targetX - start.x) * i) / steps + rand(-2, 2))
+      const y = Math.round(start.y + ((targetY - start.y) * i) / steps + rand(-2, 2))
+      if (!(await xdoOk(["mousemove", "--sync", String(x), String(y)]))) return false
+      await sleep(rand(15, 40))
+    }
+  } else if (!(await xdoOk(["mousemove", "--sync", String(targetX), String(targetY)]))) {
+    return false
+  }
+
+  await sleep(rand(40, 90))
+  if (!(await xdoMouseDown())) return false
+  if (!(await xdoMouseUp())) return false
+  return true
+}
+
 export async function humanClick(locator: Locator, opts: ClickOptions = {}): Promise<void> {
   // Keep these short: in the join flow the element is normally already present,
   // so long waits only stack latency onto the (common) mocap-miss path.
@@ -272,10 +310,14 @@ export async function humanClick(locator: Locator, opts: ClickOptions = {}): Pro
   // Preferred: replay a recorded human trajectory landing on the element.
   if (await mocapNavigateAndClick(locator, opts)) return
 
-  // Mocap miss → fast, correct Playwright click. We intentionally do NOT run a
-  // synthesised trajectory here: in prod it cost ~5-16s per miss and never moved
-  // the detection signal — the recorded mocap motion is the only part that helps,
-  // so when it can't fire we just click directly.
+  // Mocap miss → fast X11 click. Critically NOT a Playwright .click(): we must
+  // keep the xdotool (X11) dispatch even without a recorded gesture, because the
+  // CDP-vs-X11 input surface is what detection keys on. We only drop the
+  // (latency-heavy, ineffective) synthesised trajectory shape, not the dispatch.
+  if (await xdoFastClick(locator)) return
+
+  // Last resort: xdotool unavailable → Playwright (CDP) click so the join still
+  // proceeds, accepting the higher detection risk for this one interaction.
   await locator.click({ timeout: 5000 })
 }
 

@@ -1055,7 +1055,11 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   const BotNameTyped = botName || "Bot"
 
   try {
-    await page.waitForSelector(INPUT, { timeout: 1000 })
+    // 5s, not 1s: the name input often settles just past 1s on a slow/proxied
+    // page, and the tight timeout was throwing even when it had resolved to
+    // visible — forcing 3-6 typeBotName retries (with exponential backoff) per
+    // join and bloating prepareJoin.
+    await page.waitForSelector(INPUT, { timeout: 5000 })
 
     // OS-level human-like typing (clears the field first, then types per-grapheme
     // via xdotool with jittered delays). Falls back to Playwright on xdotool failure.
@@ -1155,9 +1159,9 @@ async function activateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      // Plain click: mic/cam toggles are low detection-signal and were the worst
-      // latency offenders when mocap missed — not worth the humanised path.
-      await microphoneButton.click({ timeout: 5000 })
+      // Click via the xdotool (X11) path — even on a mocap miss this keeps the
+      // dispatch off CDP, which detection keys on. The miss path is now fast.
+      await humanClick(microphoneButton)
       console.log("Microphone activated successfully")
       return true
     }
@@ -1174,7 +1178,7 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click({ timeout: 5000 })
+      await humanClick(microphoneButton)
       console.log("Microphone deactivated successfully")
       return true
     }
@@ -1191,7 +1195,7 @@ async function deactivateCamera(page: Page): Promise<boolean> {
   try {
     const cameraButton = page.locator('div[aria-label="Turn off camera"]')
     if ((await cameraButton.count()) > 0) {
-      await cameraButton.click({ timeout: 5000 })
+      await humanClick(cameraButton)
       console.log("Camera deactivated successfully")
       return true
     }
