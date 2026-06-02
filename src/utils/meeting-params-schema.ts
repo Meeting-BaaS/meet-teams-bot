@@ -1,6 +1,8 @@
 import {
+  nullable,
   number,
   object,
+  optional,
   record,
   string,
   url,
@@ -43,5 +45,18 @@ export const BotMessageSchema = object({
   silence_timeout: number().int().positive().default(600),
   grace_period: number().int().nonnegative().default(0),
   speech_to_text_provider: SpeechToTextProviderSchema.default("none"),
-  retry_count: number().int().nonnegative().default(0)
+  retry_count: number().int().nonnegative().default(0),
+
+  // Meet SSO authenticated bot config — present when api-server assigned a meet_login.
+  // Bot uses these to sign in to Google before joining the meeting.
+  meet_sso_config: optional(
+    nullable(
+      object({
+        session_id: uuid(),
+        login_email: string().email(),
+        set_cookie_url: url(),
+        fallback: zodEnum(["fail", "anonymous"]).default("anonymous")
+      })
+    )
+  ).default(null)
 })
