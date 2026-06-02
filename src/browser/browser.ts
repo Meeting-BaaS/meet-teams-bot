@@ -45,6 +45,15 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         // if CHROME_PATH ever points back at plain chromium.
         "--fingerprint-platform=windows",
 
+        // Disable per-frame canvas/WebGL/audio noise injection. That noise is the
+        // expensive part of CloakBrowser (hooks every fingerprint read) and on a
+        // CPU-capped pod it saturates cores -> throttling -> delayed UI + jittery
+        // video. Google Meet doesn't canvas-fingerprint the bot the way
+        // Cloudflare/FingerprintJS do, so we keep the cheap, high-value spoofs
+        // (platform/UA/webdriver/GPU/hardware) and drop the costly noise. Per
+        // CloakBrowser docs this also *prevents* FPJS tampering detection.
+        "--fingerprint-noise=false",
+
         // Security configurations
         "--no-sandbox",
         "--disable-setuid-sandbox",
