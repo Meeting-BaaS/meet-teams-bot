@@ -1,4 +1,4 @@
-import { type BrowserContext, chromium } from "@playwright/test"
+import { type BrowserContext } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { formatError } from "../utils/Logger"
 
@@ -9,23 +9,23 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   const { width, height } =
     resolution === "1080" ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
 
-  // Window size must match Xvfb display size (includes browser UI ~140px)
-  // Xvfb is 1280x860 for 720p or 1920x1220 for 1080p
   const windowWidth = width
   const windowHeight = resolution === "1080" ? 1220 : 860
 
   try {
-    console.log("Launching persistent context with exact extension args...")
+    console.log("Launching CloakBrowser persistent context...")
 
-    // Get Chrome path from environment variable or use default
-    const chromePath = envVars.CHROME_PATH
-    console.log(`🔍 Using Chrome path: ${chromePath}`)
-
-    const context = await chromium.launchPersistentContext("", {
+    // esbuild converts import() to require() under "module: commonjs", which breaks
+    // ESM-only packages. The Function constructor prevents that transpilation.
+    const dynamicImport = new Function("specifier", "return import(specifier)")
+    const { launchPersistentContext } = await dynamicImport("cloakbrowser")
+    const context = await launchPersistentContext({
+      userDataDir: "",
       headless: false,
       viewport: { width, height },
-      executablePath: chromePath,
       locale: "en-US", // Set locale for Playwright context
+      humanize: true,
+      ...(proxyUrl ? { proxy: proxyUrl } : {}),
       args: [
         // Window size and position - must match Xvfb display exactly
         `--window-size=${windowWidth},${windowHeight}`,
@@ -97,15 +97,15 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         // Proxy configuration (added dynamically if proxy is active)
         ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : [])
       ],
-      permissions: ["microphone", "camera"],
-      ignoreHTTPSErrors: true,
-      acceptDownloads: true,
-      bypassCSP: true,
-      timeout: 120000
+      contextOptions: {
+        permissions: ["microphone", "camera"],
+        ignoreHTTPSErrors: true,
+        acceptDownloads: true,
+        bypassCSP: true
+      }
     })
-
-    console.log("✅ Chromium launched with PulseAudio configuration")
-    return { browser: context }
+    console.log("✅ CloakBrowser launched")
+    return { browser: context as unknown as BrowserContext }
   } catch (error) {
     console.error("Failed to open browser:", formatError(error))
     throw error
