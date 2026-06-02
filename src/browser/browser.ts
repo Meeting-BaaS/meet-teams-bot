@@ -31,6 +31,20 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         `--window-size=${windowWidth},${windowHeight}`,
         "--window-position=0,0",
 
+        // ========================================
+        // CLOAKBROWSER STEALTH (only honoured by the CloakBrowser binary)
+        // ========================================
+        // The binary is stealthy with zero flags — it auto-generates a coherent
+        // random fingerprint seed at startup (canvas, WebGL, audio, GPU, screen).
+        // We only force the platform: a Linux binary reports Linux+NVIDIA by
+        // default; present as a Windows desktop instead — the most common
+        // fingerprint, harder to cluster, and what real Meet attendees look like.
+        // NOTE: deliberately NOT spoofing the WebRTC ICE IP — meeting capture uses
+        // WebRTC for media, so rewriting the ICE candidate could break recording.
+        // On stock Chromium these flags are ignored (no-ops), so this stays safe
+        // if CHROME_PATH ever points back at plain chromium.
+        "--fingerprint-platform=windows",
+
         // Security configurations
         "--no-sandbox",
         "--disable-setuid-sandbox",
