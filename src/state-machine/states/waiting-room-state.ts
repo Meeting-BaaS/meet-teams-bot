@@ -108,12 +108,6 @@ export class WaitingRoomState extends BaseState {
         void htmlSnapshot.captureSnapshot(this.context.playwrightPage, "waiting_room_page_opened")
       }
 
-      // Capture DOM state after meeting page is opened (void to avoid blocking)
-      if (this.context.playwrightPage) {
-        const htmlSnapshot = HtmlSnapshotService.getInstance()
-        void htmlSnapshot.captureSnapshot(this.context.playwrightPage, "waiting_room_page_opened")
-      }
-
       ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
 
       // Send waiting room event after the page is open
@@ -193,6 +187,22 @@ export class WaitingRoomState extends BaseState {
   private async waitForAcceptance(): Promise<void> {
     if (!this.context.playwrightPage) {
       throw new Error("Meeting page not initialized")
+    }
+
+    // Run the slow, humanised pre-join interactions (dismiss dialogs, type bot
+    // name, toggle mic/cam) BEFORE the scheduled-time wait below, so that at
+    // start_time only the quick "Join now" click remains. Humanisation can add
+    // tens of seconds; doing it here absorbs that into the bot's early window and
+    // keeps scheduled bots joining on time. Runs before the waiting-room timeout
+    // is armed, so it can't trip it. No-op for providers without prepareJoin
+    // (Teams/Zoom).
+    if (this.context.provider.prepareJoin) {
+      await this.context.provider.prepareJoin(
+        this.context.playwrightPage,
+        () =>
+          GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
+          GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord
+      )
     }
 
     // Handle timing control for precise meeting join times.

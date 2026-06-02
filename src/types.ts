@@ -15,6 +15,12 @@ export interface MeetingProviderInterface {
     link: string,
     streaming_input: string | undefined
   ): Promise<Page>
+  // Optional slow, humanised pre-join interactions (dismiss dialogs, type bot
+  // name, set mic/cam) that stop short of the final "Join now" click. When a
+  // provider implements it, the orchestrator runs it BEFORE the scheduled-time
+  // wait so humanisation latency doesn't delay a scheduled join. Providers that
+  // omit it fall back to doing all prep inside joinMeeting().
+  prepareJoin?(page: Page, cancelCheck: () => boolean): Promise<void>
   joinMeeting(
     page: Page,
     cancelCheck: () => boolean,

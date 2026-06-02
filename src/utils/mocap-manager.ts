@@ -218,24 +218,27 @@ export class MocapManager {
     if (targetDist < 1) return null
     const targetAngle = Math.atan2(targetVy, targetVx)
 
-    let best: PrimitiveMocapSequence | null = null
-    let bestErr = Number.POSITIVE_INFINITY
+    // Rank sequences by how little their displacement magnitude must be scaled
+    // to reach the target, then pick randomly among the closest few. The
+    // randomisation matters: callers retry this on elementFromPoint-verification
+    // failure, and a deterministic "single closest" would just return the same
+    // (failing) gesture every attempt.
+    const scored: { seq: PrimitiveMocapSequence; err: number }[] = []
     for (const s of this.sequences) {
       const d = Math.hypot(s.totalDx, s.totalDy)
       if (d < 1) continue
-      const err = Math.abs(d - targetDist)
-      if (err < bestErr) {
-        bestErr = err
-        best = s
-      }
+      scored.push({ seq: s, err: Math.abs(d - targetDist) })
     }
-    if (!best) return null
+    if (scored.length === 0) return null
+    scored.sort((a, b) => a.err - b.err)
+    const topK = scored.slice(0, Math.min(8, scored.length))
+    const pick = topK[Math.floor(Math.random() * topK.length)].seq
 
-    const natDist = Math.hypot(best.totalDx, best.totalDy)
-    const natAngle = Math.atan2(best.totalDy, best.totalDx)
+    const natDist = Math.hypot(pick.totalDx, pick.totalDy)
+    const natAngle = Math.atan2(pick.totalDy, pick.totalDx)
     const scale = clamp(targetDist / natDist, 0.5, 2.0)
     const rotDeg = clamp(normalizeAngleDegrees(((targetAngle - natAngle) * 180) / Math.PI), -45, 45)
-    return this.transformSequence(best, scale, rotDeg)
+    return this.transformSequence(pick, scale, rotDeg)
   }
 }
 
