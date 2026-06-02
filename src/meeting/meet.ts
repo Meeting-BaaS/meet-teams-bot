@@ -16,6 +16,12 @@ import {
     enableMeetAudioCapture,
     verifyMeetAudioCapture,
 } from './meet/audio-capture'
+import {
+    humanClick,
+    humanKey,
+    humanType,
+    positionMouseForHumanizedInteraction,
+} from '../utils/human-input'
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
@@ -41,6 +47,13 @@ function assertOnMeetPage(page: Page): void {
 }
 
 export class MeetProvider implements MeetingProviderInterface {
+    // Set once prepareJoin() has run the slow humanised pre-join interactions, so
+    // a subsequent joinMeeting() goes straight to the (quick) "Join now" click
+    // instead of repeating prep. Lets scheduled bots absorb the humanisation cost
+    // before the scheduled-time wait and still join on time. Stays false when
+    // joinMeeting() is called standalone, in which case it does prep itself.
+    private joinPrepared = false
+
     async parseMeetingUrl(meeting_url: string) {
         return parseMeetingUrlFromJoinInfos(meeting_url)
     }
@@ -176,6 +189,97 @@ export class MeetProvider implements MeetingProviderInterface {
         }
     }
 
+    // Slow, humanised pre-join interactions: dismiss dialogs, "Use without an
+    // account", type the bot name, and set mic/cam. Deliberately stops short of
+    // the irreversible "Join now" click so the caller can run this BEFORE the
+    // scheduled-time wait (see WaitingRoomState.waitForAcceptance) — the ~40-50s
+    // of humanisation is absorbed into the early window and the bot still joins
+    // on time. Safe to call standalone; joinMeeting() runs it itself if skipped.
+    async prepareJoin(
+        page: Page,
+        cancelCheck: () => boolean,
+    ): Promise<void> {
+        // Capture DOM state before starting join process
+        const htmlSnapshot = HtmlSnapshotService.getInstance()
+        await htmlSnapshot.captureSnapshot(page, 'meet_join_meeting_start')
+
+        // Bail out early if page already navigated away (e.g. denial during timing wait)
+        assertOnMeetPage(page)
+
+        // Fail-fast: if Meet has already rendered a denial page before we touch
+        // any UI, skip the 10-attempt typeBotName loop. The bot hasn't interacted
+        // with the meeting yet, so any denial here is treated as transient and
+        // retried — covers the anti-bot block ("You can't join this video call")
+        // and races where only a partial denial substring has rendered when the
+        // detector runs (notAcceptedInMeeting's text-match would otherwise pick
+        // the shorter pattern and skip the retry flag).
+        if (await notAcceptedInMeeting(page)) {
+            GLOBAL.setShouldRetry(true)
+            throw new Error('Bot not accepted into meeting - denied at page load')
+        }
+
+        // Allow an early stop request to short-circuit before any interaction.
+        if (cancelCheck()) {
+            GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
+            throw new Error('Bot stopped before preparing to join meeting')
+        }
+
+        // Seed the cursor to a realistic start position so the humanised (mocap)
+        // click replays begin from a natural spot. No-op when mocap is inactive.
+        await positionMouseForHumanizedInteraction()
+
+        await clickDismiss(page)
+        await sleep(300)
+
+        console.log(
+            'useWithoutAccountClicked:',
+            await clickWithInnerText(page, 'span', ['Use without an account'], 2),
+        )
+
+        // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
+        for (let attempt = 1; attempt <= 10; attempt++) {
+            if (await typeBotName(page, GLOBAL.get().bot_name)) {
+                console.log('Bot name typed at attempt', attempt)
+                break
+            }
+
+            if (attempt < 10) {
+                // Don't wait after last attempt
+                await clickOutsideModal(page)
+
+                if (attempt < 5) {
+                    // Fast path: 500ms fixed delay for attempts 1-4
+                    await page.waitForTimeout(500)
+                } else {
+                    // Slow path: exponential backoff for attempts 5-9 (handles dialog cases, page temporarily frozen)
+                    // Attempt 5: 500ms, attempts 6-9: 1s, 2s, 4s, 8s
+                    const exponentialDelay = 1000 * Math.pow(2, attempt - 6)
+                    console.log(
+                        `Bot name typing failed at attempt ${attempt}, waiting ${exponentialDelay}ms before retry (exponential backoff)`,
+                    )
+                    await page.waitForTimeout(exponentialDelay)
+                }
+            }
+        }
+
+        // Control microphone based on streaming_input
+        if (GLOBAL.get().streaming_input) {
+            await activateMicrophone(page)
+        } else {
+            await deactivateMicrophone(page)
+        }
+
+        // Control camera based on custom_branding_bot_path
+        if (GLOBAL.get().custom_branding_bot_path) {
+            // Camera will be used for branding, keep it on
+            console.log('Camera will be used for branding, keeping it on')
+        } else {
+            await deactivateCamera(page)
+        }
+
+        this.joinPrepared = true
+    }
+
     async joinMeeting(
         page: Page,
         cancelCheck: () => boolean,
@@ -183,65 +287,11 @@ export class MeetProvider implements MeetingProviderInterface {
         dialogObserver?: SimpleDialogObserver,
     ): Promise<void> {
         try {
-            // Capture DOM state before starting join process
-            const htmlSnapshot = HtmlSnapshotService.getInstance()
-            await htmlSnapshot.captureSnapshot(page, 'meet_join_meeting_start')
-
-            // Bail out early if page already navigated away (e.g. denial during timing wait)
-            assertOnMeetPage(page)
-
-            await clickDismiss(page)
-            await sleep(300)
-
-            console.log(
-                'useWithoutAccountClicked:',
-                await clickWithInnerText(
-                    page,
-                    'span',
-                    ['Use without an account'],
-                    2,
-                ),
-            )
-
-            // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
-            for (let attempt = 1; attempt <= 10; attempt++) {
-                if (await typeBotName(page, GLOBAL.get().bot_name)) {
-                    console.log('Bot name typed at attempt', attempt)
-                    break
-                }
-
-                if (attempt < 10) {
-                    // Don't wait after last attempt
-                    await clickOutsideModal(page)
-
-                    if (attempt < 5) {
-                        // Fast path: 500ms fixed delay for attempts 1-4
-                        await page.waitForTimeout(500)
-                    } else {
-                        // Slow path: exponential backoff for attempts 5-9 (handles dialog cases, page temporarily frozen)
-                        // Attempt 5: 500ms, attempts 6-9: 1s, 2s, 4s, 8s
-                        const exponentialDelay = 1000 * Math.pow(2, attempt - 6)
-                        console.log(
-                            `Bot name typing failed at attempt ${attempt}, waiting ${exponentialDelay}ms before retry (exponential backoff)`,
-                        )
-                        await page.waitForTimeout(exponentialDelay)
-                    }
-                }
-            }
-
-            // Control microphone based on streaming_input
-            if (GLOBAL.get().streaming_input) {
-                await activateMicrophone(page)
-            } else {
-                await deactivateMicrophone(page)
-            }
-
-            // Control camera based on custom_branding_bot_path
-            if (GLOBAL.get().custom_branding_bot_path) {
-                // Camera will be used for branding, keep it on
-                console.log('Camera will be used for branding, keeping it on')
-            } else {
-                await deactivateCamera(page)
+            // Run the slow humanised prep here only if the caller didn't already
+            // (scheduled bots call prepareJoin() before the timing wait so just
+            // the quick Join-now click below remains for the scheduled moment).
+            if (!this.joinPrepared) {
+                await this.prepareJoin(page, cancelCheck)
             }
 
             // Final stop check before the irreversible join button click
@@ -725,7 +775,7 @@ async function clickDismiss(page: Page): Promise<boolean> {
             const isEnabled = await button.isEnabled().catch(() => false)
 
             if (isVisible && isEnabled) {
-                await button.click()
+                await humanClick(button)
                 return true
             }
         }
@@ -801,7 +851,7 @@ async function clickWithInnerText(
                             `  - Found element with text "${text}" using selector "${sel}"`,
                         )
                         if (shouldClick) {
-                            await element.click()
+                            await humanClick(element.first())
                             console.log(
                                 `  - Clicked on element with text "${text}"`,
                             )
@@ -909,7 +959,7 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
 
     try {
         // Press Escape first to close any modal that might be blocking
-        await page.keyboard.press('Escape')
+        await humanKey('Escape', page)
         await page.waitForTimeout(100)
 
         for (const selector of joinSelectors) {
@@ -924,7 +974,9 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
                 const isEnabled = await locator.isEnabled().catch(() => false)
 
                 if (isVisible && isEnabled) {
-                    await locator.click({ timeout: 2000 })
+                    // High-value: the Join click is the most scrutinised
+                    // interaction, so bias hard toward a real mocap gesture.
+                    await humanClick(locator, { preferMocap: true })
                     console.log(
                         `Successfully clicked join button using selector: ${selector}`,
                     )
@@ -1155,13 +1207,15 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
     const BotNameTyped = botName || 'Bot'
 
     try {
-        await page.waitForSelector(INPUT, { timeout: 1000 })
+        // 5s, not 1s: the name input often settles just past 1s on a slow/proxied
+        // page, and the tight timeout was throwing even when it had resolved to
+        // visible — forcing 3-6 typeBotName retries (with exponential backoff) per
+        // join and bloating prepareJoin.
+        await page.waitForSelector(INPUT, { timeout: 5000 })
 
-        // Effacer le champ de texte existant
-        await page.fill(INPUT, '')
-
-        // Taper le nouveau nom
-        await page.fill(INPUT, BotNameTyped)
+        // OS-level human-like typing (clears the field first, then types per-grapheme
+        // via xdotool with jittered delays). Falls back to Playwright on xdotool failure.
+        await humanType(page.locator(INPUT), BotNameTyped)
 
         // Check that the text has been properly entered
         const inputValue = await page.inputValue(INPUT)
@@ -1180,7 +1234,9 @@ async function activateMicrophone(page: Page): Promise<boolean> {
             'div[aria-label="Turn on microphone"]',
         )
         if ((await microphoneButton.count()) > 0) {
-            await microphoneButton.click()
+            // Click via the xdotool (X11) path — even on a mocap miss this keeps
+            // the dispatch off CDP, which detection keys on. Miss path is fast.
+            await humanClick(microphoneButton)
             console.log('Microphone activated successfully')
             return true
         } else {
@@ -1201,7 +1257,7 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
             'div[aria-label="Turn off microphone"]',
         )
         if ((await microphoneButton.count()) > 0) {
-            await microphoneButton.click()
+            await humanClick(microphoneButton)
             console.log('Microphone deactivated successfully')
             return true
         } else {
@@ -1222,7 +1278,7 @@ async function deactivateCamera(page: Page): Promise<boolean> {
             'div[aria-label="Turn off camera"]',
         )
         if ((await cameraButton.count()) > 0) {
-            await cameraButton.click()
+            await humanClick(cameraButton)
             console.log('Camera deactivated successfully')
             return true
         } else {
