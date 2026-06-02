@@ -48,6 +48,13 @@ function assertOnMeetPage(page: Page): void {
 }
 
 export class MeetProvider implements MeetingProviderInterface {
+  // Set once prepareJoin() has run the slow humanised pre-join interactions, so a
+  // subsequent joinMeeting() goes straight to the (quick) "Join now" click instead
+  // of repeating prep. Lets scheduled bots absorb the humanisation cost before the
+  // scheduled-time wait and still join on time. Stays false when joinMeeting() is
+  // called standalone, in which case it runs prep itself.
+  private joinPrepared = false
+
   async parseMeetingUrl(meeting_url: string) {
     return parseMeetingUrlFromJoinInfos(meeting_url)
   }
@@ -196,12 +203,13 @@ export class MeetProvider implements MeetingProviderInterface {
     }
   }
 
-  async joinMeeting(
-    page: Page,
-    cancelCheck: () => boolean,
-    onJoinSuccess: () => void,
-    dialogObserver?: SimpleDialogObserver
-  ): Promise<void> {
+  // Slow, humanised pre-join interactions: dismiss dialogs, "Use without an
+  // account", type the bot name, set mic/cam. Deliberately stops short of the
+  // irreversible "Join now" click so the caller can run this BEFORE the
+  // scheduled-time wait (see WaitingRoomState.waitForAcceptance) — the
+  // humanisation cost is absorbed into the bot's early window and it still joins
+  // on time. Safe standalone; joinMeeting() runs it itself if skipped.
+  async prepareJoin(page: Page, cancelCheck: () => boolean): Promise<void> {
     try {
       // Capture DOM state before starting join process
       const htmlSnapshot = HtmlSnapshotService.getInstance()
@@ -220,6 +228,12 @@ export class MeetProvider implements MeetingProviderInterface {
       if (await notAcceptedInMeeting(page)) {
         GLOBAL.setShouldRetry(true)
         throw new Error("Bot not accepted into meeting - denied at page load")
+      }
+
+      // Allow an early stop request to short-circuit before any interaction.
+      if (cancelCheck()) {
+        GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
+        throw new Error("Bot stopped before preparing to join meeting")
       }
 
       // Seed the cursor to a realistic start position so the humanised (mocap)
@@ -276,6 +290,27 @@ export class MeetProvider implements MeetingProviderInterface {
         console.log("Camera will be used for branding, keeping it on")
       } else {
         await deactivateCamera(page)
+      }
+
+      this.joinPrepared = true
+    } catch (error) {
+      console.error("Error in prepareJoin:", formatError(error))
+      throw error
+    }
+  }
+
+  async joinMeeting(
+    page: Page,
+    cancelCheck: () => boolean,
+    onJoinSuccess: () => void,
+    dialogObserver?: SimpleDialogObserver
+  ): Promise<void> {
+    try {
+      // Run the slow humanised prep now if it wasn't already done before the
+      // scheduled-time wait. WaitingRoomState calls prepareJoin() up front so the
+      // humanisation latency is absorbed there; standalone callers prep here.
+      if (!this.joinPrepared) {
+        await this.prepareJoin(page, cancelCheck)
       }
 
       // Final stop check before the irreversible join button click
@@ -903,7 +938,9 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
         const isEnabled = await locator.isEnabled().catch(() => false)
 
         if (isVisible && isEnabled) {
-          await humanClick(locator)
+          // High-value: the Join click is the most scrutinised interaction, so
+          // bias hard toward landing a real mocap gesture here.
+          await humanClick(locator, { preferMocap: true })
           console.log(`Successfully clicked join button using selector: ${selector}`)
           return true
         }
@@ -1118,7 +1155,9 @@ async function activateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await humanClick(microphoneButton)
+      // Plain click: mic/cam toggles are low detection-signal and were the worst
+      // latency offenders when mocap missed — not worth the humanised path.
+      await microphoneButton.click({ timeout: 5000 })
       console.log("Microphone activated successfully")
       return true
     }
@@ -1135,7 +1174,7 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await humanClick(microphoneButton)
+      await microphoneButton.click({ timeout: 5000 })
       console.log("Microphone deactivated successfully")
       return true
     }
@@ -1152,7 +1191,7 @@ async function deactivateCamera(page: Page): Promise<boolean> {
   try {
     const cameraButton = page.locator('div[aria-label="Turn off camera"]')
     if ((await cameraButton.count()) > 0) {
-      await humanClick(cameraButton)
+      await cameraButton.click({ timeout: 5000 })
       console.log("Camera deactivated successfully")
       return true
     }
