@@ -237,10 +237,30 @@ export class ScreenRecorder extends EventEmitter {
             // reports a failure (rather than ending up as UNKNOWN_ERROR).
             const errorMessage =
                 error instanceof Error ? error.message : String(error)
-            GLOBAL.setError(
-                MeetingEndReason.StreamingSetupFailed,
-                errorMessage,
-            )
+
+            // Teams-specific: "Execution context was destroyed" during sync-signal /
+            // recording setup almost always means Teams redirected the page to a
+            // login/auth flow mid-page.evaluate. Reclassify as LoginRequired and
+            // mark retryable — if it was a transient nav, the retry recovers; if
+            // login really is required, the retry hits the same wall and we end
+            // up with the correct terminal status either way.
+            const isTeamsNavigationDestroyed =
+                GLOBAL.get().meetingProvider === 'Teams' &&
+                error instanceof Error &&
+                error.message.includes('Execution context was destroyed')
+
+            if (isTeamsNavigationDestroyed) {
+                console.log(
+                    '🔄 Teams sync-signal context destruction — reclassifying as LoginRequired and marking for retry',
+                )
+                GLOBAL.setError(MeetingEndReason.LoginRequired, errorMessage)
+                GLOBAL.setShouldRetry(true)
+            } else {
+                GLOBAL.setError(
+                    MeetingEndReason.StreamingSetupFailed,
+                    errorMessage,
+                )
+            }
             this.emit('error', { type: 'startError', error })
         }
     }
