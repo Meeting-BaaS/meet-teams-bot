@@ -2,7 +2,7 @@ import { SendMessageCommand, SQSClient } from "@aws-sdk/client-sqs"
 import { GLOBAL } from "../singleton"
 import type { MeetingParams } from "../types"
 
-export const MAX_RETRY_COUNT = 2
+export const MAX_RETRY_COUNT = 10
 
 /**
  * Creates SQS client with same credential logic as smart-rabbit
