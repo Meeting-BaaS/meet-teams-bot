@@ -15,6 +15,8 @@ RUN apt-get update && \
     libasound2t64 libatspi2.0-0 libgtk-3-0 libxss1 libxtst6 libxshmfence1 \
     # Virtual display and audio
     xvfb x11vnc x11-utils pulseaudio pulseaudio-utils unclutter \
+    # OS-level (X11) human-like mouse/keyboard input for Meet anti-bot evasion
+    xdotool \
     # Media processing
     ffmpeg \
     # System monitoring
