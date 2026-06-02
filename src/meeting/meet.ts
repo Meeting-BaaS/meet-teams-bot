@@ -14,12 +14,25 @@ import {
   type SelectorPattern
 } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
+import { humanClick, humanPrePosition, humanType } from "./humanize"
 import { enableMeetAudioCapture } from "./meet/audio-capture"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
 
 // Create a singleton detector instance for Google Meet
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
+
+// Click a locator with humanized cursor motion, falling back to Playwright's
+// instant click if the humanized path throws. Used for every pre-join control
+// (mic/cam toggles) so the whole lobby interaction looks human, not just typing.
+async function clickHumanized(page: Page, locator: import("@playwright/test").Locator): Promise<void> {
+  try {
+    await humanClick(page, locator)
+  } catch (he) {
+    console.warn("humanClick failed, falling back to locator.click():", formatError(he))
+    await locator.click()
+  }
+}
 const ENTRY_MESSAGE_TIMEOUT = 2000
 const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before checking if in meeting
 
@@ -113,6 +126,10 @@ export class MeetProvider implements MeetingProviderInterface {
         // Mark as failed so we don't retry in in-call-state
         GLOBAL.setNetworkInterceptionSetupFailed()
       }
+
+      // Seed a plausible idle cursor position before navigating so the first
+      // lobby interaction is a human-looking move rather than a cold teleport.
+      await humanPrePosition(page)
 
       console.log(`Navigating to ${link}...`)
       const response = await page.goto(link, {
@@ -865,7 +882,16 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
         const isEnabled = await locator.isEnabled().catch(() => false)
 
         if (isVisible && isEnabled) {
-          await locator.click({ timeout: 2000 })
+          // Humanized path: travel the cursor along a curved, variable-speed path
+          // to an interior point of the button and press/release with a dwell,
+          // instead of a synthetic center-teleport click. Fall back to the
+          // instant click if the humanized motion throws (e.g. no bounding box).
+          try {
+            await humanClick(page, locator)
+          } catch (he) {
+            console.warn("humanClick failed, falling back to locator.click():", formatError(he))
+            await locator.click({ timeout: 2000 })
+          }
           console.log(`Successfully clicked join button using selector: ${selector}`)
           return true
         }
@@ -982,11 +1008,18 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   try {
     await page.waitForSelector(INPUT, { timeout: 1000 })
 
-    // Effacer le champ de texte existant
-    await page.fill(INPUT, "")
-
-    // Taper le nouveau nom
-    await page.fill(INPUT, BotNameTyped)
+    // Humanized path: focus + clear + per-character typing with jittered timing,
+    // so Meet's anti-bot heuristics see keystrokes rather than a single fill().
+    // Fall back to the instant fill() if any humanized step throws, so name
+    // entry never regresses just because the lobby UI shifted under us.
+    const input = page.locator(INPUT).first()
+    try {
+      await humanType(page, input, BotNameTyped)
+    } catch (he) {
+      console.warn("humanType failed, falling back to fill():", formatError(he))
+      await page.fill(INPUT, "")
+      await page.fill(INPUT, BotNameTyped)
+    }
 
     // Check that the text has been properly entered
     const inputValue = await page.inputValue(INPUT)
@@ -1082,7 +1115,7 @@ async function activateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await clickHumanized(page, microphoneButton.first())
       console.log("Microphone activated successfully")
       return true
     }
@@ -1099,7 +1132,7 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await clickHumanized(page, microphoneButton.first())
       console.log("Microphone deactivated successfully")
       return true
     }
@@ -1116,7 +1149,7 @@ async function deactivateCamera(page: Page): Promise<boolean> {
   try {
     const cameraButton = page.locator('div[aria-label="Turn off camera"]')
     if ((await cameraButton.count()) > 0) {
-      await cameraButton.click()
+      await clickHumanized(page, cameraButton.first())
       console.log("Camera deactivated successfully")
       return true
     }
