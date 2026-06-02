@@ -159,6 +159,25 @@ export class WaitingRoomState extends BaseState {
             throw new Error('Meeting page not initialized')
         }
 
+        const cancelCheck = () =>
+            GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
+            GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord
+
+        // Run the slow, humanised pre-join interactions (dismiss dialogs, type
+        // bot name, toggle mic/cam) BEFORE the scheduled-time wait below, so that
+        // at start_time only the quick "Join now" click remains. Humanisation
+        // adds ~40-50s to the join flow; doing it here absorbs that into the
+        // bot's early window and keeps scheduled bots joining on time. Runs
+        // before the waiting-room timeout is armed, so it can't trip it. No-op
+        // for providers that don't implement prepareJoin (Teams/Zoom).
+        if (this.context.provider.prepareJoin) {
+            await this.context.provider.prepareJoin(
+                this.context.playwrightPage,
+                cancelCheck,
+                this.context.dialogObserver,
+            )
+        }
+
         // Handle timing control for precise meeting join times.
         // While waiting, poll the page URL to detect if Google Meet denied/redirected
         // (e.g. "You can't join this video call" → auto-redirect to workspace.google.com).
@@ -220,8 +239,7 @@ export class WaitingRoomState extends BaseState {
             this.context.provider
                 .joinMeeting(
                     this.context.playwrightPage,
-                    () => GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
-                          GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord,
+                    cancelCheck,
                     // Add a callback to notify that the join succeeded
                     () => {
                         joinSuccessful = true
