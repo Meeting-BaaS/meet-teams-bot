@@ -26,7 +26,6 @@ export interface MeetingProviderInterface {
     prepareJoin?(
         page: Page,
         cancelCheck: () => boolean,
-        dialogObserver?: SimpleDialogObserver,
     ): Promise<void>
     joinMeeting(
         page: Page,

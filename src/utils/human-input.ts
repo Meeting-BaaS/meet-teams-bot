@@ -124,7 +124,10 @@ export async function positionMouseForHumanizedInteraction(): Promise<void> {
 // mocap is unavailable, no sequence lands on the target, or xdotool fails
 // mid-replay. The browser runs at window-position 0,0 in Xvfb (browser.ts), so
 // screen-X == viewport-X and screen-Y == viewport-Y + CHROME_TOP_OFFSET.
-async function mocapNavigateAndClick(locator: Locator): Promise<boolean> {
+async function mocapNavigateAndClick(
+  locator: Locator,
+  opts: ClickOptions = {}
+): Promise<boolean> {
   const mocap = getMocapManager()
   if (!mocap) return false
 
@@ -145,6 +148,12 @@ async function mocapNavigateAndClick(locator: Locator): Promise<boolean> {
   // Try several candidates; prefer a natural landing, and verify via
   // elementFromPoint that the endpoint actually resolves to the target element.
   const MAX_ATTEMPTS = 10
+  // For high-value clicks, start stretching as soon as natural lookups miss:
+  // findRandomSequenceLandingInRect is deterministically empty when nothing lands
+  // in-rect, so spinning attempts on it is wasted. Otherwise stretch only as a
+  // last resort (stretch is randomised among the closest candidates, so repeated
+  // attempts get different gestures to verify).
+  const stretchFrom = opts.preferMocap ? 1 : MAX_ATTEMPTS - 3
   let chosen: ReturnType<MocapManager["findRandomSequenceLandingInRect"]> = null
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     let usedStretch = false
@@ -156,8 +165,7 @@ async function mocapNavigateAndClick(locator: Locator): Promise<boolean> {
       rectRight,
       rectBottom
     )
-    // Only stretch/rotate as a last resort, after natural lookups keep missing.
-    if (!candidate && attempt >= MAX_ATTEMPTS - 3) {
+    if (!candidate && attempt >= stretchFrom) {
       candidate = mocap.findClosestSequenceWithStretch(
         start.x,
         start.y,
@@ -171,10 +179,10 @@ async function mocapNavigateAndClick(locator: Locator): Promise<boolean> {
     if (!candidate) continue
 
     // Without an element handle we can't verify the landing via elementFromPoint.
-    // findRandomSequenceLandingInRect guarantees its endpoint is inside the rect,
-    // so a natural candidate is safe to trust; a stretched one only aims at the
-    // rect centre with bounded distortion and may land off-target, so skip it
-    // and let the caller fall back to a (correct) Playwright click.
+    // A natural (findRandomSequenceLandingInRect) candidate is guaranteed in-rect,
+    // so it's safe to trust; a stretched one only aims at the rect centre with
+    // bounded distortion and may land off-target, so skip it and let the caller
+    // fall back to a (correct) Playwright click.
     if (!handle) {
       if (usedStretch) continue
       chosen = candidate
@@ -243,197 +251,72 @@ function toPlaywrightKey(combo: string): string {
     .join("+")
 }
 
-// ===== Trajectory library =====
-// Each trajectory is a sequence of waypoints in (t, x, y) space:
-//   t ∈ [0,1] — cumulative time fraction
-//   x,y ∈ [0,1] — position fraction along start→target (with optional drift)
-// Replay scales t to a total duration (jittered) and x/y to actual screen
-// displacement, with small per-waypoint pixel jitter and time stretching.
-// Synthesised to span human-shaped motion patterns: smooth-S, overshoot,
-// curved drift, hesitation, choppy trackpad-style segments. Future work
-// could replace these with recordings of real human cursor traces.
-
-type Waypoint = { t: number; x: number; y: number }
-
-const TRAJECTORIES: Waypoint[][] = [
-  // 0: smooth-S, slow start and slow end
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.15, x: 0.05, y: 0.04 },
-    { t: 0.35, x: 0.25, y: 0.2 },
-    { t: 0.55, x: 0.55, y: 0.5 },
-    { t: 0.75, x: 0.85, y: 0.82 },
-    { t: 0.9, x: 0.97, y: 0.95 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 1: slight overshoot then correction
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.2, x: 0.1, y: 0.12 },
-    { t: 0.45, x: 0.4, y: 0.42 },
-    { t: 0.7, x: 0.72, y: 0.75 },
-    { t: 0.85, x: 0.95, y: 0.98 },
-    { t: 0.93, x: 1.04, y: 1.06 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 2: impatient — quick & direct
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.3, x: 0.35, y: 0.33 },
-    { t: 0.65, x: 0.78, y: 0.8 },
-    { t: 0.9, x: 0.97, y: 0.97 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 3: curved — drifts above the line then returns
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.2, x: 0.18, y: 0.08 },
-    { t: 0.4, x: 0.38, y: 0.28 },
-    { t: 0.6, x: 0.6, y: 0.55 },
-    { t: 0.8, x: 0.82, y: 0.8 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 4: hesitant — pauses near midway
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.15, x: 0.2, y: 0.18 },
-    { t: 0.35, x: 0.42, y: 0.4 },
-    { t: 0.5, x: 0.52, y: 0.5 },
-    { t: 0.62, x: 0.53, y: 0.51 },
-    { t: 0.8, x: 0.78, y: 0.78 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 5: bezier-shaped smooth
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.1, x: 0.02, y: 0.01 },
-    { t: 0.25, x: 0.12, y: 0.1 },
-    { t: 0.5, x: 0.5, y: 0.48 },
-    { t: 0.75, x: 0.88, y: 0.9 },
-    { t: 0.9, x: 0.98, y: 0.99 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 6: opposite-curved — drifts below the line
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.2, x: 0.08, y: 0.18 },
-    { t: 0.4, x: 0.28, y: 0.38 },
-    { t: 0.6, x: 0.55, y: 0.6 },
-    { t: 0.8, x: 0.8, y: 0.82 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 7: shallow overshoot
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.25, x: 0.3, y: 0.28 },
-    { t: 0.55, x: 0.65, y: 0.68 },
-    { t: 0.78, x: 0.95, y: 0.96 },
-    { t: 0.88, x: 1.03, y: 1.04 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 8: ramped acceleration — slow then fast
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.25, x: 0.08, y: 0.06 },
-    { t: 0.5, x: 0.25, y: 0.22 },
-    { t: 0.7, x: 0.55, y: 0.52 },
-    { t: 0.85, x: 0.8, y: 0.82 },
-    { t: 0.95, x: 0.95, y: 0.95 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ],
-  // 9: choppy trackpad-style — three distinct segments with stalls
-  [
-    { t: 0, x: 0, y: 0 },
-    { t: 0.2, x: 0.3, y: 0.3 },
-    { t: 0.3, x: 0.32, y: 0.32 },
-    { t: 0.55, x: 0.7, y: 0.7 },
-    { t: 0.65, x: 0.72, y: 0.72 },
-    { t: 0.9, x: 0.97, y: 0.97 },
-    { t: 1.0, x: 1.0, y: 1.0 }
-  ]
-]
-
-// Returns false if any xdotool call failed mid-replay (caller falls back to
-// a Playwright click); true if all waypoints dispatched successfully.
-async function replayTrajectory(
-  traj: Waypoint[],
-  startX: number,
-  startY: number,
-  targetX: number,
-  targetY: number,
-  totalMs: number
-): Promise<boolean> {
-  const dx = targetX - startX
-  const dy = targetY - startY
-  const timeStretch = rand(0.9, 1.1)
-  let lastT = 0
-  for (let i = 0; i < traj.length; i++) {
-    const wp = traj[i]
-    const segmentMs = (wp.t - lastT) * totalMs * timeStretch
-    lastT = wp.t
-    // Per-waypoint pixel jitter — skip the endpoints so we land exactly on target
-    const jx = i > 0 && i < traj.length - 1 ? rand(-2, 2) : 0
-    const jy = i > 0 && i < traj.length - 1 ? rand(-2, 2) : 0
-    const x = Math.round(startX + dx * wp.x + jx)
-    const y = Math.round(startY + dy * wp.y + jy)
-    if (segmentMs > 0) await sleep(segmentMs)
-    if (!(await xdoOk(["mousemove", "--sync", String(x), String(y)]))) return false
-  }
-  return true
-}
-
 // ===== Public API =====
 
 export type ClickOptions = {
-  // Total motion time in ms (jittered within this range). Default 250-450.
-  durationMin?: number
-  durationMax?: number
-  // Pause between landing on the target and pressing the mouse button.
-  // Humans don't click instantly on arrival. Default 60-150ms.
-  preClickDelayMin?: number
-  preClickDelayMax?: number
+  // High-value click (e.g. the name field and the Join button): engage the
+  // stretch/retarget fallback as soon as natural lookups miss, instead of only
+  // as a last resort, so the recorded human motion actually fires on the
+  // interactions Google scores most. Still gated on elementFromPoint
+  // verification, so it never clicks off-target.
+  preferMocap?: boolean
 }
 
-export async function humanClick(locator: Locator, opts: ClickOptions = {}): Promise<void> {
-  // Ensure the element is in view and visible before measuring its box.
-  await locator.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {})
-  await locator.waitFor({ state: "visible", timeout: 5000 })
+// Fast OS-level (X11) click at the locator's centre: a few quick xdotool moves
+// then a click. No recorded trajectory, but the click is dispatched via xdotool
+// — so it avoids the CDP-input detection surface that Playwright's .click()
+// exposes (Meet's reCAPTCHA Enterprise scoring distinguishes the two). Used when
+// mocap has no landing gesture: we keep the X11 dispatch (the part that matters
+// for evasion) and only drop the latency-heavy synthesised trajectory. Returns
+// false if the box or xdotool is unavailable, so the caller falls back to
+// Playwright.
+async function xdoFastClick(locator: Locator): Promise<boolean> {
+  const box = await locator.boundingBox()
+  if (!box || box.width <= 0 || box.height <= 0) return false
 
-  // Preferred: replay a recorded human trajectory landing on the element.
-  // Falls through to synthesised motion / Playwright when mocap is unavailable.
-  if (await mocapNavigateAndClick(locator)) return
+  // Off-centre target (humans don't click pixel-perfect centre), in screen coords.
+  const targetX = Math.round(box.x + box.width / 2 + rand(-box.width * 0.2, box.width * 0.2))
+  const targetY = Math.round(
+    box.y + box.height / 2 + rand(-box.height * 0.2, box.height * 0.2) + CHROME_TOP_OFFSET
+  )
 
   const start = await getMouseLocation()
   if (start) {
-    const box = await locator.boundingBox()
-    if (box) {
-      // Off-centre target (humans don't click pixel-perfect centre)
-      const targetX = box.x + box.width / 2 + rand(-box.width * 0.25, box.width * 0.25)
-      const targetY = box.y + box.height / 2 + rand(-box.height * 0.25, box.height * 0.25)
-      const screenTargetX = Math.round(targetX)
-      const screenTargetY = Math.round(targetY + CHROME_TOP_OFFSET)
-
-      const traj = TRAJECTORIES[Math.floor(Math.random() * TRAJECTORIES.length)]
-      const duration = rand(opts.durationMin ?? 250, opts.durationMax ?? 450)
-
-      const moved = await replayTrajectory(
-        traj,
-        start.x,
-        start.y,
-        screenTargetX,
-        screenTargetY,
-        duration
-      )
-      if (moved) {
-        await sleep(rand(opts.preClickDelayMin ?? 60, opts.preClickDelayMax ?? 150))
-        if (await xdoOk(["click", "1"])) return
-      }
+    // A few short steps rather than a single teleport — cheap, but not instant.
+    const steps = 4
+    for (let i = 1; i <= steps; i++) {
+      const x = Math.round(start.x + ((targetX - start.x) * i) / steps + rand(-2, 2))
+      const y = Math.round(start.y + ((targetY - start.y) * i) / steps + rand(-2, 2))
+      if (!(await xdoOk(["mousemove", "--sync", String(x), String(y)]))) return false
+      await sleep(rand(15, 40))
     }
+  } else if (!(await xdoOk(["mousemove", "--sync", String(targetX), String(targetY)]))) {
+    return false
   }
 
-  // Playwright fallback (this single interaction only; next humanClick will
-  // retry xdotool). Reaches here when getMouseLocation, the trajectory
-  // replay, or the final click failed — xdoOk has already logged.
+  await sleep(rand(40, 90))
+  if (!(await xdoMouseDown())) return false
+  if (!(await xdoMouseUp())) return false
+  return true
+}
+
+export async function humanClick(locator: Locator, opts: ClickOptions = {}): Promise<void> {
+  // Keep these short: in the join flow the element is normally already present,
+  // so long waits only stack latency onto the (common) mocap-miss path.
+  await locator.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {})
+  await locator.waitFor({ state: "visible", timeout: 3000 }).catch(() => {})
+
+  // Preferred: replay a recorded human trajectory landing on the element.
+  if (await mocapNavigateAndClick(locator, opts)) return
+
+  // Mocap miss → fast X11 click. Critically NOT a Playwright .click(): we must
+  // keep the xdotool (X11) dispatch even without a recorded gesture, because the
+  // CDP-vs-X11 input surface is what detection keys on. We only drop the
+  // (latency-heavy, ineffective) synthesised trajectory shape, not the dispatch.
+  if (await xdoFastClick(locator)) return
+
+  // Last resort: xdotool unavailable → Playwright (CDP) click so the join still
+  // proceeds, accepting the higher detection risk for this one interaction.
   await locator.click({ timeout: 5000 })
 }
 
@@ -479,7 +362,9 @@ export async function humanType(
 ): Promise<void> {
   const clearFirst = opts.clearFirst ?? true
 
-  await humanClick(locator)
+  // Focusing the field is a high-value, scored interaction (name entry), so bias
+  // toward landing a real mocap gesture rather than a fast Playwright click.
+  await humanClick(locator, { preferMocap: true })
   await sleep(rand(120, 280))
 
   if (clearFirst) {

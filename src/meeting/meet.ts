@@ -198,7 +198,6 @@ export class MeetProvider implements MeetingProviderInterface {
     async prepareJoin(
         page: Page,
         cancelCheck: () => boolean,
-        _dialogObserver?: SimpleDialogObserver,
     ): Promise<void> {
         // Capture DOM state before starting join process
         const htmlSnapshot = HtmlSnapshotService.getInstance()
@@ -292,7 +291,7 @@ export class MeetProvider implements MeetingProviderInterface {
             // (scheduled bots call prepareJoin() before the timing wait so just
             // the quick Join-now click below remains for the scheduled moment).
             if (!this.joinPrepared) {
-                await this.prepareJoin(page, cancelCheck, dialogObserver)
+                await this.prepareJoin(page, cancelCheck)
             }
 
             // Final stop check before the irreversible join button click
@@ -975,7 +974,9 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
                 const isEnabled = await locator.isEnabled().catch(() => false)
 
                 if (isVisible && isEnabled) {
-                    await humanClick(locator)
+                    // High-value: the Join click is the most scrutinised
+                    // interaction, so bias hard toward a real mocap gesture.
+                    await humanClick(locator, { preferMocap: true })
                     console.log(
                         `Successfully clicked join button using selector: ${selector}`,
                     )
@@ -1206,7 +1207,11 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
     const BotNameTyped = botName || 'Bot'
 
     try {
-        await page.waitForSelector(INPUT, { timeout: 1000 })
+        // 5s, not 1s: the name input often settles just past 1s on a slow/proxied
+        // page, and the tight timeout was throwing even when it had resolved to
+        // visible — forcing 3-6 typeBotName retries (with exponential backoff) per
+        // join and bloating prepareJoin.
+        await page.waitForSelector(INPUT, { timeout: 5000 })
 
         // OS-level human-like typing (clears the field first, then types per-grapheme
         // via xdotool with jittered delays). Falls back to Playwright on xdotool failure.
@@ -1229,6 +1234,8 @@ async function activateMicrophone(page: Page): Promise<boolean> {
             'div[aria-label="Turn on microphone"]',
         )
         if ((await microphoneButton.count()) > 0) {
+            // Click via the xdotool (X11) path — even on a mocap miss this keeps
+            // the dispatch off CDP, which detection keys on. Miss path is fast.
             await humanClick(microphoneButton)
             console.log('Microphone activated successfully')
             return true

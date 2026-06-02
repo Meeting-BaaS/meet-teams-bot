@@ -174,7 +174,6 @@ export class WaitingRoomState extends BaseState {
             await this.context.provider.prepareJoin(
                 this.context.playwrightPage,
                 cancelCheck,
-                this.context.dialogObserver,
             )
         }
 
