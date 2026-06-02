@@ -20,6 +20,7 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import type { Locator, Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
+import { MocapManager } from "./mocap-manager"
 
 const execFileAsync = promisify(execFile)
 
@@ -66,6 +67,155 @@ async function getMouseLocation(): Promise<{ x: number; y: number } | null> {
   } catch {
     return null
   }
+}
+
+// Relative mouse move (replays a recorded per-event delta). `--` guards against
+// negative deltas being parsed as flags.
+async function xdoMoveRel(dx: number, dy: number): Promise<boolean> {
+  return xdoOk(["mousemove_relative", "--", String(dx), String(dy)])
+}
+
+async function xdoMouseDown(): Promise<boolean> {
+  return xdoOk(["mousedown", "1"])
+}
+
+async function xdoMouseUp(): Promise<boolean> {
+  return xdoOk(["mouseup", "1"])
+}
+
+// ===== Mocap (recorded human motion) replay =====
+// Lazily build the MocapManager once per process for the active resolution.
+// `null` means "no recordings available" (e.g. unsupported resolution or files
+// missing) — callers then fall back to synthesised motion / Playwright.
+let mocapManager: MocapManager | null | undefined
+
+function getMocapManager(): MocapManager | null {
+  if (mocapManager === undefined) {
+    try {
+      const height = envVars.RESOLUTION === "1080" ? 1080 : 720
+      const m = new MocapManager(height)
+      mocapManager = m.sequenceCount > 0 ? m : null
+      if (mocapManager === null) {
+        console.warn("[human-input] no mocap sequences loaded; using fallback input")
+      }
+    } catch (e) {
+      console.error("[human-input] mocap init failed; using fallback input:", formatXdoErr(e))
+      mocapManager = null
+    }
+  }
+  return mocapManager
+}
+
+function formatXdoErr(e: unknown): string {
+  return (e as Error)?.message ?? String(e)
+}
+
+// Seed the cursor to the recording's start position before the first humanised
+// interaction, so the relative-delta replays begin from a realistic spot. No-op
+// when mocap is unavailable.
+export async function positionMouseForHumanizedInteraction(): Promise<void> {
+  const pos = getMocapManager()?.getInitialMousePosition()
+  if (!pos) return
+  await xdoOk(["mousemove", "--sync", String(pos[0]), String(pos[1])])
+  console.log(`[human-input] seeded mouse at (${pos[0]}, ${pos[1]})`)
+}
+
+// Navigate to `locator` by replaying a recorded human trajectory whose endpoint
+// lands on the element, then click. Returns false (so the caller falls back) if
+// mocap is unavailable, no sequence lands on the target, or xdotool fails
+// mid-replay. The browser runs at window-position 0,0 in Xvfb (browser.ts), so
+// screen-X == viewport-X and screen-Y == viewport-Y + CHROME_TOP_OFFSET.
+async function mocapNavigateAndClick(locator: Locator): Promise<boolean> {
+  const mocap = getMocapManager()
+  if (!mocap) return false
+
+  const start = await getMouseLocation()
+  if (!start) return false
+
+  const box = await locator.boundingBox()
+  if (!box || box.width <= 0 || box.height <= 0) return false
+
+  const rectLeft = Math.round(box.x)
+  const rectRight = Math.round(box.x + box.width)
+  const rectTop = Math.round(box.y + CHROME_TOP_OFFSET)
+  const rectBottom = Math.round(box.y + box.height + CHROME_TOP_OFFSET)
+
+  const page = locator.page()
+  const handle = await locator.elementHandle({ timeout: 2000 }).catch(() => null)
+
+  // Try several candidates; prefer a natural landing, and verify via
+  // elementFromPoint that the endpoint actually resolves to the target element.
+  const MAX_ATTEMPTS = 10
+  let chosen: ReturnType<MocapManager["findRandomSequenceLandingInRect"]> = null
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    let candidate = mocap.findRandomSequenceLandingInRect(
+      start.x,
+      start.y,
+      rectLeft,
+      rectTop,
+      rectRight,
+      rectBottom
+    )
+    // Only stretch/rotate as a last resort, after natural lookups keep missing.
+    if (!candidate && attempt >= MAX_ATTEMPTS - 3) {
+      candidate = mocap.findClosestSequenceWithStretch(
+        start.x,
+        start.y,
+        rectLeft,
+        rectTop,
+        rectRight,
+        rectBottom
+      )
+    }
+    if (!candidate) continue
+
+    // Without an element handle we can't verify the landing, so trust the
+    // geometric in-rect guarantee from findRandomSequenceLandingInRect.
+    if (!handle) {
+      chosen = candidate
+      break
+    }
+
+    const endViewportX = start.x + candidate.totalDx
+    const endViewportY = start.y + candidate.totalDy - CHROME_TOP_OFFSET
+    const onTarget = await page
+      .evaluate(
+        ({ x, y, el }) => {
+          const e = document.elementFromPoint(x, y)
+          return !!e && (e === el || el.contains(e))
+        },
+        { x: endViewportX, y: endViewportY, el: handle }
+      )
+      .catch(() => false)
+
+    // Only commit to a sequence whose endpoint actually resolves to the target.
+    // Replaying an unverified one would click empty space; better to fall back
+    // to a (correct, if non-humanised) Playwright click.
+    if (onTarget) {
+      chosen = candidate
+      break
+    }
+  }
+
+  if (!chosen) return false
+
+  console.log(
+    `[human-input] mocap replay: ${chosen.movements.length} movements, totalDx=${chosen.totalDx}, totalDy=${chosen.totalDy}`
+  )
+
+  for (const mov of chosen.movements) {
+    if (mov.dt > 0) await sleep(mov.dt * 1000)
+    if (mov.dx || mov.dy) {
+      if (!(await xdoMoveRel(mov.dx, mov.dy))) return false
+    }
+  }
+
+  if (chosen.clickDownDt > 0) await sleep(chosen.clickDownDt * 1000)
+  if (!(await xdoMouseDown())) return false
+  if (chosen.clickUpDt > 0) await sleep(chosen.clickUpDt * 1000)
+  if (!(await xdoMouseUp())) return false
+
+  return true
 }
 
 // Converts an xdotool-style key combo ("ctrl+e", "Escape", "Return") into the
@@ -243,6 +393,10 @@ export async function humanClick(locator: Locator, opts: ClickOptions = {}): Pro
   // Ensure the element is in view and visible before measuring its box.
   await locator.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(() => {})
   await locator.waitFor({ state: "visible", timeout: 5000 })
+
+  // Preferred: replay a recorded human trajectory landing on the element.
+  // Falls through to synthesised motion / Playwright when mocap is unavailable.
+  if (await mocapNavigateAndClick(locator)) return
 
   const start = await getMouseLocation()
   if (start) {
