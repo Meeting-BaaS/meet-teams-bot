@@ -147,6 +147,7 @@ async function mocapNavigateAndClick(locator: Locator): Promise<boolean> {
   const MAX_ATTEMPTS = 10
   let chosen: ReturnType<MocapManager["findRandomSequenceLandingInRect"]> = null
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    let usedStretch = false
     let candidate = mocap.findRandomSequenceLandingInRect(
       start.x,
       start.y,
@@ -165,12 +166,17 @@ async function mocapNavigateAndClick(locator: Locator): Promise<boolean> {
         rectRight,
         rectBottom
       )
+      usedStretch = candidate !== null
     }
     if (!candidate) continue
 
-    // Without an element handle we can't verify the landing, so trust the
-    // geometric in-rect guarantee from findRandomSequenceLandingInRect.
+    // Without an element handle we can't verify the landing via elementFromPoint.
+    // findRandomSequenceLandingInRect guarantees its endpoint is inside the rect,
+    // so a natural candidate is safe to trust; a stretched one only aims at the
+    // rect centre with bounded distortion and may land off-target, so skip it
+    // and let the caller fall back to a (correct) Playwright click.
     if (!handle) {
+      if (usedStretch) continue
       chosen = candidate
       break
     }
