@@ -54,6 +54,16 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         // CloakBrowser docs this also *prevents* FPJS tampering detection.
         "--fingerprint-noise=false",
 
+        // Disable the GPU/WebGL/compositing path. CloakBrowser strips
+        // --enable-unsafe-swiftshader and injects --ignore-gpu-blocklist in headed
+        // mode (browser.py:991) to force WebGL onto SwiftShader for a realistic GPU
+        // fingerprint. On a GPU-less node (Xvfb / k8s pod) that runs GPU work in a
+        // CPU rasterizer — the dominant cost (~1.3 cores/bot in-call, measured) and
+        // the cause of throttling on a 4-core cap (jittery video, delayed UI).
+        // Meet doesn't fingerprint the WebGL renderer, so forcing software
+        // compositing here is safe and far cheaper.
+        "--disable-gpu",
+
         // Security configurations
         "--no-sandbox",
         "--disable-setuid-sandbox",
