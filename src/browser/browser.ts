@@ -31,6 +31,17 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         `--window-size=${windowWidth},${windowHeight}`,
         "--window-position=0,0",
 
+        // GPU enable/disable via env (DEFAULT: GPU ENABLED — no change).
+        // On a GPU-less node (Xvfb / k8s pod) CloakBrowser forces
+        // WebGL/compositing onto SwiftShader (a CPU rasterizer) for a realistic
+        // GPU fingerprint; that pins cores and throttles a CPU-capped pod
+        // (jittery video, sluggish post-join UI). --disable-gpu drops it to the
+        // cheap software path — measured to roughly halve in-call CPU (~1.3 ->
+        // 0.65 cores/bot on a GPU-less Xvfb). Meet does not fingerprint the
+        // WebGL renderer, so it is safe. No-op on stock Chromium. Set
+        // DISABLE_GPU=true to enable.
+        ...(process.env.DISABLE_GPU === "true" ? ["--disable-gpu"] : []),
+
         // Security configurations
         "--no-sandbox",
         "--disable-setuid-sandbox",
