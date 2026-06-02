@@ -7,6 +7,7 @@ import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
+import { humanClick, humanKey, humanType } from "../utils/human-input"
 import { formatError } from "../utils/Logger"
 import {
   createStateDetector,
@@ -142,11 +143,13 @@ export class MeetProvider implements MeetingProviderInterface {
         for (let attempt = 1; attempt <= 3; attempt++) {
           const landedUrl = page.url()
           if (landedUrl.includes("meet.google.com")) break
-          console.log(`[Meet][SSO] Landed on ${landedUrl} — navigating to meeting URL (attempt ${attempt}/3)`)
+          console.log(
+            `[Meet][SSO] Landed on ${landedUrl} — navigating to meeting URL (attempt ${attempt}/3)`
+          )
           await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 })
         }
         // Settled on Meet — wait for the page to fully load.
-        await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => { })
+        await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {})
       }
 
       // Check for page freeze after goto (same as Teams)
@@ -753,7 +756,7 @@ async function clickDismiss(page: Page): Promise<boolean> {
       const isEnabled = await button.isEnabled().catch(() => false)
 
       if (isVisible && isEnabled) {
-        await button.click()
+        await humanClick(button)
         return true
       }
     }
@@ -814,7 +817,7 @@ async function clickWithInnerText(
           if (count > 0) {
             console.log(`  - Found element with text "${text}" using selector "${sel}"`)
             if (shouldClick) {
-              await element.click()
+              await humanClick(element.first())
               console.log(`  - Clicked on element with text "${text}"`)
             }
             return true
@@ -876,7 +879,7 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
 
   try {
     // Press Escape first to close any modal that might be blocking
-    await page.keyboard.press("Escape")
+    await humanKey("Escape", page)
     await page.waitForTimeout(100)
 
     for (const selector of joinSelectors) {
@@ -891,7 +894,7 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
         const isEnabled = await locator.isEnabled().catch(() => false)
 
         if (isVisible && isEnabled) {
-          await locator.click({ timeout: 2000 })
+          await humanClick(locator)
           console.log(`Successfully clicked join button using selector: ${selector}`)
           return true
         }
@@ -1008,11 +1011,9 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   try {
     await page.waitForSelector(INPUT, { timeout: 1000 })
 
-    // Effacer le champ de texte existant
-    await page.fill(INPUT, "")
-
-    // Taper le nouveau nom
-    await page.fill(INPUT, BotNameTyped)
+    // OS-level human-like typing (clears the field first, then types per-grapheme
+    // via xdotool with jittered delays). Falls back to Playwright on xdotool failure.
+    await humanType(page.locator(INPUT), BotNameTyped)
 
     // Check that the text has been properly entered
     const inputValue = await page.inputValue(INPUT)
@@ -1040,11 +1041,11 @@ async function isMicrophoneOff(page: Page): Promise<boolean> {
 }
 
 async function toggleCameraWithShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Control+KeyE")
+  await humanKey("ctrl+e", page)
 }
 
 async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Control+KeyD")
+  await humanKey("ctrl+d", page)
 }
 
 async function ensureCameraOn(page: Page): Promise<void> {
@@ -1056,7 +1057,7 @@ async function ensureCameraOn(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to enable camera via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn on camera"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1069,7 +1070,7 @@ async function ensureCameraOff(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to disable camera via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn off camera"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1082,7 +1083,7 @@ async function ensureMicrophoneOn(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to enable mic via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn on microphone"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1095,7 +1096,7 @@ async function ensureMicrophoneOff(page: Page): Promise<void> {
   } catch (error) {
     console.error("[Meet] Failed to disable mic via shortcut, trying DOM click:", error)
     const btn = page.locator('button[aria-label="Turn off microphone"]')
-    if ((await btn.count()) > 0) await btn.click()
+    if ((await btn.count()) > 0) await humanClick(btn)
   }
 }
 
@@ -1108,7 +1109,7 @@ async function activateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn on microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await humanClick(microphoneButton)
       console.log("Microphone activated successfully")
       return true
     }
@@ -1125,7 +1126,7 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
   try {
     const microphoneButton = page.locator('div[aria-label="Turn off microphone"]')
     if ((await microphoneButton.count()) > 0) {
-      await microphoneButton.click()
+      await humanClick(microphoneButton)
       console.log("Microphone deactivated successfully")
       return true
     }
@@ -1142,7 +1143,7 @@ async function deactivateCamera(page: Page): Promise<boolean> {
   try {
     const cameraButton = page.locator('div[aria-label="Turn off camera"]')
     if ((await cameraButton.count()) > 0) {
-      await cameraButton.click()
+      await humanClick(cameraButton)
       console.log("Camera deactivated successfully")
       return true
     }
@@ -1184,4 +1185,6 @@ async function deactivateCamera(page: Page): Promise<boolean> {
 //     } catch (e) {
 //         console.error('Error when trying to turn off the microphone:', e)
 //     }
+// }
+// }
 // }

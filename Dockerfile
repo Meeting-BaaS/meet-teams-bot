@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
     libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libxshmfence1 \
     # Virtual display and audio
     xvfb x11vnc x11-utils pulseaudio pulseaudio-utils unclutter \
+    # OS-level (X11) human-like mouse/keyboard input for Meet anti-bot evasion
+    xdotool \
     # Media processing
     ffmpeg \
     # Utilities
