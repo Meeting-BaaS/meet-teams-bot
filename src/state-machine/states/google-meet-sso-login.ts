@@ -214,7 +214,10 @@ export async function loginToGoogleMeetWithSso(
     } else {
       const confirmWatcher = watchAndClickSamlConfirm(page)
       await waitForGoogleAuthCookies(browserContext, 45_000, page)
-      await confirmWatcher
+      // Don't await: once auth cookies are present the SAML round-trip is done.
+      // The watcher's 40-second waitForURL timeout would otherwise stall here
+      // whenever samlconfirmaccount never appeared (the common fast path).
+      void confirmWatcher
     }
 
     // Persist cookies so the next bot run for this login can skip SSO entirely
