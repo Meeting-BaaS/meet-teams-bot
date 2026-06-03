@@ -1,5 +1,6 @@
 import { type BrowserContext } from "@playwright/test"
 import { envVars } from "../config/env-vars"
+import { GLOBAL } from "../singleton"
 import { formatError } from "../utils/Logger"
 
 export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
@@ -23,8 +24,8 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
       userDataDir: "",
       headless: false,
       viewport: { width, height },
-      locale: "en-US", // Set locale for Playwright context
-      humanize: true,
+      locale: "en-US",
+      humanize: GLOBAL.get().meeting_platform === "meet",
       ...(proxyUrl ? { proxy: proxyUrl } : {}),
       args: [
         // Window size and position - must match Xvfb display exactly
@@ -95,7 +96,11 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         "--vmodule=*audio*=3", // Enable audio debug logging
 
         // Proxy configuration (added dynamically if proxy is active)
-        ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : [])
+        ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : []),
+
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-gpu-compositing"
       ],
       contextOptions: {
         permissions: ["microphone", "camera"],

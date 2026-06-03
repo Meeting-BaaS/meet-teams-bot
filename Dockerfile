@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y \
     xvfb x11vnc x11-utils pulseaudio pulseaudio-utils unclutter \
     # Media processing
     ffmpeg \
+    # Fonts for rendering / fingerprint realism (CloakBrowser headed mode)
+    fonts-noto-color-emoji fonts-freefont-ttf fonts-ipafont-gothic fonts-wqy-zenhei \
     # Utilities
     curl unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -28,9 +30,16 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Install Playwright's Chromium + create symlink for browser.ts compatibility
-RUN npx playwright install chromium && \
-    find /root/.cache/ms-playwright -name chrome -type f -executable | head -1 | xargs -I {} ln -sf {} /usr/bin/google-chrome
+# CloakBrowser ships its own stealth Chromium 146 fork (no Playwright Chromium /
+# google-chrome symlink needed — browser.ts launches via cloakbrowser).
+# Pin the cache dir and disable runtime auto-update so the binary baked below is
+# the one used; otherwise each ephemeral pod would fetch ~200MB on first launch.
+ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
+ENV CLOAKBROWSER_AUTO_UPDATE=false
+# Install the Chromium system libraries the CloakBrowser binary depends on.
+RUN npx playwright install-deps chromium
+# Pre-fetch the CloakBrowser binary into the image (CLI subcommand: install).
+RUN npx cloakbrowser install
 
 # Build application
 COPY . .

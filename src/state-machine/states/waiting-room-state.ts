@@ -1,3 +1,4 @@
+import { dehumanize } from "../../utils/dehumanize"
 import { notifyJoinReady } from "../../branding"
 import { Events } from "../../events"
 import { setDirectMode } from "../../proxy/toggle-proxy"
@@ -260,6 +261,10 @@ export class WaitingRoomState extends BaseState {
           () => {
             joinSuccessful = true
             console.log("Join successful notification received")
+            // Disable humanize immediately (Meet only — Teams is never humanized).
+            if (this.context.playwrightPage && GLOBAL.get().meeting_platform === "meet") {
+              dehumanize(this.context.playwrightPage)
+            }
             setDirectMode()
           },
           this.context.dialogObserver
