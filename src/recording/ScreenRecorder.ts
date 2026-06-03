@@ -143,6 +143,17 @@ export class ScreenRecorder extends EventEmitter {
     this.meetingStartTime = startTime
   }
 
+  /**
+   * Returns the meeting start time (epoch ms), or 0 if the bot was never
+   * admitted. A non-zero value means the bot passed the waiting room and the
+   * meeting recording has a defined cut point (see finalize, where
+   * meetingStartTime > 0 is the "bot was accepted" signal). Used to tell a
+   * true denied-entry apart from a post-admission removal.
+   */
+  public getMeetingStartTime(): number {
+    return this.meetingStartTime
+  }
+
   public async startRecording(page: Page): Promise<void> {
     if (this.isRecording) {
       throw new Error("Recording is already in progress")

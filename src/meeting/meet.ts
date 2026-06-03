@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import { brandingReady } from "../branding"
 import { listenPage } from "../browser/page-logger"
+import { ScreenRecorderManager } from "../recording/ScreenRecorder"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
@@ -755,13 +756,35 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
       // Pattern is a DenialPattern
       const denialPattern = result.pattern as DenialPattern | SelectorPattern
       console.log(`${denialPattern.logPrefix} - Found text: "${result.matchedText}"`)
+
+      // Distinguish a true "denied entry" from a post-admission kick. Once the
+      // bot has been admitted, ScreenRecorder holds a non-zero meetingStartTime
+      // (the point the meeting video is cut from). A removal after that is an
+      // expected BotRemoved with a usable partial recording — not a
+      // BotNotAccepted failure. The same meetingStartTime > 0 check is what
+      // ScreenRecorder.finalize uses as its "bot was accepted" signal.
+      const wasAdmitted = ScreenRecorderManager.getInstance().getMeetingStartTime() > 0
+      const reason =
+        wasAdmitted && denialPattern.reason === MeetingEndReason.BotNotAccepted
+          ? MeetingEndReason.BotRemoved
+          : denialPattern.reason
+
+      if (reason !== denialPattern.reason) {
+        console.log(
+          `↪︎ Bot was already admitted (meetingStartTime set) — reclassifying "${denialPattern.reason}" as "${reason}" (post-admission removal, partial recording kept)`
+        )
+      }
+
       GLOBAL.setError(
-        denialPattern.reason,
-        `${denialPattern.errorMessage} - Found text: "${result.matchedText}"`
+        reason,
+        reason === MeetingEndReason.BotRemoved
+          ? `Bot removed after admission - Found text: "${result.matchedText}"`
+          : `${denialPattern.errorMessage} - Found text: "${result.matchedText}"`
       )
 
-      // NEW: Set retry flag for specific Google Meet anti-bot error
-      if (result.matchedText === "You can't join this video call") {
+      // NEW: Set retry flag for specific Google Meet anti-bot error. Only
+      // meaningful pre-admission — a post-admission removal is not retryable.
+      if (!wasAdmitted && result.matchedText === "You can't join this video call") {
         GLOBAL.setShouldRetry(true)
         console.log("🔄 Google Meet anti-bot detection - marking for retry")
       }
