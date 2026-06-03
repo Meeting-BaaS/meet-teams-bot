@@ -53,13 +53,19 @@ check_docker() {
 # Build Docker image
 build_image() {
     local image_name=${1:-meet-teams-bot}
+    local no_cache=${2:-false}
     local date_tag
     date_tag=$(date +%Y%m%d-%H%M)
     local full_tag="${image_name}:${date_tag}"
-    
+    local cache_flag=""
+    if [ "$no_cache" = "true" ]; then
+        cache_flag="--no-cache"
+        print_info "Building with --no-cache (full rebuild)"
+    fi
+
     print_info "Building Meet Teams Bot Docker image..."
     print_info "Tagging as: ${full_tag}"
-    docker build -t "${full_tag}" .
+    docker build $cache_flag -t "${full_tag}" .
     print_success "Docker image built successfully: ${full_tag}"
     
     # Also tag as latest for convenience
@@ -1019,7 +1025,7 @@ show_help() {
     echo "Usage:"
     echo "  $0 build                     - Build the Docker image"
     echo "  $0 run <config_file> [url]   - Run bot with configuration file (optional meeting URL override)"
-    echo "  $0 debug <config_file> [url] - Run bot in DEBUG mode (speakers logs + VNC enabled)"
+    echo "  $0 debug [config_file] [overrides] - Run bot in DEBUG mode (speakers logs + VNC enabled, defaults to bot.config.json)"
     echo "  $0 run-json '<json>'         - Run bot with JSON configuration"
     echo "  $0 test [duration]           - Test screen recording system (duration in seconds)"
     echo "  $0 test-api-request              - Test API request stop functionality (2 minutes)"
@@ -1071,7 +1077,9 @@ main() {
     case "${1:-}" in
         "build")
             check_docker
-            build_image
+            no_cache="false"
+            if [ "${2:-}" = "--no-cache" ]; then no_cache="true"; fi
+            build_image "meet-teams-bot" "$no_cache"
             ;;
         "run")
             local default_config="bot.config.json"
@@ -1097,13 +1105,28 @@ main() {
             run_with_config_and_overrides "$config_file" "${overrides[@]}"
             ;;
         "debug")
-            if [ -z "${2:-}" ]; then
-                print_error "Please specify a configuration file"
-                print_info "Usage: $0 debug <config_file> [meeting_url]"
+            shift # remove 'debug'
+            local config_file="bot.config.json"
+            local overrides=()
+            if [ -n "${1:-}" ] && [ -f "${1}" ]; then
+                config_file="$1"
+                shift
+            fi
+            while [ -n "${1:-}" ]; do
+                overrides+=("$1")
+                shift
+            done
+            if [ ! -f "$config_file" ]; then
+                print_error "Configuration file not found: $config_file"
+                print_info "Please create $config_file or specify a config file."
                 exit 1
             fi
             check_docker
-            run_debug "$2" "$3"
+            print_info "🐛 Starting DEBUG mode - speakers debug logs + VNC enabled"
+            print_info "Using config file: $config_file"
+            export DEBUG_LOGS=true
+            export DEBUG=true
+            run_with_config_and_overrides "$config_file" "${overrides[@]}"
             ;;
         "run-json")
             if [ -z "${2:-}" ]; then
