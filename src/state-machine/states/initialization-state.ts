@@ -125,7 +125,7 @@ export class InitializationState extends BaseState {
 
                 // Execute the promise to open the browser with a timeout
                 const result = await Promise.race<BrowserResult>([
-                    openBrowser(false, this.context.proxyUrl),
+                    openBrowser(this.context.proxyUrl),
                     timeoutPromise,
                 ])
 
