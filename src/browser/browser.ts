@@ -1,8 +1,8 @@
-import { BrowserContext, chromium } from '@playwright/test'
+import { type BrowserContext } from '@playwright/test'
+import { GLOBAL } from '../singleton'
 import { formatError } from '../utils/Logger'
 
 export async function openBrowser(
-    slowMo: boolean = false,
     proxyUrl?: string | null,
 ): Promise<{ browser: BrowserContext }> {
     // Resolution configuration from environment variable
@@ -19,17 +19,26 @@ export async function openBrowser(
     const windowHeight = resolution === '1080' ? 1220 : 860
 
     try {
-        console.log('Launching persistent context with exact extension args...')
+        console.log('Launching CloakBrowser persistent context...')
 
-        // Get Chrome path from environment variable or use default
-        const chromePath = process.env.CHROME_PATH || '/usr/bin/google-chrome'
-        console.log(`🔍 Using Chrome path: ${chromePath}`)
-
-        const context = await chromium.launchPersistentContext('', {
+        // esbuild converts import() to require() under "module: commonjs", which
+        // breaks ESM-only packages. The Function constructor prevents that
+        // transpilation.
+        const dynamicImport = new Function(
+            'specifier',
+            'return import(specifier)',
+        )
+        const { launchPersistentContext } = await dynamicImport('cloakbrowser')
+        const context = await launchPersistentContext({
+            userDataDir: '',
             headless: false,
             viewport: { width, height },
-            executablePath: chromePath,
-            locale: 'en-US', // Set locale for Playwright context
+            locale: 'en-US',
+            // Humanize only for Google Meet (reCAPTCHA-style scoring); Teams/Zoom
+            // run native Playwright. dehumanize() restores native methods once the
+            // bot is admitted (see WaitingRoomState).
+            humanize: GLOBAL.get().meetingProvider === 'Meet',
+            ...(proxyUrl ? { proxy: proxyUrl } : {}),
             args: [
                 // Window size and position - must match Xvfb display exactly
                 `--window-size=${windowWidth},${windowHeight}`,
@@ -56,6 +65,16 @@ export async function openBrowser(
                 '--disable-webrtc-hw-encoding',
                 '--enable-webrtc-capture-audio', // Ensure WebRTC can capture audio
                 '--force-webrtc-ip-handling-policy=default', // Better WebRTC handling
+
+                // Suppress Chrome's "Sign in to Chrome?" / "Turn on sync" dialogs
+                // that appear when a Workspace account authenticates. These are
+                // native Chrome UI dialogs unreachable by Playwright automation.
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-sync',
+                '--disable-component-update',
+                '--disable-signin',
+                '--disable-features=SigninInterception,IdentityConsistency,ChromeBrowserCloudManagement,SignInPromo,ChromeWhatsNewUI,AccountConsistency',
 
                 // Performance and resource management optimizations
                 '--disable-blink-features=AutomationControlled',
@@ -90,17 +109,21 @@ export async function openBrowser(
                 // 127.0.0.1; allowlist + setDirectMode() decide what actually
                 // hits the upstream.
                 ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : []),
+
+                '--disable-gpu',
+                '--disable-software-rasterizer',
+                '--disable-gpu-compositing',
             ],
-            slowMo: slowMo ? 100 : undefined,
-            permissions: ['microphone', 'camera'],
-            ignoreHTTPSErrors: true,
-            acceptDownloads: true,
-            bypassCSP: true,
-            timeout: 120000,
+            contextOptions: {
+                permissions: ['microphone', 'camera'],
+                ignoreHTTPSErrors: true,
+                acceptDownloads: true,
+                bypassCSP: true,
+            },
         })
 
-        console.log('✅ Chromium launched with PulseAudio configuration')
-        return { browser: context }
+        console.log('✅ CloakBrowser launched')
+        return { browser: context as unknown as BrowserContext }
     } catch (error) {
         console.error('Failed to open browser:', formatError(error))
         throw error
