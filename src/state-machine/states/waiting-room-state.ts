@@ -1,3 +1,4 @@
+import { dehumanize } from '../../utils/dehumanize'
 import { Events } from '../../events'
 import { setDirectMode } from '../../proxy/toggle-proxy'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
@@ -243,6 +244,15 @@ export class WaitingRoomState extends BaseState {
                     () => {
                         joinSuccessful = true
                         console.log('Join successful notification received')
+                        // Disable humanize immediately now that we're admitted
+                        // (Meet only — Teams/Zoom are never humanized). Restores
+                        // native Playwright page methods for fast in-meeting ops.
+                        if (
+                            this.context.playwrightPage &&
+                            GLOBAL.get().meetingProvider === 'Meet'
+                        ) {
+                            dehumanize(this.context.playwrightPage)
+                        }
                         // Stop routing through the residential upstream now
                         // that we're admitted — the rest of the session goes
                         // direct from the pod IP.

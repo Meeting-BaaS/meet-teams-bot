@@ -13,10 +13,10 @@ RUN apt-get update && apt-get install -y \
     libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxss1 libxshmfence1 \
     # Virtual display and audio
     xvfb x11vnc x11-utils pulseaudio pulseaudio-utils unclutter \
-    # OS-level (X11) human-like mouse/keyboard input for Meet anti-bot evasion
-    xdotool \
     # Media processing
     ffmpeg \
+    # Fonts for rendering / fingerprint realism (CloakBrowser headed mode)
+    fonts-noto-color-emoji fonts-freefont-ttf fonts-ipafont-gothic fonts-wqy-zenhei \
     # Utilities
     curl unzip \
     && rm -rf /var/lib/apt/lists/*
@@ -30,15 +30,21 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Install Playwright's Chromium + create symlink for browser.ts compatibility
+# Teams (and any non-Meet) use official Playwright Chromium via
+# /usr/bin/google-chrome; Meet uses CloakBrowser's own stealth Chromium fork
+# (baked below). Both are installed so browser.ts can pick per provider.
 RUN npx playwright install chromium && \
     find /root/.cache/ms-playwright -name chrome -type f -executable | head -1 | xargs -I {} ln -sf {} /usr/bin/google-chrome
+# CloakBrowser (Meet): pin the cache dir + disable runtime auto-update so the
+# baked binary is the one used; otherwise each ephemeral pod fetches ~200MB on
+# first launch.
+ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
+ENV CLOAKBROWSER_AUTO_UPDATE=false
+RUN npx cloakbrowser install
 
 # Build application
 COPY . .
 RUN npm run build
-# Copy mocap recordings to build output (TypeScript doesn't copy non-TS files)
-RUN cp -r src/utils/mocap build/src/utils/
 
 # Environment configuration
 ENV NODE_OPTIONS="--max-old-space-size=2048"
