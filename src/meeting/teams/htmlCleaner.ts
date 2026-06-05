@@ -74,6 +74,22 @@ export class TeamsHtmlCleaner {
                         })
                 }
 
+                // Notification / permission banners (data-tid^="ufd_" /
+                // "callingAlert") — e.g. "Teams needs permission to access your
+                // camera". Bots have no camera/mic device, so these always appear
+                // and, being overlays (vdi-occlusion), sit on top of even the
+                // fullscreen stage. Hide the whole family.
+                documentRoot
+                    .querySelectorAll(
+                        '[data-tid^="ufd_"], [data-tid^="callingAlert"]',
+                    )
+                    .forEach((el) => {
+                        if (el instanceof HTMLElement) {
+                            el.style.display = 'none'
+                            hiddenLight++
+                        }
+                    })
+
                 // Call-controls toolbar: hide the [role="toolbar"] that holds the
                 // calling buttons (mic / camera / leave / More).
                 try {
