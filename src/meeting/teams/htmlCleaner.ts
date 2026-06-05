@@ -95,12 +95,27 @@ export class TeamsHtmlCleaner {
                 // header bar (meeting title, encryption status, and the call-
                 // duration timer) are role="toolbar". Hide them all for a clean
                 // speaker-only recording.
+                const stageSel =
+                    '[data-tid="stage-layout"], [data-tid="modern-stage-wrapper"], [data-tid="only-videos-wrapper"]'
                 documentRoot
                     .querySelectorAll('[role="toolbar"]')
                     .forEach((el) => {
-                        if (el instanceof HTMLElement) {
-                            el.style.display = 'none'
-                            hiddenLight++
+                        if (!(el instanceof HTMLElement)) return
+                        el.style.display = 'none'
+                        hiddenLight++
+                        // The toolbar usually sits in a thin "bar" wrapper that
+                        // keeps a blank white strip even once the toolbar inside
+                        // is hidden. Collapse that wrapper too — but never a
+                        // top-level layout node or one that contains the stage.
+                        const parent = el.parentElement
+                        if (
+                            parent instanceof HTMLElement &&
+                            parent.id !== 'call-screen-wrapper' &&
+                            parent.id !== 'root' &&
+                            parent.tagName !== 'BODY' &&
+                            !parent.querySelector(stageSel)
+                        ) {
+                            parent.style.display = 'none'
                         }
                     })
 
