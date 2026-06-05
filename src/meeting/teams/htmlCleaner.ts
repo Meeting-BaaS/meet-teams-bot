@@ -48,6 +48,78 @@ export class TeamsHtmlCleaner {
                 return document
             }
 
+            // Teams "light" web client (teams.live.com) uses a different DOM than
+            // the classic client targeted above: there is no
+            // app-layout-area--header, the video tiles are not 137x245, and the
+            // chat/controls live under different data-tids. Hide that chrome and
+            // promote the video stage to fullscreen so the recording shows only
+            // the speaker(s). No-op on the classic client (selectors just miss).
+            function cleanLightClient(documentRoot: Document) {
+                const hideTids = [
+                    'calling-right-side-panel', // chat / people side rail
+                    'simplified-compose-bottom-toolbar', // chat compose bar
+                    'rail-header',
+                    'message-pane-footer',
+                    'chat-pane-compose-message-footer',
+                ]
+                let hiddenLight = 0
+                for (const tid of hideTids) {
+                    documentRoot
+                        .querySelectorAll(`[data-tid="${tid}"]`)
+                        .forEach((el) => {
+                            if (el instanceof HTMLElement) {
+                                el.style.display = 'none'
+                                hiddenLight++
+                            }
+                        })
+                }
+
+                // Call-controls toolbar: hide the [role="toolbar"] that holds the
+                // calling buttons (mic / camera / leave / More).
+                try {
+                    const callBtn = documentRoot.querySelector(
+                        '[id^="callingButtons-"]',
+                    )
+                    const toolbar = callBtn?.closest('[role="toolbar"]')
+                    if (toolbar instanceof HTMLElement) {
+                        toolbar.style.display = 'none'
+                        hiddenLight++
+                    }
+                } catch (e) {
+                    console.error('[Teams] light: controls toolbar hide failed', e)
+                }
+
+                // Promote the video stage to fullscreen so it covers any remaining
+                // chrome. Prefer the outer stage container, fall back to the
+                // videos / shared-content wrappers.
+                const stage =
+                    documentRoot.querySelector('[data-tid="stage-layout"]') ||
+                    documentRoot.querySelector(
+                        '[data-tid="modern-stage-wrapper"]',
+                    ) ||
+                    documentRoot.querySelector(
+                        '[data-tid="only-videos-wrapper"]',
+                    )
+                if (stage instanceof HTMLElement) {
+                    stage.style.position = 'fixed'
+                    stage.style.top = '0'
+                    stage.style.left = '0'
+                    stage.style.width = '100vw'
+                    stage.style.height = '100vh'
+                    stage.style.zIndex = '9998'
+                    stage.style.backgroundColor = 'black'
+                }
+
+                if (hiddenLight > 0) {
+                    console.log(
+                        '[Teams] light: hid',
+                        hiddenLight,
+                        'chrome element(s); stage promoted:',
+                        stage instanceof HTMLElement,
+                    )
+                }
+            }
+
             async function removeInitialShityHtml() {
                 console.log('[Teams] Starting removeInitialShityHtml')
                 await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -94,6 +166,8 @@ export class TeamsHtmlCleaner {
                 } catch (e) {
                     console.error('[Teams] Failed to modify main area', e)
                 }
+
+                cleanLightClient(documentRoot)
             }
 
             function removeShityHtml() {
@@ -150,6 +224,8 @@ export class TeamsHtmlCleaner {
                 } catch (e) {
                     console.error('[Teams] Failed to modify main area', e)
                 }
+
+                cleanLightClient(documentRoot)
             }
 
             // Execute Teams provider
