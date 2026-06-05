@@ -2,19 +2,11 @@ import type { Page } from "@playwright/test"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import type { RecordingMode } from "../../types"
 
-declare global {
-  interface Window {
-    htmlCleanerObserver: MutationObserver
-  }
-}
-
 export class TeamsHtmlCleaner {
   private page: Page
-  private recordingMode: RecordingMode
 
-  constructor(page: Page, recordingMode: RecordingMode) {
+  constructor(page: Page, _recordingMode: RecordingMode) {
     this.page = page
-    this.recordingMode = recordingMode
   }
 
   public async start(): Promise<void> {
@@ -46,13 +38,103 @@ export class TeamsHtmlCleaner {
         return document
       }
 
+      // Teams "light" web client (teams.live.com) uses a different DOM than
+      // the classic client targeted above: there is no app-layout-area--header,
+      // the video tiles are not 137x245, and the chat/controls live under
+      // different data-tids. Hide that chrome and promote the video stage to
+      // fullscreen so the recording shows only the speaker(s).
+      // No-op on the classic client (selectors just miss).
+      function cleanLightClient(documentRoot: Document) {
+        const hideTids = [
+          "calling-right-side-panel", // chat / people side rail
+          "simplified-compose-bottom-toolbar", // chat compose bar
+          "rail-header",
+          "message-pane-footer",
+          "chat-pane-compose-message-footer",
+        ]
+        let hiddenLight = 0
+        for (const tid of hideTids) {
+          documentRoot.querySelectorAll(`[data-tid="${tid}"]`).forEach((el) => {
+            if (el instanceof HTMLElement) {
+              el.style.display = "none"
+              hiddenLight++
+            }
+          })
+        }
+
+        // Notification / permission banners (data-tid^="ufd_" / "callingAlert")
+        // e.g. "Teams needs permission to access your camera". Bots have no
+        // camera/mic device, so these always appear and, being overlays
+        // (vdi-occlusion), sit on top of even the fullscreen stage.
+        documentRoot
+          .querySelectorAll('[data-tid^="ufd_"], [data-tid^="callingAlert"]')
+          .forEach((el) => {
+            if (el instanceof HTMLElement) {
+              el.style.display = "none"
+              hiddenLight++
+            }
+          })
+
+        // Toolbars: both the bottom call-controls bar (mic / camera / leave /
+        // More, containing callingButtons-*) AND the top call-header bar
+        // (meeting title, encryption status, and the call-duration timer) are
+        // role="toolbar". Hide them all for a clean speaker-only recording.
+        const stageSel =
+          '[data-tid="stage-layout"], [data-tid="modern-stage-wrapper"], [data-tid="only-videos-wrapper"]'
+        documentRoot.querySelectorAll('[role="toolbar"]').forEach((el) => {
+          if (!(el instanceof HTMLElement)) return
+          el.style.display = "none"
+          hiddenLight++
+          // The toolbar usually sits in a thin "bar" wrapper that keeps a blank
+          // white strip even once the toolbar inside is hidden. Collapse that
+          // wrapper too — but never a top-level layout node or one that
+          // contains the video stage.
+          const parent = el.parentElement
+          if (
+            parent instanceof HTMLElement &&
+            parent.id !== "call-screen-wrapper" &&
+            parent.id !== "root" &&
+            parent.tagName !== "BODY" &&
+            !parent.querySelector(stageSel)
+          ) {
+            parent.style.display = "none"
+          }
+        })
+
+        // Promote the video stage to fullscreen so it covers any remaining
+        // chrome. Prefer the outer stage container, fall back to the
+        // videos / shared-content wrappers.
+        const stage =
+          documentRoot.querySelector('[data-tid="stage-layout"]') ||
+          documentRoot.querySelector('[data-tid="modern-stage-wrapper"]') ||
+          documentRoot.querySelector('[data-tid="only-videos-wrapper"]')
+        if (stage instanceof HTMLElement) {
+          stage.style.position = "fixed"
+          stage.style.top = "0"
+          stage.style.left = "0"
+          stage.style.width = "100vw"
+          stage.style.height = "100vh"
+          stage.style.zIndex = "9998"
+          stage.style.backgroundColor = "black"
+        }
+
+        if (hiddenLight > 0) {
+          console.log(
+            "[Teams] light: hid",
+            hiddenLight,
+            "chrome element(s); stage promoted:",
+            stage instanceof HTMLElement,
+          )
+        }
+      }
+
       async function removeInitialShityHtml() {
         console.log("[Teams] Starting removeInitialShityHtml")
         await new Promise((resolve) => setTimeout(resolve, 1000))
         const documentRoot = getDocumentRoot()
         try {
           const meetingControls = documentRoot.querySelectorAll(
-            `div[data-tid="app-layout-area--header"]`
+            `div[data-tid="app-layout-area--header"]`,
           )
           if (meetingControls[0] instanceof HTMLElement) {
             meetingControls[0].style.opacity = "0"
@@ -72,7 +154,7 @@ export class TeamsHtmlCleaner {
                           border: 0px solid rgb(127, 133, 245);
                         }
                       `,
-            sheet.cssRules.length
+            sheet.cssRules.length,
           )
           console.log("[Teams] Voice level stream outline style added")
         } catch (e) {
@@ -84,12 +166,12 @@ export class TeamsHtmlCleaner {
           if (mainArea instanceof HTMLElement) {
             mainArea.style.height = "100vh"
             mainArea.style.width = "100vw"
-            mainArea.style.position = "relative"
-            mainArea.style.zIndex = "900000"
           }
         } catch (e) {
           console.error("[Teams] Failed to modify main area", e)
         }
+
+        cleanLightClient(documentRoot)
       }
 
       function removeShityHtml() {
@@ -133,12 +215,12 @@ export class TeamsHtmlCleaner {
           if (mainArea instanceof HTMLElement) {
             mainArea.style.height = "100vh"
             mainArea.style.width = "100vw"
-            mainArea.style.position = "relative"
-            mainArea.style.zIndex = "900000"
           }
         } catch (e) {
           console.error("[Teams] Failed to modify main area", e)
         }
+
+        cleanLightClient(documentRoot)
       }
 
       // Execute Teams provider
@@ -153,13 +235,13 @@ export class TeamsHtmlCleaner {
       if (document.documentElement) {
         observer.observe(document.documentElement, {
           childList: true,
-          subtree: true
+          subtree: true,
         })
       }
 
-      window.htmlCleanerObserver = observer
+      ;(window as any).htmlCleanerObserver = observer
       console.log("[Teams] HTML provider complete")
-    }, this.recordingMode)
+    })
   }
 
   public async stop(): Promise<void> {
@@ -167,9 +249,9 @@ export class TeamsHtmlCleaner {
 
     await this.page
       .evaluate(() => {
-        if (window.htmlCleanerObserver) {
-          window.htmlCleanerObserver.disconnect()
-          delete window.htmlCleanerObserver
+        if ((window as any).htmlCleanerObserver) {
+          ;(window as any).htmlCleanerObserver.disconnect()
+          delete (window as any).htmlCleanerObserver
         }
       })
       .catch((e) => console.error("[Teams] HTML cleaner stop error:", e))
