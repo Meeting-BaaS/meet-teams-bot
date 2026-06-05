@@ -90,20 +90,19 @@ export class TeamsHtmlCleaner {
                         }
                     })
 
-                // Call-controls toolbar: hide the [role="toolbar"] that holds the
-                // calling buttons (mic / camera / leave / More).
-                try {
-                    const callBtn = documentRoot.querySelector(
-                        '[id^="callingButtons-"]',
-                    )
-                    const toolbar = callBtn?.closest('[role="toolbar"]')
-                    if (toolbar instanceof HTMLElement) {
-                        toolbar.style.display = 'none'
-                        hiddenLight++
-                    }
-                } catch (e) {
-                    console.error('[Teams] light: controls toolbar hide failed', e)
-                }
+                // Toolbars: both the bottom call-controls bar (mic / camera /
+                // leave / More, containing callingButtons-*) AND the top call-
+                // header bar (meeting title, encryption status, and the call-
+                // duration timer) are role="toolbar". Hide them all for a clean
+                // speaker-only recording.
+                documentRoot
+                    .querySelectorAll('[role="toolbar"]')
+                    .forEach((el) => {
+                        if (el instanceof HTMLElement) {
+                            el.style.display = 'none'
+                            hiddenLight++
+                        }
+                    })
 
                 // Promote the video stage to fullscreen so it covers any remaining
                 // chrome. Prefer the outer stage container, fall back to the
