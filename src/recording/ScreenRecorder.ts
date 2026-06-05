@@ -81,8 +81,9 @@ const calculateFFmpegTimeout = (operation: string, fileSizeMB?: number): number 
       // Simple audio operations
       return FFMPEG_TIMEOUTS.SIMPLE_OPERATIONS
     case "getDuration":
-      // Metadata operations
-      return 30 * 1000 // 30 seconds
+      // Metadata operations: dynamic scaling with modest growth
+      timeout = Math.max(30000, (fileSizeMB || 100) * 100)
+      return Math.min(timeout, 5 * 60 * 1000)
     default:
       // Default to complex operations timeout
       return Math.min(FFMPEG_TIMEOUTS.COMPLEX_OPERATIONS, FFMPEG_TIMEOUTS.MAX_CEILING)
@@ -2026,8 +2027,18 @@ file '${absoluteInputPath}'`
   }
 
   private async getDuration(filePath: string): Promise<number> {
+    let fileSizeMB: number | undefined
+    try {
+      const stats = fs.statSync(filePath)
+      fileSizeMB = Math.round((stats.size / (1024 * 1024)) * 10) / 10
+    } catch {
+      console.warn(
+        `⚠️ Could not stat file for getDuration timeout calculation: ${filePath}, using base timeout`,
+      )
+    }
+
     const args = ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath]
-    const result = await this.runFFprobe(args)
+    const result = await this.runFFprobe(args, fileSizeMB)
     return Number.parseFloat(result.trim())
   }
 
@@ -2095,7 +2106,16 @@ file '${absoluteInputPath}'`
     })
   }
 
-  private async runFFprobe(args: string[]): Promise<string> {
+  private async runFFprobe(
+    args: string[],
+    fileSizeMB?: number,
+  ): Promise<string> {
+    const timeout = calculateFFmpegTimeout("getDuration", fileSizeMB)
+
+    console.log(
+      `⏱️ FFprobe getDuration: timeout set to ${timeout / 1000}s${fileSizeMB ? ` (estimated file size: ${fileSizeMB}MB)` : ""}`,
+    )
+
     return new Promise((resolve, reject) => {
       const process = spawn("ffprobe", args)
       let output = ""
@@ -2116,12 +2136,13 @@ file '${absoluteInputPath}'`
         reject(error)
       })
 
-      // Add timeout for metadata operations
       const timeoutId = setTimeout(() => {
-        console.error("❌ FFprobe timeout after 30s, killing process")
+        console.error(
+          `❌ FFprobe timeout after ${timeout / 1000}s for getDuration, killing process`,
+        )
         process.kill("SIGKILL")
         reject(new Error("FFprobe timeout"))
-      }, 30000)
+      }, timeout)
 
       process.on("close", () => {
         clearTimeout(timeoutId)
