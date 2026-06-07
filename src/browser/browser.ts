@@ -2,6 +2,17 @@ import { type BrowserContext, chromium } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { formatError } from "../utils/Logger"
+import { getExitGeo } from "../proxy/toggle-proxy"
+
+// Map the exit IP's country (from the residential-proxy probe) to a browser
+// locale, so locale/Accept-Language match the proxied egress geo instead of a
+// hardcoded en-US. Timezone comes straight from the probe. Unmapped → en-US.
+const COUNTRY_LOCALE: Record<string, string> = {
+  US: "en-US", GB: "en-GB", IE: "en-IE", CA: "en-CA", AU: "en-AU",
+  FR: "fr-FR", DE: "de-DE", ES: "es-ES", IT: "it-IT", NL: "nl-NL",
+  PL: "pl-PL", PT: "pt-PT", BR: "pt-BR", SE: "sv-SE", NO: "nb-NO",
+  DK: "da-DK", FI: "fi-FI", BE: "fr-BE", CH: "de-CH", AT: "de-AT",
+}
 
 export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
@@ -13,6 +24,16 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   const windowWidth = width
   const windowHeight = resolution === "1080" ? 1220 : 860
 
+  // Align locale + timezone with the residential exit IP's geo (set by the
+  // proxy probe). Falls back to en-US / browser-default tz when unknown.
+  const geo = getExitGeo()
+  const locale = COUNTRY_LOCALE[geo?.country ?? ""] ?? "en-US"
+  const lang = locale.split("-")[0]
+  const timezoneId = geo?.timezone ?? undefined
+  if (geo?.country || geo?.timezone) {
+    console.log(`[Browser] Geo from exit IP: country=${geo?.country ?? "?"} tz=${geo?.timezone ?? "?"} → locale=${locale}`)
+  }
+
   const sharedArgs = [
     // Window size and position - must match Xvfb display exactly
     `--window-size=${windowWidth},${windowHeight}`,
@@ -21,8 +42,8 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
     // Security configurations
     "--no-sandbox",
     "--disable-setuid-sandbox",
-    "--lang=en-US", // Force English language with region code
-    "--accept-lang=en-US,en", // Accept English for HTTP requests
+    `--lang=${locale}`, // align UI language with exit-IP geo
+    `--accept-lang=${locale},${lang}`, // align Accept-Language with exit-IP geo
 
     // ========================================
     // AUDIO CONFIGURATION FOR PULSEAUDIO
@@ -101,7 +122,8 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         userDataDir: "",
         headless: false,
         viewport: { width, height },
-        locale: "en-US",
+        locale,
+        ...(timezoneId ? { timezoneId } : {}),
         humanize: true,
         ...(proxyUrl ? { proxy: proxyUrl } : {}),
         args: [
@@ -139,7 +161,8 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
       headless: false,
       viewport: { width, height },
       executablePath: chromePath,
-      locale: "en-US", // Set locale for Playwright context
+      locale, // align with exit-IP geo
+      ...(timezoneId ? { timezoneId } : {}),
       args: sharedArgs,
       permissions: ["microphone", "camera"],
       ignoreHTTPSErrors: true,
