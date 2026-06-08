@@ -11,7 +11,11 @@ const execAsync = promisify(exec)
 
 // Configuration constants
 const EXPECTED_FREQUENCY = 1000
-const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds
+const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds (used as fallback upper bound)
+// Half-width of the search window centred on the known sync-signal position.
+// Keep tight (±0.5 s) to avoid matching early meeting-UI content or noise, while
+// still tolerating normal system jitter on the sleep/page-evaluate path.
+const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
 
 interface SyncOffset {
   /** Audio signal timestamp in seconds */
@@ -28,21 +32,29 @@ interface SyncOffset {
  * Calculate synchronization offset between audio and video files
  * @param audioPath - Path to audio file (.wav)
  * @param videoPath - Path to video file (.webm, .mp4, etc.)
+ * @param expectedSyncSec - Exact seconds-from-recording-start when generateSyncSignal was called.
+ *   The search window is clamped to [expectedSyncSec ± SYNC_WINDOW_HALF_WIDTH_SEC].
+ *   Required — callers must pass the recorded syncSignalTimestamp offset so detection
+ *   cannot be fooled by early meeting-UI content (authenticated bots) or noise.
  * @returns Promise<SyncOffset> - Synchronization information
  */
 export async function calculateVideoOffset(
   audioPath: string,
-  videoPath: string
+  videoPath: string,
+  expectedSyncSec: number
 ): Promise<SyncOffset> {
-  console.log(`🔍 Analyzing sync signals (first ${ANALYSIS_WINDOW}s only)...`)
+  const searchMin = Math.max(0, expectedSyncSec - SYNC_WINDOW_HALF_WIDTH_SEC)
+  const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
+
+  console.log(`🔍 Analyzing sync signals (window ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s)...`)
   console.log(`   Audio: ${audioPath}`)
   console.log(`   Video: ${videoPath}`)
 
   try {
-    // Analyze both files in parallel
+    // Analyze both files in parallel using the exact sync window
     const [audioTimestamp, videoTimestamp] = await Promise.all([
-      detectAudioBeep(audioPath),
-      detectVideoFlash(videoPath)
+      detectAudioBeep(audioPath, searchMin, searchMax),
+      detectVideoFlash(videoPath, searchMin, searchMax)
     ])
 
     // Validate that we found both signals
@@ -101,29 +113,29 @@ export async function calculateVideoOffset(
 }
 
 /**
- * Detect 1000Hz beep in audio file using FFmpeg spectral analysis
+ * Detect 1000Hz beep in audio file using FFmpeg silence analysis.
+ * Only considers timestamps within [searchMin, searchMax] to avoid false positives.
  */
-async function detectAudioBeep(audioPath: string): Promise<number> {
-  console.log(`🔊 Detecting ${EXPECTED_FREQUENCY}Hz beep in first ${ANALYSIS_WINDOW}s of audio...`)
+async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: number): Promise<number> {
+  console.log(`🔊 Detecting ${EXPECTED_FREQUENCY}Hz beep in window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s]...`)
+
+  // Scan slightly beyond the window to capture events right at the boundary.
+  const scanUntil = searchMax + 1
 
   try {
     // Method 1: Use silence detection to find audio activity
-    const silenceCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-35dB:duration=0.01" -f null -t ${ANALYSIS_WINDOW} - 2>&1 | grep "silence_"`
+    const silenceCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
 
     try {
       const { stdout: silenceOutput } = await execAsync(silenceCmd)
       const lines = silenceOutput.split("\n").filter((line) => line.includes("silence_"))
 
-      console.log(`   Silence detection found ${lines.length} events in first ${ANALYSIS_WINDOW}s`)
-
-      // Look for the first significant audio activity (silence_end)
       for (const line of lines) {
         const endMatch = line.match(/silence_end: ([0-9.]+)/)
         if (endMatch) {
           const time = Number.parseFloat(endMatch[1])
-          if (time > 0.01 && time < ANALYSIS_WINDOW) {
-            // Avoid very early noise
-            console.log(`   Found audio activity (likely bip) at ${time.toFixed(3)}s`)
+          if (time >= searchMin && time <= searchMax) {
+            console.log(`   Found audio activity (likely beep) at ${time.toFixed(3)}s`)
             return time
           }
         }
@@ -134,44 +146,29 @@ async function detectAudioBeep(audioPath: string): Promise<number> {
       )
     }
 
-    // Method 2: Use volume analysis to find the first significant audio peak
-    const volumeCmd = `ffmpeg -i "${audioPath}" -af "volumedetect" -f null -t ${ANALYSIS_WINDOW} - 2>&1`
-    const { stdout: volumeOutput } = await execAsync(volumeCmd)
+    // Method 2: More sensitive silence detection
+    const detailedCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-50dB:duration=0.005" -f null -t ${scanUntil} - 2>&1 | grep "silence_end"`
+    try {
+      const { stdout: detailedOutput } = await execAsync(detailedCmd)
+      const detailedLines = detailedOutput.split("\n").filter((line) => line.includes("silence_end"))
 
-    const maxVolumeMatch = volumeOutput.match(/max_volume: (-?[0-9.]+) dB/)
-    if (maxVolumeMatch) {
-      const maxVolume = Number.parseFloat(maxVolumeMatch[1])
-      console.log(`   Audio levels in first ${ANALYSIS_WINDOW}s: max=${maxVolume.toFixed(1)}dB`)
-
-      // If there's significant audio, use a more detailed analysis
-      if (maxVolume > -60) {
-        // Use a more sensitive silence detection
-        const detailedCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-50dB:duration=0.005" -f null -t ${ANALYSIS_WINDOW} - 2>&1 | grep "silence_end"`
-        try {
-          const { stdout: detailedOutput } = await execAsync(detailedCmd)
-          const detailedLines = detailedOutput
-            .split("\n")
-            .filter((line) => line.includes("silence_end"))
-
-          for (const line of detailedLines) {
-            const match = line.match(/silence_end: ([0-9.]+)/)
-            if (match) {
-              const time = Number.parseFloat(match[1])
-              if (time > 0.01 && time < ANALYSIS_WINDOW) {
-                console.log(`   Found audio activity with detailed analysis at ${time.toFixed(3)}s`)
-                return time
-              }
-            }
+      for (const line of detailedLines) {
+        const match = line.match(/silence_end: ([0-9.]+)/)
+        if (match) {
+          const time = Number.parseFloat(match[1])
+          if (time >= searchMin && time <= searchMax) {
+            console.log(`   Found audio activity with detailed analysis at ${time.toFixed(3)}s`)
+            return time
           }
-        } catch (e) {
-          console.log(
-            `   Detailed analysis failed: ${e instanceof Error ? e.message : "Unknown error"}`
-          )
         }
       }
+    } catch (e) {
+      console.log(
+        `   Detailed analysis failed: ${e instanceof Error ? e.message : "Unknown error"}`
+      )
     }
 
-    console.log(`   No sync bip detected in first ${ANALYSIS_WINDOW}s`)
+    console.log(`   No beep detected in window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s]`)
     return 0
   } catch (error) {
     console.warn(`⚠️ Audio analysis failed: ${error}`)
@@ -180,15 +177,17 @@ async function detectAudioBeep(audioPath: string): Promise<number> {
 }
 
 /**
- * Detect green flash in video file using color analysis
- * Much more reliable than scene detection for the specific green flash
+ * Detect green flash in video file using color analysis.
+ * Only considers timestamps within [searchMin, searchMax] to avoid false positives.
  */
-async function detectVideoFlash(videoPath: string): Promise<number> {
-  console.log(`💚 Detecting green flash using color analysis (first ${ANALYSIS_WINDOW}s)...`)
+async function detectVideoFlash(videoPath: string, searchMin: number, searchMax: number): Promise<number> {
+  console.log(`💚 Detecting green flash in window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s]...`)
+
+  const scanUntil = searchMax + 1
 
   try {
-    // Use scene detection but filter by color characteristics
-    const sceneColorCmd = `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.02)',showinfo" -vsync 0 -f null -t ${ANALYSIS_WINDOW} - 2>&1 | grep -E "(pts_time|mean:)"`
+    // Primary: scene detection filtered by green YUV color characteristics
+    const sceneColorCmd = `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.02)',showinfo" -vsync 0 -f null -t ${scanUntil} - 2>&1 | grep -E "(pts_time|mean:)"`
 
     try {
       const { stdout: sceneColorOutput } = await execAsync(sceneColorCmd)
@@ -207,19 +206,13 @@ async function detectVideoFlash(videoPath: string): Promise<number> {
         if (meanMatch) {
           currentMean = meanMatch[1]
 
-          // Parse YUV values: mean:[Y U V]
-          const values = currentMean
-            .trim()
-            .split(/\s+/)
-            .map((v) => Number.parseFloat(v))
+          const values = currentMean.trim().split(/\s+/).map((v) => Number.parseFloat(v))
           if (values.length >= 3) {
             const [Y, U, V] = values
 
-            // Check if this looks like a green flash:
-            // Y (luminance) should be lower than normal (~140-150 vs ~220)
-            // U (red chrominance) should be lower than normal (~63 vs ~128)
-            // V (blue chrominance) should be much lower than normal (~46 vs ~128)
-            if (Y < 160 && U < 80 && V < 60 && currentTime > 1.0 && currentTime < ANALYSIS_WINDOW) {
+            // Green flash (#00FF00) in YUV: Y ≈ 149, U ≈ 43, V ≈ 21.
+            // Only accept within the caller-supplied window.
+            if (Y < 160 && U < 80 && V < 60 && currentTime >= searchMin && currentTime <= searchMax) {
               console.log(`   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`)
               console.log(`   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`)
               return currentTime
@@ -231,14 +224,12 @@ async function detectVideoFlash(videoPath: string): Promise<number> {
       console.log(`   Color analysis failed: ${e instanceof Error ? e.message : "Unknown error"}`)
     }
 
-    // Fallback: Use traditional scene detection if color analysis fails
+    // Fallback: largest scene change within the window
     try {
-      const sceneCmd = `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.05)',showinfo" -f null -t ${ANALYSIS_WINDOW} - 2>&1 | grep "pts_time"`
+      const sceneCmd = `ffmpeg -i "${videoPath}" -vf "select='gt(scene,0.05)',showinfo" -f null -t ${scanUntil} - 2>&1 | grep "pts_time"`
 
       const { stdout: sceneResult } = await execAsync(sceneCmd)
       const lines = sceneResult.split("\n").filter((line) => line.includes("pts_time"))
-
-      console.log(`   Fallback: Found ${lines.length} scene changes in first ${ANALYSIS_WINDOW}s`)
 
       let bestFlashTime = 0
       let bestSceneValue = 0
@@ -251,8 +242,7 @@ async function detectVideoFlash(videoPath: string): Promise<number> {
           const time = Number.parseFloat(timeMatch[1])
           const sceneValue = Number.parseFloat(sceneMatch[1])
 
-          // Look for significant changes after 0.5s
-          if (time > 0.5 && time < ANALYSIS_WINDOW && sceneValue > bestSceneValue) {
+          if (time >= searchMin && time <= searchMax && sceneValue > bestSceneValue) {
             bestFlashTime = time
             bestSceneValue = sceneValue
           }
@@ -271,7 +261,7 @@ async function detectVideoFlash(videoPath: string): Promise<number> {
       )
     }
 
-    console.log(`   No green flash detected in first ${ANALYSIS_WINDOW}s`)
+    console.log(`   No green flash detected in window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s]`)
     return 0
   } catch (error) {
     console.warn(`⚠️ Video analysis failed: ${error}`)
@@ -290,7 +280,7 @@ async function testWithSampleFiles(): Promise<SyncOffset> {
   const videoPath =
     "/Users/philippedrion/OutOfIcloud/meeting-baas/meeting_bot/recording_server/recordings/test/output.mp4"
 
-  return calculateVideoOffset(audioPath, videoPath)
+  return calculateVideoOffset(audioPath, videoPath, 4.5)
 }
 
 /**
