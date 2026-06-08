@@ -113,6 +113,7 @@ export class ScreenRecorder extends EventEmitter {
   private filesUploaded = false
   private recordingStartTime = 0
   private meetingStartTime = 0
+  private syncSignalTimestamp = 0 // wall-clock ms when generateSyncSignal was actually called
   private gracePeriodActive = false
   private rawAudioPath = ""
   private soundMonitorRemainder: Buffer = Buffer.alloc(0)
@@ -180,6 +181,9 @@ export class ScreenRecorder extends EventEmitter {
         console.warn("[ScreenRecorder] Page closed before sync signal — aborting start")
         return
       }
+      // Stamp the exact wall-clock time before emitting the signal so post-processing
+      // knows precisely where to look in the raw recordings — no heuristic needed.
+      this.syncSignalTimestamp = Date.now()
       await generateSyncSignal(page, {
         duration: 800, // Much longer signal for reliable detection
         frequency: 1000, // Keep 1000Hz for consistency
@@ -1248,9 +1252,16 @@ export class ScreenRecorder extends EventEmitter {
       console.warn("⚠️ Raw audio file not found:", rawAudioPath)
     }
 
-    // 1. Calculate sync offset (using your existing calculation)
-    const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath)
-    console.log(`🎯 Calculated sync offset: ${syncResult.offsetSeconds.toFixed(3)}s`)
+    // 1. Calculate A/V stream offset using the exact timestamp of the sync signal.
+    //    syncSignalTimestamp is set in startRecording() just before generateSyncSignal fires,
+    //    so this is exact — no guesswork about when it happened.
+    const expectedSyncSec = this.syncSignalTimestamp > 0
+      ? (this.syncSignalTimestamp - this.recordingStartTime) / 1000
+      : FLASH_SCREEN_SLEEP_TIME / 1000 // fallback: should never happen in normal operation
+    console.log(`🎯 Sync signal expected at ${expectedSyncSec.toFixed(3)}s into recording`)
+
+    const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath, expectedSyncSec)
+    console.log(`🎯 Calculated A/V stream offset: ${syncResult.offsetSeconds.toFixed(3)}s`)
     const hasMeetingStartTime = this.meetingStartTime > 0
 
     // 2. Check if meetingStartTime is properly set - if not, bot was not accepted
@@ -1276,20 +1287,25 @@ export class ScreenRecorder extends EventEmitter {
       }
     }
 
-    // 3. Calculate final trim points using meeting timing
-    const calcOffsetVideo =
-      syncResult.videoTimestamp +
-      (this.meetingStartTime - this.recordingStartTime - FLASH_SCREEN_SLEEP_TIME) / 1000
+    // 3. Calculate where in the raw recording the meeting content starts.
+    //    This is purely timestamp arithmetic — no heuristic needed.
+    //    For authenticated bots, meetingStartTime can be < recordingStartTime (the bot
+    //    joins before FFmpeg finishes initialising); clamp to 0 in that case.
+    const rawCalcOffsetVideo = (this.meetingStartTime - this.recordingStartTime) / 1000
+    const calcOffsetVideo = Math.max(0, rawCalcOffsetVideo)
 
     console.log("📊 Debug values:")
     console.log(`   syncResult.videoTimestamp: ${syncResult.videoTimestamp}s`)
     console.log(`   syncResult.audioTimestamp: ${syncResult.audioTimestamp}s`)
+    console.log(`   expectedSyncSec: ${expectedSyncSec.toFixed(3)}s`)
     console.log(`   meetingStartTime: ${this.meetingStartTime}`)
     console.log(`   recordingStartTime: ${this.recordingStartTime}`)
-    console.log(`   FLASH_SCREEN_SLEEP_TIME: ${FLASH_SCREEN_SLEEP_TIME}`)
-    console.log(
-      `   Time diff: ${(this.meetingStartTime - this.recordingStartTime - FLASH_SCREEN_SLEEP_TIME) / 1000}s`
-    )
+    console.log(`   calcOffsetVideo (raw): ${rawCalcOffsetVideo.toFixed(3)}s → clamped: ${calcOffsetVideo.toFixed(3)}s`)
+    if (rawCalcOffsetVideo < 0) {
+      console.warn(
+        `⚠️ meetingStartTime preceded recordingStartTime by ${(-rawCalcOffsetVideo).toFixed(3)}s (authenticated bot fast-join). Trimming from t=0.`
+      )
+    }
 
     // 4. Calculate audio padding needed (can be negative for trimming)
     const audioPadding = syncResult.videoTimestamp - syncResult.audioTimestamp
