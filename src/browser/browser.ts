@@ -4,16 +4,6 @@ import { GLOBAL } from "../singleton"
 import { formatError } from "../utils/Logger"
 import { getExitGeo } from "../proxy/toggle-proxy"
 
-// Map the exit IP's country (from the residential-proxy probe) to a browser
-// locale, so locale/Accept-Language match the proxied egress geo instead of a
-// hardcoded en-US. Timezone comes straight from the probe. Unmapped → en-US.
-const COUNTRY_LOCALE: Record<string, string> = {
-  US: "en-US", GB: "en-GB", IE: "en-IE", CA: "en-CA", AU: "en-AU",
-  FR: "fr-FR", DE: "de-DE", ES: "es-ES", IT: "it-IT", NL: "nl-NL",
-  PL: "pl-PL", PT: "pt-PT", BR: "pt-BR", SE: "sv-SE", NO: "nb-NO",
-  DK: "da-DK", FI: "fi-FI", BE: "fr-BE", CH: "de-CH", AT: "de-AT",
-}
-
 export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
   // Defaults to 720p if RESOLUTION is not set or invalid
@@ -24,15 +14,13 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   const windowWidth = width
   const windowHeight = resolution === "1080" ? 1220 : 860
 
-  // Align locale + timezone with the residential exit IP's geo (set by the
-  // proxy probe). Falls back to en-US / browser-default tz when unknown.
-  const geo = getExitGeo()
-  const locale = COUNTRY_LOCALE[geo?.country ?? ""] ?? "en-US"
-  const lang = locale.split("-")[0]
-  const timezoneId = geo?.timezone ?? undefined
-  if (geo?.country || geo?.timezone) {
-    console.log(`[Browser] Geo from exit IP: country=${geo?.country ?? "?"} tz=${geo?.timezone ?? "?"} → locale=${locale}`)
-  }
+  // Align ONLY the timezone with the residential exit IP's geo. Locale and
+  // Accept-Language stay en-US on purpose: the Meet/Teams join + UI-cleaning
+  // logic matches English UI strings ("Ask to join", "Continue without audio",
+  // "Turn off camera", …), so a non-English UI would break those selectors. A
+  // UTC clock on a non-UTC egress IP is the stronger bot tell anyway.
+  const timezoneId = getExitGeo()?.timezone ?? undefined
+  if (timezoneId) console.log(`[Browser] Aligning timezone with exit IP: ${timezoneId}`)
 
   const sharedArgs = [
     // Window size and position - must match Xvfb display exactly
@@ -42,8 +30,8 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
     // Security configurations
     "--no-sandbox",
     "--disable-setuid-sandbox",
-    `--lang=${locale}`, // align UI language with exit-IP geo
-    `--accept-lang=${locale},${lang}`, // align Accept-Language with exit-IP geo
+    "--lang=en-US", // English UI — the bot matches English selectors (do not localize)
+    "--accept-lang=en-US,en",
 
     // ========================================
     // AUDIO CONFIGURATION FOR PULSEAUDIO
@@ -122,7 +110,7 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         userDataDir: "",
         headless: false,
         viewport: { width, height },
-        locale,
+        locale: "en-US",
         ...(timezoneId ? { timezoneId } : {}),
         humanize: true,
         ...(proxyUrl ? { proxy: proxyUrl } : {}),
@@ -161,7 +149,7 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
       headless: false,
       viewport: { width, height },
       executablePath: chromePath,
-      locale, // align with exit-IP geo
+      locale: "en-US", // English UI — the bot matches English selectors (do not localize)
       ...(timezoneId ? { timezoneId } : {}),
       args: sharedArgs,
       permissions: ["microphone", "camera"],
