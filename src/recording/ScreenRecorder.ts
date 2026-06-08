@@ -1385,9 +1385,6 @@ export class ScreenRecorder extends EventEmitter {
     try {
       await this.extractAudioFromVideo(this.outputPath, this.audioOutputPath)
       console.log(`✅ Audio extracted from final video: ${this.audioOutputPath}`)
-
-      // 9. Create audio chunks from the extracted audio
-      await this.createAudioChunks(this.audioOutputPath)
     } catch (error) {
       console.warn(`⚠️ Audio extraction failed (likely due to bot removal): ${error}`)
       if (GLOBAL.get().recording_mode === "audio_only") {
@@ -1414,6 +1411,17 @@ export class ScreenRecorder extends EventEmitter {
       console.warn("⚠️ Continuing without audio extraction to prevent bot hang (video mode)")
       // Don't throw - the video mp4 is still deliverable on its own in
       // speaker_view / gallery_view modes
+    }
+
+    // 9. Create audio chunks from the extracted audio.
+    // BEST-EFFORT: chunks are a transcription aid, NOT a deliverable. A failure
+    // here (e.g. an ffprobe getDuration timeout on a large file) must never
+    // abort the finalize or block the final output upload — the captured
+    // recording is already on disk and is what matters. Swallow and move on.
+    try {
+      await this.createAudioChunks(this.audioOutputPath)
+    } catch (error) {
+      console.warn(`⚠️ Audio chunk creation failed (non-fatal, skipping chunks): ${formatError(error)}`)
     }
 
     // 10. Cleanup temporary files
@@ -1952,8 +1960,24 @@ file '${absoluteInputPath}'`
       fileSizeMB = (fileSizeBytes / (1024 * 1024)).toFixed(2)
     }
 
-    // Get audio duration
-    const actualDuration = await this.getDuration(audioPath)
+    // Get audio duration. Chunking is best-effort, so a duration-probe
+    // failure/timeout here skips chunk creation rather than throwing — it must
+    // not crash finalize or block the final output upload.
+    let actualDuration: number
+    try {
+      actualDuration = await this.getDuration(audioPath)
+    } catch (error) {
+      console.warn(
+        `⚠️ Skipping audio chunk creation — could not probe duration of ${audioPath}: ${formatError(error)}`
+      )
+      return
+    }
+    if (!Number.isFinite(actualDuration) || actualDuration <= 0) {
+      console.warn(
+        `⚠️ Skipping audio chunk creation — invalid probed duration (${actualDuration}) for ${audioPath}`
+      )
+      return
+    }
     const botUuid = GLOBAL.get().bot_uuid
 
     // Add 1 second margin to avoid floating-point precision issues in duration reporting
