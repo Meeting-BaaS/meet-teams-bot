@@ -77,9 +77,11 @@ export class PathManager {
     }
   }
 
-  // Write to EFS if upload to S3 fails
-  public getEfsPath(): string {
-    return path.join(EFS_MOUNT_POINT, envVars.ENVIRON, "s3_upload_fails", this.botUuid)
+  // Bucket-segmented EFS fallback path: /mnt/efs/{env}/s3_upload_fails/{bucket}/{uuid}.
+  // Self-describing so the reconciliation job can push the file back to the exact
+  // bucket+key with no DB lookup. Used by per-file upload fallback.
+  public getEfsPathForBucket(bucket: string): string {
+    return path.join(EFS_MOUNT_POINT, envVars.ENVIRON, "s3_upload_fails", bucket, this.botUuid)
   }
 
   public getOutputPath(): string {
