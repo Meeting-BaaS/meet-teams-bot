@@ -47,6 +47,15 @@ let server: Server | null = null
 // window. setDirectMode() flips it off post-admission.
 let useUpstream = true
 let exitIp: string | null = null
+// Country code + IANA timezone of the current exit IP (set by logExitIp), so the
+// browser can align its locale/timezone with the proxied egress geo instead of a
+// hardcoded en-US/UTC. Null until the exit-IP probe runs.
+let exitGeo: { country: string | null; timezone: string | null } | null = null
+
+/** Country code + IANA timezone of the current exit IP, or null until probed. */
+export function getExitGeo(): { country: string | null; timezone: string | null } | null {
+  return exitGeo
+}
 
 // Set of connectionIds that were routed through the residential upstream.
 // Used to filter stats so only Decodo-billed traffic is counted.
@@ -113,6 +122,7 @@ export async function startToggleProxy(sessionId: string, retryCount = 0): Promi
   stats.connectionCount = 0
   proxiedConnectionIds.clear()
   exitIp = null
+  exitGeo = null
 
   try {
     server = new Server({
@@ -186,7 +196,7 @@ async function logExitIp(upstreamProxyUrl: string): Promise<boolean> {
     const res = await axios.get<{
       proxy?: { ip?: string }
       country?: { code?: string; name?: string }
-      city?: { name?: string }
+      city?: { name?: string; time_zone?: string }
       isp?: { isp?: string; asn?: number }
     }>("https://ip.decodo.com/json", {
       httpsAgent: new HttpsProxyAgent(upstreamProxyUrl),
@@ -196,6 +206,7 @@ async function logExitIp(upstreamProxyUrl: string): Promise<boolean> {
     const d = res.data
     const ip = d.proxy?.ip ?? "unknown"
     exitIp = ip
+    exitGeo = { country: d.country?.code ?? null, timezone: d.city?.time_zone ?? null }
     const geo = `${d.country?.code ?? "?"}/${d.city?.name ?? "?"}`
     const isp = `${d.isp?.isp ?? "?"} (AS${d.isp?.asn ?? "?"})`
     console.log(`[ToggleProxy] 🌍 Exit IP: ${ip} | ${geo} | ${isp}`)

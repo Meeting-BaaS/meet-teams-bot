@@ -2,6 +2,7 @@ import { type BrowserContext, chromium } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { formatError } from "../utils/Logger"
+import { getExitGeo } from "../proxy/toggle-proxy"
 
 export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
@@ -13,6 +14,14 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   const windowWidth = width
   const windowHeight = resolution === "1080" ? 1220 : 860
 
+  // Align ONLY the timezone with the residential exit IP's geo. Locale and
+  // Accept-Language stay en-US on purpose: the Meet/Teams join + UI-cleaning
+  // logic matches English UI strings ("Ask to join", "Continue without audio",
+  // "Turn off camera", …), so a non-English UI would break those selectors. A
+  // UTC clock on a non-UTC egress IP is the stronger bot tell anyway.
+  const timezoneId = getExitGeo()?.timezone ?? undefined
+  if (timezoneId) console.log(`[Browser] Aligning timezone with exit IP: ${timezoneId}`)
+
   const sharedArgs = [
     // Window size and position - must match Xvfb display exactly
     `--window-size=${windowWidth},${windowHeight}`,
@@ -21,8 +30,8 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
     // Security configurations
     "--no-sandbox",
     "--disable-setuid-sandbox",
-    "--lang=en-US", // Force English language with region code
-    "--accept-lang=en-US,en", // Accept English for HTTP requests
+    "--lang=en-US", // English UI — the bot matches English selectors (do not localize)
+    "--accept-lang=en-US,en",
 
     // ========================================
     // AUDIO CONFIGURATION FOR PULSEAUDIO
@@ -102,6 +111,7 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
         headless: false,
         viewport: { width, height },
         locale: "en-US",
+        ...(timezoneId ? { timezoneId } : {}),
         humanize: true,
         ...(proxyUrl ? { proxy: proxyUrl } : {}),
         args: [
@@ -139,7 +149,8 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
       headless: false,
       viewport: { width, height },
       executablePath: chromePath,
-      locale: "en-US", // Set locale for Playwright context
+      locale: "en-US", // English UI — the bot matches English selectors (do not localize)
+      ...(timezoneId ? { timezoneId } : {}),
       args: sharedArgs,
       permissions: ["microphone", "camera"],
       ignoreHTTPSErrors: true,
