@@ -86,39 +86,36 @@ export class InCallState extends BaseState {
       throw new Error("Playwright page not initialized")
     }
 
-    try {
-      console.log("Setting up browser components with integrated HTML cleanup...")
+    console.log("Setting up browser components with integrated HTML cleanup...")
 
-      // fix: Set meeting start time BEFORE starting speakers observation
-      // This prevents race condition where speakers are detected before startTime is set
-      const startTime = Date.now()
-      this.context.startTime = startTime
-      ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
-      console.log(`Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`)
+    // Essential + synchronous: set the meeting start time BEFORE speakers observation
+    // starts (prevents a race where speakers are detected before startTime is set).
+    const startTime = Date.now()
+    this.context.startTime = startTime
+    ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
+    console.log(`Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`)
 
-      // Start HTML cleanup first to clean the interface
-      await this.startHtmlCleaning()
-    } catch (error) {
-      console.error(
-        "Error in setupBrowserComponents:",
-        formatError(error, {
-          hasPlaywrightPage: !!this.context.playwrightPage,
-          recordingMode: GLOBAL.get().recording_mode,
-          meetingPlatform: GLOBAL.get().meeting_platform,
-          botName: GLOBAL.get().bot_name
-        })
+    // HTML cleanup (cosmetic) and speakers observation (diarization — independent of
+    // the recording) are NON-ESSENTIAL to capturing audio/video, so run them OFF the
+    // setup critical path: never await them, and never let them fail or hang setup.
+    //
+    // Previously startHtmlCleaning() was awaited and re-threw (fatal), and
+    // startSpeakersObservation() was awaited. A broken/unresponsive meeting page
+    // (e.g. a Teams Trusted-Types / ChunkLoader crash that hangs page.evaluate) would
+    // then either abort the recording or trip SETUP_TIMEOUT, making the bot exit ~30s
+    // after joining even though the recording was fine. Kick them off non-blocking and
+    // non-fatal so the bot still transitions to Recording and RecordingState's
+    // leave-conditions (silence/no-one/etc.) decide when to leave. (chat + audio
+    // verification below are already fire-and-forget for the same reason.)
+    void this.startHtmlCleaning()
+      .catch((error) =>
+        console.error("HTML cleanup failed (non-fatal, continuing):", formatError(error))
       )
-      throw new Error(`Browser component setup failed: ${error as Error}`)
-    }
-
-    // Start speakers observation in all cases
-    // Speakers observation is independent of video recording
-    try {
-      await this.startSpeakersObservation()
-    } catch (error) {
-      console.error("Failed to start speakers observation:", formatError(error))
-      // Continue even if speakers observation fails
-    }
+      .then(() =>
+        this.startSpeakersObservation().catch((error) =>
+          console.error("Speakers observation failed (non-fatal, continuing):", formatError(error))
+        )
+      )
 
     // Start chat observation + entry message (non-critical, non-blocking)
     // Chat panel opening on Teams can take up to 25s of retries — must not block SETUP_TIMEOUT.
