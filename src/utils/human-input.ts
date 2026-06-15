@@ -28,6 +28,13 @@ const execFileAsync = promisify(execFile)
 // chrome 140). Constant across both resolutions.
 const CHROME_TOP_OFFSET = 140
 
+// On a critical click (Join CTA, "Use without an account"), how many times to
+// retry the X11 fast click before resorting to a CDP Playwright click. CDP input
+// is exactly what Meet's reCAPTCHA Enterprise scoring keys on, so we'd rather
+// retry the (correct, X11) dispatch than silently drop to CDP on the highest-
+// value interactions.
+const CRITICAL_X11_RETRIES = 4
+
 const XDOTOOL_ENV = { ...process.env, DISPLAY: envVars.DISPLAY }
 
 function rand(min: number, max: number): number {
@@ -36,6 +43,63 @@ function rand(min: number, max: number): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// ===== Telemetry =====
+// The whole point of this module is to keep input off CDP — Meet scores
+// CDP-dispatched events differently from real X11 input. A Playwright fallback
+// silently defeats that, and previously left no trace. We tally every dispatch
+// so the per-join fallback *rate* is visible in the bot logs (which ship to
+// S3 / the log pipeline): grep `[human-input][fallback]` for per-event detail
+// and `[human-input][summary]` for the one-line-per-join rollup.
+type DispatchKind = "click" | "type" | "key"
+
+const telemetry = {
+  click: { x11: 0, fallback: 0 },
+  type: { x11: 0, fallback: 0 },
+  key: { x11: 0, fallback: 0 },
+  // A *critical* interaction (Join CTA, "Use without an account") that still
+  // ended up on CDP after X11 retries were exhausted. This is the signal that
+  // most directly predicts a flagged join.
+  criticalFallbacks: 0
+}
+
+function recordX11(kind: DispatchKind): void {
+  telemetry[kind].x11++
+}
+
+// Structured, greppable per-event fallback line. Critical fallbacks are logged
+// at error level so they surface above ordinary warn noise.
+function recordFallback(
+  kind: DispatchKind,
+  reason: string,
+  opts: { critical?: boolean; label?: string } = {}
+): void {
+  telemetry[kind].fallback++
+  const label = opts.label ?? "-"
+  const line = `[human-input][fallback] kind=${kind} reason=${reason} label=${label} critical=${!!opts.critical}`
+  if (opts.critical) {
+    telemetry.criticalFallbacks++
+    console.error(line)
+  } else {
+    console.warn(line)
+  }
+}
+
+// Emit once when the humanised join flow completes (see meet onJoinSuccess), so
+// the per-join fallback rate is a single greppable line regardless of log volume.
+export function logHumanInputTelemetrySummary(): void {
+  const tot = (k: DispatchKind) => telemetry[k].x11 + telemetry[k].fallback
+  const total = tot("click") + tot("type") + tot("key")
+  if (total === 0) return // join flow never used humanised input (e.g. SSO bots)
+  const fallbacks = telemetry.click.fallback + telemetry.type.fallback + telemetry.key.fallback
+  const rate = ((fallbacks / total) * 100).toFixed(1)
+  console.log(
+    `[human-input][summary] total=${total} fallbacks=${fallbacks} fallbackRate=${rate}% ` +
+      `criticalFallbacks=${telemetry.criticalFallbacks} ` +
+      `click=${telemetry.click.x11}/${tot("click")} type=${telemetry.type.x11}/${tot("type")} ` +
+      `key=${telemetry.key.x11}/${tot("key")} (x11/total)`
+  )
 }
 
 // xdotool call that returns false on failure (instead of throwing). Each
@@ -261,6 +325,14 @@ export type ClickOptions = {
   // interactions Google scores most. Still gated on elementFromPoint
   // verification, so it never clicks off-target.
   preferMocap?: boolean
+  // Critical interactions (the Join CTA, "Use without an account") are the ones
+  // Meet scores most heavily. On a mocap + fast-click miss we RETRY the X11 fast
+  // click instead of immediately dropping to a CDP Playwright click; CDP is used
+  // only as an absolute last resort (and logged at error level) so the join can
+  // still proceed rather than failing outright.
+  critical?: boolean
+  // Human-readable tag for telemetry attribution (e.g. "join-cta").
+  label?: string
 }
 
 // Fast OS-level (X11) click at the locator's centre: a few quick xdotool moves
@@ -308,16 +380,31 @@ export async function humanClick(locator: Locator, opts: ClickOptions = {}): Pro
   await locator.waitFor({ state: "visible", timeout: 3000 }).catch(() => {})
 
   // Preferred: replay a recorded human trajectory landing on the element.
-  if (await mocapNavigateAndClick(locator, opts)) return
+  if (await mocapNavigateAndClick(locator, opts)) {
+    recordX11("click")
+    return
+  }
 
   // Mocap miss → fast X11 click. Critically NOT a Playwright .click(): we must
   // keep the xdotool (X11) dispatch even without a recorded gesture, because the
   // CDP-vs-X11 input surface is what detection keys on. We only drop the
   // (latency-heavy, ineffective) synthesised trajectory shape, not the dispatch.
-  if (await xdoFastClick(locator)) return
+  // For critical clicks, retry the X11 path a few times rather than conceding to
+  // CDP — a transient xdotool/X11 hiccup shouldn't push the most-scored click
+  // onto the detection-prone path.
+  const fastAttempts = opts.critical ? CRITICAL_X11_RETRIES : 1
+  for (let attempt = 0; attempt < fastAttempts; attempt++) {
+    if (await xdoFastClick(locator)) {
+      recordX11("click")
+      return
+    }
+    if (attempt < fastAttempts - 1) await sleep(rand(120, 280))
+  }
 
-  // Last resort: xdotool unavailable → Playwright (CDP) click so the join still
-  // proceeds, accepting the higher detection risk for this one interaction.
+  // Last resort: xdotool unavailable/failing → Playwright (CDP) click so the join
+  // still proceeds, accepting the higher detection risk for this one interaction.
+  // Recorded loudly (error level for critical) so the fallback is never silent.
+  recordFallback("click", "x11-dispatch-failed", { critical: opts.critical, label: opts.label })
   await locator.click({ timeout: 5000 })
 }
 
@@ -377,6 +464,7 @@ export async function humanType(
       await xdoOk(["key", "--clearmodifiers", "Delete"])
       await sleep(rand(80, 160))
     } else {
+      recordFallback("type", "clear-xdotool-failed", { label: "field-clear" })
       await locator.fill("")
     }
   }
@@ -396,6 +484,7 @@ export async function humanType(
       // partial-input failure means we don't necessarily abandon xdotool for
       // the rest of the session, but for this string we just want to land
       // the value.
+      recordFallback("type", "type-xdotool-failed", { label: "name-entry" })
       const remaining = graphemes.slice(i).join("")
       await locator.page().keyboard.type(remaining, { delay: rand(60, 180) })
       return
@@ -407,18 +496,24 @@ export async function humanType(
       }
     }
   }
+  // Full string typed via xdotool (X11) without falling through.
+  recordX11("type")
 }
 
 // e.g. humanKey("Escape"), humanKey("ctrl+e"), humanKey("Return"). Optional
 // `page` lets us fall back to keyboard.press if the xdotool call fails for
 // this interaction — callers in the Meet pre-join flow should always pass it.
-export async function humanKey(combo: string, page?: Page): Promise<void> {
-  if (await xdoOk(["key", "--clearmodifiers", combo])) return
+export async function humanKey(combo: string, page?: Page, label?: string): Promise<void> {
+  if (await xdoOk(["key", "--clearmodifiers", combo])) {
+    recordX11("key")
+    return
+  }
   if (page) {
+    recordFallback("key", "xdotool-failed", { label: label ?? combo })
     await page.keyboard.press(toPlaywrightKey(combo))
   } else {
-    console.warn(
-      `[human-input] humanKey(${combo}): xdotool failed and no page provided for fallback — keypress dropped.`
-    )
+    // No page to fall back through — the keypress is genuinely lost. Loudest
+    // case for a key dispatch, so record it (the summary will reflect it).
+    recordFallback("key", "xdotool-failed-no-page-keypress-dropped", { label: label ?? combo })
   }
 }

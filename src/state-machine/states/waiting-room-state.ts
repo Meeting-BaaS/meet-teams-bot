@@ -1,4 +1,5 @@
 import { dehumanize } from "../../utils/dehumanize"
+import { logHumanInputTelemetrySummary } from "../../utils/human-input"
 import { notifyJoinReady } from "../../branding"
 import { Events } from "../../events"
 import { setDirectMode } from "../../proxy/toggle-proxy"
@@ -273,6 +274,9 @@ export class WaitingRoomState extends BaseState {
             console.log("Join successful notification received")
             // Disable humanize immediately (Meet only — Teams is never humanized).
             if (this.context.playwrightPage && GLOBAL.get().meeting_platform === "meet") {
+              // One greppable line summarising how the humanised join dispatched
+              // (X11 vs CDP fallback rate) before we tear the humanised path down.
+              logHumanInputTelemetrySummary()
               dehumanize(this.context.playwrightPage)
             }
             setDirectMode()

@@ -8,6 +8,7 @@ import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
 import {
+  type ClickOptions,
   humanClick,
   humanKey,
   humanType,
@@ -248,7 +249,10 @@ export class MeetProvider implements MeetingProviderInterface {
       if (!GLOBAL.get().meet_sso_config) {
         console.log(
           "useWithoutAccountClicked:",
-          await clickWithInnerText(page, "span", ["Use without an account"], 2)
+          await clickWithInnerText(page, "span", ["Use without an account"], 2, true, {
+            critical: true,
+            label: "use-without-account"
+          })
         )
 
         // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
@@ -816,7 +820,8 @@ async function clickWithInnerText(
   selector: string,
   texts: string[],
   maxAttempts: number,
-  shouldClick = true
+  shouldClick = true,
+  clickOpts: ClickOptions = {}
 ): Promise<boolean> {
   console.log(`Attempting to find ${selector} with texts: ${texts.join(", ")}`)
 
@@ -861,7 +866,7 @@ async function clickWithInnerText(
           if (count > 0) {
             console.log(`  - Found element with text "${text}" using selector "${sel}"`)
             if (shouldClick) {
-              await humanClick(element.first())
+              await humanClick(element.first(), clickOpts)
               console.log(`  - Clicked on element with text "${text}"`)
             }
             return true
@@ -939,8 +944,9 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
 
         if (isVisible && isEnabled) {
           // High-value: the Join click is the most scrutinised interaction, so
-          // bias hard toward landing a real mocap gesture here.
-          await humanClick(locator, { preferMocap: true })
+          // bias hard toward landing a real mocap gesture here, and never silently
+          // concede it to a CDP click — retry the X11 path instead (critical).
+          await humanClick(locator, { preferMocap: true, critical: true, label: "join-cta" })
           console.log(`Successfully clicked join button using selector: ${selector}`)
           return true
         }
