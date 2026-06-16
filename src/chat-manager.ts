@@ -31,8 +31,17 @@ interface CKEditor {
 export class ChatManager {
   private static instance: ChatManager | null = null
   private seenMessageIds: Set<string> = new Set()
-  private seenMessageKeys: Set<string> = new Set()
+  /** contentKey (`${sender}|${text}`) -> last-seen epoch ms, for the debounce window below. */
+  private recentContentKeys: Map<string, number> = new Map()
   private chatMessages: ChatMessageData[] = []
+
+  /**
+   * Debounce window for identical (sender, text) messages. Absorbs near-instant duplicate
+   * deliveries (Teams chatServiceBatchEvent re-delivery, Meet messages seen before the
+   * sender's userId is assigned) and the bot's own echo, without permanently suppressing a
+   * participant who legitimately repeats the same text (e.g. sending "pause" twice).
+   */
+  private static readonly CONTENT_DEDUP_WINDOW_MS = 2000
 
   static getInstance(): ChatManager {
     if (!ChatManager.instance) {
@@ -102,13 +111,20 @@ export class ChatManager {
     }
     this.seenMessageIds.add(message.message_id)
 
-    // Deduplicate by sender_name+text (catches bot echoes where platform assigns a different message_id)
+    // Debounce identical (sender, text) within a short window. message_id already catches
+    // exact re-deliveries; this additionally absorbs duplicates that arrive with a *different*
+    // id (Teams batch re-delivery, Meet pre-userId-assignment, the bot's own echo) while still
+    // letting a participant legitimately repeat the same text later (e.g. "pause" twice).
     const contentKey = `${message.sender_name}|${message.text}`
-    if (this.seenMessageKeys.has(contentKey)) {
-      console.log(`[ChatManager] Dedup by content key (message_id=${message.message_id})`)
+    const now = Date.now()
+    const lastSeen = this.recentContentKeys.get(contentKey)
+    if (lastSeen !== undefined && now - lastSeen < ChatManager.CONTENT_DEDUP_WINDOW_MS) {
+      console.log(
+        `[ChatManager] Debounced duplicate within ${ChatManager.CONTENT_DEDUP_WINDOW_MS}ms (message_id=${message.message_id})`
+      )
       return
     }
-    this.seenMessageKeys.add(contentKey)
+    this.recentContentKeys.set(contentKey, now)
 
     // Resolve sender_id via _device_id lookup (Meet only)
     if (message._device_id && message.sender_id === null) {
@@ -139,9 +155,11 @@ export class ChatManager {
       timestamp: new Date().toISOString(),
       message_id: messageId,
     })
-    // Add to seen sets so if the platform echoes it back, we don't duplicate
+    // Seed dedup state so if the platform echoes the bot's own message back, we don't
+    // re-emit it: the random message_id covers same-id echoes, and the content key (with
+    // a fresh timestamp) covers an echo that arrives with a different id within the window.
     this.addSeenMessageId(messageId)
-    this.seenMessageKeys.add(`${botName}|${text}`)
+    this.recentContentKeys.set(`${botName}|${text}`, Date.now())
   }
 
   private async sendViaMeet(page: Page, message: string): Promise<SendBotMessageResult> {
