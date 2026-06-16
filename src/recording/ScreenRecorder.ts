@@ -1627,8 +1627,8 @@ file '${absoluteInputPath}'`
       // so pause trimming proceeds with unsnapped timestamps rather than failing
       // the whole recording during finalization.
       console.warn(
-        `⚠️ getKeyframePositions failed for ${videoPath} (${formatError(error)}). ` +
-          "Continuing without keyframe snapping (non-fatal).",
+        `⚠️ getKeyframePositions failed for ${videoPath}; continuing without keyframe snapping (non-fatal):`,
+        formatError(error),
       )
       return []
     }
@@ -2056,7 +2056,7 @@ file '${absoluteInputPath}'`
       const duration = Number.parseFloat(result.trim())
       if (Number.isFinite(duration) && duration > 0) return duration
     } catch (error) {
-      console.warn(`⚠️ getDuration ffprobe failed for ${filePath}: ${formatError(error)}`)
+      console.warn(`⚠️ getDuration ffprobe failed for ${filePath}:`, formatError(error))
     }
 
     // Non-fatal: ffprobe duration probing is best-effort (originally added only to
