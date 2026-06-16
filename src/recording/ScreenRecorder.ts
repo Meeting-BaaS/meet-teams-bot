@@ -1612,13 +1612,26 @@ file '${absoluteInputPath}'`
       "csv=p=0",
       videoPath
     ]
-    const result = await this.runFFprobe(args)
-    return result
-      .trim()
-      .split("\n")
-      .map((s) => Number.parseFloat(s))
-      .filter((n) => Number.isFinite(n))
-      .sort((a, b) => a - b)
+    try {
+      const result = await this.runFFprobe(args)
+      return result
+        .trim()
+        .split("\n")
+        .map((s) => Number.parseFloat(s))
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b)
+    } catch (error) {
+      // Non-fatal: keyframe probing only refines pause-window cut points. If it
+      // fails (probe timeout / killed process), return no keyframes — the caller
+      // (snapPauseWindowsToKeyframes) already skips snapping on an empty result,
+      // so pause trimming proceeds with unsnapped timestamps rather than failing
+      // the whole recording during finalization.
+      console.warn(
+        `⚠️ getKeyframePositions failed for ${videoPath} (${formatError(error)}). ` +
+          "Continuing without keyframe snapping (non-fatal).",
+      )
+      return []
+    }
   }
 
   /**
@@ -2038,8 +2051,23 @@ file '${absoluteInputPath}'`
     }
 
     const args = ["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath]
-    const result = await this.runFFprobe(args, fileSizeMB)
-    return Number.parseFloat(result.trim())
+    try {
+      const result = await this.runFFprobe(args, fileSizeMB)
+      const duration = Number.parseFloat(result.trim())
+      if (Number.isFinite(duration) && duration > 0) return duration
+    } catch (error) {
+      console.warn(`⚠️ getDuration ffprobe failed for ${filePath}: ${formatError(error)}`)
+    }
+
+    // Non-fatal: ffprobe duration probing is best-effort (originally added only to
+    // chunk long audio for Gladia's max-duration limit). A slow probe on a multi-GB
+    // file must never discard an otherwise-complete recording during finalization.
+    // Fall back to the wall-clock recording span — an UPPER bound on real content,
+    // so any downstream `-t` trim clamps to end-of-file instead of truncating footage.
+    const fallback =
+      this.recordingStartTime > 0 ? (Date.now() - this.recordingStartTime) / 1000 : 24 * 60 * 60
+    console.warn(`⚠️ Using wall-clock duration fallback ${fallback.toFixed(1)}s (non-fatal)`)
+    return fallback
   }
 
   private async cleanupTempFiles(): Promise<void> {
