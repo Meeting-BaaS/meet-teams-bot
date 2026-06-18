@@ -206,6 +206,28 @@ export class RecordingState extends BaseState {
         return { shouldEnd: true, reason: GLOBAL.getEndReason() }
       }
 
+      /**
+       * participant / sound detection (even during grace period)
+       * 
+       * The grace period must suppress EXIT but NOT detection.
+       * If participants are present or sound is heard, record it so the
+       * bot switches to silence / alone-in-meeting monitoring once the
+       * grace period ends.  Otherwise the bot gets stuck in
+       * "waiting for first sound or attendees" for the full
+       * no_one_joined_timeout even though humans were clearly present.
+       */
+      if (!this.hasNoOneJoinedPeriodEnded) {
+        const monitor = SoundLevelMonitor.peekInstance()
+        const currentSoundLevel = monitor?.getCurrentSoundLevel() ?? 0
+        if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+          this.hasNoOneJoinedPeriodEnded = true
+          this.lastSoundActivity = now
+        } else if ((this.context.attendeesCount || 0) > 1) {
+          this.hasNoOneJoinedPeriodEnded = true
+          this.lastSoundActivity = now
+        }
+      }
+
       // During grace period the bot must stay in the meeting unconditionally —
       // even if all participants leave or the platform signals bot removal.
       // Keep lastSoundActivity fresh so the silence clock only starts after
@@ -528,37 +550,32 @@ export class RecordingState extends BaseState {
     shouldEnd: boolean
     reason?: MeetingEndReason
   } {
-    // Never end with NoAttendees during the grace period, and don't start
-    // the no_one_joined timeout countdown until the grace period has finished.
-    if (this.isInGracePeriod(now)) {
-      return { shouldEnd: false }
-    }
-
     const startTime = this.context.startTime
     if (!startTime) {
       return { shouldEnd: false }
     }
 
     // Check for positive attendee signals (only use when true, not when false/0)
-    // This helps when users are present but haven't spoken yet
     const attendeesCount = this.context.attendeesCount || 0
 
-    // If grace period has already ended (by sound or attendees), return early
-    if (this.hasNoOneJoinedPeriodEnded) {
-      return { shouldEnd: false }
-    }
-
-    // If attendees detected via speaker observer (positive signal), end grace period
-    // Use > 1 because the bot itself is counted as an attendee.
-    // This way, if detection works, we use it; if it doesn't, we fall back to sound
-    if (attendeesCount > 1) {
-      // Reset silence timer to start monitoring from now
-      // This is important to ensure that the silence timeout is not triggered too early
+    // ── detection always active (even during grace period) ──
+    if (!this.hasNoOneJoinedPeriodEnded && attendeesCount > 1) {
       this.lastSoundActivity = now
       console.log(
         `[noone-joined] Grace period ended (attendees detected: count=${attendeesCount}, excluding bot), enabling silence timeout checks`
       )
       this.hasNoOneJoinedPeriodEnded = true
+      return { shouldEnd: false }
+    }
+
+    // Never end with NoAttendees during the grace period — exit is suppressed
+    // but detection above has already flipped the flag if needed.
+    if (this.isInGracePeriod(now)) {
+      return { shouldEnd: false }
+    }
+
+    // If grace period has already ended (by sound or attendees), return early
+    if (this.hasNoOneJoinedPeriodEnded) {
       return { shouldEnd: false }
     }
 
