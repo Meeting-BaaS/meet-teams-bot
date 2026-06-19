@@ -1427,6 +1427,38 @@ export class ScreenRecorder extends EventEmitter {
             // speaker_view / gallery_view modes
         }
 
+        // Integrity gate: a bot admitted then removed within seconds can produce
+        // empty audio and a corrupt/near-empty video, while each finalize step above
+        // swallows its own failure ("still deliverable on its own"). Before declaring
+        // success, require the final output to actually contain something — otherwise
+        // report BotRemovedTooEarly so the bot emits recording_failed instead of a
+        // silent-success callback carrying a broken artifact. (audio_only already fails
+        // above on extraction error; this also covers the video modes.)
+        const fileSize = (p: string): number =>
+            fs.existsSync(p) ? fs.statSync(p).size : 0
+        const videoBytes = fileSize(this.outputPath)
+        const audioBytes = fileSize(this.audioOutputPath)
+        // 50 KB is far above a header-only / corrupt stub (the failing bot produced a
+        // ~200-byte mp4) yet well below any real recording — even a few seconds of
+        // speaker-view video exceeds it.
+        const MIN_USABLE_OUTPUT_BYTES = 50 * 1024
+        if (
+            videoBytes < MIN_USABLE_OUTPUT_BYTES &&
+            audioBytes < MIN_USABLE_OUTPUT_BYTES
+        ) {
+            console.warn(
+                `❌ Final recording has no usable content (video=${videoBytes}B, audio=${audioBytes}B) — marking bot-removed-too-early`,
+            )
+            // Preserve any terminal end_reason the state machine already set (e.g. the
+            // botRemoved/botNotAccepted from a post-admission kick) rather than clobber it.
+            if (!GLOBAL.hasError()) {
+                GLOBAL.setError(MeetingEndReason.BotRemovedTooEarly)
+            }
+            throw new Error(
+                `Recording produced no usable content (video=${videoBytes}B, audio=${audioBytes}B)`,
+            )
+        }
+
         // 10. Cleanup temporary files
         await this.cleanupTempFiles([
             rawVideoPath,
