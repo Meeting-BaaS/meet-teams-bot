@@ -87,8 +87,13 @@ describe("assertOnMeetPage", () => {
     })
   })
 
-  describe("when page navigated away and wasInMeeting is false", () => {
-    it("sets BotNotAccepted error and retry flag, then throws", () => {
+  // ── scenarios where retry MUST still happen ────────────────────
+
+  describe("anti-bot page redirect (bot never admitted)", () => {
+    it("still retries — Google Meet shows 'You can't join this video call' then redirects", () => {
+      // The anti-bot page renders on meet.google.com, then Google
+      // redirects to workspace.google.com.  The bot was never admitted
+      // so wasInMeeting stays false → retry.
       const page = createMockPage({ url: "https://workspace.google.com/" })
 
       expect(() => assertOnMeetPage(page, false)).toThrow("Page navigated away from Google Meet")
@@ -98,17 +103,40 @@ describe("assertOnMeetPage", () => {
         expect.stringContaining("Google Meet denied entry")
       )
     })
+  })
 
-    it("defaults wasInMeeting to false when omitted", () => {
+  describe("redirect before admission (bot never reached meeting)", () => {
+    it("still retries — e.g. network issue or Meet redirect before the join loop confirms entry", () => {
+      const page = createMockPage({ url: "https://workspace.google.com/" })
+
+      expect(() => assertOnMeetPage(page, false)).toThrow("Page navigated away from Google Meet")
+      expect(mockGlobal.setShouldRetry).toHaveBeenCalledWith(true)
+      expect(mockGlobal.setError).toHaveBeenCalledWith(
+        MeetingEndReason.BotNotAccepted,
+        expect.stringContaining("Google Meet denied entry")
+      )
+    })
+  })
+
+  describe("early fail-fast denial (line 214 — no second arg)", () => {
+    it("still retries — defaults wasInMeeting to false when argument omitted", () => {
+      // The call at meet.ts line 214 passes no wasInMeeting argument.
+      // Default is false, so retry behaviour is preserved.
       const page = createMockPage({ url: "https://workspace.google.com/" })
 
       expect(() => assertOnMeetPage(page)).toThrow("Page navigated away from Google Meet")
       expect(mockGlobal.setShouldRetry).toHaveBeenCalledWith(true)
+      expect(mockGlobal.setError).toHaveBeenCalledWith(
+        MeetingEndReason.BotNotAccepted,
+        expect.stringContaining("Google Meet denied entry")
+      )
     })
   })
 
-  describe("when page navigated away and wasInMeeting is true", () => {
-    it("sets BotRemoved error (normal end) and does NOT set retry flag", () => {
+  // ── the fix: NO retry when bot was admitted then removed ────────
+
+  describe("redirect after confirmed admission (host removed bot)", () => {
+    it("does NOT retry — wasInMeeting=true → BotRemoved, no setShouldRetry call", () => {
       const page = createMockPage({ url: "https://workspace.google.com/" })
 
       expect(() => assertOnMeetPage(page, true)).toThrow("Page navigated away from Google Meet")
