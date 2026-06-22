@@ -26,17 +26,28 @@ const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before c
 /**
  * Checks that the page is still on meet.google.com.
  * If the page navigated away (e.g. Google redirected to workspace.google.com
- * after showing "You can't join this video call"), sets a retryable error and throws.
+ * after showing "You can't join this video call"), sets an error and throws.
+ *
+ * When wasInMeeting is true the bot had already been confirmed in the call.
+ * A redirect at that point means the host removed the bot — not a transient
+ * denial — so the error is treated as a normal BotRemoved (no retry).
  */
-function assertOnMeetPage(page: Page): void {
+export function assertOnMeetPage(page: Page, wasInMeeting = false): void {
     const url = page.url()
     if (url && !url.includes('meet.google.com')) {
         console.log(`Page is not on Google Meet: ${url}`)
-        GLOBAL.setShouldRetry(true)
-        GLOBAL.setError(
-            MeetingEndReason.BotNotAccepted,
-            `Google Meet denied entry - page redirected to: ${url}`,
-        )
+        if (wasInMeeting) {
+            GLOBAL.setError(
+                MeetingEndReason.BotRemoved,
+                `Bot was in meeting but page redirected away - likely host removed bot: ${url}`,
+            )
+        } else {
+            GLOBAL.setShouldRetry(true)
+            GLOBAL.setError(
+                MeetingEndReason.BotNotAccepted,
+                `Google Meet denied entry - page redirected to: ${url}`,
+            )
+        }
         throw new Error('Page navigated away from Google Meet')
     }
 }
@@ -314,6 +325,7 @@ export class MeetProvider implements MeetingProviderInterface {
             console.log('Waiting to confirm meeting join...')
             let inWaitingRoom = false
             let leftWaitingRoomAt: number | null = null
+            let botWasInMeeting = false
             while (true) {
                 if (cancelCheck()) {
                     // Only set error if not already set by stopMeeting()
@@ -363,6 +375,7 @@ export class MeetProvider implements MeetingProviderInterface {
                 if (gracePeriodExpired) {
                     const inMeeting = await isInMeeting(page)
                     if (inMeeting) {
+                        botWasInMeeting = true
                         console.log(
                             `✅ Successfully confirmed we are in the meeting (grace period: ${!leftWaitingRoomAt ? 'not in waiting room' : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`,
                         )
@@ -376,12 +389,14 @@ export class MeetProvider implements MeetingProviderInterface {
                     }
                 }
 
-                // Check page URL before text-based denial detection — catches redirects
-                assertOnMeetPage(page)
-
+                // Run text-based denial check first so "You've been removed" is
+                // detected before a page redirect preempts it with assertOnMeetPage
                 if (await notAcceptedInMeeting(page)) {
                     throw new Error('Bot not accepted into meeting')
                 }
+
+                // Check page URL — catches redirects after removal
+                assertOnMeetPage(page, botWasInMeeting)
 
                 await sleep(1000)
             }
@@ -413,6 +428,14 @@ export class MeetProvider implements MeetingProviderInterface {
             }
 
             if (!page.isClosed()) {
+                // Fast-path: if the page has navigated away from Meet entirely (e.g.
+                // host removed bot and Google redirected), treat as meeting ended.
+                const url = page.url()
+                if (url && !url.includes('meet.google.com')) {
+                    console.log('End meeting detected through URL redirect:', url)
+                    return true
+                }
+
                 const content = await page.content()
                 const endMessages = [
                     "You've been removed",
