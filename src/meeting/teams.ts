@@ -484,7 +484,12 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
   }
 
-  async findEndMeeting(page: Page): Promise<boolean> {
+  async findEndMeeting(
+    page: Page,
+    _opts?: { ignoreAloneSignals?: boolean }
+  ): Promise<boolean> {
+    // Teams end-detection (login page / freeze / removed) has no "alone" signal,
+    // so _opts.ignoreAloneSignals is not applicable here.
     // Check if we're on a Microsoft login page
     if (await isOnMicrosoftLoginPage(page)) {
       return true

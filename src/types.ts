@@ -21,7 +21,7 @@ export interface MeetingProviderInterface {
     onJoinSuccess: () => void,
     dialogObserver?: import("./services/dialog-observer/simple-dialog-observer").SimpleDialogObserver
   ): Promise<void>
-  findEndMeeting(page: Page): Promise<boolean>
+  findEndMeeting(page: Page, opts?: { ignoreAloneSignals?: boolean }): Promise<boolean>
   parseMeetingUrl(meeting_url: string): Promise<{ meetingId: string; password: string }>
   getMeetingLink(
     meeting_id: string,

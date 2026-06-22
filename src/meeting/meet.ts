@@ -376,7 +376,10 @@ export class MeetProvider implements MeetingProviderInterface {
     }
   }
 
-  async findEndMeeting(page: Page): Promise<boolean> {
+  async findEndMeeting(
+    page: Page,
+    opts?: { ignoreAloneSignals?: boolean }
+  ): Promise<boolean> {
     try {
       try {
         await Promise.race([
@@ -400,12 +403,16 @@ export class MeetProvider implements MeetingProviderInterface {
         }
 
         const content = await page.content()
+        // "No one else" is an alone-signal that legitimately appears while the bot
+        // waits alone during the early grace period. When ignoreAloneSignals is set
+        // (grace-period check) we drop it so only definitive removal/ended screens
+        // — e.g. a host kicking the bot — count as the meeting ending.
         const endMessages = [
           "You've been removed",
           "we encountered a problem joining",
           "The call ended",
           "Return to home",
-          "No one else"
+          ...(opts?.ignoreAloneSignals ? [] : ["No one else"])
         ]
 
         const foundMessage = endMessages.find((msg) => content.includes(msg))
