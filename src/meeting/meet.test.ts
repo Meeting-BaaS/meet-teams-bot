@@ -211,6 +211,38 @@ describe("MeetProvider.findEndMeeting", () => {
     })
   })
 
+  describe("ignoreAloneSignals (grace-period explicit-removal check)", () => {
+    it("still returns true for an explicit removal ('You've been removed')", async () => {
+      const page = createMockPage({
+        url: "https://meet.google.com/abc-defg-hij",
+        content: "<html><body>You've been removed from the meeting</body></html>",
+      })
+
+      const result = await provider.findEndMeeting(page, { ignoreAloneSignals: true })
+      expect(result).toBe(true)
+    })
+
+    it("does NOT exit on the alone-signal ('No one else') when ignoreAloneSignals is set", async () => {
+      const page = createMockPage({
+        url: "https://meet.google.com/abc-defg-hij",
+        content: "<html><body>No one else is here</body></html>",
+      })
+
+      const result = await provider.findEndMeeting(page, { ignoreAloneSignals: true })
+      expect(result).toBe(false)
+    })
+
+    it("exits on 'No one else' normally after grace (no opts)", async () => {
+      const page = createMockPage({
+        url: "https://meet.google.com/abc-defg-hij",
+        content: "<html><body>No one else is here</body></html>",
+      })
+
+      const result = await provider.findEndMeeting(page)
+      expect(result).toBe(true)
+    })
+  })
+
   describe("error handling", () => {
     it("returns false when page.content throws", async () => {
       const page = createMockPage({ url: "https://meet.google.com/abc-defg-hij" })

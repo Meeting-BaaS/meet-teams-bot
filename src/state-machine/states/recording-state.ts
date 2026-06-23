@@ -206,19 +206,47 @@ export class RecordingState extends BaseState {
         return { shouldEnd: true, reason: GLOBAL.getEndReason() }
       }
 
-      // During grace period the bot must stay in the meeting unconditionally —
-      // even if all participants leave or the platform signals bot removal.
-      // Keep lastSoundActivity fresh so the silence clock only starts after
-      // the grace period ends.
+      // During the grace period the bot stays put through "soft" exit signals —
+      // silence and being briefly alone — so it doesn't bail out before the
+      // meeting really gets going. An EXPLICIT removal (the host kicking the bot,
+      // or the call ending) is different: that must end the meeting immediately,
+      // even mid-grace. Keep lastSoundActivity fresh so the silence clock only
+      // starts after the grace period ends.
       if (this.isInGracePeriod(now)) {
         if (!this.gracePeriodStartLogged) {
           const gracePeriodMs = (GLOBAL.get().grace_period ?? 0) * 1000
           console.info(
-            `[Grace-Period] Started — bot will not exit for ${gracePeriodMs / 1000}s. All exit conditions suppressed.`
+            `[Grace-Period] Started — bot will not exit for ${gracePeriodMs / 1000}s (silence/alone suppressed; explicit removal still ends the meeting).`
           )
           this.gracePeriodStartLogged = true
         }
         this.wasInGracePeriod = true
+
+        // ignoreAloneSignals excludes the "alone / no one else" signal so a bot
+        // simply waiting alone during grace doesn't exit — only a real removal does.
+        try {
+          const explicitlyRemoved = await Promise.race([
+            this.checkBotRemoved({ ignoreAloneSignals: true }),
+            new Promise<boolean>((_, reject) =>
+              setTimeout(
+                () => reject(new Error("Bot removed check timeout")),
+                getBotRemovalCheckTimeout()
+              )
+            )
+          ])
+          if (explicitlyRemoved) {
+            console.info(
+              "[Grace-Period] Explicit removal detected — ending meeting despite active grace period"
+            )
+            return this.getBotRemovedReason()
+          }
+        } catch (error) {
+          console.error(
+            "Error checking explicit removal during grace period:",
+            formatError(error)
+          )
+        }
+
         this.lastSoundActivity = now
         return { shouldEnd: false }
       }
@@ -501,14 +529,14 @@ export class RecordingState extends BaseState {
     return now - startTime < gracePeriodSec * 1000
   }
 
-  private async checkBotRemoved(): Promise<boolean> {
+  private async checkBotRemoved(opts?: { ignoreAloneSignals?: boolean }): Promise<boolean> {
     if (!this.context.playwrightPage) {
       console.error("Playwright page not available")
       return true
     }
 
     try {
-      return await this.context.provider.findEndMeeting(this.context.playwrightPage)
+      return await this.context.provider.findEndMeeting(this.context.playwrightPage, opts)
     } catch (error) {
       console.error("Error checking if bot was removed:", formatError(error))
       return false
