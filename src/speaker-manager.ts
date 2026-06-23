@@ -210,9 +210,17 @@ export class SpeakerManager {
     }
     // If speakersCount is neither 0 nor > 0 (impossible), keep existing value
 
+    const ignoredNames = GLOBAL.get().ignored_participant_names ?? []
+    const filteredSpeakersLength =
+      ignoredNames.length > 0
+        ? speakers.filter(
+            (s) => !ignoredNames.some((n) => n.toLowerCase() === s.name.toLowerCase())
+          ).length
+        : speakers.length
+
     const participantState: ParticipantState = {
-      attendeesCount: speakers.length,
-      firstUserJoined: speakers.length > 0,
+      attendeesCount: filteredSpeakersLength,
+      firstUserJoined: filteredSpeakersLength > 0,
       lastSpeakerTime: this.lastSpeakerTime,
       noSpeakerDetectedTime
     }
