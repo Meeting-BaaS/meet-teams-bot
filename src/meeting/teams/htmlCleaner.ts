@@ -227,9 +227,17 @@ export class TeamsHtmlCleaner {
       console.log("[Teams] Executing HTML provider")
       await removeInitialShityHtml()
 
-      // Setup continuous cleanup
+      // Setup continuous cleanup — throttled to avoid MutationObserver feedback loop.
+      // removeShityHtml() mutates the DOM, which triggers more mutations, which calls
+      // removeShityHtml() again. Without throttling this loop fires 1300+ times per session,
+      // hogging the event loop and interfering with chat operations (CKEditor sends, etc.).
+      let throttleTimer: ReturnType<typeof setTimeout> | null = null
       const observer = new MutationObserver(() => {
-        removeShityHtml()
+        if (throttleTimer !== null) return
+        throttleTimer = setTimeout(() => {
+          throttleTimer = null
+          removeShityHtml()
+        }, 500)
       })
 
       if (document.documentElement) {
