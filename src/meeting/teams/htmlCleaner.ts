@@ -229,8 +229,8 @@ export class TeamsHtmlCleaner {
 
       // Batched cleanup: defer to next event loop tick so multiple DOM mutations
       // within the same synchronous batch trigger only one removeShityHtml() call.
-      // Without this the observer fires 1300+ times per session due to its own
-      // DOM mutations creating a feedback loop.
+      // Teams constantly adds/removes nodes (banners, menus, chat panels), and
+      // without batching the observer fires 1300+ times per session.
       let cleanupScheduled = false
       const observer = new MutationObserver(() => {
         if (cleanupScheduled) return
