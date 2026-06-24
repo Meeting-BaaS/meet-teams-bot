@@ -9,6 +9,7 @@ import {
   warmUpCamera
 } from "../../branding"
 import { openBrowser } from "../../browser/browser"
+import { envVars } from "../../config/env-vars"
 import { markProxyDisabledReason, startToggleProxy } from "../../proxy/toggle-proxy"
 import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
@@ -106,7 +107,9 @@ export class InitializationState extends BaseState {
         if (!this.context.proxyUrl && GLOBAL.get().meeting_platform === "meet") {
           const retryCount = GLOBAL.getRetryCount()
           if (retryCount >= MAX_RETRY_COUNT) {
-            markProxyDisabledReason("final_retry")
+            if (envVars.RESIDENTIAL_PROXY_TEMPLATE) {
+              markProxyDisabledReason("final_retry")
+            }
             console.log("[InitializationState] Last retry attempt — running without proxy")
           } else {
             const proxyUrl = await startToggleProxy(GLOBAL.get().bot_uuid, retryCount)

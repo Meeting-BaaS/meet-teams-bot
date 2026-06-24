@@ -77,9 +77,10 @@ export function markProxyDisabledReason(reason: string): void {
 
 export function getProxyTelemetry(): ProxyTelemetry {
   const configured = Boolean(envVars.RESIDENTIAL_PROXY_TEMPLATE)
+  const upstreamEnabled = server !== null && useUpstream
   return {
-    enabled: server !== null,
-    mode: server !== null ? "selective" : "none",
+    enabled: upstreamEnabled,
+    mode: upstreamEnabled ? "selective" : "none",
     provider: configured ? inferProxyProvider() : null,
     type: configured ? "residential" : null,
     exit_ip: server !== null ? exitIp : null,
