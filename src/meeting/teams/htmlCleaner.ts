@@ -235,7 +235,8 @@ export class TeamsHtmlCleaner {
       const observer = new MutationObserver(() => {
         if (cleanupScheduled) return
         cleanupScheduled = true
-        setTimeout(() => {
+        ;(window as any).htmlCleanerCleanupTimeout = setTimeout(() => {
+          ;(window as any).htmlCleanerCleanupTimeout = null
           cleanupScheduled = false
           removeShityHtml()
         }, 0)
@@ -258,6 +259,10 @@ export class TeamsHtmlCleaner {
 
     await this.page
       .evaluate(() => {
+        if ((window as any).htmlCleanerCleanupTimeout) {
+          clearTimeout((window as any).htmlCleanerCleanupTimeout)
+          delete (window as any).htmlCleanerCleanupTimeout
+        }
         if ((window as any).htmlCleanerObserver) {
           ;(window as any).htmlCleanerObserver.disconnect()
           delete (window as any).htmlCleanerObserver
