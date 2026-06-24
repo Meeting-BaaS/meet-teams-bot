@@ -1,3 +1,6 @@
+import { envVars } from "../config/env-vars"
+import type { MeetBotDetectionSignal } from "../meeting/meet/network-interception"
+import { getProxyTelemetry } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
 import { getErrorMessageFromCode, type MeetingEndReason } from "../state-machine/types"
 import axios from "./axios-instance"
@@ -116,6 +119,58 @@ export class Api {
       )
       return false
     }
+  }
+
+  public reportMeetBotDetection(signal: MeetBotDetectionSignal, pageAttempt: number): void {
+    if (GLOBAL.isServerless()) {
+      console.log("[MeetBotDetection] Serverless mode, skipping telemetry")
+      return
+    }
+
+    const params = GLOBAL.get()
+    const proxy = getProxyTelemetry()
+    const runContext = {
+      stack: "cloakbrowser_playwright",
+      humanize: true,
+      resolution: envVars.RESOLUTION,
+      authenticated: Boolean(params.meet_sso_config),
+      meet_sso_session_id_present: Boolean(params.meet_sso_config?.session_id),
+      recording_mode: params.recording_mode,
+      bot_image_loop_mode: params.bot_image_config?.loop_mode ?? null,
+      streaming_input_enabled: Boolean(params.streaming_input),
+      network_interception_setup_failed: GLOBAL.hasNetworkInterceptionSetupFailed(),
+      proxy
+    }
+
+    axios({
+      method: "POST",
+      url: "/bot-process/meet-bot-detection",
+      timeout: 5000,
+      data: {
+        bot_id: params.bot_id,
+        bot_uuid: params.bot_uuid,
+        detected_as_bot: signal.detectedAsBot,
+        decoded: signal.decoded,
+        raw_field: signal.rawField == null ? null : String(signal.rawField),
+        detected_at: new Date(signal.timestamp).toISOString(),
+        source: "create_meeting_device_response",
+        retry_count: params.retry_count ?? 0,
+        page_attempt: pageAttempt,
+        proxy,
+        run_context: runContext
+      }
+    })
+      .then(() => {
+        console.log(
+          `[MeetBotDetection] Stored signal: detected=${signal.detectedAsBot}, decoded=${signal.decoded}, proxy_ip=${proxy.exit_ip ?? "none"}`
+        )
+      })
+      .catch((error) => {
+        console.warn(
+          "[MeetBotDetection] Failed to store signal (continuing):",
+          error instanceof Error ? error.message : error
+        )
+      })
   }
 
   // Handle end meeting with retry logic

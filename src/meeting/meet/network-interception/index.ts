@@ -25,6 +25,7 @@ import type { ChatMessage, NetworkPayload } from "./types"
 // the bot as suspected.
 export type MeetBotDetectionSignal = {
   detectedAsBot: boolean
+  decoded: boolean
   rawField: number | string | null
   timestamp: number
 }
@@ -191,10 +192,11 @@ export async function setupBotDetectionRoute(
       const text = await response.text()
       // Response body is base64-encoded protobuf.
       const bytes = Uint8Array.from(Buffer.from(text, "base64"))
-      const raw = decodeDetectedAsBotField(bytes)
+      const decoded = decodeDetectedAsBotField(bytes)
       onSignal({
-        detectedAsBot: Boolean(raw),
-        rawField: raw,
+        detectedAsBot: decoded.decoded && Boolean(decoded.rawField),
+        decoded: decoded.decoded,
+        rawField: decoded.rawField,
         timestamp: Date.now()
       })
     } catch (err) {
@@ -208,14 +210,17 @@ export async function setupBotDetectionRoute(
   return true
 }
 
-function decodeDetectedAsBotField(bytes: Uint8Array): number | null {
+function decodeDetectedAsBotField(bytes: Uint8Array): {
+  decoded: boolean
+  rawField: number | null
+} {
   try {
     const msg = CreateMeetingDeviceResponseType.decode(bytes) as unknown as {
       detectedAsBot?: number
     }
-    return msg.detectedAsBot ?? null
+    return { decoded: true, rawField: msg.detectedAsBot ?? null }
   } catch {
-    return null
+    return { decoded: false, rawField: null }
   }
 }
 
