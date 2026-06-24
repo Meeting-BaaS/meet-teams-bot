@@ -577,14 +577,15 @@ export class RecordingState extends BaseState {
     }
 
     // If attendees detected via speaker observer (positive signal), end grace period
-    // Use > 1 because the bot itself is counted as an attendee.
+    // attendeesCount is filtered by ignored_participant_names, so > 1 means at least
+    // one real non-ignored participant beyond the bot itself is present.
     // This way, if detection works, we use it; if it doesn't, we fall back to sound
     if (attendeesCount > 1) {
       // Reset silence timer to start monitoring from now
       // This is important to ensure that the silence timeout is not triggered too early
       this.lastSoundActivity = now
       console.log(
-        `[noone-joined] Grace period ended (attendees detected: count=${attendeesCount}, excluding bot), enabling silence timeout checks`
+        `[noone-joined] Grace period ended (attendees detected: count=${attendeesCount}), enabling silence timeout checks`
       )
       this.hasNoOneJoinedPeriodEnded = true
       return { shouldEnd: false }
@@ -701,7 +702,9 @@ export class RecordingState extends BaseState {
 
     // Gate: only activate alone-in-meeting if we've ever seen a real participant.
     // v2 includes the bot itself in the participants list, so > 1 means at least
-    // one real human was detected at some point during the meeting.
+    // one real human or other bot was detected at some point during the meeting.
+    // attendeesCount is filtered by ignored_participant_names, so isAlone can
+    // still be true even when other (ignored) bots remain.
     const participantsEverSeen = GLOBAL.getParticipants().length > 1
     if (!participantsEverSeen) {
       return { shouldEnd: false }
