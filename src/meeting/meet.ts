@@ -162,8 +162,6 @@ export class MeetProvider implements MeetingProviderInterface {
           )
           await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 })
         }
-        // Settled on Meet — wait for the page to fully load.
-        await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {})
       }
 
       // Check for page freeze after goto (same as Teams)
