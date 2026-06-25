@@ -13,7 +13,14 @@ import {
 } from "zod"
 
 export const RecordingModeSchema = zodEnum(["speaker_view", "audio_only", "gallery_view"])
-export const SpeechToTextProviderSchema = zodEnum(["gladia", "assembly", "none"])
+export const SpeechToTextProviderSchema = zodEnum([
+  "gladia",
+  "deepgram",
+  "assemblyai",
+  "speechmatics",
+  "soniox",
+  "none"
+])
 export const MeetingPlatformSchema = zodEnum(["zoom", "meet", "teams"])
 
 /**
