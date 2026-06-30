@@ -125,7 +125,7 @@ export class S3Uploader {
       } else {
         console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
         // Best-effort EFS mirror so a later reconciliation job can push to S3.
-        await this.copyToEFS(filePath, s3Path)
+        await this.copyToEFS(filePath, bucketName, s3Path)
       }
       // Rethrow so callers (ScreenRecorder, cleanup-state, uploadDirectory)
       // can record the artifact as uploaded:false with UPLOAD_FAILED. Without
@@ -238,14 +238,16 @@ export class S3Uploader {
   }
 
   /**
-   * Fallback when a single S3 upload fails. Copies the file under the EFS
-   * s3_upload_fails prefix (see PathManager.getEfsPath) preserving the
-   * intended s3 key so a later reconciliation job can push it to S3.
+   * Fallback when a single S3 upload fails. Copies the file under the
+   * bucket-segmented EFS prefix
+   * (/mnt/efs/<env>/s3_upload_fails/<bucket>/<uuid>/<key>) preserving the
+   * intended bucket + s3 key so the reconciliation job can push it back to the
+   * exact destination with no DB lookup.
    *
    * No-op in local/dev and serverless modes. Errors are logged but swallowed
    * so the caller can keep draining other uploads.
    */
-  private async copyToEFS(filePath: string, s3Path: string): Promise<void> {
+  private async copyToEFS(filePath: string, bucketName: string, s3Path: string): Promise<void> {
     try {
       if (GLOBAL.isServerless()) return
       const env = envVars.ENVIRON
@@ -253,12 +255,12 @@ export class S3Uploader {
         console.warn(`⚠️ EFS not available in ${env} environment - file will remain on local disk`)
         return
       }
-      const efsBase = PathManager.getInstance().getEfsPath()
-      // efsBase already scopes to the bot UUID (/mnt/efs/<env>/s3_upload_fails/<uuid>).
+      const efsBase = PathManager.getInstance().getEfsPathForBucket(bucketName)
+      // efsBase scopes to <bucket>/<uuid> (/mnt/efs/<env>/s3_upload_fails/<bucket>/<uuid>).
       // Callers' s3Path usually starts with `<uuid>/` (keys are built as
       // `${identifier}/<subpath>`), which would produce `<uuid>/<uuid>/…` on join.
-      // Strip the redundant prefix so the on-disk layout matches sqs-consumer's
-      // fallbackToEfs and this module's copyDirToEFS (single-UUID nesting).
+      // Strip the redundant prefix so the on-disk layout is <bucket>/<uuid>/<key>;
+      // the reconciliation job reconstructs the s3 key as <uuid>/<key>.
       const botUuid = PathManager.getInstance().getIdentifier()
       const relativeKey = s3Path.startsWith(`${botUuid}/`)
         ? s3Path.slice(botUuid.length + 1)
@@ -274,14 +276,13 @@ export class S3Uploader {
   }
 
   /**
-   * Recursively copy the bot's entire working directory (typically
-   * PathManager.getBasePath()) to EFS under the same `s3_upload_fails/{uuid}/`
-   * prefix sqs-consumer already uses. Intended as a last-resort safety net
-   * when cleanup-state's outer timeout fires: the pipeline may have finished
-   * building output.mp4 / output.flac but uploads hung past the outer
-   * timeout, which means the per-file copyToEFS in this module never ran for
-   * those files. This dump captures whatever's on disk so a reconciliation
-   * job that already scans s3_upload_fails/ picks it up uniformly.
+   * Last-resort safety net when cleanup-state's outer timeout fires: the
+   * pipeline may have finished building output.mp4 / output.flac but uploads
+   * hung past the timeout, so the per-file copyToEFS never ran. Mirror the known
+   * final outputs to the same bucket-segmented EFS layout copyToEFS uses
+   * (s3_upload_fails/<bucket>/<uuid>/<key>) so the reconciliation job drains them
+   * with no filename guessing. Only known artifacts are mirrored — intermediate
+   * / temp files are intentionally left behind.
    *
    * No-op in local and serverless modes. Errors are logged but swallowed so
    * cleanup can continue into Terminated without blocking.
@@ -298,13 +299,53 @@ export class S3Uploader {
         console.warn(`⚠️ Local dir does not exist, skipping EFS copy: ${localDir}`)
         return
       }
-      const efsDst = PathManager.getInstance().getEfsPath()
-      console.log(`📁 Copying ${localDir} → ${efsDst} (cleanup-timeout safety net)`)
-      await fs.promises.mkdir(efsDst, { recursive: true })
-      await fs.promises.cp(localDir, efsDst, { recursive: true, force: true, errorOnExist: false })
-      console.log(`📁 Directory copied to EFS: ${efsDst}`)
+
+      const pm = PathManager.getInstance()
+      const outputBase = pm.getOutputPath()
+      const artifactsBucket = envVars.AWS_S3_ARTIFACTS_BUCKET
+
+      // Named final outputs → artifacts bucket (key <uuid>/<name>, matching the
+      // bot's real S3 keys).
+      const namedOutputs: Array<{ src: string; name: string }> = [
+        { src: `${outputBase}.mp4`, name: "output.mp4" },
+        { src: `${outputBase}.flac`, name: "output.flac" },
+        { src: path.join(pm.getTempPath(), "diarization.jsonl"), name: "diarization.jsonl" },
+        { src: path.join(pm.getBasePath(), "chat_messages.json"), name: "chat_messages.json" }
+      ]
+      for (const { src, name } of namedOutputs) {
+        await this.mirrorFileToEFS(src, artifactsBucket, name)
+      }
+
+      // Audio chunks → audio chunks bucket (key <uuid>/<filename>).
+      const chunksDir = pm.getAudioTmpPath()
+      if (fs.existsSync(chunksDir)) {
+        for (const filename of fs.readdirSync(chunksDir)) {
+          await this.mirrorFileToEFS(
+            path.join(chunksDir, filename),
+            envVars.AWS_S3_AUDIO_CHUNKS_BUCKET,
+            filename
+          )
+        }
+      }
     } catch (error) {
-      console.error(`❌ Failed to copy dir to EFS: ${error}`)
+      console.error(`❌ Failed to mirror outputs to EFS: ${error}`)
+    }
+  }
+
+  /**
+   * Copy a single known output to its bucket-segmented EFS path
+   * (s3_upload_fails/<bucket>/<uuid>/<key>). No-op if the source is missing.
+   * Errors are logged but swallowed so the caller can keep mirroring.
+   */
+  private async mirrorFileToEFS(src: string, bucket: string, key: string): Promise<void> {
+    try {
+      if (!fs.existsSync(src)) return
+      const dst = path.join(PathManager.getInstance().getEfsPathForBucket(bucket), key)
+      await fs.promises.mkdir(path.dirname(dst), { recursive: true })
+      await fs.promises.copyFile(src, dst)
+      console.log(`📁 Mirrored to EFS (cleanup-timeout safety net): ${dst}`)
+    } catch (error) {
+      console.error(`❌ Failed to mirror ${src} to EFS: ${error}`)
     }
   }
 }
