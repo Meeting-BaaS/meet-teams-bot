@@ -280,8 +280,9 @@ export class InCallState extends BaseState {
           teamsNetworkInterception.setupTeamsNetworkInterceptionCallback
         verifyNetworkInterception = teamsNetworkInterception.verifyTeamsNetworkInterception
       } else {
-        setupNetworkInterceptionCallback = (await import("../../meeting/meet/network-interception"))
-          .setupNetworkInterceptionCallback
+        const meetNetworkInterception = await import("../../meeting/meet/network-interception")
+        setupNetworkInterceptionCallback = meetNetworkInterception.setupNetworkInterceptionCallback
+        verifyNetworkInterception = meetNetworkInterception.verifyNetworkInterception
       }
 
       // Callback to handle network speaker updates
