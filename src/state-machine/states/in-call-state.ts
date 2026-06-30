@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test"
 import { switchToRecordingBranding } from "../../branding"
 import { ChatManager } from "../../chat-manager"
 import { Events } from "../../events"
@@ -17,6 +18,7 @@ import { BaseState } from "./base-state"
 
 export class InCallState extends BaseState {
   private isStartingUIObserver = false // Lock to prevent race conditions in fallback
+  private lastNetworkSpeakingKey?: string // Dedup for network-speaker debug logging
 
   async execute(): StateExecuteResult {
     const startTime = Date.now()
@@ -222,14 +224,18 @@ export class InCallState extends BaseState {
       return
     }
 
-    // For Google Meet, try network interception first (PRIMARY), fallback to UI-based (FALLBACK)
-    // This needs to happen early so the callback is ready when audio tracks start being processed
-    // Skip if scripts failed to load in openMeetingPage (no point retrying)
-    if (GLOBAL.get().meeting_platform === "meet" && !GLOBAL.hasNetworkInterceptionSetupFailed()) {
+    // Meet and Teams: try network interception first (PRIMARY), else UI-based.
+    // Done early so the callback is ready when audio tracks start; skip if
+    // scripts failed to load in openMeetingPage.
+    const platform = GLOBAL.get().meeting_platform
+    if (
+      (platform === "meet" || platform === "teams") &&
+      !GLOBAL.hasNetworkInterceptionSetupFailed()
+    ) {
       try {
         const networkSetupSuccess = await this.tryNetworkInterception()
         if (networkSetupSuccess) {
-          console.log("✅ Network-based speaker detection enabled for Meet")
+          console.log(`✅ Network-based speaker detection enabled for ${platform}`)
           return // Successfully set up network interception, no need for UI-based
         }
       } catch (error) {
@@ -250,7 +256,7 @@ export class InCallState extends BaseState {
   }
 
   /**
-   * Try to setup network interception for Meet.
+   * Try to setup network interception for the current platform (Meet or Teams).
    * Returns true if successful, false otherwise (allows graceful fallback).
    */
   private async tryNetworkInterception(): Promise<boolean> {
@@ -259,10 +265,18 @@ export class InCallState extends BaseState {
     }
 
     try {
-      // Dynamic import to avoid loading network interception code for Teams
-      const { setupNetworkInterceptionCallback } = await import(
-        "../../meeting/meet/network-interception"
-      )
+      // Load only the platform's module. Both expose the same
+      // (page, onSpeakersChange) signature, so the handler below is shared.
+      const platform = GLOBAL.get().meeting_platform
+      const setupNetworkInterceptionCallback: (
+        page: Page,
+        cb: (payload: NetworkPayload) => void
+      ) => Promise<boolean> =
+        platform === "teams"
+          ? (await import("../../meeting/teams/network-interception"))
+              .setupTeamsNetworkInterceptionCallback
+          : (await import("../../meeting/meet/network-interception"))
+              .setupNetworkInterceptionCallback
 
       // Callback to handle network speaker updates
       const onNetworkSpeakersChange = async (payload: NetworkPayload) => {
@@ -331,6 +345,18 @@ export class InCallState extends BaseState {
 
           // Existing speaker update handling
           const networkUsers = payload.users as NetworkUser[]
+
+          // Debug: this handler only runs under network interception, so logging
+          // here (on change) confirms diarization comes from the network path.
+          const speakingNames = networkUsers.filter((u) => u.isSpeaking).map((u) => u.name)
+          const speakingKey = speakingNames.slice().sort().join("|")
+          if (speakingKey !== this.lastNetworkSpeakingKey) {
+            this.lastNetworkSpeakingKey = speakingKey
+            console.log(
+              `[NetworkSpeaker][${GLOBAL.get().meeting_platform}] 🗣️ speaking=[${speakingNames.join(", ") || "(none)"}] source=${payload.source} participants=${networkUsers.length}`
+            )
+          }
+
           await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
             networkUsers,
             payload.timestamp
