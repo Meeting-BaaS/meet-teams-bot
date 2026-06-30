@@ -148,18 +148,17 @@ export class TeamsProvider implements MeetingProviderInterface {
     })
 
     // Inject network speaker-detection scripts BEFORE goto (addInitScript only
-    // applies to later navigations). On failure, flag it so in-call-state skips
-    // the network attempt and uses UI detection. Mirrors meet.ts.
+    // applies to later navigations). Keep failures local to this page attempt:
+    // in-call-state verifies the browser hook after navigation and falls back
+    // to UI detection if this injection did not install.
     try {
       const { setupTeamsNetworkInterceptionScripts } = await import("./teams/network-interception")
       const success = await setupTeamsNetworkInterceptionScripts(page)
       if (!success) {
         console.warn("[Teams] ⚠️ Failed to setup network interception scripts")
-        GLOBAL.setNetworkInterceptionSetupFailed()
       }
     } catch (error) {
       console.error("[Teams] ⚠️ Error setting up network interception scripts:", formatError(error))
-      GLOBAL.setNetworkInterceptionSetupFailed()
     }
 
     try {

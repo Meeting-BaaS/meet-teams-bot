@@ -11,6 +11,7 @@ import type { NetworkPayload } from "./types"
 declare global {
   interface Window {
     __teamsNetworkInterceptorMain?: boolean
+    __teamsNetworkInterceptorInitialized?: boolean
     __teamsStopNetworkInterception?: () => void
   }
 }
@@ -67,7 +68,7 @@ export async function setupTeamsNetworkInterceptionCallback(
   try {
     await page.exposeFunction("onNetworkSpeakerUpdate", onSpeakersChange)
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
-    return true
+    return verifyTeamsNetworkInterception(page)
   } catch (error) {
     console.error("[Teams NetworkInterceptor] Failed to expose function:", error)
     return false
@@ -78,15 +79,16 @@ export async function setupTeamsNetworkInterceptionCallback(
 export async function verifyTeamsNetworkInterception(page: Page): Promise<boolean> {
   try {
     const status = await page.evaluate(() => ({
-      hasInterceptor: typeof window.__teamsNetworkInterceptorMain !== "undefined",
+      hasInterceptor: window.__teamsNetworkInterceptorInitialized === true,
+      hasStopFunction: typeof window.__teamsStopNetworkInterception === "function",
       hasPako: typeof (window as unknown as { pako?: unknown }).pako !== "undefined",
       hasCallback: typeof window.onNetworkSpeakerUpdate !== "undefined"
     }))
 
     console.log("[Teams NetworkInterceptor] Status:", status)
 
-    if (!status.hasInterceptor) {
-      console.error("[Teams NetworkInterceptor] ❌ Main interceptor not loaded")
+    if (!status.hasInterceptor || !status.hasStopFunction) {
+      console.error("[Teams NetworkInterceptor] ❌ Browser interceptor not installed")
       return false
     }
     if (!status.hasPako) {

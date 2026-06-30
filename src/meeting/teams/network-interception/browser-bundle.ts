@@ -40,6 +40,8 @@ export function teamsBrowserInterceptionLogic() {
     let dominantSpeakerStreamId: string | null = null
     // when true, CSRC is authoritative; when false, fall back to dsh
     let csrcAvailable = false
+    // CSRC becomes authoritative only after a source maps to a participant.
+    let hasObservedCsrcMapping = false
 
     // receiver → isActive
     const receiverMap = new Map<RTCRtpReceiver, boolean>()
@@ -265,6 +267,7 @@ export function teamsBrowserInterceptionLogic() {
       if ((window as any).__teamsNetworkInterceptorStopped) return
 
       const speakingParticipantIds = new Set<string>()
+      let mappedCsrcThisPoll = false
       const now = Date.now()
 
       for (const [receiver, isActive] of receiverMap) {
@@ -282,11 +285,17 @@ export function teamsBrowserInterceptionLogic() {
         }
 
         const recent = contributingSources.filter((cs) => now - cs.timestamp <= 50)
-        for (const id of getSpeakingParticipantIds(recent)) speakingParticipantIds.add(id)
+        const mappedIds = getSpeakingParticipantIds(recent)
+        if (mappedIds.size > 0) mappedCsrcThisPoll = true
+        for (const id of mappedIds) speakingParticipantIds.add(id)
       }
 
-      // Track whether the calling SDK is giving us per-participant data at all.
-      csrcAvailable = !!getActiveCall()?.participants
+      // Do not let merely seeing Teams SDK participants disable the working
+      // dsh path. CSRC is trusted only after a real source→participant mapping.
+      if (mappedCsrcThisPoll) hasObservedCsrcMapping = true
+      const hasActiveReceiver = Array.from(receiverMap.values()).some(Boolean)
+      if (!hasActiveReceiver) hasObservedCsrcMapping = false
+      csrcAvailable = hasObservedCsrcMapping
 
       // Ensure a state machine exists for every participant we've seen speaking.
       for (const participantId of speakingParticipantIds) {
