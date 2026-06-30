@@ -268,15 +268,21 @@ export class InCallState extends BaseState {
       // Load only the platform's module. Both expose the same
       // (page, onSpeakersChange) signature, so the handler below is shared.
       const platform = GLOBAL.get().meeting_platform
-      const setupNetworkInterceptionCallback: (
+      let setupNetworkInterceptionCallback: (
         page: Page,
         cb: (payload: NetworkPayload) => void
-      ) => Promise<boolean> =
-        platform === "teams"
-          ? (await import("../../meeting/teams/network-interception"))
-              .setupTeamsNetworkInterceptionCallback
-          : (await import("../../meeting/meet/network-interception"))
-              .setupNetworkInterceptionCallback
+      ) => Promise<boolean>
+      let verifyNetworkInterception: ((page: Page) => Promise<boolean>) | undefined
+
+      if (platform === "teams") {
+        const teamsNetworkInterception = await import("../../meeting/teams/network-interception")
+        setupNetworkInterceptionCallback =
+          teamsNetworkInterception.setupTeamsNetworkInterceptionCallback
+        verifyNetworkInterception = teamsNetworkInterception.verifyTeamsNetworkInterception
+      } else {
+        setupNetworkInterceptionCallback = (await import("../../meeting/meet/network-interception"))
+          .setupNetworkInterceptionCallback
+      }
 
       // Callback to handle network speaker updates
       const onNetworkSpeakersChange = async (payload: NetworkPayload) => {
@@ -373,6 +379,14 @@ export class InCallState extends BaseState {
       )
 
       if (success) {
+        if (verifyNetworkInterception) {
+          const verified = await verifyNetworkInterception(this.context.playwrightPage)
+          if (!verified) {
+            console.warn("[NetworkInterceptor] ⚠️ Browser interceptor verification failed")
+            return false
+          }
+        }
+
         console.log("[NetworkInterceptor] ✅ Network interception enabled successfully")
         // Mark network diarization as active (defensive pattern: only sets if not already set)
         GLOBAL.setNetworkDiarizationActiveIfNotSet()
