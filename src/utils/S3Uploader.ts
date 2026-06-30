@@ -4,6 +4,7 @@ import { S3Client, type Tag } from "@aws-sdk/client-s3"
 import { Upload } from "@aws-sdk/lib-storage"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
+import type { ArtifactType } from "../types"
 import { PathManager } from "./PathManager"
 
 // Singleton instance
@@ -284,6 +285,12 @@ export class S3Uploader {
    * with no filename guessing. Only known artifacts are mirrored — intermediate
    * / temp files are intentionally left behind.
    *
+   * Each mirrored output is also recorded in GLOBAL as a recoverable upload
+   * failure, so the end-meeting trampoline defers the bot to
+   * `awaiting_reconciliation` — the only status the reconciliation job scans.
+   * Without that the files would sit on EFS while the bot completes, and nothing
+   * would ever drain them.
+   *
    * No-op in local and serverless modes. Errors are logged but swallowed so
    * cleanup can continue into Terminated without blocking.
    */
@@ -306,25 +313,41 @@ export class S3Uploader {
 
       // Named final outputs → artifacts bucket (key <uuid>/<name>, matching the
       // bot's real S3 keys).
-      const namedOutputs: Array<{ src: string; name: string }> = [
-        { src: `${outputBase}.mp4`, name: "output.mp4" },
-        { src: `${outputBase}.flac`, name: "output.flac" },
-        { src: path.join(pm.getTempPath(), "diarization.jsonl"), name: "diarization.jsonl" },
-        { src: path.join(pm.getBasePath(), "chat_messages.json"), name: "chat_messages.json" }
+      const namedOutputs: Array<{
+        src: string
+        name: string
+        type: ArtifactType
+        extension: string
+      }> = [
+        { src: `${outputBase}.mp4`, name: "output.mp4", type: "video", extension: "mp4" },
+        { src: `${outputBase}.flac`, name: "output.flac", type: "audio", extension: "flac" },
+        {
+          src: path.join(pm.getTempPath(), "diarization.jsonl"),
+          name: "diarization.jsonl",
+          type: "diarization",
+          extension: "jsonl"
+        },
+        {
+          src: path.join(pm.getBasePath(), "chat_messages.json"),
+          name: "chat_messages.json",
+          type: "chat_messages",
+          extension: "json"
+        }
       ]
-      for (const { src, name } of namedOutputs) {
-        await this.mirrorFileToEFS(src, artifactsBucket, name)
+      for (const { src, name, type, extension } of namedOutputs) {
+        if (await this.mirrorFileToEFS(src, artifactsBucket, name)) {
+          this.recordPendingArtifact(src, extension, type)
+        }
       }
 
       // Audio chunks → audio chunks bucket (key <uuid>/<filename>).
       const chunksDir = pm.getAudioTmpPath()
       if (fs.existsSync(chunksDir)) {
         for (const filename of fs.readdirSync(chunksDir)) {
-          await this.mirrorFileToEFS(
-            path.join(chunksDir, filename),
-            envVars.AWS_S3_AUDIO_CHUNKS_BUCKET,
-            filename
-          )
+          const src = path.join(chunksDir, filename)
+          if (await this.mirrorFileToEFS(src, envVars.AWS_S3_AUDIO_CHUNKS_BUCKET, filename)) {
+            this.recordPendingChunk(src, filename)
+          }
         }
       }
     } catch (error) {
@@ -334,19 +357,65 @@ export class S3Uploader {
 
   /**
    * Copy a single known output to its bucket-segmented EFS path
-   * (s3_upload_fails/<bucket>/<uuid>/<key>). No-op if the source is missing.
-   * Errors are logged but swallowed so the caller can keep mirroring.
+   * (s3_upload_fails/<bucket>/<uuid>/<key>). Returns true once the file is
+   * mirrored, false if the source is missing or the copy failed. Errors are
+   * logged but swallowed so the caller can keep mirroring.
    */
-  private async mirrorFileToEFS(src: string, bucket: string, key: string): Promise<void> {
+  private async mirrorFileToEFS(src: string, bucket: string, key: string): Promise<boolean> {
     try {
-      if (!fs.existsSync(src)) return
+      if (!fs.existsSync(src)) return false
       const dst = path.join(PathManager.getInstance().getEfsPathForBucket(bucket), key)
       await fs.promises.mkdir(path.dirname(dst), { recursive: true })
       await fs.promises.copyFile(src, dst)
       console.log(`📁 Mirrored to EFS (cleanup-timeout safety net): ${dst}`)
+      return true
     } catch (error) {
       console.error(`❌ Failed to mirror ${src} to EFS: ${error}`)
+      return false
     }
+  }
+
+  /**
+   * Record a timed-out output as a recoverable upload failure so the end-meeting
+   * trampoline defers the bot to `awaiting_reconciliation`. A file still on disk
+   * at cleanup-timeout means its S3 upload never succeeded (the success paths
+   * unlink). Skips if GLOBAL already has an entry for this artifact type (the
+   * per-file upload path already recorded it, or it uploaded successfully).
+   */
+  private recordPendingArtifact(filePath: string, extension: string, type: ArtifactType): void {
+    if (GLOBAL.getArtifactKeys().some((a) => a.type === type)) return
+    GLOBAL.addArtifactKey({
+      s3Key: null,
+      filePath,
+      extension,
+      uploaded: false,
+      uploadedAt: null,
+      type,
+      errorCode: "UPLOAD_FAILED",
+      errorMessage: "Output mirrored to EFS after cleanup timeout; pending reconciliation"
+    })
+  }
+
+  /**
+   * recordPendingArtifact for an audio chunk. Dedups against chunks already
+   * uploaded or already recorded (match by canonical key or local path), since
+   * chunks are not unlinked on successful upload.
+   */
+  private recordPendingChunk(filePath: string, filename: string): void {
+    const s3Key = `${PathManager.getInstance().getIdentifier()}/${filename}`
+    if (GLOBAL.getAudioChunks().some((c) => c.s3Key === s3Key || c.filePath === filePath)) {
+      return
+    }
+    GLOBAL.addAudioChunk({
+      s3Key: null,
+      filePath,
+      extension: "flac",
+      uploaded: false,
+      uploadedAt: null,
+      type: "audio",
+      errorCode: "UPLOAD_FAILED",
+      errorMessage: "Chunk mirrored to EFS after cleanup timeout; pending reconciliation"
+    })
   }
 }
 
