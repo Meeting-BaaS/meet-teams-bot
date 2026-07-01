@@ -147,6 +147,20 @@ export class TeamsProvider implements MeetingProviderInterface {
       console.log("[TeamsChatAPI] Function.prototype.bind monkey-patch installed")
     })
 
+    // Inject network speaker-detection scripts BEFORE goto (addInitScript only
+    // applies to later navigations). Keep failures local to this page attempt:
+    // in-call-state verifies the browser hook after navigation and falls back
+    // to UI detection if this injection did not install.
+    try {
+      const { setupTeamsNetworkInterceptionScripts } = await import("./teams/network-interception")
+      const success = await setupTeamsNetworkInterceptionScripts(page)
+      if (!success) {
+        console.warn("[Teams] ⚠️ Failed to setup network interception scripts")
+      }
+    } catch (error) {
+      console.error("[Teams] ⚠️ Error setting up network interception scripts:", formatError(error))
+    }
+
     try {
       const response = await page.goto(link, {
         waitUntil: "load",
