@@ -78,7 +78,9 @@ export class WaitingRoomState extends BaseState {
 
             // Start recording early to capture entire bot lifecycle
             // Recording will be cropped based on meetingStartTime anyway
-            ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
+            ScreenRecorderManager.getInstance().startRecording(
+                this.context.playwrightPage,
+            )
 
             // Send waiting room event after the page is open
             Events.inWaitingRoom()
@@ -162,7 +164,8 @@ export class WaitingRoomState extends BaseState {
 
         const cancelCheck = () =>
             GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
-            GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord
+            GLOBAL.getEndReason() ===
+                MeetingEndReason.ExitingMeetingBeforeRecord
 
         // Run the slow, humanised pre-join interactions (dismiss dialogs, type
         // bot name, toggle mic/cam) BEFORE the scheduled-time wait below, so that
@@ -183,19 +186,26 @@ export class WaitingRoomState extends BaseState {
         // (e.g. "You can't join this video call" → auto-redirect to workspace.google.com).
         // Only check for Meet — Teams URLs are on a different domain and would false-positive.
         const isMeet = GLOBAL.get().meetingProvider === 'Meet'
-        const startTime = await handleTimingControl(GLOBAL.get().start_time, isMeet ? async () => {
-            const url = this.context.playwrightPage?.url() ?? ''
-            if (url && !url.includes('meet.google.com')) {
-                console.log(`Page navigated away from Meet during timing wait: ${url}`)
-                GLOBAL.setShouldRetry(true)
-                GLOBAL.setError(
-                    MeetingEndReason.BotNotAccepted,
-                    'Google Meet denied entry - page redirected during scheduled wait',
-                )
-                return true
-            }
-            return false
-        } : undefined)
+        const startTime = await handleTimingControl(
+            GLOBAL.get().start_time,
+            isMeet
+                ? async () => {
+                      const url = this.context.playwrightPage?.url() ?? ''
+                      if (url && !url.includes('meet.google.com')) {
+                          console.log(
+                              `Page navigated away from Meet during timing wait: ${url}`,
+                          )
+                          GLOBAL.setShouldRetry(true)
+                          GLOBAL.setError(
+                              MeetingEndReason.BotNotAccepted,
+                              'Google Meet denied entry - page redirected during scheduled wait',
+                          )
+                          return true
+                      }
+                      return false
+                  }
+                : undefined,
+        )
 
         // If the abort check detected a denial during the wait, bail out immediately
         if (GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted) {
@@ -228,7 +238,8 @@ export class WaitingRoomState extends BaseState {
                 if (
                     GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
                     GLOBAL.getEndReason() === MeetingEndReason.LoginRequired ||
-                    GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord
+                    GLOBAL.getEndReason() ===
+                        MeetingEndReason.ExitingMeetingBeforeRecord
                 ) {
                     clearInterval(checkStopSignal)
                     clearTimeout(timeout)
@@ -244,13 +255,9 @@ export class WaitingRoomState extends BaseState {
                     () => {
                         joinSuccessful = true
                         console.log('Join successful notification received')
-                        // Disable humanize immediately now that we're admitted
-                        // (Meet only — Teams/Zoom are never humanized). Restores
-                        // native Playwright page methods for fast in-meeting ops.
-                        if (
-                            this.context.playwrightPage &&
-                            GLOBAL.get().meetingProvider === 'Meet'
-                        ) {
+                        // Restore native Playwright page methods for fast
+                        // in-meeting ops. Safe no-op if page was not humanized.
+                        if (this.context.playwrightPage) {
                             dehumanize(this.context.playwrightPage)
                         }
                         // Stop routing through the residential upstream now

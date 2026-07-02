@@ -10,7 +10,10 @@ import { sleep } from '../utils/sleep'
 import { createStateDetector } from '../utils/meeting-state-detector'
 import { TEAMS_STATE_CONFIG } from './teams-state-config'
 import { formatError } from '../utils/Logger'
-import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from './teams/audio-capture'
+import {
+    enableTeamsAudioCapture,
+    verifyTeamsAudioCapture,
+} from './teams/audio-capture'
 
 // Create a singleton detector instance for Microsoft Teams
 const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
@@ -48,17 +51,173 @@ export class TeamsProvider implements MeetingProviderInterface {
             origin: url.origin,
         })
 
+        await page.addInitScript(() => {
+            const ALLOWED = /^(https?|about|blob|data|filesystem):/i
+            const isExternal = (raw: string | null | undefined): boolean => {
+                if (!raw) return false
+                const s = String(raw).trim()
+                if (s === '' || /^[#?/]/.test(s)) return false
+                if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) return false
+                return !ALLOWED.test(s)
+            }
+            const log = (vector: string, url: string): void => {
+                try {
+                    console.warn(
+                        `[Teams DeepLinkBlock] blocked ${vector} -> ${url}`,
+                    )
+                } catch (_e) {
+                    // console may be unavailable during early init.
+                }
+            }
+
+            try {
+                const nativeOpen = window.open.bind(window)
+                window.open = ((url?: string | URL, ...rest: unknown[]) => {
+                    if (isExternal(typeof url === 'string' ? url : url?.href)) {
+                        log('window.open', String(url))
+                        return null
+                    }
+                    return (nativeOpen as (...a: unknown[]) => Window | null)(
+                        url,
+                        ...rest,
+                    )
+                }) as typeof window.open
+            } catch (_e) {}
+
+            try {
+                const nativeAssign = window.location.assign.bind(
+                    window.location,
+                )
+                window.location.assign = (url: string | URL) => {
+                    if (isExternal(String(url))) {
+                        log('location.assign', String(url))
+                        return
+                    }
+                    nativeAssign(url as string)
+                }
+            } catch (_e) {}
+
+            try {
+                const nativeReplace = window.location.replace.bind(
+                    window.location,
+                )
+                window.location.replace = (url: string | URL) => {
+                    if (isExternal(String(url))) {
+                        log('location.replace', String(url))
+                        return
+                    }
+                    nativeReplace(url as string)
+                }
+            } catch (_e) {}
+
+            try {
+                const hrefDesc = Object.getOwnPropertyDescriptor(
+                    Location.prototype,
+                    'href',
+                )
+                if (hrefDesc?.set && hrefDesc.get) {
+                    const nativeSet = hrefDesc.set
+                    const nativeGet = hrefDesc.get
+                    Object.defineProperty(Location.prototype, 'href', {
+                        configurable: true,
+                        enumerable: hrefDesc.enumerable,
+                        get(): string {
+                            return nativeGet.call(this) as string
+                        },
+                        set(v: string): void {
+                            if (isExternal(v)) {
+                                log('location.href', String(v))
+                                return
+                            }
+                            nativeSet.call(this, v)
+                        },
+                    })
+                }
+            } catch (_e) {}
+
+            try {
+                const srcDesc = Object.getOwnPropertyDescriptor(
+                    HTMLIFrameElement.prototype,
+                    'src',
+                )
+                if (srcDesc?.set && srcDesc.get) {
+                    const nativeSet = srcDesc.set
+                    const nativeGet = srcDesc.get
+                    Object.defineProperty(HTMLIFrameElement.prototype, 'src', {
+                        configurable: true,
+                        enumerable: srcDesc.enumerable,
+                        get(): string {
+                            return nativeGet.call(this) as string
+                        },
+                        set(v: string): void {
+                            if (isExternal(v)) {
+                                log('iframe.src', String(v))
+                                return
+                            }
+                            nativeSet.call(this, v)
+                        },
+                    })
+                }
+            } catch (_e) {}
+
+            try {
+                const nativeSetAttr = Element.prototype.setAttribute
+                Element.prototype.setAttribute = function (
+                    name: string,
+                    value: string,
+                ): void {
+                    const n = typeof name === 'string' ? name.toLowerCase() : ''
+                    if (
+                        ((n === 'src' && this.tagName === 'IFRAME') ||
+                            (n === 'href' && this.tagName === 'A')) &&
+                        isExternal(value)
+                    ) {
+                        log(`setAttribute:${n}`, String(value))
+                        return
+                    }
+                    nativeSetAttr.call(this, name, value)
+                }
+            } catch (_e) {}
+
+            document.addEventListener(
+                'click',
+                (e: Event) => {
+                    const path = (e.composedPath?.() ?? []) as EventTarget[]
+                    for (const t of path) {
+                        const el = t as HTMLAnchorElement
+                        if (
+                            el?.tagName === 'A' &&
+                            isExternal(el.getAttribute?.('href'))
+                        ) {
+                            log('anchor.click', String(el.getAttribute('href')))
+                            e.preventDefault()
+                            e.stopImmediatePropagation()
+                            return
+                        }
+                    }
+                },
+                true,
+            )
+        })
+
         // Enable Web Audio mixing for clean streaming (KISS approach!)
         // Check config directly, not Streaming.instance (which may not be instantiated yet)
         if (GLOBAL.get().streaming_output) {
             try {
                 await enableTeamsAudioCapture(page)
-                console.log('[Teams] ✅ Web Audio capture enabled for streaming')
+                console.log(
+                    '[Teams] ✅ Web Audio capture enabled for streaming',
+                )
             } catch (error) {
-                console.error('[Teams] Failed to enable audio capture, continuing without it:', formatError(error))
+                console.error(
+                    '[Teams] Failed to enable audio capture, continuing without it:',
+                    formatError(error),
+                )
             }
         } else {
-            console.log('[Teams] ℹ️ Streaming not configured, skipping audio capture setup')
+            console.log(
+                '[Teams] ℹ️ Streaming not configured, skipping audio capture setup',
+            )
         }
 
         try {
@@ -144,7 +303,9 @@ export class TeamsProvider implements MeetingProviderInterface {
 
             // Teams now almost always renders in light mode, so we accept it and continue
             if (isLightInterface) {
-                console.log('🥕 Light interface detected (expected), continuing...')
+                console.log(
+                    '🥕 Light interface detected (expected), continuing...',
+                )
             }
 
             return page
@@ -152,7 +313,9 @@ export class TeamsProvider implements MeetingProviderInterface {
             console.error('Error in openMeetingPage:', formatError(error))
             // Mark as retryable - bot hasn't joined yet, so retrying is safe
             // Worst case: 3 attempts (1 initial + 2 retries) before giving up
-            console.log('🔄 Error occurred before joining - marking as retryable')
+            console.log(
+                '🔄 Error occurred before joining - marking as retryable',
+            )
             GLOBAL.setShouldRetry(true)
             throw error
         }
@@ -369,7 +532,9 @@ export class TeamsProvider implements MeetingProviderInterface {
 
         // Final stop check before the irreversible "Join now" click
         if (cancelCheck()) {
-            console.log('Stop request detected before clicking Join now — aborting')
+            console.log(
+                'Stop request detected before clicking Join now — aborting',
+            )
             GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
             throw new Error('Bot stopped before joining meeting')
         }
@@ -430,7 +595,10 @@ export class TeamsProvider implements MeetingProviderInterface {
             try {
                 await verifyTeamsAudioCapture(page)
             } catch (error) {
-                console.error('[Teams] Failed to verify audio capture post-join:', formatError(error))
+                console.error(
+                    '[Teams] Failed to verify audio capture post-join:',
+                    formatError(error),
+                )
             }
         }
 
@@ -480,7 +648,10 @@ export class TeamsProvider implements MeetingProviderInterface {
                 }
             }
         } catch (e) {
-            console.error('Error handling "View" or "Speaker" mode:', formatError(e))
+            console.error(
+                'Error handling "View" or "Speaker" mode:',
+                formatError(e),
+            )
         }
     }
 
@@ -589,7 +760,7 @@ async function clickWithInnerText(
             }
 
             continueButton = await page.evaluate(
-                ({ innerText, htmlType, i, click }) => {
+                ({ innerText, htmlType, i }) => {
                     let elements: Element[] = []
                     const iframes = document.querySelectorAll('iframe')
 
@@ -615,18 +786,32 @@ async function clickWithInnerText(
                         )
                     }
 
-                    for (const elem of elements) {
-                        if (elem.textContent?.trim() === innerText) {
-                            if (click) {
-                                ;(elem as HTMLElement).click()
-                            }
-                            return true
-                        }
-                    }
-                    return false
+                    return elements.some(
+                        (elem) => elem.textContent?.trim() === innerText,
+                    )
                 },
-                { innerText, htmlType, i, click },
+                { innerText, htmlType, i },
             )
+
+            if (continueButton && click) {
+                const humanizeActive = Boolean(
+                    (page as unknown as { _original?: unknown })._original,
+                )
+                const humanized =
+                    humanizeActive &&
+                    (await clickButtonHumanized(page, htmlType, innerText))
+                if (!humanized) {
+                    await page.evaluate(
+                        ({ innerText, htmlType }) => {
+                            const el = Array.from(
+                                document.querySelectorAll(htmlType),
+                            ).find((e) => e.textContent?.trim() === innerText)
+                            ;(el as HTMLElement | undefined)?.click()
+                        },
+                        { innerText, htmlType },
+                    )
+                }
+            }
         } catch (e) {
             if (i === iterations - 1) {
                 console.error(
@@ -650,6 +835,29 @@ async function clickWithInnerText(
         i++
     }
     return continueButton
+}
+
+async function clickButtonHumanized(
+    page: Page,
+    htmlType: string,
+    innerText: string,
+): Promise<boolean> {
+    const escaped = innerText.replace(/"/g, '\\"')
+    const selectors = [
+        `${htmlType}:text-is("${escaped}")`,
+        `${htmlType}:has-text("${escaped}")`,
+    ]
+    for (const selector of selectors) {
+        try {
+            const locator = page.locator(selector).first()
+            if ((await locator.count()) === 0) continue
+            await locator.click({ timeout: 2000 })
+            return true
+        } catch {
+            // Try next selector, then caller DOM-click fallback.
+        }
+    }
+    return false
 }
 
 async function typeBotName(
@@ -683,7 +891,10 @@ async function typeBotName(
 
             await page.waitForTimeout(500)
         } catch (e) {
-            console.error(`Error typing bot name (attempt ${i + 1}):`, formatError(e))
+            console.error(
+                `Error typing bot name (attempt ${i + 1}):`,
+                formatError(e),
+            )
         }
     }
     throw new Error('Failed to type bot name')
@@ -728,7 +939,10 @@ async function isRemovedFromTheMeeting(page: Page): Promise<boolean> {
         }
         return false
     } catch (error) {
-        console.error('Error while checking meeting status:', formatError(error))
+        console.error(
+            'Error while checking meeting status:',
+            formatError(error),
+        )
         return false
     }
 }
@@ -743,9 +957,12 @@ async function isBotNotAccepted(page: Page): Promise<boolean> {
     const result = await teamsStateDetector.isDenied(page)
     if (result.matched) {
         const reason =
-            (result.pattern && 'reason' in result.pattern ? result.pattern.reason : undefined) ??
-            MeetingEndReason.BotNotAccepted
-        console.log(`Teams denial detected: "${result.matchedText}" -> ${reason}`)
+            (result.pattern && 'reason' in result.pattern
+                ? result.pattern.reason
+                : undefined) ?? MeetingEndReason.BotNotAccepted
+        console.log(
+            `Teams denial detected: "${result.matchedText}" -> ${reason}`,
+        )
         GLOBAL.setError(reason)
         return true
     }

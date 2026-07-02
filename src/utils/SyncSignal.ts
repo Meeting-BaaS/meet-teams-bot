@@ -155,7 +155,7 @@ async function generateVisualFlash(
             z-index: 999999;
             pointer-events: none;
             box-shadow: inset 0 0 30px ${flashColor};
-            opacity: 0.9;
+            opacity: 1;
         `
 
             document.body.appendChild(flashDiv)
