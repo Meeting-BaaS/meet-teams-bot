@@ -261,8 +261,11 @@ export class WaitingRoomState extends BaseState {
           () => {
             joinSuccessful = true
             console.log("Join successful notification received")
-            // Disable humanize immediately (Meet only — Teams is never humanized).
-            if (this.context.playwrightPage && GLOBAL.get().meeting_platform === "meet") {
+            // Stop humanizing the moment we're admitted — restore native
+            // Playwright speed for the in-call phase. Both Meet and Teams
+            // humanize the join now; dehumanize() is a safe no-op if the page
+            // was never humanized, so no platform gate is needed.
+            if (this.context.playwrightPage) {
               dehumanize(this.context.playwrightPage)
             }
             setDirectMode()
