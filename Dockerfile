@@ -30,12 +30,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Teams (and any non-Meet) use official Playwright Chromium via
-# /usr/bin/google-chrome; Meet uses CloakBrowser's own stealth Chromium fork
-# (baked below). Both are installed so browser.ts can pick per provider.
-RUN npx playwright install chromium && \
-    find /root/.cache/ms-playwright -name chrome -type f -executable | head -1 | xargs -I {} ln -sf {} /usr/bin/google-chrome
-# CloakBrowser (Meet): pin the cache dir + disable runtime auto-update so the
+# CloakBrowser ships its own stealth Chromium fork; both Meet and Teams launch
+# through it. Install Chromium system dependencies without downloading
+# Playwright's browser binary.
+RUN npx playwright install-deps chromium
+# CloakBrowser: pin the cache dir + disable runtime auto-update so the
 # baked binary is the one used; otherwise each ephemeral pod fetches ~200MB on
 # first launch.
 ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
