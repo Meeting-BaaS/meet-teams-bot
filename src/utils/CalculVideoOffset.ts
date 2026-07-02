@@ -16,6 +16,14 @@ const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds (used as fallback upper b
 // Keep tight (±0.5 s) to avoid matching early meeting-UI content or noise, while
 // still tolerating normal system jitter on the sleep/page-evaluate path.
 const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
+// The video flash routinely lands EARLIER than the audio beep even though they
+// fire together: x11grab's capture pipeline starts with more latency than
+// PulseAudio, so the flash's video-stream timestamp is pulled below the tight
+// audio window and gets missed. Search further back (but not forward) for the
+// flash so a slow capture start doesn't drop it. The green + scene-change
+// detector makes an early false positive very unlikely (pre-join UI isn't
+// fullscreen green).
+const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
 
 interface SyncOffset {
   /** Audio signal timestamp in seconds */
@@ -45,16 +53,21 @@ export async function calculateVideoOffset(
 ): Promise<SyncOffset> {
   const searchMin = Math.max(0, expectedSyncSec - SYNC_WINDOW_HALF_WIDTH_SEC)
   const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
+  // Wider, downward-biased window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC).
+  const videoSearchMin = Math.max(0, expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC)
+  const videoSearchMax = searchMax
 
-  console.log(`🔍 Analyzing sync signals (window ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s)...`)
+  console.log(
+    `🔍 Analyzing sync signals (audio ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s, video ${videoSearchMin.toFixed(2)}s – ${videoSearchMax.toFixed(2)}s)...`
+  )
   console.log(`   Audio: ${audioPath}`)
   console.log(`   Video: ${videoPath}`)
 
   try {
-    // Analyze both files in parallel using the exact sync window
+    // Analyze both files in parallel using the sync windows
     const [audioTimestamp, videoTimestamp] = await Promise.all([
       detectAudioBeep(audioPath, searchMin, searchMax),
-      detectVideoFlash(videoPath, searchMin, searchMax)
+      detectVideoFlash(videoPath, videoSearchMin, videoSearchMax)
     ])
 
     // Validate that we found both signals
@@ -65,17 +78,35 @@ export async function calculateVideoOffset(
       console.warn(`⚠️ Failed to detect video flash in first ${ANALYSIS_WINDOW}s, using default`)
     }
 
-    // If either signal is missing, use default values
+    // If exactly one signal is missing, fall back to assuming the beep and flash
+    // landed at the SAME timestamp. They are emitted simultaneously
+    // (Promise.all in generateSyncSignal), so the detected signal's time is the
+    // best estimate for both — this yields offsetSeconds 0 AND, downstream,
+    // audioPadding = videoTimestamp - audioTimestamp = 0, so no stream is
+    // shifted and A/V stays aligned as captured.
+    //
+    // The previous behaviour left the undetected timestamp at 0. When only the
+    // beep was found (e.g. a software-rendered flash paints outside the tight
+    // detection window), that made audioPadding = 0 - audioTimestamp, trimming
+    // the FULL beep offset (~4.3s) off the audio and desyncing A/V by seconds.
     if (audioTimestamp <= 0 || videoTimestamp <= 0) {
-      const defaultResult: SyncOffset = {
-        audioTimestamp: audioTimestamp > 0 ? audioTimestamp : 0,
-        videoTimestamp: videoTimestamp > 0 ? videoTimestamp : 0,
+      const bothMissing = audioTimestamp <= 0 && videoTimestamp <= 0
+      const detected = audioTimestamp > 0 ? audioTimestamp : videoTimestamp
+      const fallbackResult: SyncOffset = {
+        audioTimestamp: bothMissing ? 0 : detected,
+        videoTimestamp: bothMissing ? 0 : detected,
         offsetSeconds: 0.0,
-        confidence: 0.1
+        confidence: bothMissing ? 0.1 : 0.3
       }
 
-      console.log("✅ Using default offset: 0.000s (confidence: 10.0%)")
-      return defaultResult
+      if (bothMissing) {
+        console.warn("⚠️ Neither sync signal detected — assuming zero A/V offset")
+      } else {
+        console.warn(
+          `⚠️ Only the ${audioTimestamp > 0 ? "audio beep" : "video flash"} was detected (at ${detected.toFixed(3)}s). Assuming simultaneous beep+flash → zero offset, no audio shift.`
+        )
+      }
+      return fallbackResult
     }
 
     const offsetSeconds = videoTimestamp - audioTimestamp

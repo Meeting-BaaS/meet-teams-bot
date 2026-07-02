@@ -65,6 +65,160 @@ export class TeamsProvider implements MeetingProviderInterface {
       origin: url.origin
     })
 
+    // ── Block Teams' native-app deep link ────────────────────────────────────
+    // The teams.live.com launcher fires a custom-scheme deep link (msteams:…) to
+    // open the desktop app. Chromium intercepts the unknown scheme and shows a
+    // tab-modal "Open xdg-open?" dialog — native browser UI Playwright cannot
+    // click — which freezes the join even though the web pre-join renders behind
+    // it. This init script runs before the launcher's JS and neutralizes every
+    // in-page vector that keeps the current page alive (window.open, location.*,
+    // iframe.src, anchor clicks, setAttribute), so the deep link never fires.
+    // Scoped to non-http(s) schemes only, so normal Teams web navigation is
+    // untouched. Blocked targets are logged so we can confirm the exact scheme.
+    await page.addInitScript(() => {
+      const ALLOWED = /^(https?|about|blob|data|filesystem):/i
+      const isExternal = (raw: string | null | undefined): boolean => {
+        if (!raw) return false
+        const s = String(raw).trim()
+        if (s === "" || /^[#?/]/.test(s)) return false // relative / hash / query
+        if (!/^[a-z][a-z0-9+.-]*:/i.test(s)) return false // no scheme → relative
+        return !ALLOWED.test(s)
+      }
+      const log = (vector: string, url: string): void => {
+        try {
+          console.warn(`[Teams DeepLinkBlock] blocked ${vector} → ${url}`)
+        } catch (_e) {
+          /* console may be unavailable */
+        }
+      }
+
+      // window.open("scheme:…")
+      try {
+        const nativeOpen = window.open.bind(window)
+        window.open = ((url?: string | URL, ...rest: unknown[]) => {
+          if (isExternal(typeof url === "string" ? url : url?.href)) {
+            log("window.open", String(url))
+            return null
+          }
+          return (nativeOpen as (...a: unknown[]) => Window | null)(url, ...rest)
+        }) as typeof window.open
+      } catch (_e) {
+        /* leave native window.open in place */
+      }
+
+      // location.assign / location.replace
+      try {
+        const nativeAssign = window.location.assign.bind(window.location)
+        window.location.assign = (url: string | URL) => {
+          if (isExternal(String(url))) {
+            log("location.assign", String(url))
+            return
+          }
+          nativeAssign(url as string)
+        }
+      } catch (_e) {
+        /* leave native location.assign in place */
+      }
+      try {
+        const nativeReplace = window.location.replace.bind(window.location)
+        window.location.replace = (url: string | URL) => {
+          if (isExternal(String(url))) {
+            log("location.replace", String(url))
+            return
+          }
+          nativeReplace(url as string)
+        }
+      } catch (_e) {
+        /* leave native location.replace in place */
+      }
+
+      // location.href = "scheme:…" (also catches `window.location = …`)
+      try {
+        const hrefDesc = Object.getOwnPropertyDescriptor(Location.prototype, "href")
+        if (hrefDesc?.set && hrefDesc.get) {
+          const nativeSet = hrefDesc.set
+          const nativeGet = hrefDesc.get
+          Object.defineProperty(Location.prototype, "href", {
+            configurable: true,
+            enumerable: hrefDesc.enumerable,
+            get(): string {
+              return nativeGet.call(this) as string
+            },
+            set(v: string): void {
+              if (isExternal(v)) {
+                log("location.href", String(v))
+                return
+              }
+              nativeSet.call(this, v)
+            }
+          })
+        }
+      } catch (_e) {
+        /* location.href not overridable here — other vectors still covered */
+      }
+
+      // iframe.src = "scheme:…" (property assignment fires a synchronous nav)
+      try {
+        const srcDesc = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, "src")
+        if (srcDesc?.set && srcDesc.get) {
+          const nativeSet = srcDesc.set
+          const nativeGet = srcDesc.get
+          Object.defineProperty(HTMLIFrameElement.prototype, "src", {
+            configurable: true,
+            enumerable: srcDesc.enumerable,
+            get(): string {
+              return nativeGet.call(this) as string
+            },
+            set(v: string): void {
+              if (isExternal(v)) {
+                log("iframe.src", String(v))
+                return
+              }
+              nativeSet.call(this, v)
+            }
+          })
+        }
+      } catch (_e) {
+        /* iframe.src not overridable here — MutationObserver/setAttribute cover it */
+      }
+
+      // setAttribute("src"/"href", "scheme:…") on iframe/anchor
+      try {
+        const nativeSetAttr = Element.prototype.setAttribute
+        Element.prototype.setAttribute = function (name: string, value: string): void {
+          const n = typeof name === "string" ? name.toLowerCase() : ""
+          if (
+            ((n === "src" && this.tagName === "IFRAME") || (n === "href" && this.tagName === "A")) &&
+            isExternal(value)
+          ) {
+            log(`setAttribute:${n}`, String(value))
+            return
+          }
+          nativeSetAttr.call(this, name, value)
+        }
+      } catch (_e) {
+        /* leave native setAttribute in place */
+      }
+
+      // Programmatic + user anchor clicks (capture phase, before the default)
+      document.addEventListener(
+        "click",
+        (e: Event) => {
+          const path = (e.composedPath?.() ?? []) as EventTarget[]
+          for (const t of path) {
+            const el = t as HTMLAnchorElement
+            if (el?.tagName === "A" && isExternal(el.getAttribute?.("href"))) {
+              log("anchor.click", String(el.getAttribute("href")))
+              e.preventDefault()
+              e.stopImmediatePropagation()
+              return
+            }
+          }
+        },
+        true
+      )
+    })
+
     // Audio track layer for track detection
     // Audio streaming is handled by FFmpeg PulseAudio capture
     try {
@@ -598,8 +752,11 @@ async function clickWithInnerText(
         }
       }
 
+      // Detect the target button (iframe-aware, exact-text match) WITHOUT
+      // clicking here: a DOM .click() inside page.evaluate bypasses Playwright,
+      // and therefore CloakBrowser's humanize patches, so the join looks robotic.
       continueButton = await page.evaluate(
-        ({ innerText, htmlType, i, click }) => {
+        ({ innerText, htmlType, i }) => {
           let elements: Element[] = []
           const iframes = document.querySelectorAll("iframe")
 
@@ -619,18 +776,37 @@ async function clickWithInnerText(
             elements = Array.from(document.querySelectorAll(htmlType))
           }
 
-          for (const elem of elements) {
-            if (elem.textContent?.trim() === innerText) {
-              if (click) {
-                ;(elem as HTMLElement).click()
-              }
-              return true
-            }
-          }
-          return false
+          return elements.some((elem) => elem.textContent?.trim() === innerText)
         },
-        { innerText, htmlType, i, click }
+        { innerText, htmlType, i }
       )
+
+      // Click strategy depends on whether humanization is still active:
+      //  • During the bot-scored join the page is humanized — CloakBrowser sets
+      //    page._original — so click via Playwright (locator.click routes through
+      //    the patched frame.click) to get real mouse movement + human timing.
+      //  • Once admitted, WaitingRoomState calls dehumanize(), which DELETES
+      //    page._original. From then on click via a raw in-page DOM click, which
+      //    is instant — the post-join view/layout changes must NOT be slow or
+      //    humanized (this was the "layout changes slowly after joining" bug).
+      // The DOM click doubles as the reliability fallback when a humanized click
+      // can't land during the join.
+      if (continueButton && click) {
+        const humanizeActive = Boolean((page as unknown as { _original?: unknown })._original)
+        const humanized =
+          humanizeActive && (await clickButtonHumanized(page, htmlType, innerText))
+        if (!humanized) {
+          await page.evaluate(
+            ({ innerText, htmlType }) => {
+              const el = Array.from(document.querySelectorAll(htmlType)).find(
+                (e) => e.textContent?.trim() === innerText
+              )
+              ;(el as HTMLElement | undefined)?.click()
+            },
+            { innerText, htmlType }
+          )
+        }
+      }
     } catch (e) {
       if (i === iterations - 1) {
         console.error("Error in clickWithInnerText (last attempt):", formatError(e))
@@ -649,6 +825,34 @@ async function clickWithInnerText(
     i++
   }
   return continueButton
+}
+
+/**
+ * Click a button by its exact visible text through Playwright's input pipeline
+ * (locator.click) so CloakBrowser's humanize patches — real mouse movement and
+ * human-like timing — apply during the bot-scored join. Returns false when no
+ * actionable match is found/clickable, letting the caller fall back to a raw
+ * in-page DOM click for reliability.
+ */
+async function clickButtonHumanized(
+  page: Page,
+  htmlType: string,
+  innerText: string
+): Promise<boolean> {
+  // :text-is mirrors the exact-text detection above; :has-text is a fallback for
+  // buttons that wrap the label in a child element.
+  const selectors = [`${htmlType}:text-is("${innerText}")`, `${htmlType}:has-text("${innerText}")`]
+  for (const selector of selectors) {
+    try {
+      const locator = page.locator(selector).first()
+      if ((await locator.count()) === 0) continue
+      await locator.click({ timeout: 2000 })
+      return true
+    } catch {
+      // Try the next strategy, then the caller's DOM-click fallback.
+    }
+  }
+  return false
 }
 
 async function typeBotName(page: Page, botName: string, maxAttempts: number): Promise<void> {

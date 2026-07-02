@@ -94,73 +94,31 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
     ...(proxyUrl ? [`--proxy-server=${proxyUrl}`] : [])
   ]
 
-  // ─── Google Meet: CloakBrowser (stealth Chromium + humanized input) ───────
-  // Meet's reCAPTCHA-Enterprise-style join scoring blocks plain Chromium/CDP
-  // input. dehumanize() restores native Playwright methods once the bot is
-  // admitted (see WaitingRoomState).
-  if (GLOBAL.get().meeting_platform === "meet") {
-    try {
-      console.log("Launching CloakBrowser persistent context (Meet)...")
-
-      // esbuild converts import() to require() under "module: commonjs", which breaks
-      // ESM-only packages. The Function constructor prevents that transpilation.
-      const dynamicImport = new Function("specifier", "return import(specifier)")
-      const { launchPersistentContext } = await dynamicImport("cloakbrowser")
-      const context = await launchPersistentContext({
-        userDataDir: "",
-        headless: false,
-        viewport: { width, height },
-        locale: "en-US",
-        ...(timezoneId ? { timezoneId } : {}),
-        humanize: true,
-        ...(proxyUrl ? { proxy: proxyUrl } : {}),
-        args: [
-          ...sharedArgs,
-          "--disable-gpu",
-          "--disable-software-rasterizer",
-          "--disable-gpu-compositing"
-        ],
-        contextOptions: {
-          permissions: ["microphone", "camera"],
-          ignoreHTTPSErrors: true,
-          acceptDownloads: true,
-          bypassCSP: true
-        }
-      })
-      console.log("✅ CloakBrowser launched (Meet)")
-      return { browser: context as unknown as BrowserContext }
-    } catch (error) {
-      console.error("Failed to open browser:", formatError(error))
-      throw error
-    }
-  }
-
-  // ─── Teams / everything else: official Chrome (pre-CloakBrowser path) ─────
-  // Exact same launch as before CloakBrowser was introduced — no CloakBrowser,
-  // no humanize. Teams has no anti-bot join scoring that requires stealth.
+  const platform = GLOBAL.get().meeting_platform
+  const gpuArgs = ["--disable-gpu", "--disable-software-rasterizer", "--disable-gpu-compositing"]
   try {
-    console.log("Launching persistent context with exact extension args...")
+    console.log(`Launching CloakBrowser persistent context (${platform})...`)
 
-    // Get Chrome path from environment variable or use default
-    const chromePath = envVars.CHROME_PATH
-    console.log(`🔍 Using Chrome path: ${chromePath}`)
-
-    const context = await chromium.launchPersistentContext("", {
+    const dynamicImport = new Function("specifier", "return import(specifier)")
+    const { launchPersistentContext } = await dynamicImport("cloakbrowser")
+    const context = await launchPersistentContext({
+      userDataDir: "",
       headless: false,
       viewport: { width, height },
-      executablePath: chromePath,
-      locale: "en-US", // English UI — the bot matches English selectors (do not localize)
+      locale: "en-US",
       ...(timezoneId ? { timezoneId } : {}),
-      args: sharedArgs,
-      permissions: ["microphone", "camera"],
-      ignoreHTTPSErrors: true,
-      acceptDownloads: true,
-      bypassCSP: true,
-      timeout: 120000
+      humanize: true,
+      ...(proxyUrl ? { proxy: proxyUrl } : {}),
+      args: [...sharedArgs, ...gpuArgs],
+      contextOptions: {
+        permissions: ["microphone", "camera"],
+        ignoreHTTPSErrors: true,
+        acceptDownloads: true,
+        bypassCSP: true
+      }
     })
-
-    console.log("✅ Chrome launched with PulseAudio configuration")
-    return { browser: context }
+    console.log(`✅ CloakBrowser launched (${platform})`)
+    return { browser: context as unknown as BrowserContext }
   } catch (error) {
     console.error("Failed to open browser:", formatError(error))
     throw error
