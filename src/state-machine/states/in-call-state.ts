@@ -85,66 +85,56 @@ export class InCallState extends BaseState {
             throw new Error('Playwright page not initialized')
         }
 
-        try {
-            console.log(
-                'Setting up browser components with integrated HTML cleanup...',
-            )
+        console.log(
+            'Setting up browser components with integrated HTML cleanup...',
+        )
 
-            // Set meetingStartTime for clean video output
-            // This is set here (not in joinMeeting) to ensure clean video output
-            const startTime = Date.now()
-            this.context.startTime = startTime
-            ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
-            console.log(
-                `Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`,
-            )
+        // Set meetingStartTime for clean video output
+        // This is set here (not in joinMeeting) to ensure clean video output
+        const startTime = Date.now()
+        this.context.startTime = startTime
+        ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
+        console.log(
+            `Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`,
+        )
 
-
-            // OPTIMIZATION: Start HTML Cleaner FIRST to surface video on top
-            // This ensures video is at z-index: 900000 before other actions
-            await this.startHtmlCleaning()
-
-            // Start speakers observation in all cases
-            // Speakers observation is independent of video recording
-            try {
-                await this.startSpeakersObservation()
-            } catch (error) {
+        // Make HTML cleanup non-blocking so as to avoid aborting a valid
+        // recording when Teams' page is slow, broken, or unresponsive during setup.
+        // Speakers observation is also independent of recording, so keep it off the
+        // critical setup path and let RecordingState decide when the bot should leave.
+        void this.startHtmlCleaning()
+            .catch((error) =>
                 console.error(
-                    'Failed to start speakers observation:',
+                    'HTML cleanup failed (non-fatal, continuing):',
                     formatError(error),
-                )
-                // Continue even if speakers observation fails
-            }
-
-            // OPTIMIZATION: Move entry message and audio verification to async (non-blocking)
-            // These run after video is surfaced and recording has started
-            this.performNonBlockingActions().catch((err) => {
-                console.error(
-                    'Error in non-blocking actions:',
-                    formatError(err),
-                )
-            })
-
-            // Final gate: if a stop request arrived during setup, bail out
-            // before firing the recording event and transitioning to Recording state
-            if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
-                throw new Error('Stop requested during recording setup — exiting before record')
-            }
-
-            // Notify that recording has started
-            Events.inCallRecording({ start_time: this.context.startTime })
-        } catch (error) {
-            console.error(
-                'Error in setupBrowserComponents:',
-                formatError(error, {
-                    hasPlaywrightPage: !!this.context.playwrightPage,
-                    recordingMode: GLOBAL.get().recording_mode,
-                    meetingProvider: GLOBAL.get().meetingProvider,
-                    botName: GLOBAL.get().bot_name,
-                }),
+                ),
             )
-            throw new Error(`Browser component setup failed: ${error as Error}`)
+            .then(() =>
+                this.startSpeakersObservation().catch((error) =>
+                    console.error(
+                        'Speakers observation failed (non-fatal, continuing):',
+                        formatError(error),
+                    ),
+                ),
+            )
+
+        // OPTIMIZATION: Move entry message and audio verification to async (non-blocking)
+        // These run after video is surfaced and recording has started
+        this.performNonBlockingActions().catch((err) => {
+            console.error(
+                'Error in non-blocking actions:',
+                formatError(err),
+            )
+        })
+
+        // Final gate: if a stop request arrived during setup, bail out
+        // before firing the recording event and transitioning to Recording state
+        if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
+            throw new Error('Stop requested during recording setup — exiting before record')
         }
+
+        // Notify that recording has started
+        Events.inCallRecording({ start_time: this.context.startTime })
     }
 
     /**
