@@ -4,6 +4,7 @@ import { MeetingStateMachine } from './state-machine/machine'
 import { Streaming } from './streaming'
 
 import { enablePrintPageLogs } from './browser/page-logger'
+import type { NetworkUser } from './meeting/teams/network-interception/types'
 import { GLOBAL } from './singleton'
 import { ParticipantState } from './state-machine/types'
 import { SpeakerData } from './types'
@@ -76,6 +77,26 @@ export class SpeakerManager {
             )
             throw error
         }
+    }
+
+    public async handleNetworkSpeakerUpdate(
+        networkUsers: NetworkUser[],
+        timestamp: number,
+    ): Promise<void> {
+        const speakers: SpeakerData[] = networkUsers
+            .filter((user) => !user.isCurrentUser)
+            .map((user, index) => ({
+                name:
+                    user.fullName ||
+                    user.displayName ||
+                    user.name ||
+                    'Unknown',
+                id: index + 1,
+                timestamp,
+                isSpeaking: user.isSpeaking === true,
+            }))
+
+        await this.handleSpeakerUpdate(speakers)
     }
 
     private async logSpeakers(speakers: SpeakerData[]): Promise<void> {

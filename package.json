@@ -24,6 +24,7 @@
         "cloakbrowser": "^0.3.31",
         "express": "4.17.1",
         "https-proxy-agent": "^9.0.0",
+        "pako": "^2.1.0",
         "protobufjs": "^7.6.1",
         "proxy-chain": "^2.7.1",
         "retry-axios": "^2.5.0",

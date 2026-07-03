@@ -1,6 +1,11 @@
+import type { Page } from '@playwright/test'
 import { Events } from '../../events'
 import { HtmlCleaner } from '../../meeting/htmlCleaner'
 import { SpeakersObserver } from '../../meeting/speakersObserver'
+import type {
+    NetworkPayload,
+    NetworkUser,
+} from '../../meeting/teams/network-interception/types'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
@@ -12,6 +17,9 @@ import { sendEntryMessage } from '../../meeting/meet'
 import { verifyMeetAudioCapture } from '../../meeting/meet/audio-capture'
 
 export class InCallState extends BaseState {
+    private isStartingUIObserver = false
+    private lastNetworkSpeakingKey?: string
+
     async execute(): StateExecuteResult {
         const startTime = Date.now()
         console.info(`[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`)
@@ -98,10 +106,9 @@ export class InCallState extends BaseState {
             `Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`,
         )
 
-        // Make HTML cleanup non-blocking so as to avoid aborting a valid
-        // recording when Teams' page is slow, broken, or unresponsive during setup.
-        // Speakers observation is also independent of recording, so keep it off the
-        // critical setup path and let RecordingState decide when the bot should leave.
+        // Make HTML cleanup and speaker observation non-blocking so as to avoid
+        // aborting a valid recording when Teams' page is slow, broken, or
+        // unresponsive during setup. RecordingState owns leave decisions.
         void this.startHtmlCleaning()
             .catch((error) =>
                 console.error(
@@ -109,14 +116,13 @@ export class InCallState extends BaseState {
                     formatError(error),
                 ),
             )
-            .then(() =>
-                this.startSpeakersObservation().catch((error) =>
-                    console.error(
-                        'Speakers observation failed (non-fatal, continuing):',
-                        formatError(error),
-                    ),
-                ),
-            )
+
+        void this.startSpeakersObservation().catch((error) =>
+            console.error(
+                'Speakers observation failed (non-fatal, continuing):',
+                formatError(error),
+            ),
+        )
 
         // OPTIMIZATION: Move entry message and audio verification to async (non-blocking)
         // These run after video is surfaced and recording has started
@@ -194,21 +200,112 @@ export class InCallState extends BaseState {
             return
         }
 
-        // Create and start integrated speakers observer
-        const speakersObserver = new SpeakersObserver(
-            GLOBAL.get().meetingProvider,
-        )
-
-        // Callback to handle speakers changes
-        const onSpeakersChange = async (speakers: any[]) => {
+        if (GLOBAL.get().meetingProvider === 'Teams') {
             try {
-                await SpeakerManager.getInstance().handleSpeakerUpdate(speakers)
+                const networkSetupSuccess =
+                    await this.tryTeamsNetworkInterception()
+                if (networkSetupSuccess) {
+                    console.log(
+                        '✅ Network-based speaker detection enabled for Teams',
+                    )
+                    return
+                }
             } catch (error) {
-                console.error('Error handling speaker update:', formatError(error))
+                console.warn(
+                    '⚠️ Teams network speaker detection failed, falling back to UI-based detection:',
+                    formatError(error),
+                )
             }
         }
 
+        await this.startUIBasedObservation()
+    }
+
+    private async tryTeamsNetworkInterception(): Promise<boolean> {
+        if (!this.context.playwrightPage) {
+            return false
+        }
+
+        const teamsNetworkInterception = await import(
+            '../../meeting/teams/network-interception'
+        )
+        const onNetworkSpeakersChange = async (payload: NetworkPayload) => {
+            try {
+                const networkUsers = payload.users as NetworkUser[]
+                const speakingNames = networkUsers
+                    .filter((u) => u.isSpeaking)
+                    .map((u) => u.name)
+                const speakingKey = speakingNames.slice().sort().join('|')
+                if (speakingKey !== this.lastNetworkSpeakingKey) {
+                    this.lastNetworkSpeakingKey = speakingKey
+                    console.log(
+                        `[NetworkSpeaker][Teams] 🗣️ speaking=[${speakingNames.join(', ') || '(none)'}] source=${payload.source} participants=${networkUsers.length}`,
+                    )
+                }
+
+                await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
+                    networkUsers,
+                    payload.timestamp,
+                )
+            } catch (error) {
+                console.error(
+                    'Error handling Teams network speaker update:',
+                    formatError(error),
+                )
+            }
+        }
+
+        const success =
+            await teamsNetworkInterception.setupTeamsNetworkInterceptionCallback(
+                this.context.playwrightPage as Page,
+                onNetworkSpeakersChange,
+            )
+        if (!success) {
+            return false
+        }
+
+        const verified =
+            await teamsNetworkInterception.verifyTeamsNetworkInterception(
+                this.context.playwrightPage as Page,
+            )
+        if (!verified) {
+            console.warn(
+                '[Teams NetworkInterceptor] Browser interceptor verification failed',
+            )
+            return false
+        }
+
+        return true
+    }
+
+    private async startUIBasedObservation(): Promise<void> {
+        if (this.isStartingUIObserver) {
+            console.log('UI speakers observer startup already in progress')
+            return
+        }
+
+        this.isStartingUIObserver = true
+
         try {
+            // Create and start integrated speakers observer
+            const speakersObserver = new SpeakersObserver(
+                GLOBAL.get().meetingProvider,
+            )
+
+            // Callback to handle speakers changes
+            const onSpeakersChange = async (speakers: any[]) => {
+                try {
+                    await SpeakerManager.getInstance().handleSpeakerUpdate(
+                        speakers,
+                    )
+                } catch (error) {
+                    console.error(
+                        'Error handling speaker update:',
+                        formatError(error),
+                    )
+                }
+            }
+
             await speakersObserver.startObserving(
                 this.context.playwrightPage,
                 GLOBAL.get().recording_mode,
@@ -226,6 +323,8 @@ export class InCallState extends BaseState {
                 error,
             )
             throw error
+        } finally {
+            this.isStartingUIObserver = false
         }
     }
 
