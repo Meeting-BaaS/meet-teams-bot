@@ -256,6 +256,32 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
   const timezoneId = getExitGeo()?.timezone ?? undefined
   if (timezoneId) console.log(`[Browser] Aligning timezone with exit IP: ${timezoneId}`)
 
+  // Chromium collapses a REPEATED switch to its LAST value — base::CommandLine
+  // stores one value per switch name, and base::FeatureList reads it once. So
+  // --disable-features / --disable-blink-features must each be passed exactly
+  // ONCE as a single comma-joined value; a second occurrence silently discards
+  // every earlier one. Keep these two arrays as the single source of truth.
+  const disableFeatures = [
+    "AudioServiceSandbox", // audio service sandbox off for virtual audio devices
+    // Suppress Chrome's "Sign in to Chrome?" / "Turn on sync" native dialogs that
+    // appear when a Workspace account authenticates (unreachable by automation).
+    "SigninInterception", // DICE web sign-in intercept bubble ("Sign in to Chrome?")
+    "IdentityConsistency", // auto-linking cookie-jar identity to a Chrome profile
+    "ChromeBrowserCloudManagement",
+    "SignInPromo",
+    "ChromeWhatsNewUI",
+    "AccountConsistency",
+    "TranslateUI", // translation UI — save resources
+    "AutofillServerCommunication", // autofill network chatter
+    "MediaRouter", // media router overhead
+    "TrustedScriptTypes",
+    "TrustedHTML"
+  ]
+  const disableBlinkFeatures = [
+    "AutomationControlled", // hide navigator.webdriver automation signal (anti-detection)
+    "TrustedDOMTypes"
+  ]
+
   const sharedArgs = [
     // Window size and position - must match Xvfb display exactly
     `--window-size=${windowWidth},${windowHeight}`,
@@ -273,7 +299,6 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     "--use-pulseaudio", // Force Chromium to use PulseAudio
     "--enable-audio-service-sandbox=false", // Disable audio service sandbox for virtual devices
     "--audio-buffer-size=2048", // Set buffer size for better audio handling
-    "--disable-features=AudioServiceSandbox", // Additional sandbox disable
     "--autoplay-policy=no-user-gesture-required", // Allow autoplay for meeting platforms
 
     // WebRTC optimizations (required for meeting audio/video capture)
@@ -283,21 +308,14 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     "--enable-webrtc-capture-audio", // Ensure WebRTC can capture audio
     "--force-webrtc-ip-handling-policy=default", // Better WebRTC handling
 
-    // Suppress Chrome's "Sign in to Chrome?" / "Turn on sync" dialogs that
-    // appear when a Workspace account authenticates. These are native Chrome UI
-    // dialogs unreachable by Playwright automation.
+    // Sign-in dialog suppression (values folded into disableFeatures above)
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-sync",
     "--disable-component-update",
-    // SigninInterception = DICE web sign-in intercept bubble ("Sign in to Chrome?")
-    // IdentityConsistency = browser auto-linking cookie-jar identity to a Chrome profile
-    // --disable-signin = fully disables browser sign-in at the policy level
-    "--disable-signin",
-    "--disable-features=SigninInterception,IdentityConsistency,ChromeBrowserCloudManagement,SignInPromo,ChromeWhatsNewUI,AccountConsistency",
+    "--disable-signin", // fully disables browser sign-in at the policy level
 
     // Performance and resource management optimizations
-    "--disable-blink-features=AutomationControlled",
     "--disable-background-timer-throttling",
     "--enable-features=SharedArrayBuffer",
     "--memory-pressure-off", // Disable memory pressure handling for consistent performance
@@ -305,21 +323,19 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     // --max_old_space_size argument is not a Chromium switch and is silently ignored.
     "--js-flags=--max-old-space-size=4096",
     "--disable-background-networking", // Reduce background network activity
-    "--disable-features=TranslateUI", // Disable translation features to save resources
-    "--disable-features=AutofillServerCommunication", // Disable autofill to reduce network usage
     "--disable-component-extensions-with-background-pages", // Reduce background extension overhead
     "--disable-default-apps", // Disable default Chrome apps
     "--renderer-process-limit=4", // Limit renderer processes to prevent resource exhaustion
     "--disable-ipc-flooding-protection", // Improve IPC performance for high-frequency operations
     "--aggressive-cache-discard", // Enable aggressive cache management for memory efficiency
-    "--disable-features=MediaRouter", // Disable media router for reduced overhead
 
     // Certificate and security optimizations for meeting platforms
     "--ignore-certificate-errors",
     "--allow-insecure-localhost",
-    "--disable-blink-features=TrustedDOMTypes",
-    "--disable-features=TrustedScriptTypes",
-    "--disable-features=TrustedHTML",
+
+    // Single authoritative occurrence of each repeated switch (see note above)
+    `--disable-features=${disableFeatures.join(",")}`,
+    `--disable-blink-features=${disableBlinkFeatures.join(",")}`,
 
     // Additional audio debugging (remove in production)
     "--enable-logging=stderr",
