@@ -8,6 +8,7 @@ import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason, MeetingStateType } from "./state-machine/types"
 import type { SendChatMessageParams, StopRecordParams } from "./types"
 import { formatError } from "./utils/Logger"
+import { PiiRedactor } from "./utils/PiiRedactor"
 
 const HOST = envVars.HOST
 const PORT = envVars.PORT
@@ -259,7 +260,9 @@ export async function server() {
         context.chatObserver,
       )
 
-      console.log("[Server] Chat message result:", JSON.stringify(result))
+      // Chat payloads are PII: message content becomes <CHAT_TEXT> and any
+      // sender name is masked via the registered speaker dictionary.
+      console.log("[Server] Chat message result:", PiiRedactor.redactChatLine(JSON.stringify(result)))
 
       if (result.success === false) {
         return res.status(result.status).json({ error: result.error })

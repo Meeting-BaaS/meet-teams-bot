@@ -61,6 +61,11 @@ const NOISE_PATTERNS = [
 ]
 
 export function listenPage(page: Page) {
+  // Note on PII: everything relayed here goes through the console.*
+  // overrides installed by setupConsoleLogger(), whose winston format
+  // passes every formatted line through PiiRedactor.redact() before any
+  // transport (stdout/logs.log and bot.log). Page text (names, emails,
+  // URLs) is therefore redacted at the choke point, not here.
   page.on("console", async (message) => {
     try {
       const text = message.text()
