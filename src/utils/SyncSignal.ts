@@ -60,10 +60,10 @@ async function generateCapturedAudioBeep(
     duration: number,
     volume: number,
 ): Promise<void> {
-    const speakerSink = process.env.VIRTUAL_SPEAKER
+    const speakerSink = getVirtualSpeakerSink()
     if (!speakerSink) {
         console.warn(
-            '⚠️ VIRTUAL_SPEAKER is not set, falling back to browser WebAudio sync beep',
+            '⚠️ Virtual speaker sink is not set, falling back to browser WebAudio sync beep',
         )
         await generateAudioBeep(page, frequency, duration, volume)
         return
@@ -78,6 +78,23 @@ async function generateCapturedAudioBeep(
         )
         await generateAudioBeep(page, frequency, duration, volume)
     }
+}
+
+function getVirtualSpeakerSink(): string | undefined {
+    if (process.env.VIRTUAL_SPEAKER) {
+        return process.env.VIRTUAL_SPEAKER
+    }
+
+    if (process.env.PULSE_SINK) {
+        return process.env.PULSE_SINK
+    }
+
+    const monitor = process.env.VIRTUAL_SPEAKER_MONITOR
+    if (monitor?.endsWith('.monitor')) {
+        return monitor.slice(0, -'.monitor'.length)
+    }
+
+    return undefined
 }
 
 function generatePulseAudioBeep(
@@ -98,48 +115,121 @@ function generatePulseAudioBeep(
         '-af',
         `volume=${volume}`,
         '-f',
-        'pulse',
-        `pulse:${speakerSink}`,
+        's16le',
+        '-ac',
+        '1',
+        '-ar',
+        '44100',
+        '-',
+    ]
+    const pacatArgs = [
+        '--playback',
+        `--device=${speakerSink}`,
+        '--format=s16le',
+        '--channels=1',
+        '--rate=44100',
+        '--raw',
     ]
 
     console.log(
-        `🔊 PulseAudio sync beep: ${frequency}Hz for ${duration}ms on ${speakerSink}`,
+        `🔊 PulseAudio sync beep: ${frequency}Hz for ${duration}ms on ${speakerSink} via pacat`,
     )
 
     return new Promise((resolve, reject) => {
-        const child = spawn('ffmpeg', ffmpegArgs, {
-            stdio: ['ignore', 'ignore', 'pipe'],
+        const env = {
+            ...process.env,
+            XDG_RUNTIME_DIR:
+                process.env.XDG_RUNTIME_DIR || '/root/.config/pulse',
+            PULSE_RUNTIME_PATH:
+                process.env.PULSE_RUNTIME_PATH ||
+                process.env.XDG_RUNTIME_DIR ||
+                '/root/.config/pulse',
+        }
+        const ffmpeg = spawn('ffmpeg', ffmpegArgs, {
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
         })
-        let stderr = ''
+        const pacat = spawn('pacat', pacatArgs, {
+            env,
+            stdio: ['pipe', 'ignore', 'pipe'],
+        })
+        let ffmpegStderr = ''
+        let pacatStderr = ''
+        let ffmpegExitCode: number | null = null
+        let pacatExitCode: number | null = null
+        let settled = false
+
+        ffmpeg.stdout?.pipe(pacat.stdin!)
+
         const timeout = setTimeout(() => {
-            child.kill('SIGTERM')
-            reject(
-                new Error(
-                    `ffmpeg pulse sync beep timed out after ${duration + 3000}ms`,
-                ),
+            ffmpeg.kill('SIGTERM')
+            pacat.kill('SIGTERM')
+            finish(
+                new Error(`PulseAudio sync beep timed out after ${duration + 3000}ms`),
             )
         }, duration + 3000)
 
-        child.stderr?.on('data', (chunk) => {
-            stderr += chunk.toString()
-        })
+        const finish = (error?: Error) => {
+            if (settled) {
+                return
+            }
+            settled = true
+            clearTimeout(timeout)
+            if (error) {
+                reject(error)
+                return
+            }
+            resolve()
+        }
 
-        child.on('error', (error) => {
-            clearTimeout(timeout)
-            reject(error)
-        })
-        child.on('close', (code) => {
-            clearTimeout(timeout)
-            if (code === 0) {
-                resolve()
+        const maybeFinish = () => {
+            if (ffmpegExitCode === null || pacatExitCode === null) {
                 return
             }
 
-            reject(
-                new Error(
-                    `ffmpeg pulse sync beep exited with code ${code}: ${stderr.trim()}`,
-                ),
-            )
+            if (ffmpegExitCode !== 0 || pacatExitCode !== 0) {
+                finish(
+                    new Error(
+                        [
+                            `PulseAudio sync beep failed: ffmpeg=${ffmpegExitCode}, pacat=${pacatExitCode}`,
+                            ffmpegStderr.trim() &&
+                                `ffmpeg stderr: ${ffmpegStderr.trim()}`,
+                            pacatStderr.trim() &&
+                                `pacat stderr: ${pacatStderr.trim()}`,
+                        ]
+                            .filter(Boolean)
+                            .join('; '),
+                    ),
+                )
+                return
+            }
+
+            finish()
+        }
+
+        ffmpeg.stderr?.on('data', (chunk) => {
+            ffmpegStderr += chunk.toString()
+        })
+        pacat.stderr?.on('data', (chunk) => {
+            pacatStderr += chunk.toString()
+        })
+
+        ffmpeg.on('error', (error) => {
+            pacat.kill('SIGTERM')
+            finish(error)
+        })
+        pacat.on('error', (error) => {
+            ffmpeg.kill('SIGTERM')
+            finish(error)
+        })
+        ffmpeg.on('close', (code) => {
+            ffmpegExitCode = code
+            pacat.stdin?.end()
+            maybeFinish()
+        })
+        pacat.on('close', (code) => {
+            pacatExitCode = code
+            maybeFinish()
         })
     })
 }
