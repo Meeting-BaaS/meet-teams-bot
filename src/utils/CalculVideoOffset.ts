@@ -24,6 +24,13 @@ const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
 // detector makes an early false positive very unlikely (pre-join UI isn't
 // fullscreen green).
 const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
+// The flash can also land LATE: on a heavy Meet page the paint is delayed by the
+// renderer/compositor. Prod logs show flashes up to ~450ms after the expected
+// timestamp — right at the old +0.5s edge — and recordings where the flash was
+// missed entirely (shipping with zero A/V correction). Give the flash more
+// forward room too; the strict green + scene-change detector keeps false
+// positives unlikely (in-meeting content isn't fullscreen #00FF00).
+const VIDEO_SYNC_WINDOW_FWD_SEC = 1.0
 
 interface SyncOffset {
   /** Audio signal timestamp in seconds */
@@ -53,9 +60,9 @@ export async function calculateVideoOffset(
 ): Promise<SyncOffset> {
   const searchMin = Math.max(0, expectedSyncSec - SYNC_WINDOW_HALF_WIDTH_SEC)
   const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
-  // Wider, downward-biased window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC).
+  // Wider window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC / _FWD_SEC).
   const videoSearchMin = Math.max(0, expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC)
-  const videoSearchMax = searchMax
+  const videoSearchMax = expectedSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
 
   console.log(
     `🔍 Analyzing sync signals (audio ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s, video ${videoSearchMin.toFixed(2)}s – ${videoSearchMax.toFixed(2)}s)...`
@@ -153,9 +160,17 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
   // Scan slightly beyond the window to capture events right at the boundary.
   const scanUntil = searchMax + 1
 
+  // Band-limit around the 1000Hz sync tone before detecting activity. Without this,
+  // ANY audio above the threshold in the window is taken as the beep (a join chime,
+  // someone talking), and conversely continuous meeting audio before the beep means
+  // no silence_end ever fires and the beep is missed entirely. The beep is a pure
+  // near-full-scale 1kHz tone, so it survives the narrow band intact while broadband
+  // speech/chimes are strongly attenuated.
+  const beepBandFilter = `highpass=f=${EXPECTED_FREQUENCY - 150},lowpass=f=${EXPECTED_FREQUENCY + 150}`
+
   try {
-    // Method 1: Use silence detection to find audio activity
-    const silenceCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
+    // Method 1: Use silence detection to find audio activity in the beep band
+    const silenceCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
 
     try {
       const { stdout: silenceOutput } = await execAsync(silenceCmd)
@@ -177,8 +192,8 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
       )
     }
 
-    // Method 2: More sensitive silence detection
-    const detailedCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-50dB:duration=0.005" -f null -t ${scanUntil} - 2>&1 | grep "silence_end"`
+    // Method 2: More sensitive silence detection (still band-limited to the tone)
+    const detailedCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-50dB:duration=0.005" -f null -t ${scanUntil} - 2>&1 | grep "silence_end"`
     try {
       const { stdout: detailedOutput } = await execAsync(detailedCmd)
       const detailedLines = detailedOutput.split("\n").filter((line) => line.includes("silence_end"))

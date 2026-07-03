@@ -387,6 +387,12 @@ export class ScreenRecorder extends EventEmitter {
       "-map",
       "1:a:0",
       "-vn",
+      // Stretch/pad audio to match capture timestamps: PulseAudio xruns and
+      // sample-clock drift otherwise accumulate against the wall-clock-paced
+      // video (x11grab dups/drops frames to hold 30fps), desyncing long
+      // recordings even when the start was aligned perfectly.
+      "-af",
+      "aresample=async=1:first_pts=0",
       "-sample_fmt",
       "s16",
       "-ac",
@@ -1263,6 +1269,16 @@ export class ScreenRecorder extends EventEmitter {
 
     const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath, expectedSyncSec)
     console.log(`🎯 Calculated A/V stream offset: ${syncResult.offsetSeconds.toFixed(3)}s`)
+    if (syncResult.confidence < 0.9) {
+      // Alertable marker: sync-signal detection failed (fully or partially), so the
+      // A/V offset and capture-startup corrections below run degraded. Grep-able as
+      // SYNC_CONFIDENCE_LOW in bot logs.
+      console.warn(
+        `⚠️ SYNC_CONFIDENCE_LOW confidence=${syncResult.confidence.toFixed(2)} ` +
+          `audioTs=${syncResult.audioTimestamp.toFixed(3)} videoTs=${syncResult.videoTimestamp.toFixed(3)} ` +
+          `expected=${expectedSyncSec.toFixed(3)} — proceeding without measured correction`
+      )
+    }
     const hasMeetingStartTime = this.meetingStartTime > 0
 
     // 2. Check if meetingStartTime is properly set - if not, bot was not accepted
@@ -1292,7 +1308,30 @@ export class ScreenRecorder extends EventEmitter {
     //    This is purely timestamp arithmetic — no heuristic needed.
     //    For authenticated bots, meetingStartTime can be < recordingStartTime (the bot
     //    joins before FFmpeg finishes initialising); clamp to 0 in that case.
-    const rawCalcOffsetVideo = (this.meetingStartTime - this.recordingStartTime) / 1000
+    //
+    //    (meetingStartTime - recordingStartTime) is wall-clock arithmetic, but the trim
+    //    offset is applied in MEDIA time. FFmpeg needs time after spawn() to open
+    //    x11grab and capture its first frame, so media t=0 corresponds to
+    //    recordingStartTime + startupDelay, not recordingStartTime. Without correcting
+    //    for that, the whole video (and the diarization timeline, which counts from
+    //    meetingStartTime) leads the media by the startup delay for the entire meeting.
+    //    The flash measurement gives us that delay directly: the sync signal was
+    //    emitted expectedSyncSec after recordingStartTime (wall clock) but appears at
+    //    videoTimestamp in the file (media time). Only trust it when both signals were
+    //    detected (confidence >= 0.9) — the single-signal fallback fabricates
+    //    videoTimestamp from the beep, which would poison this correction.
+    const measuredStartupDelaySec =
+      syncResult.confidence >= 0.9 ? expectedSyncSec - syncResult.videoTimestamp : 0
+    // x11grab startup can't be negative and is typically 0.1–0.5s; clamp against
+    // detection outliers (VIDEO_SYNC_WINDOW_BACK_SEC allows matches up to 2s early).
+    const startupDelaySec = Math.min(Math.max(measuredStartupDelaySec, 0), 2.0)
+    if (measuredStartupDelaySec !== startupDelaySec) {
+      console.warn(
+        `⚠️ Measured capture startup delay ${measuredStartupDelaySec.toFixed(3)}s outside [0, 2.0]s — clamped to ${startupDelaySec.toFixed(3)}s`
+      )
+    }
+    const rawCalcOffsetVideo =
+      (this.meetingStartTime - this.recordingStartTime) / 1000 - startupDelaySec
     const calcOffsetVideo = Math.max(0, rawCalcOffsetVideo)
 
     console.log("📊 Debug values:")
@@ -1301,10 +1340,11 @@ export class ScreenRecorder extends EventEmitter {
     console.log(`   expectedSyncSec: ${expectedSyncSec.toFixed(3)}s`)
     console.log(`   meetingStartTime: ${this.meetingStartTime}`)
     console.log(`   recordingStartTime: ${this.recordingStartTime}`)
+    console.log(`   capture startup delay: ${startupDelaySec.toFixed(3)}s`)
     console.log(`   calcOffsetVideo (raw): ${rawCalcOffsetVideo.toFixed(3)}s → clamped: ${calcOffsetVideo.toFixed(3)}s`)
     if (rawCalcOffsetVideo < 0) {
       console.warn(
-        `⚠️ meetingStartTime preceded recordingStartTime by ${(-rawCalcOffsetVideo).toFixed(3)}s (authenticated bot fast-join). Trimming from t=0.`
+        `⚠️ Meeting start precedes media t=0 by ${(-rawCalcOffsetVideo).toFixed(3)}s (authenticated bot fast-join and/or capture startup delay). Trimming from t=0.`
       )
     }
 
