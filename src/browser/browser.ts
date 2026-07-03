@@ -9,6 +9,25 @@ function buildChromeArgs(
     windowHeight: number,
     proxyUrl?: string | null,
 ): string[] {
+    const disabledFeatures = [
+        'AudioServiceSandbox',
+        'SigninInterception',
+        'IdentityConsistency',
+        'ChromeBrowserCloudManagement',
+        'SignInPromo',
+        'ChromeWhatsNewUI',
+        'AccountConsistency',
+        'TranslateUI',
+        'AutofillServerCommunication',
+        'MediaRouter',
+        'TrustedScriptTypes',
+        'TrustedHTML',
+    ]
+    const disabledBlinkFeatures = [
+        'AutomationControlled',
+        'TrustedDOMTypes',
+    ]
+
     return [
         // Window size and position - must match Xvfb display exactly
         `--window-size=${windowWidth},${windowHeight}`,
@@ -26,7 +45,6 @@ function buildChromeArgs(
         '--use-pulseaudio', // Force Chromium to use PulseAudio
         '--enable-audio-service-sandbox=false', // Disable audio service sandbox for virtual devices
         '--audio-buffer-size=2048', // Set buffer size for better audio handling
-        '--disable-features=AudioServiceSandbox', // Additional sandbox disable
         '--autoplay-policy=no-user-gesture-required', // Allow autoplay for meeting platforms
 
         // WebRTC optimizations (required for meeting audio/video capture)
@@ -43,30 +61,28 @@ function buildChromeArgs(
         '--disable-sync',
         '--disable-component-update',
         '--disable-signin',
-        '--disable-features=SigninInterception,IdentityConsistency,ChromeBrowserCloudManagement,SignInPromo,ChromeWhatsNewUI,AccountConsistency',
 
         // Performance and resource management optimizations
-        '--disable-blink-features=AutomationControlled',
         '--disable-background-timer-throttling',
         '--enable-features=SharedArrayBuffer',
         '--memory-pressure-off', // Disable memory pressure handling for consistent performance
         '--max_old_space_size=4096', // Increase V8 heap size to 4GB for large meetings
         '--disable-background-networking', // Reduce background network activity
-        '--disable-features=TranslateUI', // Disable translation features to save resources
-        '--disable-features=AutofillServerCommunication', // Disable autofill to reduce network usage
         '--disable-component-extensions-with-background-pages', // Reduce background extension overhead
         '--disable-default-apps', // Disable default Chrome apps
         '--renderer-process-limit=4', // Limit renderer processes to prevent resource exhaustion
         '--disable-ipc-flooding-protection', // Improve IPC performance for high-frequency operations
         '--aggressive-cache-discard', // Enable aggressive cache management for memory efficiency
-        '--disable-features=MediaRouter', // Disable media router for reduced overhead
 
         // Certificate and security optimizations for meeting platforms
         '--ignore-certificate-errors',
         '--allow-insecure-localhost',
-        '--disable-blink-features=TrustedDOMTypes',
-        '--disable-features=TrustedScriptTypes',
-        '--disable-features=TrustedHTML',
+
+        // Chromium command-line switches are single-valued: repeated
+        // --disable-features / --disable-blink-features entries are overwritten
+        // by the last occurrence, so keep each list merged into one flag.
+        `--disable-features=${disabledFeatures.join(',')}`,
+        `--disable-blink-features=${disabledBlinkFeatures.join(',')}`,
 
         // Additional audio debugging (remove in production)
         '--enable-logging=stderr',
