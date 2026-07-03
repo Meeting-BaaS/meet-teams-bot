@@ -121,6 +121,11 @@ interface DictionaryEntry {
   placeholder: string
 }
 
+// Cap on distinct registered speaker names (guards against unbounded growth
+// from adversarial or degenerate participant lists).
+const MAX_SPEAKERS = 500
+let speakerOverflowWarned = false
+
 class PiiRedactorService {
   /** speaker name -> stable placeholder (insertion order => <SPEAKER_n>) */
   private speakerMap = new Map<string, string>()
@@ -145,6 +150,15 @@ class PiiRedactorService {
     if (this.botNames.has(key)) return "<BOT_NAME>"
     let placeholder = this.speakerMap.get(key)
     if (!placeholder) {
+      if (this.speakerMap.size >= MAX_SPEAKERS) {
+        if (!speakerOverflowWarned) {
+          speakerOverflowWarned = true
+          console.warn(
+            `PiiRedactor: speaker registry full (${MAX_SPEAKERS}), new names map to <SPEAKER_OVERFLOW>`
+          )
+        }
+        return "<SPEAKER_OVERFLOW>"
+      }
       placeholder = `<SPEAKER_${this.speakerMap.size + 1}>`
       this.speakerMap.set(key, placeholder)
       this.dictionary = null
@@ -211,38 +225,43 @@ class PiiRedactorService {
     if (this.isDisabled()) return text
     if (typeof text !== "string" || text.length === 0) return text
 
-    let out = text
+    try {
+      let out = text
 
-    // URLs first: they can embed emails, names and tokens that would
-    // otherwise be partially matched by later passes.
-    out = out.replace(MEETING_URL_RE, urlReplacer("<MEETING_URL>"))
-    out = out.replace(STREAM_URL_RE, urlReplacer("<STREAM_URL>"))
-    out = out.replace(URL_RE, urlReplacer("<URL>"))
+      // URLs first: they can embed emails, names and tokens that would
+      // otherwise be partially matched by later passes.
+      out = out.replace(MEETING_URL_RE, urlReplacer("<MEETING_URL>"))
+      out = out.replace(STREAM_URL_RE, urlReplacer("<STREAM_URL>"))
+      out = out.replace(URL_RE, urlReplacer("<URL>"))
 
-    // Credentials.
-    out = out.replace(JWT_RE, "<TOKEN>")
-    out = out.replace(BEARER_RE, "$1<TOKEN>")
-    out = out.replace(AWS_KEY_RE, "<AWS_KEY>")
-    out = out.replace(SECRET_RE, (match, offset: number, whole: string) => {
-      const context = whole.slice(Math.max(0, offset - 120), offset + match.length + 40)
-      return SECRET_CONTEXT_RE.test(context) ? "<SECRET>" : match
-    })
-    out = out.replace(KEY_VALUE_RE, "$1$2<TOKEN>")
+      // Credentials.
+      out = out.replace(JWT_RE, "<TOKEN>")
+      out = out.replace(BEARER_RE, "$1<TOKEN>")
+      out = out.replace(AWS_KEY_RE, "<AWS_KEY>")
+      out = out.replace(SECRET_RE, (match, offset: number, whole: string) => {
+        const context = whole.slice(Math.max(0, offset - 120), offset + match.length + 40)
+        return SECRET_CONTEXT_RE.test(context) ? "<SECRET>" : match
+      })
+      out = out.replace(KEY_VALUE_RE, "$1$2<TOKEN>")
 
-    // Identifiers.
-    out = out.replace(USER_ID_RE, "$1<USER_ID>")
-    out = out.replace(EMAIL_RE, "<EMAIL>")
-    out = out.replace(PHONE_INTL_RE, "<PHONE>")
-    out = out.replace(PHONE_US_PAREN_RE, "<PHONE>")
-    out = out.replace(PHONE_US_SEP_RE, "<PHONE>")
-    out = out.replace(IP_V4_RE, "<IP>")
+      // Identifiers.
+      out = out.replace(USER_ID_RE, "$1<USER_ID>")
+      out = out.replace(EMAIL_RE, "<EMAIL>")
+      out = out.replace(PHONE_INTL_RE, "<PHONE>")
+      out = out.replace(PHONE_US_PAREN_RE, "<PHONE>")
+      out = out.replace(PHONE_US_SEP_RE, "<PHONE>")
+      out = out.replace(IP_V4_RE, "<IP>")
 
-    // Dictionary pass (bot name first, then speakers, longest-first).
-    for (const entry of this.getDictionary()) {
-      out = out.replace(entry.regex, entry.placeholder)
+      // Dictionary pass (bot name first, then speakers, longest-first).
+      for (const entry of this.getDictionary()) {
+        out = out.replace(entry.regex, entry.placeholder)
+      }
+
+      return out
+    } catch (_error) {
+      // Fail closed: never return the original (potentially PII-bearing) text.
+      return "<REDACTION_FAILED>"
     }
-
-    return out
   }
 
   /**
