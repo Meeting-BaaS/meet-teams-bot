@@ -153,9 +153,17 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
   // Scan slightly beyond the window to capture events right at the boundary.
   const scanUntil = searchMax + 1
 
+  // Band-limit around the 1000Hz sync tone before detecting activity. Without this,
+  // ANY audio above the threshold in the window is taken as the beep (a join chime,
+  // someone talking), and conversely continuous meeting audio before the beep means
+  // no silence_end ever fires and the beep is missed entirely. The beep is a pure
+  // near-full-scale 1kHz tone, so it survives the narrow band intact while broadband
+  // speech/chimes are strongly attenuated.
+  const beepBandFilter = `highpass=f=${EXPECTED_FREQUENCY - 150},lowpass=f=${EXPECTED_FREQUENCY + 150}`
+
   try {
-    // Method 1: Use silence detection to find audio activity
-    const silenceCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
+    // Method 1: Use silence detection to find audio activity in the beep band
+    const silenceCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
 
     try {
       const { stdout: silenceOutput } = await execAsync(silenceCmd)
@@ -177,8 +185,8 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
       )
     }
 
-    // Method 2: More sensitive silence detection
-    const detailedCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-50dB:duration=0.005" -f null -t ${scanUntil} - 2>&1 | grep "silence_end"`
+    // Method 2: More sensitive silence detection (still band-limited to the tone)
+    const detailedCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-50dB:duration=0.005" -f null -t ${scanUntil} - 2>&1 | grep "silence_end"`
     try {
       const { stdout: detailedOutput } = await execAsync(detailedCmd)
       const detailedLines = detailedOutput.split("\n").filter((line) => line.includes("silence_end"))
