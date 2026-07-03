@@ -4,6 +4,7 @@ import winston from "winston"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { PathManager } from "./PathManager"
+import { PiiRedactor } from "./PiiRedactor"
 import { S3Uploader, s3cp } from "./S3Uploader"
 
 /**
@@ -44,13 +45,16 @@ const currentBotLogFile: string | null = null
 // Store current caller info globally
 let currentCaller = "unknown:0"
 
-// Base format shared between console and file logging
+// Base format shared between console and file logging.
+// Every formatted line passes through the PII redactor before hitting any
+// transport: the file transport writes bot.log directly, and in prod the
+// console transport's stdout is captured to logs.log and uploaded to S3.
 const baseFormat = winston.format.combine(
   winston.format.timestamp({
     format: () => new Date().toISOString()
   }),
   winston.format.printf(({ timestamp, level, message }) => {
-    return `${timestamp}  ${level} ${currentCaller}: ${message}`
+    return PiiRedactor.redact(`${timestamp}  ${level} ${currentCaller}: ${message}`)
   })
 )
 
@@ -308,6 +312,24 @@ export async function uploadScreenshotsToS3(): Promise<void> {
   }
 }
 
+/**
+ * Safety net before S3 upload: re-run the PII redactor over a whole log
+ * file. sound.log and speaker_separation.log are already redacted at write
+ * time, but this catches any line written before the redactor learned a
+ * name (redaction is idempotent, placeholders pass through unchanged).
+ */
+async function redactLogFileForUpload(filePath: string): Promise<void> {
+  try {
+    const content = await fs.promises.readFile(filePath, "utf-8")
+    const redacted = PiiRedactor.redact(content)
+    if (redacted !== content) {
+      await fs.promises.writeFile(filePath, redacted)
+    }
+  } catch (error) {
+    console.error(`Failed to redact log file before upload: ${filePath}`, formatError(error))
+  }
+}
+
 export async function uploadLogsToS3(): Promise<void> {
   try {
     const pathManager = PathManager.getInstance()
@@ -334,6 +356,7 @@ export async function uploadLogsToS3(): Promise<void> {
     // Upload sound log file (internal log file)
     if (fs.existsSync(soundLogPath)) {
       logger.info("Uploading sound logs to S3...")
+      await redactLogFileForUpload(soundLogPath)
       await s3cp(soundLogPath, s3SoundLogPath)
       logger.info("Sound logs uploaded to S3")
     } else {
@@ -343,6 +366,7 @@ export async function uploadLogsToS3(): Promise<void> {
     // Upload speaker separation log file
     if (fs.existsSync(speakerLogPath)) {
       logger.info("Uploading speaker separation logs to S3...")
+      await redactLogFileForUpload(speakerLogPath)
       await s3cp(speakerLogPath, s3SpeakerLogPath)
       logger.info("Speaker separation logs uploaded to S3")
     } else {
