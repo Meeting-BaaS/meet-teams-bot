@@ -318,15 +318,22 @@ export async function uploadScreenshotsToS3(): Promise<void> {
  * time, but this catches any line written before the redactor learned a
  * name (redaction is idempotent, placeholders pass through unchanged).
  */
-async function redactLogFileForUpload(filePath: string): Promise<void> {
+async function redactLogFileForUpload(filePath: string): Promise<boolean> {
   try {
     const content = await fs.promises.readFile(filePath, "utf-8")
-    const redacted = PiiRedactor.redact(content)
+    // Line by line so an internal redaction error degrades only that line
+    // to <REDACTION_FAILED> instead of discarding the whole file.
+    const redacted = content
+      .split("\n")
+      .map((line) => PiiRedactor.redact(line))
+      .join("\n")
     if (redacted !== content) {
       await fs.promises.writeFile(filePath, redacted)
     }
+    return true
   } catch (error) {
     console.error(`Failed to redact log file before upload: ${filePath}`, formatError(error))
+    return false
   }
 }
 
@@ -356,9 +363,13 @@ export async function uploadLogsToS3(): Promise<void> {
     // Upload sound log file (internal log file)
     if (fs.existsSync(soundLogPath)) {
       logger.info("Uploading sound logs to S3...")
-      await redactLogFileForUpload(soundLogPath)
-      await s3cp(soundLogPath, s3SoundLogPath)
-      logger.info("Sound logs uploaded to S3")
+      // Never upload a file the redactor could not process.
+      if (await redactLogFileForUpload(soundLogPath)) {
+        await s3cp(soundLogPath, s3SoundLogPath)
+        logger.info("Sound logs uploaded to S3")
+      } else {
+        logger.error("Skipping sound log upload: redaction failed")
+      }
     } else {
       console.log("No sound log file found at path:", soundLogPath)
     }
@@ -366,9 +377,12 @@ export async function uploadLogsToS3(): Promise<void> {
     // Upload speaker separation log file
     if (fs.existsSync(speakerLogPath)) {
       logger.info("Uploading speaker separation logs to S3...")
-      await redactLogFileForUpload(speakerLogPath)
-      await s3cp(speakerLogPath, s3SpeakerLogPath)
-      logger.info("Speaker separation logs uploaded to S3")
+      if (await redactLogFileForUpload(speakerLogPath)) {
+        await s3cp(speakerLogPath, s3SpeakerLogPath)
+        logger.info("Speaker separation logs uploaded to S3")
+      } else {
+        logger.error("Skipping speaker separation log upload: redaction failed")
+      }
     } else {
       console.log("No speaker separation log file found at path:", speakerLogPath)
     }

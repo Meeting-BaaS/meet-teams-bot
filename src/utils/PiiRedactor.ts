@@ -48,8 +48,9 @@ const URL_RE = new RegExp(`\\bhttps?:\\/\\/${URL_CHARS}+`, "gi")
 // JWTs: eyJ<header>.<payload>.<signature> (also matches truncated forms).
 const JWT_RE = /\beyJ[A-Za-z0-9_=-]+(?:\.[A-Za-z0-9_=-]+){0,2}/g
 
-// Bearer <value> in headers. (?!<) keeps already-redacted values intact.
-const BEARER_RE = /\b(Bearer\s+)(?!<)[A-Za-z0-9._~+/=-]+/g
+// Bearer <value> in headers, any casing. (?!<) keeps already-redacted
+// values intact.
+const BEARER_RE = /\b(Bearer\s+)(?!<)[A-Za-z0-9._~+/=-]+/gi
 
 // AWS access key ids.
 const AWS_KEY_RE = /\bAKIA[0-9A-Z]{16}\b/g
@@ -109,11 +110,16 @@ const RESERVED_LITERALS = new Set(["null", "undefined", "true", "false", "nan", 
 function buildNameRegex(variant: string): RegExp {
   const escaped = escapeRegExp(variant)
   const jsonLiteralGuard = RESERVED_LITERALS.has(variant.toLowerCase()) ? '(?<!"\\s*:\\s*)' : ""
+  // Identifier-looking names ("name", "id", "user_id") get a key-position
+  // guard so they cannot rewrite JSON/struct field names. Applied only to
+  // identifier shapes: guarding every name would leak "John Doe: hello"
+  // caption-style lines.
+  const keyGuard = /^[a-z_][a-z0-9_]*$/.test(variant) ? '(?!"?\\s*:)' : ""
   // Custom unicode-aware word boundaries: \b is ASCII-only and misbehaves
   // around CJK names; these lookarounds also keep "Mark" from matching
   // inside "bookmark"/"marker".
   return new RegExp(
-    `${jsonLiteralGuard}(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`,
+    `${jsonLiteralGuard}(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])${keyGuard}`,
     "giu"
   )
 }
@@ -123,9 +129,12 @@ interface DictionaryEntry {
   placeholder: string
 }
 
-// Cap on distinct registered speaker names (guards against unbounded growth
-// from adversarial or degenerate participant lists).
+// Above MAX_SPEAKERS, new names no longer get a distinct stable placeholder
+// but are STILL added to the dictionary (as <SPEAKER_OVERFLOW>) — otherwise
+// their raw names would leak wherever they later appear in log content.
+// MAX_TOTAL_NAMES is the absolute backstop on dictionary growth.
 const MAX_SPEAKERS = 500
+const MAX_TOTAL_NAMES = 5000
 let speakerOverflowWarned = false
 
 class PiiRedactorService {
@@ -152,6 +161,10 @@ class PiiRedactorService {
     if (this.botNames.has(key)) return "<BOT_NAME>"
     let placeholder = this.speakerMap.get(key)
     if (!placeholder) {
+      if (this.speakerMap.size >= MAX_TOTAL_NAMES) {
+        // Absolute backstop; far beyond any real meeting.
+        return "<SPEAKER_OVERFLOW>"
+      }
       if (this.speakerMap.size >= MAX_SPEAKERS) {
         if (!speakerOverflowWarned) {
           speakerOverflowWarned = true
@@ -159,9 +172,11 @@ class PiiRedactorService {
             `PiiRedactor: speaker registry full (${MAX_SPEAKERS}), new names map to <SPEAKER_OVERFLOW>`
           )
         }
-        return "<SPEAKER_OVERFLOW>"
+        // Still registered so the raw name gets redacted from log content.
+        placeholder = "<SPEAKER_OVERFLOW>"
+      } else {
+        placeholder = `<SPEAKER_${this.speakerMap.size + 1}>`
       }
-      placeholder = `<SPEAKER_${this.speakerMap.size + 1}>`
       this.speakerMap.set(key, placeholder)
       this.dictionary = null
     }
@@ -278,7 +293,13 @@ class PiiRedactorService {
   public redactChatLine(text: string): string {
     if (this.isDisabled()) return text
     if (typeof text !== "string" || text.length === 0) return text
-    const withoutChatText = text.replace(CHAT_TEXT_FIELD_RE, '$1"<CHAT_TEXT>"')
+    // Same fail-closed contract as redact(): never surface the raw line.
+    let withoutChatText: string
+    try {
+      withoutChatText = text.replace(CHAT_TEXT_FIELD_RE, '$1"<CHAT_TEXT>"')
+    } catch {
+      return "<REDACTION_FAILED>"
+    }
     return this.redact(withoutChatText)
   }
 }

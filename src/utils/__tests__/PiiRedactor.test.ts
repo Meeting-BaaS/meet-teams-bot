@@ -108,6 +108,7 @@ function registerFixtureDictionary(): void {
   expect(PiiRedactor.registerSpeaker('O\'Brien, John "JJ"')).toBe("<SPEAKER_4>")
   expect(PiiRedactor.registerSpeaker("Mark")).toBe("<SPEAKER_5>")
   expect(PiiRedactor.registerSpeaker("null")).toBe("<SPEAKER_6>")
+  expect(PiiRedactor.registerSpeaker("name")).toBe("<SPEAKER_7>")
 }
 
 function redactRow(row: CsvRow): string {
@@ -128,8 +129,8 @@ describe("PiiRedactor CSV edge cases", () => {
   })
 
   it("finds the expected applicable rows in the CSV", () => {
-    expect(allRows.length).toBe(53)
-    expect(applicableRows.length).toBe(32)
+    expect(allRows.length).toBe(54)
+    expect(applicableRows.length).toBe(33)
   })
 
   test.each(applicableRows.map((row) => [row.id, row.category, row]))(
@@ -195,8 +196,8 @@ describe("PiiRedactor behavior", () => {
 
   it("assigns stable placeholders (same name -> same n)", () => {
     expect(PiiRedactor.registerSpeaker("John Doe")).toBe("<SPEAKER_1>")
-    expect(PiiRedactor.registerSpeaker("New Person")).toBe("<SPEAKER_7>")
-    expect(PiiRedactor.registerSpeaker("New Person")).toBe("<SPEAKER_7>")
+    expect(PiiRedactor.registerSpeaker("New Person")).toBe("<SPEAKER_8>")
+    expect(PiiRedactor.registerSpeaker("New Person")).toBe("<SPEAKER_8>")
   })
 
   it("maps the bot's own name to <BOT_NAME> even via registerSpeaker", () => {
