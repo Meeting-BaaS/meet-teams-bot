@@ -34,7 +34,7 @@ const URL_CHARS = `[^\\s"'<>()\`]`
 // enterprise meetup-join links (incl. URL-encoded context carrying tenant
 // and organizer ids) and Teams consumer links (numeric id + passcode).
 const MEETING_URL_RE = new RegExp(
-  `https?:\\/\\/(?:meet\\.google\\.com|teams\\.microsoft\\.com\\/l\\/meetup-join|teams\\.live\\.com\\/meet)\\/${URL_CHARS}+`,
+  `https?:\\/\\/(?:meet\\.google\\.com|teams\\.microsoft\\.com\\/l\\/meetup-join|(?:teams\\.live\\.com|teams\\.microsoft\\.com)\\/meet)\\/${URL_CHARS}+`,
   "gi"
 )
 
@@ -74,7 +74,9 @@ const EMAIL_RE = /[A-Za-z0-9._%+-]+(?:@|%40)[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 
 // Phone numbers. All variants require either a leading "+" or separator
 // punctuation so bare digit runs (unix timestamps, meeting ids) never match.
-const PHONE_INTL_RE = /\+\d{1,3}(?:[ .-]?\d{1,4}){2,7}(?!\d)/g
+// The intl form additionally requires >= 7 digits total: signed decimals in
+// metrics ("Growth: +0.50 MB in 30.0s") must not match (seen in prod logs).
+const PHONE_INTL_RE = /\+(?=(?:[ .-]?\d){7,15}(?!\d))\d{1,3}(?:[ .-]?\d{1,4}){2,7}(?!\d)/g
 const PHONE_US_PAREN_RE = /\(\d{3}\)[ .-]?\d{3}[ .-]?\d{4}\b/g
 const PHONE_US_SEP_RE = /\b\d{3}[.-]\d{3}[.-]\d{4}\b/g
 
