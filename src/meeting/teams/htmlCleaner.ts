@@ -48,6 +48,27 @@ export class TeamsHtmlCleaner {
                 return document
             }
 
+            const CLEANUP_STYLE_ID = 'mbaas-teams-cleanup-style'
+            function injectCleanupStylesheet(documentRoot: Document) {
+                if (documentRoot.getElementById(CLEANUP_STYLE_ID)) return
+                const style = documentRoot.createElement('style')
+                style.id = CLEANUP_STYLE_ID
+                style.textContent = `
+                    [data-tid^="ufd_"],
+                    [data-tid^="callingAlert"],
+                    [data-tid$="-alert-container"],
+                    [data-severity],
+                    [role="alert"],
+                    .fui-Toast,
+                    .fui-Toaster { display: none !important; }
+                `
+                const head = documentRoot.head || documentRoot.documentElement
+                if (head) {
+                    head.appendChild(style)
+                    console.log('[Teams] Cleanup stylesheet injected')
+                }
+            }
+
             // Teams "light" web client (teams.live.com) uses a different DOM than
             // the classic client targeted above: there is no
             // app-layout-area--header, the video tiles are not 137x245, and the
@@ -154,6 +175,7 @@ export class TeamsHtmlCleaner {
                 console.log('[Teams] Starting removeInitialShityHtml')
                 await new Promise((resolve) => setTimeout(resolve, 1000))
                 const documentRoot = getDocumentRoot()
+                injectCleanupStylesheet(documentRoot)
                 try {
                     const meetingControls = documentRoot.querySelectorAll(
                         `div[data-tid="app-layout-area--header"]`,
@@ -203,6 +225,7 @@ export class TeamsHtmlCleaner {
             function removeShityHtml() {
                 console.log('[Teams] Starting removeShityHtml')
                 const documentRoot = getDocumentRoot()
+                injectCleanupStylesheet(documentRoot)
                 try {
                     const menus = documentRoot.querySelectorAll('[role="menu"]')
                     const menu = menus[0] || menus

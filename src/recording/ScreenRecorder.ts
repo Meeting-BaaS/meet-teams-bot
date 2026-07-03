@@ -125,7 +125,9 @@ export class ScreenRecorder extends EventEmitter {
     private config: ScreenRecordingConfig
     private isRecording: boolean = false
     private filesUploaded: boolean = false
+    private recordingStartTime: number = 0
     private meetingStartTime: number = 0
+    private syncSignalTimestamp: number = 0
     private gracePeriodActive: boolean = false
     private rawAudioPath: string = ''
     private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
@@ -198,7 +200,8 @@ export class ScreenRecorder extends EventEmitter {
             })
 
             this.isRecording = true
-            GLOBAL.setRecordingStartTime(Date.now())
+            this.recordingStartTime = Date.now()
+            GLOBAL.setRecordingStartTime(this.recordingStartTime)
             this.gracePeriodActive = false
             this.logMemoryUsage('Starting recording')
             this.setupProcessMonitoring()
@@ -215,6 +218,7 @@ export class ScreenRecorder extends EventEmitter {
                 )
                 return
             }
+            this.syncSignalTimestamp = Date.now()
             await generateSyncSignal(page, {
                 duration: 800, // Much longer signal for reliable detection
                 frequency: 1000, // Keep 1000Hz for consistency
@@ -1190,13 +1194,21 @@ export class ScreenRecorder extends EventEmitter {
             console.warn('⚠️ Raw audio file not found:', rawAudioPath)
         }
 
-        // 1. Calculate sync offset (using your existing calculation)
+        const expectedSyncSec =
+            this.syncSignalTimestamp > 0
+                ? (this.syncSignalTimestamp - this.recordingStartTime) / 1000
+                : FLASH_SCREEN_SLEEP_TIME / 1000
+        console.log(
+            `🎯 Sync signal expected at ${expectedSyncSec.toFixed(3)}s into recording`,
+        )
+
         const syncResult = await calculateVideoOffset(
             rawAudioPath,
             rawVideoPath,
+            expectedSyncSec,
         )
         console.log(
-            `🎯 Calculated sync offset: ${syncResult.offsetSeconds.toFixed(3)}s`,
+            `🎯 Calculated A/V stream offset: ${syncResult.offsetSeconds.toFixed(3)}s`,
         )
         const hasMeetingStartTime = this.meetingStartTime > 0
 
@@ -1230,13 +1242,9 @@ export class ScreenRecorder extends EventEmitter {
             }
         }
 
-        // 3. Calculate final trim points using meeting timing
-        const calcOffsetVideo =
-            syncResult.videoTimestamp +
-            (this.meetingStartTime -
-                GLOBAL.getRecordingStartTime() -
-                FLASH_SCREEN_SLEEP_TIME) /
-                1000
+        const rawCalcOffsetVideo =
+            (this.meetingStartTime - this.recordingStartTime) / 1000
+        const calcOffsetVideo = Math.max(0, rawCalcOffsetVideo)
 
         console.log(`📊 Debug values:`)
         console.log(
@@ -1245,12 +1253,17 @@ export class ScreenRecorder extends EventEmitter {
         console.log(
             `   syncResult.audioTimestamp: ${syncResult.audioTimestamp}s`,
         )
+        console.log(`   expectedSyncSec: ${expectedSyncSec.toFixed(3)}s`)
         console.log(`   meetingStartTime: ${this.meetingStartTime}`)
-        console.log(`   recordingStartTime: ${GLOBAL.getRecordingStartTime()}`)
-        console.log(`   FLASH_SCREEN_SLEEP_TIME: ${FLASH_SCREEN_SLEEP_TIME}`)
+        console.log(`   recordingStartTime: ${this.recordingStartTime}`)
         console.log(
-            `   Time diff: ${(this.meetingStartTime - GLOBAL.getRecordingStartTime() - FLASH_SCREEN_SLEEP_TIME) / 1000}s`,
+            `   calcOffsetVideo (raw): ${rawCalcOffsetVideo.toFixed(3)}s -> clamped: ${calcOffsetVideo.toFixed(3)}s`,
         )
+        if (rawCalcOffsetVideo < 0) {
+            console.warn(
+                `⚠️ meetingStartTime preceded recordingStartTime by ${(-rawCalcOffsetVideo).toFixed(3)}s. Trimming from t=0.`,
+            )
+        }
 
         // 4. Calculate audio padding needed (can be negative for trimming)
         const audioPadding =

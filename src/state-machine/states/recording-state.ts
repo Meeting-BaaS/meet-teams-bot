@@ -193,7 +193,17 @@ export class RecordingState extends BaseState {
                         : String(error)
             }
 
-            GLOBAL.setError(MeetingEndReason.StreamingSetupFailed, errorMessage)
+            const existingReason = GLOBAL.getEndReason()
+            if (existingReason) {
+                console.log(
+                    `Preserving existing end_reason ${existingReason} instead of overriding with StreamingSetupFailed`,
+                )
+            } else {
+                GLOBAL.setError(
+                    MeetingEndReason.StreamingSetupFailed,
+                    errorMessage,
+                )
+            }
             this.isProcessing = false
         })
 
