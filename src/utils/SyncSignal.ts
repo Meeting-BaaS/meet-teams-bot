@@ -3,6 +3,7 @@
  * Generates a 1000Hz beep + green flash for synchronization purposes
  */
 
+import { spawn } from 'child_process'
 import { Page } from 'playwright'
 import { formatError } from './Logger'
 
@@ -38,9 +39,11 @@ export async function generateSyncSignal(
     )
 
     try {
-        // Generate audio beep and visual flash simultaneously
+        // Generate audio beep and visual flash simultaneously. Prefer writing
+        // the tone directly to the captured PulseAudio speaker sink so sync does
+        // not depend on the meeting page allowing WebAudio playback.
         await Promise.all([
-            generateAudioBeep(page, frequency, duration, volume),
+            generateCapturedAudioBeep(page, frequency, duration, volume),
             generateVisualFlash(page, flashColor, duration),
         ])
 
@@ -49,6 +52,96 @@ export async function generateSyncSignal(
         console.error('❌ Failed to generate sync signal:', formatError(error))
         throw error
     }
+}
+
+async function generateCapturedAudioBeep(
+    page: Page,
+    frequency: number,
+    duration: number,
+    volume: number,
+): Promise<void> {
+    const speakerSink = process.env.VIRTUAL_SPEAKER
+    if (!speakerSink) {
+        console.warn(
+            '⚠️ VIRTUAL_SPEAKER is not set, falling back to browser WebAudio sync beep',
+        )
+        await generateAudioBeep(page, frequency, duration, volume)
+        return
+    }
+
+    try {
+        await generatePulseAudioBeep(speakerSink, frequency, duration, volume)
+    } catch (error) {
+        console.warn(
+            '⚠️ PulseAudio sync beep failed, falling back to browser WebAudio sync beep:',
+            formatError(error),
+        )
+        await generateAudioBeep(page, frequency, duration, volume)
+    }
+}
+
+function generatePulseAudioBeep(
+    speakerSink: string,
+    frequency: number,
+    duration: number,
+    volume: number,
+): Promise<void> {
+    const durationSeconds = Math.max(0.01, duration / 1000)
+    const ffmpegArgs = [
+        '-hide_banner',
+        '-loglevel',
+        'warning',
+        '-f',
+        'lavfi',
+        '-i',
+        `sine=frequency=${frequency}:duration=${durationSeconds}:sample_rate=44100`,
+        '-af',
+        `volume=${volume}`,
+        '-f',
+        'pulse',
+        `pulse:${speakerSink}`,
+    ]
+
+    console.log(
+        `🔊 PulseAudio sync beep: ${frequency}Hz for ${duration}ms on ${speakerSink}`,
+    )
+
+    return new Promise((resolve, reject) => {
+        const child = spawn('ffmpeg', ffmpegArgs, {
+            stdio: ['ignore', 'ignore', 'pipe'],
+        })
+        let stderr = ''
+        const timeout = setTimeout(() => {
+            child.kill('SIGTERM')
+            reject(
+                new Error(
+                    `ffmpeg pulse sync beep timed out after ${duration + 3000}ms`,
+                ),
+            )
+        }, duration + 3000)
+
+        child.stderr?.on('data', (chunk) => {
+            stderr += chunk.toString()
+        })
+
+        child.on('error', (error) => {
+            clearTimeout(timeout)
+            reject(error)
+        })
+        child.on('close', (code) => {
+            clearTimeout(timeout)
+            if (code === 0) {
+                resolve()
+                return
+            }
+
+            reject(
+                new Error(
+                    `ffmpeg pulse sync beep exited with code ${code}: ${stderr.trim()}`,
+                ),
+            )
+        })
+    })
 }
 
 /**

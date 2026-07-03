@@ -71,14 +71,18 @@ export async function calculateVideoOffset(
 
         if (audioTimestamp <= 0 || videoTimestamp <= 0) {
             const bothMissing = audioTimestamp <= 0 && videoTimestamp <= 0
-            const detected =
-                audioTimestamp > 0 ? audioTimestamp : videoTimestamp
+            const fallbackAudioTimestamp =
+                audioTimestamp > 0 ? audioTimestamp : expectedSyncSec
+            const fallbackVideoTimestamp =
+                videoTimestamp > 0 ? videoTimestamp : expectedSyncSec
             const fallbackResult: SyncOffset = {
-                audioTimestamp: bothMissing ? 0 : detected,
-                videoTimestamp: bothMissing ? 0 : detected,
+                audioTimestamp: bothMissing ? 0 : fallbackAudioTimestamp,
+                videoTimestamp: bothMissing ? 0 : fallbackVideoTimestamp,
                 offsetSeconds: 0.0,
-                confidence: bothMissing ? 0.1 : 0.3,
+                confidence: bothMissing ? 0.1 : 0.35,
             }
+            fallbackResult.offsetSeconds =
+                fallbackResult.videoTimestamp - fallbackResult.audioTimestamp
 
             if (bothMissing) {
                 console.warn(
@@ -86,7 +90,7 @@ export async function calculateVideoOffset(
                 )
             } else {
                 console.warn(
-                    `⚠️ Only the ${audioTimestamp > 0 ? 'audio beep' : 'video flash'} was detected (at ${detected.toFixed(3)}s). Assuming simultaneous beep+flash → zero offset, no audio shift.`,
+                    `⚠️ Only the ${audioTimestamp > 0 ? 'audio beep' : 'video flash'} was detected. Using expected sync timestamp ${expectedSyncSec.toFixed(3)}s for the missing signal.`,
                 )
             }
             return fallbackResult
