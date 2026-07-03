@@ -24,6 +24,13 @@ const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
 // detector makes an early false positive very unlikely (pre-join UI isn't
 // fullscreen green).
 const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
+// The flash can also land LATE: on a heavy Meet page the paint is delayed by the
+// renderer/compositor. Prod logs show flashes up to ~450ms after the expected
+// timestamp — right at the old +0.5s edge — and recordings where the flash was
+// missed entirely (shipping with zero A/V correction). Give the flash more
+// forward room too; the strict green + scene-change detector keeps false
+// positives unlikely (in-meeting content isn't fullscreen #00FF00).
+const VIDEO_SYNC_WINDOW_FWD_SEC = 1.0
 
 interface SyncOffset {
   /** Audio signal timestamp in seconds */
@@ -53,9 +60,9 @@ export async function calculateVideoOffset(
 ): Promise<SyncOffset> {
   const searchMin = Math.max(0, expectedSyncSec - SYNC_WINDOW_HALF_WIDTH_SEC)
   const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
-  // Wider, downward-biased window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC).
+  // Wider window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC / _FWD_SEC).
   const videoSearchMin = Math.max(0, expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC)
-  const videoSearchMax = searchMax
+  const videoSearchMax = expectedSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
 
   console.log(
     `🔍 Analyzing sync signals (audio ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s, video ${videoSearchMin.toFixed(2)}s – ${videoSearchMax.toFixed(2)}s)...`
