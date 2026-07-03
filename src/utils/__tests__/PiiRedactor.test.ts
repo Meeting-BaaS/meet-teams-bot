@@ -128,7 +128,7 @@ describe("PiiRedactor CSV edge cases", () => {
   })
 
   it("finds the expected applicable rows in the CSV", () => {
-    expect(allRows.length).toBe(45)
+    expect(allRows.length).toBe(51)
     expect(applicableRows.length).toBe(30)
   })
 
