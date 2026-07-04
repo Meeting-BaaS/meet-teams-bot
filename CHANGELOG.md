@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Live capture encode switched from x264 preset `fast` to `veryfast`: ~40% less
+  encoder CPU per bot at the same crf 23, near-identical quality on meeting
+  content, output ~10-15% larger.
+
+### Fixed
+- V8 heap cap for large meetings (`--max-old-space-size=4096`) was passed as a
+  bare Chromium argument and silently ignored; now passed via `--js-flags`.
+
 ### Added
 - Initial open source release
 - Comprehensive documentation and README
