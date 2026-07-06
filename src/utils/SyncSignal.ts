@@ -39,11 +39,25 @@ export async function generateSyncSignal(
     )
 
     try {
-        // Generate audio beep and visual flash simultaneously. Prefer writing
-        // the tone directly to the captured PulseAudio speaker sink so sync does
-        // not depend on the meeting page allowing WebAudio playback.
+        // Fire the audio beep and visual flash simultaneously.
+        //
+        // We emit the beep TWO ways on purpose:
+        //  - generateAudioBeep (WebAudio, in-page) is the primary TIMING
+        //    reference: it is tightly coupled to the flash paint, so the measured
+        //    A/V offset reflects real capture skew, not process-spawn jitter.
+        //  - generateCapturedAudioBeep injects the tone straight into the captured
+        //    PulseAudio sink (ffmpeg|pacat) so a detectable beep is GUARANTEED even
+        //    when the meeting page suppresses WebAudio (the no-branding / no-camera
+        //    join path, where the beep was silently missed before). It double-spawns,
+        //    so it lands a spawn-latency after the flash — acceptable for a fallback.
+        //
+        // The post-hoc detector returns the earliest activity in the search window,
+        // so WebAudio wins when present (tight timing) and the injected tone — which
+        // sits in the trimmed-off pre-meeting region — only takes over when WebAudio
+        // is absent. Injection failure is non-fatal: the WebAudio beep already fired.
         await Promise.all([
-            generateCapturedAudioBeep(page, frequency, duration, volume),
+            generateAudioBeep(page, frequency, duration, volume),
+            generateCapturedAudioBeep(frequency, duration, volume),
             generateVisualFlash(page, flashColor, duration),
         ])
 
@@ -54,8 +68,12 @@ export async function generateSyncSignal(
     }
 }
 
+// Inject the sync tone directly into the captured PulseAudio speaker sink so a
+// detectable beep is always present in the recorded audio, independent of the
+// meeting page's WebAudio state. Runs ALONGSIDE the WebAudio beep (the primary
+// timing reference), so a failure here is non-fatal — the WebAudio beep has
+// already fired in the same Promise.all.
 async function generateCapturedAudioBeep(
-    page: Page,
     frequency: number,
     duration: number,
     volume: number,
@@ -63,9 +81,8 @@ async function generateCapturedAudioBeep(
     const speakerSink = getVirtualSpeakerSink()
     if (!speakerSink) {
         console.warn(
-            '⚠️ Virtual speaker sink is not set, falling back to browser WebAudio sync beep',
+            '⚠️ Virtual speaker sink not resolved — skipping recorder-owned sync tone (WebAudio beep still fired)',
         )
-        await generateAudioBeep(page, frequency, duration, volume)
         return
     }
 
@@ -73,10 +90,9 @@ async function generateCapturedAudioBeep(
         await generatePulseAudioBeep(speakerSink, frequency, duration, volume)
     } catch (error) {
         console.warn(
-            '⚠️ PulseAudio sync beep failed, falling back to browser WebAudio sync beep:',
+            '⚠️ PulseAudio sync tone failed (WebAudio beep still fired):',
             formatError(error),
         )
-        await generateAudioBeep(page, frequency, duration, volume)
     }
 }
 

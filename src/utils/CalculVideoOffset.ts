@@ -71,26 +71,34 @@ export async function calculateVideoOffset(
 
         if (audioTimestamp <= 0 || videoTimestamp <= 0) {
             const bothMissing = audioTimestamp <= 0 && videoTimestamp <= 0
-            const fallbackAudioTimestamp =
-                audioTimestamp > 0 ? audioTimestamp : expectedSyncSec
-            const fallbackVideoTimestamp =
-                videoTimestamp > 0 ? videoTimestamp : expectedSyncSec
+            // When only one signal is detected, assume the beep and flash landed at
+            // the SAME media timestamp (they are emitted simultaneously). This yields
+            // offsetSeconds 0 and, downstream, audioPadding 0 — no stream is shifted
+            // and A/V stays aligned as captured.
+            //
+            // Do NOT substitute expectedSyncSec for the missing signal: that value is
+            // wall-clock relative (syncSignalTimestamp - recordingStartTime), while the
+            // detected timestamp is MEDIA time, which lands earlier by the (unobservable)
+            // capture startup delay. Mixing the two frames flips the offset sign in the
+            // missing-beep case (beep really lands ~100ms before expected, so assuming it
+            // AT expected makes audio look later than video → trims audio that should be
+            // padded) and actively desyncs the recording — the exact case this path is
+            // meant to rescue.
+            const detected = audioTimestamp > 0 ? audioTimestamp : videoTimestamp
             const fallbackResult: SyncOffset = {
-                audioTimestamp: bothMissing ? 0 : fallbackAudioTimestamp,
-                videoTimestamp: bothMissing ? 0 : fallbackVideoTimestamp,
+                audioTimestamp: bothMissing ? 0 : detected,
+                videoTimestamp: bothMissing ? 0 : detected,
                 offsetSeconds: 0.0,
-                confidence: bothMissing ? 0.1 : 0.35,
+                confidence: bothMissing ? 0.1 : 0.3,
             }
-            fallbackResult.offsetSeconds =
-                fallbackResult.videoTimestamp - fallbackResult.audioTimestamp
 
             if (bothMissing) {
                 console.warn(
-                    '⚠️ Neither sync signal detected — assuming zero A/V offset',
+                    '⚠️ SYNC_CONFIDENCE_LOW: neither sync signal detected — assuming zero A/V offset',
                 )
             } else {
                 console.warn(
-                    `⚠️ Only the ${audioTimestamp > 0 ? 'audio beep' : 'video flash'} was detected. Using expected sync timestamp ${expectedSyncSec.toFixed(3)}s for the missing signal.`,
+                    `⚠️ SYNC_CONFIDENCE_LOW: only the ${audioTimestamp > 0 ? 'audio beep' : 'video flash'} was detected (at ${detected.toFixed(3)}s). Assuming simultaneous beep+flash → zero offset, no audio shift.`,
                 )
             }
             return fallbackResult
