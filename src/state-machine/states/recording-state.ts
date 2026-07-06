@@ -657,9 +657,19 @@ export class RecordingState extends BaseState {
       // capture failure and do NOT leave. Genuinely empty/quiet meetings (no recent
       // DOM speech) still end here; populated meetings still end via
       // allParticipantsLeft / alone-in-meeting / botRemoved once people actually leave.
+      // Only trust the DOM signal when the observer is healthy (delivered a callback
+      // recently), mirroring checkAloneInMeeting — a dead observer's stale
+      // lastSpeakerTime must not suppress the leave indefinitely.
       const lastSpeakerTime = this.context.lastSpeakerTime
+      const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
+      const speakerObserverHealthy =
+        lastCallbackTime !== null && now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
       const domSpeechAgeMs = lastSpeakerTime ? now - lastSpeakerTime : null
-      if (domSpeechAgeMs !== null && domSpeechAgeMs < silenceTimeoutSeconds * 1000) {
+      if (
+        speakerObserverHealthy &&
+        domSpeechAgeMs !== null &&
+        domSpeechAgeMs < silenceTimeoutSeconds * 1000
+      ) {
         if (now - this.lastNoSpeakerLogTime >= 30000) {
           console.warn(
             `[checkNoSpeaker] Audio silent for ${silenceDurationSeconds}s but DOM speaker observer saw speech ${Math.floor(domSpeechAgeMs / 1000)}s ago — audio capture likely failed; NOT ending on noSpeaker`
