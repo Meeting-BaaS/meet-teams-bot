@@ -285,9 +285,20 @@ export class TeamsHtmlCleaner {
             console.log('[Teams] Executing HTML provider')
             await removeInitialShityHtml()
 
-            // Setup continuous cleanup
+            // Setup continuous cleanup.
+            // Batched: defer to the next event-loop tick so multiple DOM mutations
+            // in one synchronous batch trigger a single removeShityHtml() call.
+            // Without this the observer fires 1300+ times per session because its
+            // own DOM edits feed back into the MutationObserver.
+            let cleanupScheduled = false
             const observer = new MutationObserver(() => {
-                removeShityHtml()
+                if (cleanupScheduled) return
+                cleanupScheduled = true
+                ;(window as any).htmlCleanerCleanupTimeout = setTimeout(() => {
+                    ;(window as any).htmlCleanerCleanupTimeout = null
+                    cleanupScheduled = false
+                    removeShityHtml()
+                }, 0)
             })
 
             if (document.documentElement) {
@@ -307,6 +318,12 @@ export class TeamsHtmlCleaner {
 
         await this.page
             .evaluate(() => {
+                // Cancel any cleanup deferred by the batched observer so a queued
+                // removeShityHtml() cannot fire after teardown.
+                if ((window as any).htmlCleanerCleanupTimeout) {
+                    clearTimeout((window as any).htmlCleanerCleanupTimeout)
+                    delete (window as any).htmlCleanerCleanupTimeout
+                }
                 if ((window as any).htmlCleanerObserver) {
                     ;(window as any).htmlCleanerObserver.disconnect()
                     delete (window as any).htmlCleanerObserver
