@@ -647,6 +647,37 @@ export class RecordingState extends BaseState {
 
     const shouldEnd = silenceDurationSeconds >= silenceTimeoutSeconds
     if (shouldEnd) {
+      // The silence timer is driven purely by the audio pipeline (sound level from
+      // FFmpeg). When audio capture dies — e.g. Chrome's audio never lands on the
+      // virtual PulseAudio sink — the sound level reads 0 forever even while people
+      // are actively talking, so this "silence" is spurious. Leaving here ends the
+      // call mid-meeting and reports it as completed. Cross-check the DOM speaker
+      // observer, which detects speech independently of the audio pipeline: if it saw
+      // an active speaker within the silence window, treat the silence as an audio
+      // capture failure and do NOT leave. Genuinely empty/quiet meetings (no recent
+      // DOM speech) still end here; populated meetings still end via
+      // allParticipantsLeft / alone-in-meeting / botRemoved once people actually leave.
+      // Only trust the DOM signal when the observer is healthy (delivered a callback
+      // recently), mirroring checkAloneInMeeting — a dead observer's stale
+      // lastSpeakerTime must not suppress the leave indefinitely.
+      const lastSpeakerTime = this.context.lastSpeakerTime
+      const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
+      const speakerObserverHealthy =
+        lastCallbackTime !== null && now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
+      const domSpeechAgeMs = lastSpeakerTime ? now - lastSpeakerTime : null
+      if (
+        speakerObserverHealthy &&
+        domSpeechAgeMs !== null &&
+        domSpeechAgeMs < silenceTimeoutSeconds * 1000
+      ) {
+        if (now - this.lastNoSpeakerLogTime >= 30000) {
+          console.warn(
+            `[checkNoSpeaker] Audio silent for ${silenceDurationSeconds}s but DOM speaker observer saw speech ${Math.floor(domSpeechAgeMs / 1000)}s ago — audio capture likely failed; NOT ending on noSpeaker`
+          )
+          this.lastNoSpeakerLogTime = now
+        }
+        return false
+      }
       console.log(
         `[checkNoSpeaker] No sound activity detected for ${silenceDurationSeconds} seconds, ending meeting`
       )
