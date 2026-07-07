@@ -119,8 +119,8 @@ export class ScreenRecorder extends EventEmitter {
   private gracePeriodActive = false
   private rawAudioPath = ""
   private soundMonitorRemainder: Buffer = Buffer.alloc(0)
-  private lastAudioRecoveryAt = 0
-  private audioRecoveryAttempts = 0
+  private lastAudioDiagAt = 0
+  private audioDiagCount = 0
 
   constructor(config: Partial<ScreenRecordingConfig> = {}) {
     super()
@@ -718,13 +718,11 @@ export class ScreenRecorder extends EventEmitter {
             console.warn(
               `⚠️ WARNING: Raw audio file has not grown for ${consecutiveNoGrowthCount * (FILE_SIZE_CHECK_INTERVAL / 1000)}s! Current: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s. This may indicate a silent write failure.`
             )
-            // Dead audio is usually Chrome's stream sitting on the wrong PulseAudio
-            // sink (startup race, or a mid-call detach) so FFmpeg reads silence from
-            // virtual_speaker.monitor. Try to re-home the browser audio onto the
-            // monitored sink instead of just logging — this is what actually recovers
-            // the recording (silent audio otherwise produces a mute file and a false
-            // noSpeaker leave).
-            this.attemptAudioRecovery(recordingDurationSeconds)
+            // Dead audio means the browser's stream isn't reaching the monitored
+            // sink (virtual_speaker.monitor). Capture the PulseAudio routing state so
+            // we can confirm the failure mode from prod logs (which sink the browser
+            // is on vs the server default) rather than guessing at a fix.
+            this.logAudioPipelineDiagnostics(recordingDurationSeconds)
           } else {
             console.log(
               `📊 Raw audio file size: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s | No growth detected (${consecutiveNoGrowthCount}/${MAX_CONSECUTIVE_NO_GROWTH})`
@@ -744,66 +742,54 @@ export class ScreenRecorder extends EventEmitter {
   }
 
   /**
-   * Re-route the browser's audio onto the monitored PulseAudio sink.
+   * Log the PulseAudio routing state when the raw audio file stops growing.
    *
-   * FFmpeg records from `virtual_speaker.monitor`. Chrome is meant to output to
-   * `virtual_speaker` (the default sink), but its audio stream can bind to the
-   * wrong sink — a race between `pulseaudio --start` / `set-default-sink` and
-   * Chrome creating its stream at startup, or a mid-call renegotiation (common on
-   * the Teams web client) that detaches and re-attaches the audio element. When
-   * that happens the monitor sees no samples, the raw file never grows, and the
-   * recording is silent. Re-assert the default sink (so any *new* streams route
-   * correctly) and move every live sink-input onto `virtual_speaker` (so the
-   * *current* stream flows into the monitor again). Throttled to one attempt per
-   * check interval; best-effort — failures are logged, never thrown.
+   * FFmpeg records from the monitored sink (`VIRTUAL_SPEAKER_MONITOR`). If that file
+   * never grows the recording is silent — the browser's audio isn't reaching the
+   * monitored sink. Rather than blindly re-routing (which risks masking the real
+   * cause), capture the actual state so the failure mode is confirmable from prod
+   * logs: the server default sink, every sink, and which sink each browser stream is
+   * on (plus corked/mute). Diagnostic-only, throttled, best-effort — never throws.
    */
-  private attemptAudioRecovery(recordingDurationSeconds: number): void {
+  private logAudioPipelineDiagnostics(recordingDurationSeconds: number): void {
     const now = Date.now()
-    // Throttle: at most one attempt per file-size check window (30s).
-    if (now - this.lastAudioRecoveryAt < 30_000) {
+    // Throttle: at most one dump per file-size check window (30s).
+    if (now - this.lastAudioDiagAt < 30_000) {
       return
     }
-    this.lastAudioRecoveryAt = now
-    this.audioRecoveryAttempts++
+    this.lastAudioDiagAt = now
+    this.audioDiagCount++
 
     try {
-      // Re-assert the monitored sink as default for any newly-created streams.
-      execSync(`pactl set-default-sink ${VIRTUAL_SPEAKER}`, {
-        timeout: 5000,
-        stdio: "ignore"
-      })
+      const defaultSink =
+        execSync("pactl info", { timeout: 5000 })
+          .toString()
+          .split("\n")
+          .find((l) => l.startsWith("Default Sink:"))
+          ?.trim() ?? "Default Sink: <unknown>"
 
-      // Move every existing sink-input onto the monitored sink. Chrome is the only
-      // audio-producing app in the container, so re-homing all inputs is safe and
-      // catches the case where its stream is stuck on a fallback/auto_null sink.
-      const listing = execSync("pactl list sink-inputs short", { timeout: 5000 })
+      const sinks = execSync("pactl list sinks short", { timeout: 5000 })
         .toString()
         .trim()
-      const inputIds = listing
-        ? listing
-            .split("\n")
-            .map((line) => line.split("\t")[0])
-            .filter((id) => id.length > 0)
-        : []
+        .replace(/\n/g, " ; ")
 
-      let moved = 0
-      for (const id of inputIds) {
-        try {
-          execSync(`pactl move-sink-input ${id} ${VIRTUAL_SPEAKER}`, {
-            timeout: 5000,
-            stdio: "ignore"
-          })
-          moved++
-        } catch {
-          // A sink-input can disappear between listing and moving — ignore.
-        }
-      }
+      // Keep only routing-relevant fields from the sink-input dump.
+      const routing = execSync("pactl list sink-inputs", { timeout: 5000 })
+        .toString()
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) =>
+          /^Sink Input #|^Sink:|application\.name|application\.process\.binary|media\.name|Corked:|Mute:/.test(
+            l
+          )
+        )
+        .join(" | ")
 
       console.warn(
-        `🔧 [audio-recovery] Attempt ${this.audioRecoveryAttempts}: re-asserted default sink '${VIRTUAL_SPEAKER}' and moved ${moved}/${inputIds.length} sink-input(s) onto it (raw audio not growing at ${recordingDurationSeconds.toFixed(0)}s)`
+        `🔎 [audio-diag #${this.audioDiagCount}] raw audio not growing at ${recordingDurationSeconds.toFixed(0)}s — expected sink '${VIRTUAL_SPEAKER}'. ${defaultSink}. sinks=[${sinks}]. sink-inputs: ${routing || "<none>"}`
       )
     } catch (error) {
-      console.warn(`⚠️ [audio-recovery] Failed to re-route audio: ${formatError(error)}`)
+      console.warn(`⚠️ [audio-diag] Failed to collect PulseAudio state: ${formatError(error)}`)
     }
   }
 
