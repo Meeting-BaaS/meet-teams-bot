@@ -1043,6 +1043,19 @@ async function performCriticalSetupActions(
     page: Page,
     dialogObserver?: SimpleDialogObserver,
 ): Promise<void> {
+    // Google Meet may reset device state during the waiting room -> call transition.
+    if (GLOBAL.get().custom_branding_bot_path) {
+        await activateCamera(page)
+    } else {
+        await deactivateCamera(page)
+    }
+
+    if (GLOBAL.get().streaming_input) {
+        await activateMicrophone(page)
+    } else {
+        await deactivateMicrophone(page)
+    }
+
     const htmlSnapshot = HtmlSnapshotService.getInstance()
 
     // 1. Open People Panel FIRST (keyboard shortcut - fastest)
@@ -1293,6 +1306,25 @@ async function deactivateMicrophone(page: Page): Promise<boolean> {
         }
     } catch (error) {
         console.error('Error deactivating microphone:', error)
+        return false
+    }
+}
+
+async function activateCamera(page: Page): Promise<boolean> {
+    console.log('Activating camera...')
+    try {
+        // Look for the camera button that's turned off
+        const cameraButton = page.locator('div[aria-label="Turn on camera"]')
+        if ((await cameraButton.count()) > 0) {
+            await cameraButton.click()
+            console.log('Camera activated successfully')
+            return true
+        } else {
+            console.log('Camera is already active or button not found')
+            return false
+        }
+    } catch (error) {
+        console.error('Error activating camera:', error)
         return false
     }
 }
