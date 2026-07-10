@@ -83,6 +83,21 @@ export class PausedState extends BaseState {
                 console.log('Speakers observation paused')
             }
 
+            // Teams network speaker detection has no observer handle — gate its
+            // Node-side bridge so transcript updates stop while paused. No-op on
+            // other platforms; non-fatal by design.
+            try {
+                const { pauseTeamsNetworkInterception } = await import(
+                    '../../meeting/teams/network-interception'
+                )
+                pauseTeamsNetworkInterception()
+            } catch (error) {
+                console.error(
+                    'Failed to pause Teams network interception:',
+                    formatError(error),
+                )
+            }
+
             console.log('Recording paused successfully')
         }
 

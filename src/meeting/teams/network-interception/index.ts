@@ -55,6 +55,23 @@ export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<
   }
 }
 
+// Pause gate for the Node-side bridge. The browser interceptor cannot be
+// stopped and restarted (its stop flag is terminal), so pause/resume drops
+// payloads here instead of tearing the interceptor down.
+let interceptionPaused = false
+
+/** Drop network speaker payloads while the recording is paused. */
+export function pauseTeamsNetworkInterception(): void {
+  interceptionPaused = true
+  console.log("[Teams NetworkInterceptor] ⏸️ Speaker updates paused")
+}
+
+/** Resume forwarding network speaker payloads after a pause. */
+export function resumeTeamsNetworkInterception(): void {
+  interceptionPaused = false
+  console.log("[Teams NetworkInterceptor] ▶️ Speaker updates resumed")
+}
+
 /**
  * Expose the Node-side callback (can run AFTER page.goto()). Reuses Meet's
  * onNetworkSpeakerUpdate name — a bot is only ever one platform, no collision.
@@ -64,7 +81,10 @@ export async function setupTeamsNetworkInterceptionCallback(
   onSpeakersChange: (payload: NetworkPayload) => void
 ): Promise<boolean> {
   try {
-    await page.exposeFunction("onNetworkSpeakerUpdate", onSpeakersChange)
+    await page.exposeFunction("onNetworkSpeakerUpdate", (payload: NetworkPayload) => {
+      if (interceptionPaused) return
+      onSpeakersChange(payload)
+    })
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
     return verifyTeamsNetworkInterception(page)
   } catch (error) {

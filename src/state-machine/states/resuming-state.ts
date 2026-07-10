@@ -77,6 +77,20 @@ export class ResumingState extends BaseState {
                 console.log('Speakers observation resumed')
             }
 
+            // Re-open the Teams network speaker bridge gated during pause.
+            // No-op on other platforms; non-fatal by design.
+            try {
+                const { resumeTeamsNetworkInterception } = await import(
+                    '../../meeting/teams/network-interception'
+                )
+                resumeTeamsNetworkInterception()
+            } catch (error) {
+                console.error(
+                    'Failed to resume Teams network interception:',
+                    formatError(error),
+                )
+            }
+
             console.log('Recording resumed successfully')
         }
 
