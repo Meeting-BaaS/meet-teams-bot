@@ -752,8 +752,22 @@ async function notAcceptedInMeeting(page: Page): Promise<boolean> {
             // its "bot was accepted" signal.
             const wasAdmitted =
                 ScreenRecorderManager.getInstance().getMeetingStartTime() > 0
+            // Only explicit removal phrases become BotRemoved. The denial group
+            // also matches credential and generic join failures ("Your sign-in
+            // credentials might have changed", "we encountered a problem
+            // joining", "You can't join") — reclassifying those hid real
+            // failures as a benign removal (v2 preserves the configured
+            // reason).
+            const explicitRemovalTexts = [
+                "you've been removed",
+                'you left the meeting',
+            ]
+            const isExplicitRemoval = explicitRemovalTexts.some((t) =>
+                (result.matchedText ?? '').toLowerCase().includes(t),
+            )
             const reason =
                 wasAdmitted &&
+                isExplicitRemoval &&
                 denialPattern.reason === MeetingEndReason.BotNotAccepted
                     ? MeetingEndReason.BotRemoved
                     : denialPattern.reason
