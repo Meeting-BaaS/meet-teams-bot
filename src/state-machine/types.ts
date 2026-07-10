@@ -46,6 +46,12 @@ export enum MeetingEndReason {
   // SDK. Maps to the api-server's ZOOM_ANONYMOUS_JOIN_NOT_ALLOWED error code.
   ZoomAnonymousJoinNotAllowed = "zoomAnonymousJoinNotAllowed",
   ZoomPasscodeRequired = "zoomPasscodeRequired",
+  // Authenticated Teams bot (username/password) — failure modes the api-server distinguishes.
+  // Invalid/Captcha/Mfa flip the teams_login to invalid (per-account); Timeout is transient.
+  TeamsLoginFailedInvalidCredentials = "teamsLoginFailedInvalidCredentials",
+  TeamsLoginFailedCaptcha = "teamsLoginFailedCaptcha",
+  TeamsLoginFailedMfaRequired = "teamsLoginFailedMfaRequired",
+  TeamsLoginFailedTimeout = "teamsLoginFailedTimeout",
   Internal = "internalError"
 }
 
@@ -88,6 +94,14 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "This Zoom meeting rejected the recording bot because it joined anonymously — the host's account blocks anonymous/automated browser joins. We recommend recording it via Zoom RTMS (or the native SDK with a user-authorized credential)."
     case MeetingEndReason.ZoomPasscodeRequired:
       return "Zoom meeting requires a passcode that was not supplied in the meeting URL (?pwd=)."
+    case MeetingEndReason.TeamsLoginFailedInvalidCredentials:
+      return "Microsoft rejected the account email/password. Update the teams_login credentials."
+    case MeetingEndReason.TeamsLoginFailedCaptcha:
+      return "Microsoft presented a captcha the bot could not solve during sign-in."
+    case MeetingEndReason.TeamsLoginFailedMfaRequired:
+      return "Microsoft requested MFA during sign-in; the bot account must be MFA-free."
+    case MeetingEndReason.TeamsLoginFailedTimeout:
+      return "Microsoft sign-in did not complete in time."
     case MeetingEndReason.Internal:
       return "Internal error occurred during recording."
     default:

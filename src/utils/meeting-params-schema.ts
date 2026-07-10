@@ -73,5 +73,18 @@ export const BotMessageSchema = object({
         fallback: zodEnum(["fail", "anonymous"]).default("anonymous")
       })
     )
+  ).default(null),
+
+  // Teams authenticated bot config — present when api-server assigned a teams_login.
+  // Bot fetches { email, password } from resolve_url and signs in before joining.
+  teams_login_config: optional(
+    nullable(
+      object({
+        session_id: uuid(),
+        login_email: string().email(),
+        resolve_url: url(),
+        fallback: zodEnum(["fail", "anonymous"]).default("anonymous")
+      })
+    )
   ).default(null)
 })
