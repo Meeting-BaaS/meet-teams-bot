@@ -270,15 +270,18 @@ export class RecordingState extends BaseState {
                     )
                 }
                 
+                // State updates must run on every detection — only the log line
+                // is throttled. Keeping them inside the throttle let a stale
+                // silence marker survive brief resumed speech and get trimmed.
+                GLOBAL.setLastSilenceStart(null)
+                GLOBAL.setSoundDetectedInMeeting(true)
+
                 // Only log once per 2 seconds to avoid spam (separate from silence timer)
                 if (now - this.lastSoundActivityLogTime >= 2000) {
                     console.log(
                         `[checkEndConditions] Sound activity detected (${currentSoundLevel.toFixed(2)}), resetting lastSoundActivity silence timer`,
                     )
                     this.lastSoundActivityLogTime = now
-                    // Reset silence start timestamp when sound is detected
-                    GLOBAL.setLastSilenceStart(null)
-                    GLOBAL.setSoundDetectedInMeeting(true)
                 }
                 
                 // Reset the silence timer (this is the critical timer for automatic leave)
@@ -477,7 +480,10 @@ export class RecordingState extends BaseState {
             this.lastSoundActivity = now
             // Reset silence start timestamp when attendees are detected (similar to sound detection)
             GLOBAL.setLastSilenceStart(null)
-            GLOBAL.setSoundDetectedInMeeting(true)
+            // Do NOT set soundDetectedInMeeting here: attendees are not audio.
+            // Faking sound gave silent meetings an end-silence trim marker that
+            // discarded valid video during finalization (v2 ends the grace
+            // period without synthesizing sound).
             console.log(
                 `[noone-joined] Grace period ended (attendees detected via UI: count=${attendeesCount}, firstUserJoined=${firstUserJoined}), enabling silence timeout checks`,
             )
