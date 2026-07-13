@@ -39,7 +39,10 @@ const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
 // missed entirely (shipping with zero A/V correction). Give the flash more
 // forward room too; the strict green + scene-change detector keeps false
 // positives unlikely (in-meeting content isn't fullscreen #00FF00).
-const VIDEO_SYNC_WINDOW_FWD_SEC = 1.0
+// v1 preprod measured a flash landing 1.7s late (6.2s vs a 4.5s anchor) under
+// multi-bot node load — past even the 1.0s forward room this constant used to
+// give. 4s matches the audio back-window's safety margin.
+const VIDEO_SYNC_WINDOW_FWD_SEC = 4.0
 
 interface SyncOffset {
   /** Audio signal timestamp in seconds */
@@ -275,10 +278,15 @@ async function detectVideoFlash(videoPath: string, searchMin: number, searchMax:
 
             // Green flash (#00FF00) in YUV: Y ≈ 149, U ≈ 43, V ≈ 21.
             // Only accept within the caller-supplied window.
-            if (Y < 160 && U < 80 && V < 60 && currentTime >= searchMin && currentTime <= searchMax) {
-              console.log(`   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`)
-              console.log(`   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`)
-              return currentTime
+            if (Y < 160 && U < 80 && V < 60) {
+              if (currentTime >= searchMin && currentTime <= searchMax) {
+                console.log(`   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`)
+                console.log(`   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`)
+                return currentTime
+              }
+              console.log(
+                `   Green frame at ${currentTime.toFixed(3)}s (YUV [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]) outside window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s] — ignored`
+              )
             }
           }
         }
