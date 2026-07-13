@@ -128,6 +128,8 @@ export class ScreenRecorder extends EventEmitter {
     private recordingStartTime: number = 0
     private meetingStartTime: number = 0
     private syncSignalTimestamp: number = 0
+    private audioBeepWallMs: number = 0
+    private videoFlashWallMs: number = 0
     private gracePeriodActive: boolean = false
     private rawAudioPath: string = ''
     private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
@@ -219,11 +221,17 @@ export class ScreenRecorder extends EventEmitter {
                 return
             }
             this.syncSignalTimestamp = Date.now()
-            await generateSyncSignal(page, {
+            const syncTimestamps = await generateSyncSignal(page, {
                 duration: 800, // Much longer signal for reliable detection
                 frequency: 1000, // Keep 1000Hz for consistency
                 volume: 0.95, // Higher volume for better detection
             })
+            // Per-signal wall-clock anchors; fall back to the fire time when a
+            // signal could not report its own timestamp.
+            this.audioBeepWallMs =
+                syncTimestamps.audioBeepWallMs ?? this.syncSignalTimestamp
+            this.videoFlashWallMs =
+                syncTimestamps.videoFlashWallMs ?? this.syncSignalTimestamp
 
             console.log('Native recording started successfully')
             this.emit('started', {
@@ -1198,14 +1206,27 @@ export class ScreenRecorder extends EventEmitter {
             this.syncSignalTimestamp > 0
                 ? (this.syncSignalTimestamp - this.recordingStartTime) / 1000
                 : FLASH_SCREEN_SLEEP_TIME / 1000
+        // Per-signal anchors: the beep fires Node-side near-instantly, the
+        // flash paint can commit >1.5s later (busy renderer). Anchoring each
+        // detection window on its own emission time — and subtracting the gap
+        // in the offset math — isolates pure capture-start skew.
+        const expectedAudioSyncSec =
+            this.audioBeepWallMs > 0
+                ? (this.audioBeepWallMs - this.recordingStartTime) / 1000
+                : expectedSyncSec
+        const expectedVideoSyncSec =
+            this.videoFlashWallMs > 0
+                ? (this.videoFlashWallMs - this.recordingStartTime) / 1000
+                : expectedSyncSec
         console.log(
-            `🎯 Sync signal expected at ${expectedSyncSec.toFixed(3)}s into recording`,
+            `🎯 Sync signal fired at ${expectedSyncSec.toFixed(3)}s into recording (beep emitted ${expectedAudioSyncSec.toFixed(3)}s, flash painted ${expectedVideoSyncSec.toFixed(3)}s)`,
         )
 
         const syncResult = await calculateVideoOffset(
             rawAudioPath,
             rawVideoPath,
-            expectedSyncSec,
+            expectedAudioSyncSec,
+            expectedVideoSyncSec,
         )
         console.log(
             `🎯 Calculated A/V stream offset: ${syncResult.offsetSeconds.toFixed(3)}s`,

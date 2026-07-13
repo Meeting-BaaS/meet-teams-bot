@@ -48,15 +48,25 @@ interface SyncOffset {
 export async function calculateVideoOffset(
     audioPath: string,
     videoPath: string,
-    expectedSyncSec: number,
+    expectedAudioSyncSec: number,
+    expectedVideoSyncSec: number = expectedAudioSyncSec,
 ): Promise<SyncOffset> {
-    const searchMin = Math.max(0, expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC)
-    const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
+    // Emission gap between the two signals (flash paints late on a busy
+    // renderer). Media positions inherit this gap, so it must be subtracted
+    // from the raw flash-minus-beep difference — otherwise the correction
+    // overshoots by exactly the paint delay.
+    const emissionGapSec = expectedVideoSyncSec - expectedAudioSyncSec
+
+    const searchMin = Math.max(
+        0,
+        expectedAudioSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC,
+    )
+    const searchMax = expectedAudioSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
     const videoSearchMin = Math.max(
         0,
-        expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC,
+        expectedVideoSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC,
     )
-    const videoSearchMax = expectedSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
+    const videoSearchMax = expectedVideoSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
 
     console.log(
         `🔍 Analyzing sync signals (audio ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s, video ${videoSearchMin.toFixed(2)}s – ${videoSearchMax.toFixed(2)}s)...`,
@@ -117,19 +127,26 @@ export async function calculateVideoOffset(
             return fallbackResult
         }
 
-        const offsetSeconds = videoTimestamp - audioTimestamp
+        // Subtract the known emission gap: what remains is pure capture-start
+        // skew between the audio and video pipelines. The corrected video
+        // timestamp is returned so downstream (audioPadding = video - audio)
+        // applies exactly this skew.
+        const correctedVideoTimestamp = videoTimestamp - emissionGapSec
+        const offsetSeconds = correctedVideoTimestamp - audioTimestamp
         const confidence = 0.9 // High confidence if both signals detected
 
         const result: SyncOffset = {
             audioTimestamp,
-            videoTimestamp,
+            videoTimestamp: correctedVideoTimestamp,
             offsetSeconds,
             confidence,
         }
 
         console.log(`✅ Sync analysis complete:`)
         console.log(`   Audio beep at: ${audioTimestamp.toFixed(3)}s`)
-        console.log(`   Video flash at: ${videoTimestamp.toFixed(3)}s`)
+        console.log(
+            `   Video flash at: ${videoTimestamp.toFixed(3)}s (emission gap ${emissionGapSec.toFixed(3)}s → corrected ${correctedVideoTimestamp.toFixed(3)}s)`,
+        )
         console.log(`   Offset: ${offsetSeconds.toFixed(3)}s`)
         console.log(`   Confidence: ${(confidence * 100).toFixed(1)}%`)
 

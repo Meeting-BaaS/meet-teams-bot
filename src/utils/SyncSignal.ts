@@ -18,15 +18,27 @@ interface SyncSignalOptions {
     volume?: number
 }
 
+export interface SyncSignalTimestamps {
+    /** Wall-clock ms when the pacat sync tone was spawned (≈ tone start). Null if it failed. */
+    audioBeepWallMs: number | null
+    /** Wall-clock ms when the flash paint committed (post-rAF). Null if unmeasured. */
+    videoFlashWallMs: number | null
+}
+
 /**
  * Generate synchronization signal on the given page
  * @param page - Playwright page instance
  * @param options - Optional configuration for the sync signal
+ * @returns per-signal wall-clock emission timestamps. The pacat beep fires
+ * Node-side near-instantly, but the flash goes through page.evaluate into a
+ * Chromium busy joining the meeting — its paint has been measured committing
+ * >1.5s later under load. The offset calculation must subtract this emission
+ * gap or it overcorrects by exactly the paint delay.
  */
 export async function generateSyncSignal(
     page: Page,
     options: SyncSignalOptions = {},
-): Promise<void> {
+): Promise<SyncSignalTimestamps> {
     const {
         duration = 150,
         frequency = 1000,
@@ -42,26 +54,26 @@ export async function generateSyncSignal(
         // Fire the audio beep and visual flash simultaneously.
         //
         // We emit the beep TWO ways on purpose:
-        //  - generateAudioBeep (WebAudio, in-page) is the primary TIMING
-        //    reference: it is tightly coupled to the flash paint, so the measured
-        //    A/V offset reflects real capture skew, not process-spawn jitter.
+        //  - generateAudioBeep (WebAudio, in-page) rides the same evaluate queue
+        //    as the flash, but the meeting page can suppress WebAudio entirely
+        //    (no-branding / no-camera join path), so it cannot be relied on.
         //  - generateCapturedAudioBeep injects the tone straight into the captured
-        //    PulseAudio sink (ffmpeg|pacat) so a detectable beep is GUARANTEED even
-        //    when the meeting page suppresses WebAudio (the no-branding / no-camera
-        //    join path, where the beep was silently missed before). It double-spawns,
-        //    so it lands a spawn-latency after the flash — acceptable for a fallback.
+        //    PulseAudio sink (ffmpeg|pacat) so a detectable beep is GUARANTEED.
+        //    It fires Node-side, immune to the page's evaluate queue, so it is the
+        //    EARLIEST audio activity in the file and the one the detector anchors on.
         //
-        // The post-hoc detector returns the earliest activity in the search window,
-        // so WebAudio wins when present (tight timing) and the injected tone — which
-        // sits in the trimmed-off pre-meeting region — only takes over when WebAudio
-        // is absent. Injection failure is non-fatal: the WebAudio beep already fired.
-        await Promise.all([
+        // Each signal reports when it actually fired (wall clock); the offset
+        // calculation subtracts the emission gap between them.
+        const [, audioBeepWallMs, videoFlashWallMs] = await Promise.all([
             generateAudioBeep(page, frequency, duration, volume),
             generateCapturedAudioBeep(frequency, duration, volume),
             generateVisualFlash(page, flashColor, duration),
         ])
 
-        console.log('✅ Sync signal generated successfully')
+        console.log(
+            `✅ Sync signal generated successfully (beep wall=${audioBeepWallMs ?? 'n/a'}, flash paint wall=${videoFlashWallMs ?? 'n/a'})`,
+        )
+        return { audioBeepWallMs, videoFlashWallMs }
     } catch (error) {
         console.error('❌ Failed to generate sync signal:', formatError(error))
         throw error
@@ -77,22 +89,27 @@ async function generateCapturedAudioBeep(
     frequency: number,
     duration: number,
     volume: number,
-): Promise<void> {
+): Promise<number | null> {
     const speakerSink = getVirtualSpeakerSink()
     if (!speakerSink) {
         console.warn(
             '⚠️ Virtual speaker sink not resolved — skipping recorder-owned sync tone (WebAudio beep still fired)',
         )
-        return
+        return null
     }
 
     try {
+        // Spawn time ≈ tone start (pacat connects to the sink in ~100ms —
+        // negligible next to the >1.5s page paint delays this anchors against).
+        const spawnWallMs = Date.now()
         await generatePulseAudioBeep(speakerSink, frequency, duration, volume)
+        return spawnWallMs
     } catch (error) {
         console.warn(
             '⚠️ PulseAudio sync tone failed (WebAudio beep still fired):',
             formatError(error),
         )
+        return null
     }
 }
 
@@ -332,19 +349,24 @@ async function generateVisualFlash(
     page: any,
     color: string,
     duration: number,
-): Promise<void> {
-    await page.evaluate(
-        ({ flashColor, dur }) => {
-            if (document.querySelector('#sync-flash-overlay')) {
-                console.log(
-                    '⚠️ Flash overlay already exists, skipping duplicate',
-                )
-                return
-            }
+): Promise<number | null> {
+    try {
+        // Returns the wall-clock ms at which the flash paint was committed
+        // (after two animation frames). The page clock and Node's Date.now()
+        // are the same machine clock, so the value is directly comparable to
+        // the beep's spawn timestamp.
+        const paintWallMs: number | null = await page.evaluate(
+            ({ flashColor, dur }) => {
+                if (document.querySelector('#sync-flash-overlay')) {
+                    console.log(
+                        '⚠️ Flash overlay already exists, skipping duplicate',
+                    )
+                    return null
+                }
 
-            const flashDiv = document.createElement('div')
-            flashDiv.id = 'sync-flash-overlay'
-            flashDiv.style.cssText = `
+                const flashDiv = document.createElement('div')
+                flashDiv.id = 'sync-flash-overlay'
+                flashDiv.style.cssText = `
             position: fixed;
             top: 0;
             left: 0;
@@ -357,13 +379,31 @@ async function generateVisualFlash(
             opacity: 1;
         `
 
-            document.body.appendChild(flashDiv)
-            console.log(`💡 Visual flash: ${flashColor} for ${dur}ms`)
+                document.body.appendChild(flashDiv)
+                console.log(`💡 Visual flash: ${flashColor} for ${dur}ms`)
 
-            setTimeout(() => {
-                flashDiv.remove()
-            }, dur)
-        },
-        { flashColor: color, dur: duration },
-    )
+                setTimeout(() => {
+                    flashDiv.remove()
+                }, dur)
+
+                // Two rAFs: the first fires before the frame containing the
+                // overlay is composited, the second after it is on screen.
+                return new Promise<number>((resolve) => {
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => {
+                            resolve(Date.now())
+                        })
+                    })
+                })
+            },
+            { flashColor: color, dur: duration },
+        )
+        return paintWallMs
+    } catch (error) {
+        console.warn(
+            '⚠️ Visual flash paint timestamp unavailable:',
+            formatError(error),
+        )
+        return null
+    }
 }
