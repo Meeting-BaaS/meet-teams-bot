@@ -273,17 +273,23 @@ export class MeetHtmlCleaner {
             function hideBottomBarStrip(): void {
                 try {
                     const controls = document.querySelector(
-                        '[aria-label="Call controls"]',
+                        'div[role="region"][aria-label="Call controls"]',
                     ) as HTMLElement | null
                     if (!controls) {
                         return
                     }
                     let el: HTMLElement | null = controls
                     while (el) {
+                        // Computed style (not inline) and the full strip
+                        // geometry — positioned, anchored bottom/left/right —
+                        // so a coincidental partial inline match on a larger
+                        // wrapper can't get hidden instead of the strip.
+                        const style = window.getComputedStyle(el)
                         if (
-                            el.style &&
-                            el.style.bottom === '0px' &&
-                            el.style.left === '0px'
+                            style.position !== 'static' &&
+                            style.bottom === '0px' &&
+                            style.left === '0px' &&
+                            style.right === '0px'
                         ) {
                             el.style.display = 'none'
                             return
