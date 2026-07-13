@@ -16,6 +16,15 @@ const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds (used as fallback upper b
 // Keep tight (±0.5 s) to avoid matching early meeting-UI content or noise, while
 // still tolerating normal system jitter on the sleep/page-evaluate path.
 const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
+// The audio beep can land far EARLIER in media time than the wall-clock
+// anchor: expectedSyncSec is relative to recordingStartTime, but the audio
+// media timeline starts only once ffmpeg's PulseAudio capture delivers its
+// first samples — measured ~2.1s after spawn in the v1 production image
+// (0/6 test bots detected the beep with the ±0.5s window; the injected tone
+// sat at ~2.4s media time vs a 4.5s anchor). Search further back (but not
+// forward) for the beep; the 1kHz band-limited detector keeps early meeting
+// audio from false-positiving.
+const AUDIO_SYNC_WINDOW_BACK_SEC = 4.0
 // The video flash routinely lands EARLIER than the audio beep even though they
 // fire together: x11grab's capture pipeline starts with more latency than
 // PulseAudio, so the flash's video-stream timestamp is pulled below the tight
@@ -48,7 +57,7 @@ interface SyncOffset {
  * @param audioPath - Path to audio file (.wav)
  * @param videoPath - Path to video file (.webm, .mp4, etc.)
  * @param expectedSyncSec - Exact seconds-from-recording-start when generateSyncSignal was called.
- *   The search window is clamped to [expectedSyncSec ± SYNC_WINDOW_HALF_WIDTH_SEC].
+ *   The audio window is [expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC, expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC].
  *   Required — callers must pass the recorded syncSignalTimestamp offset so detection
  *   cannot be fooled by early meeting-UI content (authenticated bots) or noise.
  * @returns Promise<SyncOffset> - Synchronization information
@@ -58,7 +67,7 @@ export async function calculateVideoOffset(
   videoPath: string,
   expectedSyncSec: number
 ): Promise<SyncOffset> {
-  const searchMin = Math.max(0, expectedSyncSec - SYNC_WINDOW_HALF_WIDTH_SEC)
+  const searchMin = Math.max(0, expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC)
   const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
   // Wider window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC / _FWD_SEC).
   const videoSearchMin = Math.max(0, expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC)
@@ -168,6 +177,12 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
   // speech/chimes are strongly attenuated.
   const beepBandFilter = `highpass=f=${EXPECTED_FREQUENCY - 150},lowpass=f=${EXPECTED_FREQUENCY + 150}`
 
+  const reportRejected = (time: number, method: string) => {
+    console.log(
+      `   Audio activity at ${time.toFixed(3)}s (${method}) outside window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s] — ignored`
+    )
+  }
+
   try {
     // Method 1: Use silence detection to find audio activity in the beep band
     const silenceCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
@@ -184,6 +199,7 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
             console.log(`   Found audio activity (likely beep) at ${time.toFixed(3)}s`)
             return time
           }
+          reportRejected(time, "silencedetect")
         }
       }
     } catch (e) {
@@ -206,6 +222,7 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
             console.log(`   Found audio activity with detailed analysis at ${time.toFixed(3)}s`)
             return time
           }
+          reportRejected(time, "detailed silencedetect")
         }
       }
     } catch (e) {
