@@ -116,6 +116,8 @@ export class ScreenRecorder extends EventEmitter {
   private recordingStartTime = 0
   private meetingStartTime = 0
   private syncSignalTimestamp = 0 // wall-clock ms when generateSyncSignal was actually called
+  private audioBeepWallMs = 0 // wall-clock ms when the WebAudio beep actually started
+  private videoFlashWallMs = 0 // wall-clock ms when the flash paint committed
   private gracePeriodActive = false
   private rawAudioPath = ""
   private soundMonitorRemainder: Buffer = Buffer.alloc(0)
@@ -188,11 +190,15 @@ export class ScreenRecorder extends EventEmitter {
       // Stamp the exact wall-clock time before emitting the signal so post-processing
       // knows precisely where to look in the raw recordings — no heuristic needed.
       this.syncSignalTimestamp = Date.now()
-      await generateSyncSignal(page, {
+      const syncTimestamps = await generateSyncSignal(page, {
         duration: 800, // Much longer signal for reliable detection
         frequency: 1000, // Keep 1000Hz for consistency
         volume: 0.95 // Higher volume for better detection
       })
+      // Per-signal wall-clock anchors; fall back to the fire time when a
+      // signal could not report its own timestamp.
+      this.audioBeepWallMs = syncTimestamps.audioBeepWallMs ?? this.syncSignalTimestamp
+      this.videoFlashWallMs = syncTimestamps.videoFlashWallMs ?? this.syncSignalTimestamp
 
       console.log("Native recording started successfully")
       this.emit("started", {
@@ -1325,9 +1331,26 @@ export class ScreenRecorder extends EventEmitter {
     const expectedSyncSec = this.syncSignalTimestamp > 0
       ? (this.syncSignalTimestamp - this.recordingStartTime) / 1000
       : FLASH_SCREEN_SLEEP_TIME / 1000 // fallback: should never happen in normal operation
-    console.log(`🎯 Sync signal expected at ${expectedSyncSec.toFixed(3)}s into recording`)
+    // Per-signal anchors: both signals ride the page.evaluate queue and can
+    // fire seconds after syncSignalTimestamp under load. Anchoring each
+    // detection window on its own real emission time — and subtracting the
+    // emission gap in the offset math — isolates pure capture-start skew.
+    const expectedAudioSyncSec = this.audioBeepWallMs > 0
+      ? (this.audioBeepWallMs - this.recordingStartTime) / 1000
+      : expectedSyncSec
+    const expectedVideoSyncSec = this.videoFlashWallMs > 0
+      ? (this.videoFlashWallMs - this.recordingStartTime) / 1000
+      : expectedSyncSec
+    console.log(
+      `🎯 Sync signal fired at ${expectedSyncSec.toFixed(3)}s into recording (beep started ${expectedAudioSyncSec.toFixed(3)}s, flash painted ${expectedVideoSyncSec.toFixed(3)}s)`
+    )
 
-    const syncResult = await calculateVideoOffset(rawAudioPath, rawVideoPath, expectedSyncSec)
+    const syncResult = await calculateVideoOffset(
+      rawAudioPath,
+      rawVideoPath,
+      expectedAudioSyncSec,
+      expectedVideoSyncSec
+    )
     console.log(`🎯 Calculated A/V stream offset: ${syncResult.offsetSeconds.toFixed(3)}s`)
     if (syncResult.confidence < 0.9) {
       // Alertable marker: sync-signal detection failed (fully or partially), so the
@@ -1375,13 +1398,12 @@ export class ScreenRecorder extends EventEmitter {
     //    recordingStartTime + startupDelay, not recordingStartTime. Without correcting
     //    for that, the whole video (and the diarization timeline, which counts from
     //    meetingStartTime) leads the media by the startup delay for the entire meeting.
-    //    The flash measurement gives us that delay directly: the sync signal was
-    //    emitted expectedSyncSec after recordingStartTime (wall clock) but appears at
-    //    videoTimestamp in the file (media time). Only trust it when both signals were
-    //    detected (confidence >= 0.9) — the single-signal fallback fabricates
-    //    videoTimestamp from the beep, which would poison this correction.
-    const measuredStartupDelaySec =
-      syncResult.confidence >= 0.9 ? expectedSyncSec - syncResult.videoTimestamp : 0
+    //    The flash measurement gives us that delay directly: videoCaptureDelaySec is
+    //    the flash's PAINT wall time minus its detected media time, so evaluate-queue
+    //    delay no longer masquerades as (or cancels out) capture delay, and the value
+    //    is valid even when only the flash was detected. It is 0 when the flash was
+    //    not detected at all.
+    const measuredStartupDelaySec = syncResult.videoCaptureDelaySec
     // x11grab startup can't be negative and is typically 0.1–0.5s; clamp against
     // detection outliers (VIDEO_SYNC_WINDOW_BACK_SEC allows matches up to 2s early).
     const startupDelaySec = Math.min(Math.max(measuredStartupDelaySec, 0), 2.0)

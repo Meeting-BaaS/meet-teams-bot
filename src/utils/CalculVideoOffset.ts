@@ -15,7 +15,23 @@ const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds (used as fallback upper b
 // Half-width of the search window centred on the known sync-signal position.
 // Keep tight (±0.5 s) to avoid matching early meeting-UI content or noise, while
 // still tolerating normal system jitter on the sleep/page-evaluate path.
-const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
+
+// The audio beep can land far EARLIER in media time than the wall-clock
+// anchor: expectedSyncSec is relative to recordingStartTime, but the audio
+// media timeline starts only once ffmpeg's PulseAudio capture delivers its
+// first samples — measured ~2.1s after spawn in the v1 production image
+// (0/6 test bots detected the beep with the ±0.5s window; the injected tone
+// sat at ~2.4s media time vs a 4.5s anchor). Search further back (but not
+// forward) for the beep; the 1kHz band-limited detector keeps early meeting
+// audio from false-positiving.
+const AUDIO_SYNC_WINDOW_BACK_SEC = 4.0
+// The beep can also land LATE: this codebase emits it via in-page WebAudio,
+// which rides the same page.evaluate queue as the flash — v1 measured that
+// queue delaying the flash paint by 1.7s under multi-bot node load, and the
+// WebAudio beep is subject to the same delay. (When beep and flash are both
+// delayed by the queue, the offset math cancels it — the window just has to
+// catch them.)
+const AUDIO_SYNC_WINDOW_FWD_SEC = 2.0
 // The video flash routinely lands EARLIER than the audio beep even though they
 // fire together: x11grab's capture pipeline starts with more latency than
 // PulseAudio, so the flash's video-stream timestamp is pulled below the tight
@@ -30,7 +46,10 @@ const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
 // missed entirely (shipping with zero A/V correction). Give the flash more
 // forward room too; the strict green + scene-change detector keeps false
 // positives unlikely (in-meeting content isn't fullscreen #00FF00).
-const VIDEO_SYNC_WINDOW_FWD_SEC = 1.0
+// v1 preprod measured a flash landing 1.7s late (6.2s vs a 4.5s anchor) under
+// multi-bot node load — past even the 1.0s forward room this constant used to
+// give. 4s matches the audio back-window's safety margin.
+const VIDEO_SYNC_WINDOW_FWD_SEC = 4.0
 
 interface SyncOffset {
   /** Audio signal timestamp in seconds */
@@ -41,6 +60,14 @@ interface SyncOffset {
   offsetSeconds: number
   /** Quality/confidence of detection (0-1) */
   confidence: number
+  /**
+   * How long after recordingStartTime the video capture actually delivered its
+   * first frame (flash paint wall time minus detected flash media time).
+   * Wall-clock-derived cut points (trimming at meetingStartTime) must subtract
+   * this or they land this many seconds INTO the meeting. 0 when the flash was
+   * not detected (unknown).
+   */
+  videoCaptureDelaySec: number
 }
 
 /**
@@ -48,7 +75,7 @@ interface SyncOffset {
  * @param audioPath - Path to audio file (.wav)
  * @param videoPath - Path to video file (.webm, .mp4, etc.)
  * @param expectedSyncSec - Exact seconds-from-recording-start when generateSyncSignal was called.
- *   The search window is clamped to [expectedSyncSec ± SYNC_WINDOW_HALF_WIDTH_SEC].
+ *   The audio window is [expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC, expectedSyncSec + AUDIO_SYNC_WINDOW_FWD_SEC].
  *   Required — callers must pass the recorded syncSignalTimestamp offset so detection
  *   cannot be fooled by early meeting-UI content (authenticated bots) or noise.
  * @returns Promise<SyncOffset> - Synchronization information
@@ -56,13 +83,20 @@ interface SyncOffset {
 export async function calculateVideoOffset(
   audioPath: string,
   videoPath: string,
-  expectedSyncSec: number
+  expectedAudioSyncSec: number,
+  expectedVideoSyncSec: number = expectedAudioSyncSec
 ): Promise<SyncOffset> {
-  const searchMin = Math.max(0, expectedSyncSec - SYNC_WINDOW_HALF_WIDTH_SEC)
-  const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
+  // Emission gap between the two signals (each rides the page.evaluate queue
+  // with its own delay). Media positions inherit this gap, so it must be
+  // subtracted from the raw flash-minus-beep difference — otherwise the
+  // correction is off by exactly the differential emission delay.
+  const emissionGapSec = expectedVideoSyncSec - expectedAudioSyncSec
+
+  const searchMin = Math.max(0, expectedAudioSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC)
+  const searchMax = expectedAudioSyncSec + AUDIO_SYNC_WINDOW_FWD_SEC
   // Wider window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC / _FWD_SEC).
-  const videoSearchMin = Math.max(0, expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC)
-  const videoSearchMax = expectedSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
+  const videoSearchMin = Math.max(0, expectedVideoSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC)
+  const videoSearchMax = expectedVideoSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
 
   console.log(
     `🔍 Analyzing sync signals (audio ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s, video ${videoSearchMin.toFixed(2)}s – ${videoSearchMax.toFixed(2)}s)...`
@@ -103,7 +137,10 @@ export async function calculateVideoOffset(
         audioTimestamp: bothMissing ? 0 : detected,
         videoTimestamp: bothMissing ? 0 : detected,
         offsetSeconds: 0.0,
-        confidence: bothMissing ? 0.1 : 0.3
+        confidence: bothMissing ? 0.1 : 0.3,
+        // The flash alone still measures the video capture delay.
+        videoCaptureDelaySec:
+          videoTimestamp > 0 ? Math.max(0, expectedVideoSyncSec - videoTimestamp) : 0
       }
 
       if (bothMissing) {
@@ -116,20 +153,30 @@ export async function calculateVideoOffset(
       return fallbackResult
     }
 
-    const offsetSeconds = videoTimestamp - audioTimestamp
+    // Subtract the known emission gap: what remains is pure capture-start
+    // skew between the audio and video pipelines. The corrected video
+    // timestamp is returned so downstream (audioPadding = video - audio)
+    // applies exactly this skew.
+    const correctedVideoTimestamp = videoTimestamp - emissionGapSec
+    const offsetSeconds = correctedVideoTimestamp - audioTimestamp
     const confidence = 0.9 // High confidence if both signals detected
+    const videoCaptureDelaySec = Math.max(0, expectedVideoSyncSec - videoTimestamp)
 
     const result: SyncOffset = {
       audioTimestamp,
-      videoTimestamp,
+      videoTimestamp: correctedVideoTimestamp,
       offsetSeconds,
-      confidence
+      confidence,
+      videoCaptureDelaySec
     }
 
     console.log("✅ Sync analysis complete:")
     console.log(`   Audio beep at: ${audioTimestamp.toFixed(3)}s`)
-    console.log(`   Video flash at: ${videoTimestamp.toFixed(3)}s`)
+    console.log(
+      `   Video flash at: ${videoTimestamp.toFixed(3)}s (emission gap ${emissionGapSec.toFixed(3)}s → corrected ${correctedVideoTimestamp.toFixed(3)}s)`
+    )
     console.log(`   Offset: ${offsetSeconds.toFixed(3)}s`)
+    console.log(`   Video capture delay: ${videoCaptureDelaySec.toFixed(3)}s`)
     console.log(`   Confidence: ${(confidence * 100).toFixed(1)}%`)
 
     return result
@@ -142,7 +189,8 @@ export async function calculateVideoOffset(
       audioTimestamp: 0,
       videoTimestamp: 0,
       offsetSeconds: 0.0,
-      confidence: 0.05 // Very low confidence for error case
+      confidence: 0.05, // Very low confidence for error case
+      videoCaptureDelaySec: 0
     }
 
     console.log("✅ Using fallback offset: 0.000s (confidence: 5.0%)")
@@ -168,6 +216,12 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
   // speech/chimes are strongly attenuated.
   const beepBandFilter = `highpass=f=${EXPECTED_FREQUENCY - 150},lowpass=f=${EXPECTED_FREQUENCY + 150}`
 
+  const reportRejected = (time: number, method: string) => {
+    console.log(
+      `   Audio activity at ${time.toFixed(3)}s (${method}) outside window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s] — ignored`
+    )
+  }
+
   try {
     // Method 1: Use silence detection to find audio activity in the beep band
     const silenceCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
@@ -184,6 +238,7 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
             console.log(`   Found audio activity (likely beep) at ${time.toFixed(3)}s`)
             return time
           }
+          reportRejected(time, "silencedetect")
         }
       }
     } catch (e) {
@@ -206,6 +261,7 @@ async function detectAudioBeep(audioPath: string, searchMin: number, searchMax: 
             console.log(`   Found audio activity with detailed analysis at ${time.toFixed(3)}s`)
             return time
           }
+          reportRejected(time, "detailed silencedetect")
         }
       }
     } catch (e) {
@@ -258,10 +314,15 @@ async function detectVideoFlash(videoPath: string, searchMin: number, searchMax:
 
             // Green flash (#00FF00) in YUV: Y ≈ 149, U ≈ 43, V ≈ 21.
             // Only accept within the caller-supplied window.
-            if (Y < 160 && U < 80 && V < 60 && currentTime >= searchMin && currentTime <= searchMax) {
-              console.log(`   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`)
-              console.log(`   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`)
-              return currentTime
+            if (Y < 160 && U < 80 && V < 60) {
+              if (currentTime >= searchMin && currentTime <= searchMax) {
+                console.log(`   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`)
+                console.log(`   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`)
+                return currentTime
+              }
+              console.log(
+                `   Green frame at ${currentTime.toFixed(3)}s (YUV [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]) outside window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s] — ignored`
+              )
             }
           }
         }
@@ -349,7 +410,8 @@ async function testGreenFlashDetection(): Promise<SyncOffset> {
       audioTimestamp: 0, // Not testing audio
       videoTimestamp,
       offsetSeconds: 0,
-      confidence: videoTimestamp > 0 ? 0.95 : 0.1
+      confidence: videoTimestamp > 0 ? 0.95 : 0.1,
+      videoCaptureDelaySec: 0
     }
 
     console.log("✅ Green flash detection result:")
@@ -363,7 +425,8 @@ async function testGreenFlashDetection(): Promise<SyncOffset> {
       audioTimestamp: 0,
       videoTimestamp: 0,
       offsetSeconds: 0,
-      confidence: 0.05
+      confidence: 0.05,
+      videoCaptureDelaySec: 0
     }
   }
 }
