@@ -29,6 +29,12 @@ export const envVars = cleanEnv(process.env, {
   VIDEO_DEVICE: str({ default: "/dev/video10" }),
   EFS_MOUNT_POINT: str({ default: "/mnt/efs" }),
   RESOLUTION: str({ choices: ["720", "1080"], default: "720" }),
+  // Chromium GPU flag set (see GPU_MODES in browser/browser.ts). Env-selectable
+  // so a bad rasterizer config can be swapped in preprod without a rebuild.
+  BROWSER_GPU_MODE: str({
+    choices: ["swiftshader", "none", "legacy"],
+    default: "swiftshader"
+  }),
   UPLOAD_AUDIO_CHUNKS: bool({ default: false }),
   UPLOAD_RAW_VIDEO: bool({ default: false }),
   // Override output directory for serverless mode (e.g., when using run_bot.sh)

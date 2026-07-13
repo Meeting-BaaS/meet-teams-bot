@@ -4,6 +4,27 @@ import { GLOBAL } from "../singleton"
 import { formatError } from "../utils/Logger"
 import { getExitGeo } from "../proxy/toggle-proxy"
 
+// Chromium's GPU stack. CloakBrowser launches through Playwright with
+// ignoreDefaultArgs = ["--enable-automation", "--enable-unsafe-swiftshader"],
+// so it drops the SwiftShader flag Playwright normally passes, and adds
+// --ignore-gpu-blocklist in headed mode. Stacking --disable-gpu +
+// --disable-software-rasterizer + --disable-gpu-compositing on top of that
+// leaves no rasterizer able to handle a large surface: a Teams screen-share
+// track renders as row-shifted garbage in the X framebuffer while small camera
+// tiles still paint (bot cdb011f5, 2026-07-09). "swiftshader" is the coherent
+// software stack: no hardware GPU, SwiftShader rasters everything.
+// NB: --enable-unsafe-swiftshader is deliberately absent. Playwright applies
+// ignoreDefaultArgs as a filter over the *whole* arg list (user args included,
+// coreBundle.js:38322), so passing it here would just be stripped again. It
+// only gates WebGL anyway — ANGLE-SwiftShader raster/compositing works without.
+const GPU_MODES: Record<string, string[]> = {
+  swiftshader: ["--disable-gpu", "--use-gl=angle", "--use-angle=swiftshader"],
+  // Pre-2026-07-02 plain-Chrome behaviour: pass nothing, let Chromium decide.
+  none: [],
+  // The broken combo. Kept only to reproduce the corruption on demand.
+  legacy: ["--disable-gpu", "--disable-software-rasterizer", "--disable-gpu-compositing"]
+}
+
 export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
   // Defaults to 720p if RESOLUTION is not set or invalid
@@ -97,7 +118,7 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   ]
 
   const platform = GLOBAL.get().meeting_platform
-  const gpuArgs = ["--disable-gpu", "--disable-software-rasterizer", "--disable-gpu-compositing"]
+  const gpuArgs = GPU_MODES[envVars.BROWSER_GPU_MODE] ?? GPU_MODES.swiftshader
   try {
     console.log(`Launching CloakBrowser persistent context (${platform})...`)
 
