@@ -89,6 +89,9 @@ export class MeetHtmlCleaner {
                 // Hide visitor indicator bar
                 hideVisitorIndicator()
 
+                // Hide the bottom control-bar strip (white border in recordings)
+                hideBottomBarStrip()
+
                 // People panel cleanup (check once, skip if not found)
                 try {
                     const root = (Array as any)
@@ -256,6 +259,38 @@ export class MeetHtmlCleaner {
 
                 // Hide visitor indicator bar
                 hideVisitorIndicator()
+
+                // Hide the bottom control-bar strip (white border in recordings)
+                hideBottomBarStrip()
+            }
+
+            // The size/color heuristics above hide the button cluster INSIDE
+            // Meet's bottom control bar, but the bar's own container (inline
+            // style `bottom: 0px; left: 0px; right: 0px`) stays visible as an
+            // empty white strip across the bottom of the recording. Anchor on
+            // the stable "Call controls" region (bot browser locale is always
+            // English) and hide the positioned strip itself.
+            function hideBottomBarStrip(): void {
+                try {
+                    const controls = document.querySelector(
+                        '[aria-label="Call controls"]',
+                    ) as HTMLElement | null
+                    if (!controls) {
+                        return
+                    }
+                    let el: HTMLElement | null = controls
+                    while (el) {
+                        if (
+                            el.style &&
+                            el.style.bottom === '0px' &&
+                            el.style.left === '0px'
+                        ) {
+                            el.style.display = 'none'
+                            return
+                        }
+                        el = el.parentElement
+                    }
+                } catch (e) {}
             }
 
             function hideVisitorIndicator(): void {
