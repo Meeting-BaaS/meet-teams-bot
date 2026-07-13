@@ -13,6 +13,12 @@ const execAsync = promisify(exec)
 const EXPECTED_FREQUENCY = 1000
 const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds (used as fallback upper bound)
 const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
+// The audio window must reach much further back than the video one:
+// expectedSyncSec is wall-clock relative to recordingStartTime, but the flac
+// media timeline starts only once ffmpeg's PulseAudio capture delivers its
+// first samples — measured ~2.1s after spawn in the production image. The
+// beep therefore lands ~2s EARLIER in media time than the wall-clock anchor.
+const AUDIO_SYNC_WINDOW_BACK_SEC = 4.0
 const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
 
 interface SyncOffset {
@@ -37,7 +43,7 @@ export async function calculateVideoOffset(
     videoPath: string,
     expectedSyncSec: number,
 ): Promise<SyncOffset> {
-    const searchMin = Math.max(0, expectedSyncSec - SYNC_WINDOW_HALF_WIDTH_SEC)
+    const searchMin = Math.max(0, expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC)
     const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
     const videoSearchMin = Math.max(
         0,
@@ -152,9 +158,23 @@ async function detectAudioBeep(
 
     const scanUntil = searchMax + 1
 
+    // Band-limit around the 1000Hz sync tone before detecting activity (port of
+    // v2-improvements). Without this, ANY audio above the threshold in the
+    // window is taken as the beep, and continuous audio before the beep means
+    // no silence_end ever fires. The beep is a pure near-full-scale 1kHz tone,
+    // so it survives the narrow band intact while broadband speech/chimes are
+    // strongly attenuated.
+    const beepBandFilter = `highpass=f=${EXPECTED_FREQUENCY - 150},lowpass=f=${EXPECTED_FREQUENCY + 150}`
+
+    const reportRejected = (time: number, method: string) => {
+        console.log(
+            `   Audio activity at ${time.toFixed(3)}s (${method}) outside window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s] — ignored`,
+        )
+    }
+
     try {
-        // Method 1: Use silence detection to find audio activity
-        const silenceCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
+        // Method 1: Use silence detection to find audio activity in the beep band
+        const silenceCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-35dB:duration=0.01" -f null -t ${scanUntil} - 2>&1 | grep "silence_"`
 
         try {
             const { stdout: silenceOutput } = await execAsync(silenceCmd)
@@ -172,6 +192,7 @@ async function detectAudioBeep(
                         )
                         return time
                     }
+                    reportRejected(time, 'silencedetect')
                 }
             }
         } catch (e) {
@@ -180,7 +201,7 @@ async function detectAudioBeep(
             )
         }
 
-        const detailedCmd = `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-50dB:duration=0.005" -f null -t ${scanUntil} - 2>&1 | grep "silence_end"`
+        const detailedCmd = `ffmpeg -i "${audioPath}" -af "${beepBandFilter},silencedetect=noise=-50dB:duration=0.005" -f null -t ${scanUntil} - 2>&1 | grep "silence_end"`
         try {
             const { stdout: detailedOutput } = await execAsync(detailedCmd)
             const detailedLines = detailedOutput
@@ -197,6 +218,7 @@ async function detectAudioBeep(
                         )
                         return time
                     }
+                    reportRejected(time, 'detailed silencedetect')
                 }
             }
         } catch (e) {
