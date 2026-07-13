@@ -15,7 +15,7 @@ const ANALYSIS_WINDOW = 10 // Analyze first 10 seconds (used as fallback upper b
 // Half-width of the search window centred on the known sync-signal position.
 // Keep tight (±0.5 s) to avoid matching early meeting-UI content or noise, while
 // still tolerating normal system jitter on the sleep/page-evaluate path.
-const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
+
 // The audio beep can land far EARLIER in media time than the wall-clock
 // anchor: expectedSyncSec is relative to recordingStartTime, but the audio
 // media timeline starts only once ffmpeg's PulseAudio capture delivers its
@@ -25,6 +25,13 @@ const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
 // forward) for the beep; the 1kHz band-limited detector keeps early meeting
 // audio from false-positiving.
 const AUDIO_SYNC_WINDOW_BACK_SEC = 4.0
+// The beep can also land LATE: this codebase emits it via in-page WebAudio,
+// which rides the same page.evaluate queue as the flash — v1 measured that
+// queue delaying the flash paint by 1.7s under multi-bot node load, and the
+// WebAudio beep is subject to the same delay. (When beep and flash are both
+// delayed by the queue, the offset math cancels it — the window just has to
+// catch them.)
+const AUDIO_SYNC_WINDOW_FWD_SEC = 2.0
 // The video flash routinely lands EARLIER than the audio beep even though they
 // fire together: x11grab's capture pipeline starts with more latency than
 // PulseAudio, so the flash's video-stream timestamp is pulled below the tight
@@ -60,7 +67,7 @@ interface SyncOffset {
  * @param audioPath - Path to audio file (.wav)
  * @param videoPath - Path to video file (.webm, .mp4, etc.)
  * @param expectedSyncSec - Exact seconds-from-recording-start when generateSyncSignal was called.
- *   The audio window is [expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC, expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC].
+ *   The audio window is [expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC, expectedSyncSec + AUDIO_SYNC_WINDOW_FWD_SEC].
  *   Required — callers must pass the recorded syncSignalTimestamp offset so detection
  *   cannot be fooled by early meeting-UI content (authenticated bots) or noise.
  * @returns Promise<SyncOffset> - Synchronization information
@@ -71,7 +78,7 @@ export async function calculateVideoOffset(
   expectedSyncSec: number
 ): Promise<SyncOffset> {
   const searchMin = Math.max(0, expectedSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC)
-  const searchMax = expectedSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
+  const searchMax = expectedSyncSec + AUDIO_SYNC_WINDOW_FWD_SEC
   // Wider window for the flash (see VIDEO_SYNC_WINDOW_BACK_SEC / _FWD_SEC).
   const videoSearchMin = Math.max(0, expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC)
   const videoSearchMax = expectedSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
