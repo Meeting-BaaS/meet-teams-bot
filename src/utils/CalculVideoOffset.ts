@@ -20,6 +20,13 @@ const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
 // beep therefore lands ~2s EARLIER in media time than the wall-clock anchor.
 const AUDIO_SYNC_WINDOW_BACK_SEC = 4.0
 const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
+// The flash can also land LATE: under load (several bots on one node) the
+// renderer/compositor delays the paint — measured 1.7s after the wall-clock
+// anchor in preprod (flash at 6.2s vs expected 4.5s, missed by the old +0.5s
+// edge and the recording shipped with ~3.6s A/V skew uncorrected). The strict
+// fullscreen-green + scene-change detector keeps false positives unlikely, so
+// give the flash generous forward room.
+const VIDEO_SYNC_WINDOW_FWD_SEC = 4.0
 
 interface SyncOffset {
     /** Audio signal timestamp in seconds */
@@ -49,7 +56,7 @@ export async function calculateVideoOffset(
         0,
         expectedSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC,
     )
-    const videoSearchMax = searchMax
+    const videoSearchMax = expectedSyncSec + VIDEO_SYNC_WINDOW_FWD_SEC
 
     console.log(
         `🔍 Analyzing sync signals (audio ${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s, video ${videoSearchMin.toFixed(2)}s – ${videoSearchMax.toFixed(2)}s)...`,
@@ -285,20 +292,22 @@ async function detectVideoFlash(
                         // Y (luminance) should be lower than normal (~140-150 vs ~220)
                         // U (red chrominance) should be lower than normal (~63 vs ~128)
                         // V (blue chrominance) should be much lower than normal (~46 vs ~128)
-                        if (
-                            Y < 160 &&
-                            U < 80 &&
-                            V < 60 &&
-                            currentTime >= searchMin &&
-                            currentTime <= searchMax
-                        ) {
+                        if (Y < 160 && U < 80 && V < 60) {
+                            if (
+                                currentTime >= searchMin &&
+                                currentTime <= searchMax
+                            ) {
+                                console.log(
+                                    `   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`,
+                                )
+                                console.log(
+                                    `   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`,
+                                )
+                                return currentTime
+                            }
                             console.log(
-                                `   Found green flash at ${currentTime.toFixed(3)}s (color analysis)`,
+                                `   Green frame at ${currentTime.toFixed(3)}s (YUV [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]) outside window [${searchMin.toFixed(2)}s – ${searchMax.toFixed(2)}s] — ignored`,
                             )
-                            console.log(
-                                `   YUV values: [${Y.toFixed(1)} ${U.toFixed(1)} ${V.toFixed(1)}]`,
-                            )
-                            return currentTime
                         }
                     }
                 }
