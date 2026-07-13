@@ -366,7 +366,12 @@ export class ScreenRecorder extends EventEmitter {
       "-c:v",
       "libx264",
       "-preset",
-      "fast",
+      // veryfast: ~40% less encoder CPU than "fast" at the same crf, with
+      // near-identical visual quality on meeting content (mostly static
+      // talking heads / shared screens). Output is ~10-15% larger, which is
+      // cheap S3 vs compute: the encoder is the biggest steady CPU draw of
+      // the bot, and lower per-bot CPU lets more bots share a node.
+      "veryfast",
       "-crf",
       "23",
       "-profile:v",
