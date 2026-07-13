@@ -1263,8 +1263,14 @@ export class ScreenRecorder extends EventEmitter {
             }
         }
 
+        // meetingStartTime is wall-clock, but the video media timeline starts
+        // videoCaptureDelaySec AFTER recordingStartTime (measured from the
+        // flash). Without subtracting it the trim lands that many seconds INTO
+        // the meeting and drags transcript timestamps (meetingStartTime-
+        // relative) out of alignment with the final file.
         const rawCalcOffsetVideo =
-            (this.meetingStartTime - this.recordingStartTime) / 1000
+            (this.meetingStartTime - this.recordingStartTime) / 1000 -
+            syncResult.videoCaptureDelaySec
         const calcOffsetVideo = Math.max(0, rawCalcOffsetVideo)
 
         console.log(`📊 Debug values:`)

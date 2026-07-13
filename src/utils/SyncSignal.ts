@@ -99,11 +99,18 @@ async function generateCapturedAudioBeep(
     }
 
     try {
-        // Spawn time ≈ tone start (pacat connects to the sink in ~100ms —
-        // negligible next to the >1.5s page paint delays this anchors against).
+        // Preferred anchor: pacat's "Stream started" moment (parsed from its
+        // --verbose stderr), which is when samples actually begin entering the
+        // sink. Falls back to spawn time (~100-300ms early: process spawn +
+        // Pulse connection) if the marker line never shows.
         const spawnWallMs = Date.now()
-        await generatePulseAudioBeep(speakerSink, frequency, duration, volume)
-        return spawnWallMs
+        const streamStartWallMs = await generatePulseAudioBeep(
+            speakerSink,
+            frequency,
+            duration,
+            volume,
+        )
+        return streamStartWallMs ?? spawnWallMs
     } catch (error) {
         console.warn(
             '⚠️ PulseAudio sync tone failed (WebAudio beep still fired):',
@@ -135,7 +142,7 @@ function generatePulseAudioBeep(
     frequency: number,
     duration: number,
     volume: number,
-): Promise<void> {
+): Promise<number | null> {
     const durationSeconds = Math.max(0.01, duration / 1000)
     const ffmpegArgs = [
         '-hide_banner',
@@ -162,6 +169,11 @@ function generatePulseAudioBeep(
         '--channels=1',
         '--rate=44100',
         '--raw',
+        // Verbose stderr carries the "Stream started" marker used as the
+        // tone-start wall-clock anchor; small latency keeps that marker within
+        // ~50ms of actual sound in the sink.
+        '--verbose',
+        '--latency-msec=50',
     ]
 
     console.log(
@@ -191,6 +203,8 @@ function generatePulseAudioBeep(
         let ffmpegExitCode: number | null = null
         let pacatExitCode: number | null = null
         let settled = false
+        let streamStartWallMs: number | null = null
+        let connectionWallMs: number | null = null
 
         ffmpeg.stdout?.pipe(pacat.stdin!)
 
@@ -212,7 +226,7 @@ function generatePulseAudioBeep(
                 reject(error)
                 return
             }
-            resolve()
+            resolve(streamStartWallMs ?? connectionWallMs)
         }
 
         const maybeFinish = () => {
@@ -244,7 +258,25 @@ function generatePulseAudioBeep(
             ffmpegStderr += chunk.toString()
         })
         pacat.stderr?.on('data', (chunk) => {
-            pacatStderr += chunk.toString()
+            const text = chunk.toString()
+            pacatStderr += text
+            // --verbose markers (verified against the shipped pacat):
+            // "Connection established." fires on connect, before any data;
+            // "Stream started." fires when playback of the prebuffered tone
+            // actually begins (~latency-msec later the sound is in the sink).
+            // Prefer the latter, keep the former as fallback.
+            if (
+                streamStartWallMs === null &&
+                text.includes('Stream started')
+            ) {
+                streamStartWallMs = Date.now()
+            }
+            if (
+                connectionWallMs === null &&
+                text.includes('Connection established')
+            ) {
+                connectionWallMs = Date.now()
+            }
         })
 
         ffmpeg.on('error', (error) => {

@@ -37,6 +37,15 @@ interface SyncOffset {
     offsetSeconds: number
     /** Quality/confidence of detection (0-1) */
     confidence: number
+    /**
+     * How long after recordingStartTime the video capture actually delivered
+     * its first frame (flash paint wall time minus detected flash media time).
+     * Wall-clock-derived cut points (e.g. trimming at meetingStartTime) must
+     * subtract this or they land this many seconds INTO the meeting — and drag
+     * transcript timestamps (meetingStartTime-relative) out of alignment with
+     * the final file. 0 when the flash was not detected (unknown).
+     */
+    videoCaptureDelaySec: number
 }
 
 /**
@@ -113,6 +122,11 @@ export async function calculateVideoOffset(
                 videoTimestamp: bothMissing ? 0 : detected,
                 offsetSeconds: 0.0,
                 confidence: bothMissing ? 0.1 : 0.3,
+                // The flash alone still measures the video capture delay.
+                videoCaptureDelaySec:
+                    videoTimestamp > 0
+                        ? Math.max(0, expectedVideoSyncSec - videoTimestamp)
+                        : 0,
             }
 
             if (bothMissing) {
@@ -134,12 +148,17 @@ export async function calculateVideoOffset(
         const correctedVideoTimestamp = videoTimestamp - emissionGapSec
         const offsetSeconds = correctedVideoTimestamp - audioTimestamp
         const confidence = 0.9 // High confidence if both signals detected
+        const videoCaptureDelaySec = Math.max(
+            0,
+            expectedVideoSyncSec - videoTimestamp,
+        )
 
         const result: SyncOffset = {
             audioTimestamp,
             videoTimestamp: correctedVideoTimestamp,
             offsetSeconds,
             confidence,
+            videoCaptureDelaySec,
         }
 
         console.log(`✅ Sync analysis complete:`)
@@ -148,6 +167,9 @@ export async function calculateVideoOffset(
             `   Video flash at: ${videoTimestamp.toFixed(3)}s (emission gap ${emissionGapSec.toFixed(3)}s → corrected ${correctedVideoTimestamp.toFixed(3)}s)`,
         )
         console.log(`   Offset: ${offsetSeconds.toFixed(3)}s`)
+        console.log(
+            `   Video capture delay: ${videoCaptureDelaySec.toFixed(3)}s`,
+        )
         console.log(`   Confidence: ${(confidence * 100).toFixed(1)}%`)
 
         return result
@@ -161,6 +183,7 @@ export async function calculateVideoOffset(
             videoTimestamp: 0,
             offsetSeconds: 0.0,
             confidence: 0.05, // Very low confidence for error case
+            videoCaptureDelaySec: 0,
         }
 
         console.log(`✅ Using fallback offset: 0.000s (confidence: 5.0%)`)
@@ -421,6 +444,7 @@ async function testGreenFlashDetection(): Promise<SyncOffset> {
             videoTimestamp,
             offsetSeconds: 0,
             confidence: videoTimestamp > 0 ? 0.95 : 0.1,
+            videoCaptureDelaySec: 0,
         }
 
         console.log(`✅ Green flash detection result:`)
@@ -435,6 +459,7 @@ async function testGreenFlashDetection(): Promise<SyncOffset> {
             videoTimestamp: 0,
             offsetSeconds: 0,
             confidence: 0.05,
+            videoCaptureDelaySec: 0,
         }
     }
 }
