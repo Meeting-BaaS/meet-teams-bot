@@ -1,5 +1,12 @@
 import type { Page } from "@playwright/test"
 import type { RecordingMode, SpeakerData } from "../../types"
+import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
+
+// Audio level above which we treat the active tile as speaking. Deliberately
+// lower than recording-state's SOUND_LEVEL_ACTIVITY_THRESHOLD (5) so quieter
+// speech still flips isSpeaking; this only affects the observer's label, not the
+// silence/meeting-end logic.
+const SOUND_ACTIVITY_THRESHOLD = 2
 
 declare global {
   interface Window {
@@ -41,6 +48,15 @@ export class ZoomSpeakersObserver {
   private readonly CONFIRM_POLLS = 2
   private readonly HEARTBEAT_MS = 2000
 
+  // Fast audio re-gating: the in-page observer only re-emits ~every HEARTBEAT_MS,
+  // which made isSpeaking lag speech by up to ~2s. We cache the last roster from
+  // the page and re-evaluate isSpeaking against the live audio level on a fast
+  // timer, re-emitting only when the speaking state flips (so the log isn't spammed).
+  private lastSpeakers: SpeakerData[] = []
+  private lastSpeaking = false
+  private soundGateTimer: NodeJS.Timeout | null = null
+  private readonly SOUND_GATE_MS = 250
+
   constructor(
     page: Page,
     recordingMode: RecordingMode,
@@ -62,11 +78,24 @@ export class ZoomSpeakersObserver {
 
     await this.page.exposeFunction("zoomSpeakersChanged", (speakers: SpeakerData[]) => {
       try {
-        this.onSpeakersChange(speakers)
+        this.lastSpeakers = speakers
+        this.emitGated(speakers)
       } catch (error) {
         console.error("[Zoom] Error in speakers callback:", error)
       }
     })
+
+    // Fast audio re-gate: the page emits ~every 2s, so without this isSpeaking
+    // lagged speech by seconds. Poll the live audio level quickly and re-emit the
+    // cached roster the instant speech starts or stops (only on a flip → no spam).
+    this.soundGateTimer = setInterval(() => {
+      if (this.lastSpeakers.length === 0) return
+      const level = SoundLevelMonitor.peekInstance()?.getCurrentSoundLevel() ?? 0
+      const speaking = level > SOUND_ACTIVITY_THRESHOLD
+      if (speaking !== this.lastSpeaking) {
+        this.emitGated(this.lastSpeakers)
+      }
+    }, this.SOUND_GATE_MS)
 
     // Forensics come back over the exposeFunction bridge, NOT page console:
     // page-logger only forwards page console when LOG_LEVEL=debug, so an
@@ -142,23 +171,81 @@ export class ZoomSpeakersObserver {
           return null
         }
 
-        // Emit the active-speaker set (0 or 1 name) as SpeakerData[], the shape
-        // speaker-manager consumes. id=0 marks UI/DOM-based detection.
-        //
-        // LIMITATION — isSpeaking is always true when a name is present, and
-        // that is not a shortcut: Zoom's web DOM exposes NO per-tile speaking
-        // flag in this view (live forensics found no class matching
-        // /speak|talk|active|audio|voice/ anywhere in the tile subtree). The
-        // only signal available is WHO Zoom puts in the main tile. So this
-        // reports "who Zoom currently considers the active speaker", not "who is
-        // producing audio right now" — it cannot distinguish speech from
-        // silence, and cannot separate overlapping speakers. Silence is handled
-        // out-of-band by SoundLevelMonitor (ffmpeg PCM levels), which is why the
-        // recording still ends correctly on a silent call.
+        // Full roster from the participants panel. The panel is opened but forced
+        // OFF-SCREEN and out of flow by the html cleaner (position:fixed;
+        // left:-100000px; opacity:0), so it never appears in the recording and the
+        // video keeps the full frame — while its text stays readable here.
+        const ROSTER_NAME_SELECTORS = [
+          ".participants-item__display-name",
+          '[class*="participants-item"] [class*="display-name"]',
+          '[class*="participants-li"] [class*="display-name"]',
+          '#participants-ul [class*="display-name"]',
+          '[class*="participants-item"] [class*="name"]'
+        ]
+        let rosterReported = false
+
+        function openParticipantsPanel(): void {
+          try {
+            const btn = document.querySelector(
+              'button[aria-label*="open the participants list pane"]'
+            ) as HTMLElement | null
+            if (btn) btn.click()
+          } catch {
+            /* ignore */
+          }
+        }
+
+        function readRoster(): string[] {
+          const names: string[] = []
+          const seen = new Set<string>()
+          for (const sel of ROSTER_NAME_SELECTORS) {
+            const els = document.querySelectorAll(sel)
+            if (els.length === 0) continue
+            els.forEach((el) => {
+              const raw = ((el as HTMLElement).innerText || el.textContent || "")
+                .replace(/\s+/g, " ")
+                .trim()
+              const nm = raw.replace(/\s*\((host|guest|me|co-host)[^)]*\)\s*/gi, "").trim()
+              if (nm && !seen.has(nm.toLowerCase())) {
+                seen.add(nm.toLowerCase())
+                names.push(nm)
+              }
+            })
+            if (names.length > 0) {
+              if (!rosterReported) {
+                rosterReported = true
+                try {
+                  window.zoomSpeakerForensics?.(`ROSTER via "${sel}" -> ${JSON.stringify(names)}`)
+                } catch {
+                  /* bridge unavailable */
+                }
+              }
+              break
+            }
+          }
+          return names
+        }
+
+        // Emit the speaker set. When the roster is readable, emit EVERY participant
+        // (so the log shows Speaker 1, 2, 3), with the one Zoom shows in the main
+        // tile flagged isSpeaking (keeps the audio-capture-failure safety net alive,
+        // since there is always exactly one active tile). If the roster isn't
+        // available, fall back to the single active tile.
         function emit(name: string | null): void {
-          const speakers: SpeakerData[] = name
-            ? [{ name, id: 0, timestamp: Date.now(), isSpeaking: true }]
-            : []
+          const roster = readRoster().filter(
+            (n) => !(selfName && n.toLowerCase() === selfName.toLowerCase())
+          )
+          let speakers: SpeakerData[]
+          if (roster.length > 0) {
+            speakers = roster.map((n, i) => ({
+              name: n,
+              id: i,
+              timestamp: Date.now(),
+              isSpeaking: name ? n.toLowerCase() === name.toLowerCase() : false
+            }))
+          } else {
+            speakers = name ? [{ name, id: 0, timestamp: Date.now(), isSpeaking: true }] : []
+          }
           try {
             window.zoomSpeakersChanged?.(speakers)
           } catch {
@@ -241,11 +328,26 @@ export class ZoomSpeakersObserver {
           }
         }
 
+        // Open the participants panel so readRoster() can see everyone. The panel
+        // is forced off-screen by the html cleaner, so it never shows. Retry a few
+        // seconds; safe to call repeatedly (once open, the "open …" button is gone).
+        openParticipantsPanel()
+        let panelAttempts = 0
+        const panelOpener = setInterval(() => {
+          panelAttempts++
+          if (readRoster().length > 0 || panelAttempts >= 20) {
+            clearInterval(panelOpener)
+            return
+          }
+          openParticipantsPanel()
+        }, 500)
+
         tick()
         const timer = setInterval(tick, pollMs)
 
         window.zoomObserverCleanup = () => {
           clearInterval(timer)
+          clearInterval(panelOpener)
         }
       },
       {
@@ -260,8 +362,31 @@ export class ZoomSpeakersObserver {
     console.log("[Zoom] ✅ Speaker observer started")
   }
 
+  /**
+   * Gate isSpeaking on the REAL audio level and forward to the consumer.
+   *
+   * Zoom's web DOM has no per-tile speaking flag, so the in-page observer marks
+   * the main-tile occupant isSpeaking=true unconditionally. Ungated that is both
+   * misleading in the log and dangerous — recording-state's checkNoSpeaker treats
+   * a recent DOM speaker as "still speaking", so a permanently-true flag keeps the
+   * silence timeout from ever firing. Gating on the audio pipeline makes isSpeaking
+   * reflect actual speech and lets the silence timeout work. No names are logged
+   * here — the speaker-manager table masks them to "Speaker N".
+   */
+  private emitGated(speakers: SpeakerData[]): void {
+    const level = SoundLevelMonitor.peekInstance()?.getCurrentSoundLevel() ?? 0
+    const speaking = level > SOUND_ACTIVITY_THRESHOLD
+    this.lastSpeaking = speaking
+    const gated = speakers.map((s) => ({ ...s, isSpeaking: s.isSpeaking && speaking }))
+    this.onSpeakersChange(gated)
+  }
+
   public stopObserving(): void {
     if (!this.isObserving) return
+    if (this.soundGateTimer) {
+      clearInterval(this.soundGateTimer)
+      this.soundGateTimer = null
+    }
     this.page
       ?.evaluate(() => window.zoomObserverCleanup?.())
       .catch((e) => console.error("[Zoom] Error cleaning up observer:", e))
