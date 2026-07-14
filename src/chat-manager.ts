@@ -257,7 +257,15 @@ export class ChatManager {
 
       // Real keyboard events + Enter — Zoom's chat editor validates like the
       // pre-join name field, so focus+type is the reliable path.
-      await page.locator(activeSelector).first().click({ timeout: 3000 })
+      //
+      // Focus via JS rather than a real .click(): the Zoom recording cleaner moves
+      // the right dock (which holds the chat editor) OFF-SCREEN so it stays out of
+      // frame, and a real click would land at off-screen coordinates and time out
+      // ("element is outside of the viewport"). Focusing the contenteditable
+      // directly still routes keyboard input to it.
+      await page.evaluate((sel) => {
+        ;(document.querySelector(sel) as HTMLElement | null)?.focus()
+      }, activeSelector)
       await page.keyboard.type(message, { delay: 20 })
       await page.keyboard.press("Enter")
 
