@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from "@playwright/test"
+import { envVars } from "../config/env-vars"
 import { listenPage } from "../browser/page-logger"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
@@ -87,6 +88,21 @@ export class ZoomProvider implements MeetingProviderInterface {
     const page = await browserContext.newPage()
     page.setDefaultTimeout(30_000)
     page.setDefaultNavigationTimeout(60_000)
+
+    // Pin the viewport to the exact ffmpeg capture size. The page provably
+    // renders full-width (single-main-container__video-frame = 1280x720, right
+    // rail collapsed to 0px), so the black band on the right is the *viewport*
+    // being narrower than the fixed 1280-wide x11grab capture — CloakBrowser's
+    // humanize mode can randomize the viewport for anti-fingerprinting. Re-assert
+    // the intended size so Zoom's video fills the whole recorded frame.
+    try {
+      const width = envVars.RESOLUTION === "1080" ? 1920 : 1280
+      const height = envVars.RESOLUTION === "1080" ? 1080 : 720
+      await page.setViewportSize({ width, height })
+      console.log(`[Zoom] Viewport pinned to ${width}x${height} to match capture`)
+    } catch (e) {
+      console.warn("[Zoom] Failed to pin viewport size:", formatError(e))
+    }
 
     // Forward in-page console output to the bot log. Without this every
     // console.log inside page.evaluate() — including the speaker observer's

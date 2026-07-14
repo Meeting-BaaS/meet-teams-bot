@@ -58,6 +58,41 @@ export class ZoomHtmlCleaner {
       // and the bot never actually leaves. (Meet hit this exact trap — see the
       // evaluate-click comment in meet.ts.) Elements must stay in the layout and
       // stay clickable; they just must not be visible in the recording.
+      // Inject CSS (once) that (a) forces the Zoom speaker video to fill the whole
+      // recorded frame — killing the black band, and covering the participants
+      // panel when we open it to read the roster — and (b) hides the name/network
+      // label overlaid on the tile. Uses opacity:0 for the name so the speaker
+      // observer can still read its text (display:none would keep it readable too,
+      // but opacity is safe and consistent with the rest of the cleaner).
+      const STYLE_ID = "baas-zoom-rec-fix"
+      if (!document.getElementById(STYLE_ID)) {
+        const style = document.createElement("style")
+        style.id = STYLE_ID
+        style.textContent = [
+          "#video-share-layout video-player {",
+          "  position: fixed !important; inset: 0 !important;",
+          "  top: 0 !important; left: 0 !important;",
+          "  width: 100vw !important; height: 100vh !important;",
+          "  z-index: 2147483000 !important;",
+          "}",
+          "#video-share-layout video-player video {",
+          "  width: 100% !important; height: 100% !important;",
+          "  object-fit: cover !important;",
+          "}",
+          ".video-avatar__avatar-footer { opacity: 0 !important; }",
+          // The speaker observer opens the participants pane to read the roster
+          // (so the log can show Speaker 1/2/3). Force that pane OFF-SCREEN and out
+          // of flow so it never appears in the recording and never squeezes the
+          // video — but keep it sized/rendered so its names stay readable in the DOM.
+          "#wc-container-right {",
+          "  position: fixed !important; left: -100000px !important; top: 0 !important;",
+          "  width: 360px !important; height: 100vh !important;",
+          "  opacity: 0 !important; pointer-events: none !important; z-index: -1 !important;",
+          "}"
+        ].join("\n")
+        document.head.appendChild(style)
+      }
+
       const clean = () => {
         for (const sel of HIDE_SELECTORS) {
           document.querySelectorAll(sel).forEach((el) => {
