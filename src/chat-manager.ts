@@ -100,6 +100,10 @@ export class ChatManager {
       return this.sendViaTeams(page, message)
     }
 
+    if (platform === "zoom") {
+      return this.sendViaZoom(page, message)
+    }
+
     return { success: false, error: `Unsupported platform: ${platform}`, status: 400 }
   }
 
@@ -174,6 +178,94 @@ export class ChatManager {
     } catch (error) {
       console.error("[ChatManager] Meet send failed:", formatError(error))
       return { success: false, error: "Failed to send chat message via Meet", status: 500 }
+    }
+  }
+
+  private async sendViaZoom(page: Page, message: string): Promise<SendBotMessageResult> {
+    try {
+      // Zoom mounts the chat INPUT only while the panel is open (the message
+      // LIST can already be in the DOM, which is why "list found but input
+      // missing" is the normal closed-panel state — don't read that as chat
+      // being disabled).
+      // Zoom's chat composer is a TipTap/ProseMirror contenteditable (confirmed
+      // live: `div.tiptap.ProseMirror.ProseMirror-focused`), NOT a textarea.
+      // The legacy textarea selectors are kept as fallbacks for older builds.
+      const inputSelectors = [
+        'div.ProseMirror[contenteditable="true"]',
+        'div.tiptap[contenteditable="true"]',
+        'div.chat-rtf-box__editor[contenteditable="true"]',
+        "textarea.chat-box__chat-textarea",
+        'textarea[aria-label*="chat" i]',
+        'div[contenteditable="true"][aria-label*="chat" i]',
+        'textarea[placeholder*="message" i]'
+      ]
+      // Visibility via getClientRects(), NOT offsetParent: offsetParent is null
+      // for position:fixed elements, and Zoom's chat panel is fixed — so an
+      // offsetParent check rejects the very editor we're looking for.
+      const findInput = async () =>
+        page.evaluate((sels) => {
+          for (const s of sels) {
+            const el = document.querySelector(s) as HTMLElement | null
+            if (el && el.getClientRects().length > 0) return s
+          }
+          return null
+        }, inputSelectors)
+
+      let activeSelector = await findInput()
+      if (!activeSelector) {
+        // Open the panel. Match the EXACT toggle: a substring match on "chat"
+        // hits "Chat Settings" first in DOM order and opens the settings menu
+        // instead of the panel.
+        const opened = await page.evaluate(() => {
+          const btn =
+            (document.querySelector(
+              'button[aria-label="open the chat panel"]'
+            ) as HTMLElement | null) ??
+            (Array.from(document.querySelectorAll("button")).find((b) => {
+              const al = (b.getAttribute("aria-label") || "").toLowerCase()
+              return al.includes("chat") && !al.includes("setting")
+            }) as HTMLElement | undefined)
+          if (!btn) return false
+          btn.click()
+          return true
+        })
+        if (!opened) {
+          return { success: false, error: "Zoom chat toggle not found", status: 400 }
+        }
+        await page.waitForSelector(inputSelectors.join(", "), { timeout: 5000 }).catch(() => {})
+        activeSelector = await findInput()
+      }
+
+      if (!activeSelector) {
+        // Forensics: dump every editable element so the next run tells us the
+        // real selector instead of failing blind again.
+        const probe = await page
+          .evaluate(() =>
+            Array.from(
+              document.querySelectorAll('textarea,[contenteditable="true"],input[type="text"]')
+            )
+              .slice(0, 15)
+              .map((e) => {
+                const el = e as HTMLElement
+                return `${el.tagName.toLowerCase()}.${String(el.className).slice(0, 60)}[aria=${el.getAttribute("aria-label") || ""}]`
+              })
+          )
+          .catch(() => [])
+        console.error("[ChatManager] Zoom chat input not found. Editable elements:", probe)
+        return { success: false, error: "Zoom chat input not found", status: 400 }
+      }
+
+      // Real keyboard events + Enter — Zoom's chat editor validates like the
+      // pre-join name field, so focus+type is the reliable path.
+      await page.locator(activeSelector).first().click({ timeout: 3000 })
+      await page.keyboard.type(message, { delay: 20 })
+      await page.keyboard.press("Enter")
+
+      this.persistBotSentMessage(message)
+      return { success: true }
+    } catch (error) {
+      console.error("[ChatManager] Zoom send failed:", formatError(error))
+      return { success: false, error: "Chat is not available in this meeting", status: 400 }
     }
   }
 
