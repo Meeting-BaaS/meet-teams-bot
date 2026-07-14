@@ -303,21 +303,40 @@ export class ZoomProvider implements MeetingProviderInterface {
       throw new Error("Bot stopped before clicking Join")
     }
 
-    // Click Join via the DOM to bypass Playwright's pointer-event hit-test —
-    // `.preview-meeting-info` overlays the Join button and makes a Playwright
-    // .click() time out after 30s; the React handler fires regardless.
-    console.log("[Zoom] Clicking Join (DOM-direct)...")
-    const clicked = await page.evaluate((sel: string) => {
-      const btn = document.querySelector(sel) as HTMLButtonElement | null
-      if (!btn || btn.classList.contains("disabled") || btn.disabled) return false
-      btn.click()
-      return true
-    }, JOIN_BUTTON)
+    // Click Join through Playwright, NOT via a DOM .click().
+    //
+    // This is the most bot-scrutinised action in the whole flow, and an in-page
+    // `element.click()` is a free tell: the MouseEvent it produces has
+    // isTrusted === false, which any anti-bot layer can read in one line.
+    // Playwright dispatches through CDP, so the event is genuinely trusted
+    // (isTrusted === true) AND it routes through CloakBrowser's humanize patches
+    // (real mouse movement, human timing) — the same reason teams.ts prefers a
+    // humanized click and treats a raw DOM click as making "the join look
+    // robotic".
+    //
+    // `force: true` is what lets us keep the trusted path: it skips Playwright's
+    // actionability/hit-test checks — which is why we reached for a DOM click in
+    // the first place, since `.preview-meeting-info` overlays the button and
+    // intercepts pointer events — while still sending real input.
+    //
+    // The DOM click stays ONLY as a last-resort fallback, matching Teams.
+    console.log("[Zoom] Clicking Join (Playwright, trusted + humanized)...")
+    let clicked = false
+    try {
+      await page.locator(JOIN_BUTTON).first().click({ force: true, timeout: 10_000 })
+      clicked = true
+    } catch (e) {
+      console.warn("[Zoom] Humanized Join click failed, falling back to DOM click:", formatError(e))
+    }
     if (!clicked) {
-      console.warn("[Zoom] DOM Join click failed; falling back to Playwright click")
-      const joinBtn = page.locator(JOIN_BUTTON)
-      await joinBtn.waitFor({ state: "visible", timeout: 10_000 }).catch(() => {})
-      await joinBtn.click({ force: true, timeout: 10_000 }).catch(() => {})
+      await page
+        .evaluate((sel: string) => {
+          const btn = document.querySelector(sel) as HTMLButtonElement | null
+          if (!btn || btn.classList.contains("disabled") || btn.disabled) return false
+          btn.click()
+          return true
+        }, JOIN_BUTTON)
+        .catch(() => false)
     }
     console.log("[Zoom] Join clicked — waiting for admission...")
     await sleep(3000)
