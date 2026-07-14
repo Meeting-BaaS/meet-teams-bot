@@ -216,6 +216,32 @@ async function handleFailedRecording(): Promise<void> {
       }
     }
 
+    // Graceful shutdown. Without this, SIGTERM kills the process outright: the
+    // browser dies mid-call having never left, so the platform keeps the bot in
+    // the participant list as a GHOST until its own heartbeat timeout. Observed
+    // directly — SIGKILLed containers left bots sitting in a live Zoom meeting
+    // and the host had to remove them by hand.
+    //
+    // This matters in production, not just locally: k8s sends SIGTERM on pod
+    // eviction, node drain and scale-down, and the bots run on preemptible
+    // nodes where evictions are routine — so each one can strand a ghost bot in
+    // a customer's meeting. Applies to Meet and Teams exactly as much as Zoom.
+    //
+    // stopMeeting() sets the end reason and lets the state machine unwind through
+    // Cleanup, which calls closeMeeting() and actually leaves the call — the same
+    // path POST /stop_record uses. Idempotent: repeated signals are ignored.
+    let shuttingDown = false
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.on(signal, () => {
+        if (shuttingDown) return
+        shuttingDown = true
+        console.log(`Received ${signal} — leaving the meeting before exiting`)
+        MeetingStateMachine.instance
+          ?.stopMeeting(MeetingEndReason.ApiRequest)
+          .catch((e) => console.error(`Error during ${signal} shutdown:`, formatError(e)))
+      })
+    }
+
     // Start the meeting recording
     await MeetingStateMachine.instance.startRecordMeeting()
 
