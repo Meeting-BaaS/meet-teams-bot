@@ -124,7 +124,8 @@ export class ZoomChatObserver {
       ]
 
       const seenNodes = new WeakSet<Element>()
-      const seenHashes = new Set<string>()
+      const seenHashes = new Map<string, number>()
+      const HASH_TTL_MS = 5000
       let matchedContainer: Element | null = null
 
       const firstText = (root: Element, selectors: string[]): string => {
@@ -197,8 +198,10 @@ export class ZoomChatObserver {
         if (!msg) return
         if (isSystemMessage(msg)) return
         const hash = `${msg.sender} ${msg.text}`
-        if (seenHashes.has(hash)) return
-        seenHashes.add(hash)
+        const now = Date.now()
+        const last = seenHashes.get(hash)
+        if (last !== undefined && now - last < HASH_TTL_MS) return
+        seenHashes.set(hash, now)
         try {
           window.zoomChatMessage?.(msg)
         } catch {
