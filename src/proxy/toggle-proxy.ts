@@ -5,8 +5,8 @@ import axios from "axios"
 // the codebase moves to moduleResolution: "bundler" or "node16".
 // @ts-expect-error - see comment above; remove this once tsconfig moves on.
 import { HttpsProxyAgent } from "https-proxy-agent"
-import { Server } from "proxy-chain"
 import type { ConnectionStats } from "proxy-chain"
+import { Server } from "proxy-chain"
 import { envVars } from "../config/env-vars"
 
 // Allowlist of hosts that route through the residential upstream. Everything
@@ -47,14 +47,58 @@ let server: Server | null = null
 // window. setDirectMode() flips it off post-admission.
 let useUpstream = true
 let exitIp: string | null = null
+let currentSessionId: string | null = null
+let proxyDisabledReason: string | null = null
 // Country code + IANA timezone of the current exit IP (set by logExitIp), so the
 // browser can align its locale/timezone with the proxied egress geo instead of a
 // hardcoded en-US/UTC. Null until the exit-IP probe runs.
 let exitGeo: { country: string | null; timezone: string | null } | null = null
 
+export type ProxyTelemetry = {
+  enabled: boolean
+  mode: "selective" | "none"
+  provider: string | null
+  type: "residential" | null
+  exit_ip: string | null
+  exit_country: string | null
+  exit_timezone: string | null
+  session_id: string | null
+  disabled_reason: string | null
+}
+
 /** Country code + IANA timezone of the current exit IP, or null until probed. */
 export function getExitGeo(): { country: string | null; timezone: string | null } | null {
   return exitGeo
+}
+
+export function markProxyDisabledReason(reason: string): void {
+  proxyDisabledReason = reason
+}
+
+export function getProxyTelemetry(): ProxyTelemetry {
+  const configured = Boolean(envVars.RESIDENTIAL_PROXY_TEMPLATE)
+  const upstreamEnabled = server !== null && useUpstream
+  return {
+    enabled: upstreamEnabled,
+    mode: upstreamEnabled ? "selective" : "none",
+    provider: configured ? inferProxyProvider() : null,
+    type: configured ? "residential" : null,
+    exit_ip: server !== null ? exitIp : null,
+    exit_country: server !== null ? (exitGeo?.country ?? null) : null,
+    exit_timezone: server !== null ? (exitGeo?.timezone ?? null) : null,
+    session_id: currentSessionId,
+    disabled_reason: server === null ? proxyDisabledReason : null
+  }
+}
+
+function inferProxyProvider(): string {
+  try {
+    const host = new URL(envVars.RESIDENTIAL_PROXY_TEMPLATE).hostname
+    if (host.includes("decodo")) return "decodo"
+    return "unknown"
+  } catch {
+    return "unknown"
+  }
 }
 
 // Set of connectionIds that were routed through the residential upstream.
@@ -108,6 +152,8 @@ function logStats(label: string): void {
 
 export async function startToggleProxy(sessionId: string, retryCount = 0): Promise<string | null> {
   if (!envVars.RESIDENTIAL_PROXY_TEMPLATE) {
+    currentSessionId = null
+    proxyDisabledReason = "template_missing"
     console.log("[ToggleProxy] No RESIDENTIAL_PROXY_TEMPLATE configured, skipping proxy")
     return null
   }
@@ -115,6 +161,9 @@ export async function startToggleProxy(sessionId: string, retryCount = 0): Promi
   // Append retry count so each SQS retry lands on a different residential IP.
   const session = `${sessionId.replace(/-/g, "")}${retryCount}`
   const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session)
+  currentSessionId = session
+  proxyDisabledReason = null
+  useUpstream = true
 
   // Reset stats, proxied-connection tracking, and exit IP for this new session
   stats.trgTxBytes = 0
@@ -150,13 +199,16 @@ export async function startToggleProxy(sessionId: string, retryCount = 0): Promi
     // The local proxy server must stay running after joining (Chrome was launched
     // with --proxy-server pointing here), but setDirectMode() stops routing through
     // the upstream residential proxy — so stats at that point reflect residential usage.
-    server.on("connectionClosed", ({ connectionId, stats: cs }: { connectionId: number; stats: ConnectionStats }) => {
-      if (!proxiedConnectionIds.has(connectionId)) return
-      proxiedConnectionIds.delete(connectionId)
-      stats.connectionCount++
-      stats.trgTxBytes += cs.trgTxBytes ?? 0
-      stats.trgRxBytes += cs.trgRxBytes ?? 0
-    })
+    server.on(
+      "connectionClosed",
+      ({ connectionId, stats: cs }: { connectionId: number; stats: ConnectionStats }) => {
+        if (!proxiedConnectionIds.has(connectionId)) return
+        proxiedConnectionIds.delete(connectionId)
+        stats.connectionCount++
+        stats.trgTxBytes += cs.trgTxBytes ?? 0
+        stats.trgRxBytes += cs.trgRxBytes ?? 0
+      }
+    )
 
     await server.listen()
     const port = server.port
@@ -166,8 +218,9 @@ export async function startToggleProxy(sessionId: string, retryCount = 0): Promi
     // down, etc.), tear down and let the bot run direct.
     const upstreamOk = await logExitIp(upstreamUrl)
     if (!upstreamOk) {
-      await server.close(true).catch(() => { })
+      await server.close(true).catch(() => {})
       server = null
+      proxyDisabledReason = "upstream_unreachable"
       return null
     }
     return proxyUrl
@@ -176,6 +229,7 @@ export async function startToggleProxy(sessionId: string, retryCount = 0): Promi
       `[ToggleProxy] ❌ Failed to start, proceeding without proxy: ${error instanceof Error ? error.message : String(error)}`
     )
     server = null
+    proxyDisabledReason = "start_failed"
     return null
   }
 }
@@ -204,12 +258,12 @@ async function logExitIp(upstreamProxyUrl: string): Promise<boolean> {
       timeout: 5000
     })
     const d = res.data
-    const ip = d.proxy?.ip ?? "unknown"
+    const ip = d.proxy?.ip ?? null
     exitIp = ip
     exitGeo = { country: d.country?.code ?? null, timezone: d.city?.time_zone ?? null }
     const geo = `${d.country?.code ?? "?"}/${d.city?.name ?? "?"}`
     const isp = `${d.isp?.isp ?? "?"} (AS${d.isp?.asn ?? "?"})`
-    console.log(`[ToggleProxy] 🌍 Exit IP: ${ip} | ${geo} | ${isp}`)
+    console.log(`[ToggleProxy] 🌍 Exit IP: ${ip ?? "unknown"} | ${geo} | ${isp}`)
     return true
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

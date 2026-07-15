@@ -2,6 +2,7 @@ import { envVars } from "./config/env-vars"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
 import type { ArtifactKey, MeetingParams, Participant, RecordingMode } from "./types"
+import { PiiRedactor } from "./utils/PiiRedactor"
 
 class Global {
   private meetingParams: MeetingParams | null = null
@@ -64,6 +65,12 @@ class Global {
     }
 
     this.meetingParams = normalizedParams
+
+    // Register the bot name with the PII redactor as soon as meeting
+    // params are available: bot names often contain end-user names and
+    // must be masked as <BOT_NAME> in every log line.
+    PiiRedactor.registerBotName(normalizedParams.bot_name)
+
     console.log(`🤖 Bot ${meetingParams.bot_uuid} initialized with validated parameters`)
   }
 

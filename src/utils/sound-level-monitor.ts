@@ -1,6 +1,7 @@
 import * as fs from "node:fs"
 import { formatError } from "./Logger"
 import { PathManager } from "./PathManager"
+import { PiiRedactor } from "./PiiRedactor"
 
 const RMS_THRESHOLD = 0.005 // 0.5%
 const RMS_TO_LEVEL_SCALE = 300
@@ -148,7 +149,8 @@ export class SoundLevelMonitor {
     const now = Date.now()
     if (now - this.lastSoundLogTime >= this.SOUND_LOG_INTERVAL_MS) {
       const timestamp = new Date(now).toISOString()
-      const logEntry = `${timestamp},${normalizedLevel.toFixed(0)}\n`
+      // sound.log is uploaded raw to S3 — redact every line at write time.
+      const logEntry = PiiRedactor.redact(`${timestamp},${normalizedLevel.toFixed(0)}\n`)
 
       const soundLogPath = PathManager.getInstance().getSoundLogPath()
       // Silently handle file errors
