@@ -20,7 +20,11 @@ export class SoundLevelMonitor {
   private lastSoundLogTime = 0
   private readonly SOUND_LOG_INTERVAL_MS: number = 5000
   private audioBuffer: Float32Array[] = []
-  private readonly AUDIO_BUFFER_SIZE: number = 12
+  // Number of ffmpeg stdout chunks to batch before recomputing the level. Kept
+  // small so getCurrentSoundLevel() stays fresh — at 12 the level only refreshed
+  // every ~1s, which made the Zoom speaker observer's isSpeaking lag speech by
+  // seconds. 2 is plenty of audio for a stable RMS while staying responsive.
+  private readonly AUDIO_BUFFER_SIZE: number = 2
   private isActive = false
 
   private constructor() {}

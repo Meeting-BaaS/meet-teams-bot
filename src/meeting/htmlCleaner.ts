@@ -2,10 +2,11 @@ import type { Page } from "@playwright/test"
 import type { MeetingProvider, RecordingMode } from "../types"
 import { MeetHtmlCleaner } from "./meet/htmlCleaner"
 import { TeamsHtmlCleaner } from "./teams/htmlCleaner"
+import { ZoomHtmlCleaner } from "./zoom/htmlCleaner"
 
 export class HtmlCleaner {
   private meetingProvider: MeetingProvider
-  private cleaner: MeetHtmlCleaner | TeamsHtmlCleaner | null = null
+  private cleaner: MeetHtmlCleaner | TeamsHtmlCleaner | ZoomHtmlCleaner | null = null
   private isRunning = false
 
   constructor(page: Page, meetingProvider: MeetingProvider, recordingMode: RecordingMode) {
@@ -19,6 +20,10 @@ export class HtmlCleaner {
 
       case "teams":
         this.cleaner = new TeamsHtmlCleaner(page, recordingMode)
+        break
+
+      case "zoom":
+        this.cleaner = new ZoomHtmlCleaner(page, recordingMode)
         break
 
       default:

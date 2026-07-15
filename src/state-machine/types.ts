@@ -39,6 +39,13 @@ export enum MeetingEndReason {
   // SamlRejected triggers workspace-level auto-disable; Timeout is treated as transient.
   MeetLoginFailedSamlRejected = "meetLoginFailedSamlRejected",
   MeetLoginFailedTimeout = "meetLoginFailedTimeout",
+  // Zoom web-client (browser) specific failures. ZoomRequiresRtms is the
+  // post-Join anti-bot wall ("automated bots aren't allowed … must use Zoom
+  // RTMS") — keyed to the meeting/account, NOT IP reputation, so it is
+  // NON-RETRYABLE: retrying the same meeting always re-hits the wall. The
+  // api-server should route these to the native SDK / RTMS path instead.
+  ZoomRequiresRtms = "zoomRequiresRtms",
+  ZoomPasscodeRequired = "zoomPasscodeRequired",
   Internal = "internalError"
 }
 
@@ -77,6 +84,10 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "Google rejected our SAML assertion (cert mismatch most likely). Workspace auto-disabled."
     case MeetingEndReason.MeetLoginFailedTimeout:
       return "SAML round-trip with Google did not complete in time."
+    case MeetingEndReason.ZoomRequiresRtms:
+      return "Zoom blocks automated browser joins for this meeting and requires Zoom RTMS. Route to the native SDK / RTMS path."
+    case MeetingEndReason.ZoomPasscodeRequired:
+      return "Zoom meeting requires a passcode that was not supplied in the meeting URL (?pwd=)."
     case MeetingEndReason.Internal:
       return "Internal error occurred during recording."
     default:

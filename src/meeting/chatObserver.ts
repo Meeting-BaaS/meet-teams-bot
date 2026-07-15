@@ -3,10 +3,11 @@ import type { MeetingProvider } from "../types"
 import { formatError } from "../utils/Logger"
 import { MeetChatObserver } from "./meet/chatObserver"
 import { TeamsChatObserver } from "./teams/chatObserver"
+import { ZoomChatObserver } from "./zoom/chatObserver"
 
 export class ChatObserver {
   private meetingProvider: MeetingProvider
-  private observer: MeetChatObserver | TeamsChatObserver | null = null
+  private observer: MeetChatObserver | TeamsChatObserver | ZoomChatObserver | null = null
   private isObserving = false
 
   constructor(meetingProvider: MeetingProvider) {
@@ -25,6 +26,9 @@ export class ChatObserver {
         break
       case "teams":
         this.observer = new TeamsChatObserver(page)
+        break
+      case "zoom":
+        this.observer = new ZoomChatObserver(page)
         break
       default:
         console.warn(`[ChatObserver] Unknown meeting provider: ${this.meetingProvider}`)

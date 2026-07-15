@@ -3,10 +3,12 @@ import type { MeetingProvider, RecordingMode, SpeakerData } from "../types"
 import { formatError } from "../utils/Logger"
 import { MeetSpeakersObserver } from "./meet/speakersObserver"
 import { TeamsSpeakersObserver } from "./teams/speakersObserver"
+import { ZoomSpeakersObserver } from "./zoom/speakersObserver"
 
 export class SpeakersObserver {
   private meetingProvider: MeetingProvider
-  private observer: MeetSpeakersObserver | TeamsSpeakersObserver | null = null
+  private observer: MeetSpeakersObserver | TeamsSpeakersObserver | ZoomSpeakersObserver | null =
+    null
   private isObserving = false
   private retryCount = 0
   private maxRetries = 3
@@ -36,6 +38,10 @@ export class SpeakersObserver {
 
       case "teams":
         this.observer = new TeamsSpeakersObserver(page, recordingMode, botName, onSpeakersChange)
+        break
+
+      case "zoom":
+        this.observer = new ZoomSpeakersObserver(page, recordingMode, botName, onSpeakersChange)
         break
 
       default:

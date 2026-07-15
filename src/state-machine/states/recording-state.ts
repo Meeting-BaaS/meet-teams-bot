@@ -19,14 +19,23 @@ const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
 // which calls ensurePageLoaded (20s) + button search, while Meet is faster
 const getBotRemovalCheckTimeout = (): number => {
   const provider = GLOBAL.get().meeting_platform
-  return provider === "teams" ? 40000 : 25000 // Teams: 40s, Meet: 25s (sufficient for page.content())
+  // Zoom needs Teams-level headroom: its findEndMeeting embeds a 20s page-freeze
+  // race, so Meet's 25s budget leaves only ~5s for the rest of the check, and
+  // Zoom Web is the heaviest client we run (it's the reason for --in-process-gpu).
+  if (provider === "teams" || provider === "zoom") return 40000
+  return 25000 // Meet: 25s (sufficient for page.content())
 }
 
 // Window for checking recent speaker callbacks when timeout occurs
 // Use a wider window for Teams to avoid false positives when page is slow but still active
 const getSpeakerCallbackCheckWindow = (): number => {
   const provider = GLOBAL.get().meeting_platform
-  return provider === "teams" ? 60000 : 30000 // Teams: 60s, Meet: 30s
+  // Zoom widened alongside Teams: this window is the "page is slow but alive"
+  // rescue signal, and Zoom's observer only emits while someone occupies the
+  // main tile — so a quiet stretch produces no callbacks at all and a slow page
+  // would otherwise be misread as a removal.
+  if (provider === "teams" || provider === "zoom") return 60000
+  return 30000 // Meet: 30s
 }
 
 // How long the bot must be alone (no other attendees + no sound) before leaving
@@ -723,6 +732,23 @@ export class RecordingState extends BaseState {
     now: number,
     currentSoundLevel: number
   ): { shouldEnd: boolean; reason?: MeetingEndReason } {
+    // Zoom cannot participate in this check. attendeesCount comes from the
+    // speaker observer's emitted array (speaker-manager.ts), and Zoom's DOM
+    // observer emits only the ACTIVE SPEAKER (0 or 1 name), never a roster — so
+    // `attendeesCount <= 1` below is permanently true on Zoom. Paired with any
+    // silent stretch (a quiet screen-share, a pause), this check would fire
+    // mid-call and eject the bot from a LIVE meeting as AllParticipantsLeft.
+    //
+    // Silence is still covered: silence_timeout runs off SoundLevelMonitor,
+    // independently of attendee count, so a genuinely empty Zoom call still ends.
+    //
+    // The real fix is a Zoom roster source (participants-panel scrape) so that
+    // attendeesCount means what this check assumes it means. Until then, opt Zoom
+    // out rather than let it act on a number that doesn't mean what it says.
+    if (GLOBAL.get().meeting_platform === "zoom") {
+      return { shouldEnd: false }
+    }
+
     // Never trigger alone-in-meeting during the configured grace period.
     if (this.isInGracePeriod(now)) {
       return { shouldEnd: false }

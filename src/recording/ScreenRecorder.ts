@@ -441,6 +441,9 @@ export class ScreenRecorder extends EventEmitter {
       "1", // Mono
       "-ar",
       "24000", // 24kHz is sufficient for sound level analysis
+      "-flush_packets",
+      "1", // Flush each packet to the pipe immediately — keeps the sound level
+      // (and the Zoom observer's isSpeaking) low-latency instead of buffering.
       "-f",
       "f32le", // Raw float32 format
       "pipe:1" // stdout

@@ -1,5 +1,6 @@
 import { MeetProvider } from "../meeting/meet"
 import { TeamsProvider } from "../meeting/teams"
+import { ZoomProvider } from "../meeting/zoom"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { GLOBAL } from "../singleton"
 import type { MeetingProviderInterface } from "../types"
@@ -27,8 +28,23 @@ export class MeetingStateMachine {
 
   constructor() {
     this.currentState = MeetingStateType.Initialization
-    this.provider =
-      GLOBAL.get().meeting_platform === "teams" ? new TeamsProvider() : new MeetProvider()
+    // Explicit switch (was a teams?:meet ternary that silently handed "zoom"
+    // bots a MeetProvider — they'd navigate a Zoom URL with Meet selectors and
+    // fail confusingly). Unknown platforms now throw instead of masquerading.
+    const platform = GLOBAL.get().meeting_platform
+    switch (platform) {
+      case "teams":
+        this.provider = new TeamsProvider()
+        break
+      case "zoom":
+        this.provider = new ZoomProvider()
+        break
+      case "meet":
+        this.provider = new MeetProvider()
+        break
+      default:
+        throw new Error(`Unknown meeting_platform: ${platform}`)
+    }
 
     this.context = {
       provider: this.provider,
