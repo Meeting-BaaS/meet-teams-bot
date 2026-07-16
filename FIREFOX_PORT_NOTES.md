@@ -4,6 +4,23 @@
 
 This branch ports the Zoom web browser bot from Chromium/CloakBrowser to Firefox to test whether Zoom's ISP-based bot detection also blocks Firefox browsers.
 
+## Automation Verification
+
+**All Zoom automation is browser-agnostic and works identically in Firefox:**
+
+✅ **Selectors**: CSS selectors, aria-label, text matching - all browser-agnostic
+✅ **Click automation**: `page.locator().click({ force: true })` - works in both browsers
+  - Chromium: Uses CDP, routes through CloakBrowser humanization
+  - Firefox: Uses WebDriver BiDi, trusted clicks but no humanization layer
+✅ **Keyboard input**: `page.keyboard.type()` - browser-agnostic Playwright API
+✅ **Media permissions**:
+  - Chromium: `grantPermissions()` call
+  - Firefox: `firefoxUserPrefs` for permissions (grantPermissions wrapped in try/catch)
+✅ **Page evaluation**: `page.evaluate()` - works identically
+✅ **Waiting/timeouts**: `waitForSelector`, `waitForFunction` - browser-agnostic
+
+**Key difference:** Firefox clicks are trusted (isTrusted=true) but lack CloakBrowser's anti-fingerprinting humanization (randomized mouse movement, timing). This is actually the test goal - does Firefox's different fingerprint bypass ISP blocking?
+
 ## Changes Made
 
 ### 1. Browser Layer (`src/browser/browser.ts`)
