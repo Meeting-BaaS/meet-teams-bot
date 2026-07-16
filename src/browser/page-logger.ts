@@ -33,10 +33,38 @@ export const disablePrintPageLogs = () => {
   PRINT_PAGE_LOGS = false
 }
 
+// Known-harmless browser/Zoom console spam (especially on Firefox/stealthfox):
+// Zoom's own icozoom webfont has imperfect glyph bboxes Firefox loudly "adjusts",
+// plus Zoom's CSP/deprecation/WebGL chatter. None are actionable and they bury the
+// real logs hundreds of lines deep, so drop them before forwarding.
+const NOISE_PATTERNS = [
+  "downloadable font:",
+  "Glyph bbox was incorrect",
+  "Content-Security-Policy: Ignoring",
+  "unreachable code after return statement",
+  "Synchronous XMLHttpRequest",
+  "MouseEvent.mozInputSource is deprecated",
+  "WebGL warning:",
+  "WEBGL_debug_renderer_info is deprecated",
+  "ProseMirror expects the CSS",
+  "Layout was forced before the page was fully loaded",
+  "This page is in Quirks Mode",
+  "Using matchMedia for dark mode detection",
+  // Zoom media-stack internal chatter — high-volume and not actionable.
+  "CustomChunkLoader",
+  "cancelConsume interval",
+  "Video Version:",
+  "Sharing Version:",
+  "Audio Version:",
+  "Report-Only policy",
+  "frame-ancestors"
+]
+
 export function listenPage(page: Page) {
   page.on("console", async (message) => {
     try {
       const text = message.text()
+      if (NOISE_PATTERNS.some((p) => text.includes(p))) return
       const location = message.location()
 
       const type = message.type()
