@@ -2,20 +2,12 @@ import { MeetingEndReason } from "../state-machine/types"
 import type { StateDetectionConfig } from "../utils/meeting-state-detector"
 
 /**
- * Zoom Web Client (browser) state-detection configuration.
+ * Zoom Web Client (browser) state-detection config (live-DOM-verified).
  *
- * Selectors/text ported from vexa `join/zoom/selectors.ts` (live-DOM-verified).
- * Consumed by createStateDetector() the same way MEET_STATE_CONFIG /
- * TEAMS_STATE_CONFIG are.
- *
- * Two hard subtleties baked into the ZoomProvider, not this config:
- *  1. The anti-bot wall ("automated bots aren't allowed … must use Zoom RTMS")
- *     maps to a NON-RETRYABLE ZoomRequiresRtms — see denialPatterns below.
- *  2. Zoom renders the waiting room INSIDE `.meeting-app`, and mic-preview audio
- *     stays live across pre-join → waiting-room, so `.meeting-app`/audio presence
- *     alone false-positives as "in meeting". The in-meeting signal here is
- *     therefore the Leave button ONLY (footer-only, never renders pre-join or in
- *     the waiting room); the provider runs the waiting-room text check first.
+ * Key subtlety: Zoom renders the waiting room INSIDE `.meeting-app` with live
+ * mic-preview audio, so `.meeting-app`/audio presence alone false-positives as
+ * "in meeting". The provider checks the waiting-room text FIRST, then in-meeting,
+ * and the in-meeting selectors are all in-meeting-only (never pre-join/waiting).
  */
 export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
   providerName: "Zoom Web",
@@ -62,25 +54,33 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
     }
   ],
   waitingRoomPattern: {
-    // Zoom waiting room has no unique CSS class — only text strings. Substring
-    // match (unquoted text=) survives minor copy changes.
+    // The waiting room has no unique class — only text. Substring match survives
+    // minor copy changes.
     selectors: [
       "text=Please wait, the meeting host will let you in soon",
       "text=Please wait",
       "text=Waiting for the host to start this meeting",
       "text=Waiting for the host to start the meeting",
       "text=waiting room",
-      "text=Host has joined"
+      "text=Host has joined",
+      "text=will let you in",
+      "text=admitted shortly"
     ],
     threshold: 1,
     checkVisibility: false
   },
   inMeetingPattern: {
-    // Leave button ONLY. This footer control never renders pre-join or in the
-    // waiting room, so a single reliable indicator beats a threshold of weaker
-    // ones (which false-positive inside `.meeting-app`). checkVisibility=true so
-    // a hidden-but-present Leave button in the pre-join DOM can't match.
-    selectors: ['button[aria-label="Leave"]'],
+    // Any ONE confirms admission (waiting-room text is checked first, so these
+    // can't false-positive there). Leave is the primary signal, but Zoom auto-hides
+    // the footer that holds it — so we also accept a rendered in-meeting video tile
+    // and the video/share layout, which never appear pre-join or in the waiting
+    // room and don't auto-hide. checkVisibility keeps hidden pre-join DOM out.
+    selectors: [
+      'button[aria-label="Leave"]',
+      ".single-main-container__video-frame",
+      ".single-suspension-container__video-frame",
+      "#video-share-layout video-player"
+    ],
     threshold: 1,
     checkVisibility: true
   }

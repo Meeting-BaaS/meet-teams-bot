@@ -110,6 +110,17 @@ async function handleFailedRecording(): Promise<void> {
     return
   }
 
+  // The Zoom browser-join anti-bot / RTMS wall is probabilistic: it keys on the
+  // exit IP's reputation, and our proxy pool mixes clean and burned IPs (a live
+  // test joined 1 of 4 bots with identical fingerprints — the pass/fail split was
+  // purely the exit IP). Mark the wall retryable so the bot requeues onto a FRESH
+  // exit IP — the proxy session token embeds the retry count, so each requeue
+  // lands a different IP — cycling past burned ones up to MAX_RETRY_COUNT.
+  if (endReason === MeetingEndReason.ZoomRequiresRtms) {
+    console.log("[Retry] Zoom RTMS wall — marking retryable to cycle exit IP")
+    GLOBAL.setShouldRetry(true)
+  }
+
   // Check if we should retry instead of failing permanently
   const shouldRetry = shouldAttemptRetry(currentRetryCount)
 

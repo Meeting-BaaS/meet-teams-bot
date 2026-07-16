@@ -61,7 +61,6 @@ export async function parseZoomMeetingUrl(meeting_url: string): Promise<ZoomUrlC
  * Build the Zoom Web Client URL the bot actually navigates.
  * Rewrites ONLY canonical zoom.us hosts to app.zoom.us/wc/<id>/join; everything
  * else (white-label portals, or an already-built /wc/ URL) is returned as-is.
- * Ported from vexa buildZoomWebClientUrl (join/zoom/join.ts).
  */
 export function buildZoomWebClientUrl(meetingUrl: string, password?: string): string {
   try {

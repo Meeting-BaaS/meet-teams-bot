@@ -17,25 +17,14 @@ declare global {
 }
 
 /**
- * Zoom Web speaker attribution — TEMPORAL, DOM-based.
+ * Zoom Web speaker attribution — TEMPORAL, DOM-based. The Zoom Web client exposes
+ * only a mixed audio stream, so attribution reads who Zoom currently renders as
+ * the active speaker and labels the mixed audio by timestamp (active-speaker
+ * containers + avatar footer, 250ms poll, 2-poll debounce, 2s heartbeat). Emits
+ * SpeakerData[] over the exposeFunction bridge.
  *
- * Unlike Meet (per-participant <audio> → per-track vote/lock) and unlike our
- * Meet/Teams network-interception path, the Zoom Web client exposes only a
- * mixed audio stream (captured out-of-band by PulseAudio → ffmpeg, same as
- * every platform here). So attribution is temporal: read who Zoom is CURRENTLY
- * rendering as the active speaker from the DOM and label the mixed audio with
- * that name by timestamp.
- *
- * Logic + selectors ported verbatim from vexa `zoom-capture/zoom-speakers.ts`
- * (active-speaker containers + avatar footer, 250ms poll, 2-poll flicker
- * debounce, 2s heartbeat). Emits SpeakerData[] over the exposeFunction bridge
- * exactly like MeetSpeakersObserver, so the downstream speaker-manager /
- * diarization-tracker is unchanged.
- *
- * KNOWN LIMITATION (documented, not a bug): temporal attribution cannot
- * separate overlapping speakers — whoever Zoom lights up wins the turn. Quality
- * is below Meet's per-participant network diarization. The in-page getState()
- * probe is exposed for live selector-forensics when Zoom shifts its DOM.
+ * Limitation: temporal attribution can't separate overlapping speakers — whoever
+ * Zoom lights up wins the turn.
  */
 export class ZoomSpeakersObserver {
   private page: Page
@@ -102,31 +91,20 @@ export class ZoomSpeakersObserver {
     // in-page console.log here is dropped in normal runs — which is precisely
     // how the first stale-selector dump went missing.
     await this.page.exposeFunction("zoomSpeakerForensics", (report: string) => {
-      console.error(`[Zoom-Speakers] FORENSICS (active-speaker selectors matched nothing): ${report}`)
+      console.debug(`[Zoom-Speakers] FORENSICS (active-speaker selectors matched nothing): ${report}`)
     })
 
     await this.page.evaluate(
       ({ selfName, pollMs, confirmPolls, heartbeatMs }) => {
-        // Active-speaker containers, most-specific first.
-        //
-        // The first two are vexa's; live forensics against Zoom (2026-07) show
-        // BOTH match zero elements — vexa's Zoom speaker module was never wired
-        // into their own bot, so its selectors were never exercised. Kept only
-        // as fallbacks for older/other Zoom builds.
-        //
-        // `.single-main-container__video-frame` is what Zoom actually renders
-        // today: the speaker-view main tile. Zoom itself decides who occupies
-        // it, so the name in its footer IS Zoom's active-speaker pick — which is
-        // precisely the temporal attribution we want.
-        //
-        // Note: the same forensics found NO class matching
-        // /speak|talk|active|audio|voice/ anywhere in the tile DOM, so Zoom
-        // exposes no per-tile "is speaking" flag here. Occupancy of the main
-        // tile is the only speaking signal available to a DOM observer.
         const ACTIVE_CONTAINER_SELECTORS = [
           ".speaker-active-container__video-frame",
           ".speaker-bar-container__video-frame--active",
+          // Speaker-view main tile — Zoom's active-speaker pick (stays valid during
+          // a share; the shared screen is a separate .sharee-container__canvas).
           ".single-main-container__video-frame",
+          // "Suspension" container Zoom swaps in for some layouts (e.g. camera off).
+          // The selfName check filters the bot's own tile, so this is safe.
+          ".single-suspension-container__video-frame",
           ".gallery-video-container__video-frame--active"
         ]
         const NAME_FOOTER_SELECTOR = ".video-avatar__avatar-footer"
@@ -148,17 +126,19 @@ export class ZoomSpeakersObserver {
           return t || null
         }
 
+        // No screen-share special-casing: the main tile still holds the active
+        // speaker during a share. Multi-speaker attribution under a degenerate
+        // one-tile UI is handled by the downstream provider-diarization fallback.
         let reportedSelector: string | null = null
         function readActiveSpeaker(): string | null {
           for (const sel of ACTIVE_CONTAINER_SELECTORS) {
             const name = nameFromContainer(document.querySelector(sel))
             if (name) {
-              // Report which selector actually won, once — Zoom shifts this DOM
-              // across builds and a silent fallback would hide the drift.
+              // Log which selector won, once (no name — privacy).
               if (reportedSelector !== sel) {
                 reportedSelector = sel
                 try {
-                  window.zoomSpeakerForensics?.(`RESOLVED via "${sel}" -> "${name}"`)
+                  window.zoomSpeakerForensics?.(`RESOLVED via "${sel}"`)
                 } catch {
                   /* bridge unavailable */
                 }
@@ -215,7 +195,7 @@ export class ZoomSpeakersObserver {
               if (!rosterReported) {
                 rosterReported = true
                 try {
-                  window.zoomSpeakerForensics?.(`ROSTER via "${sel}" -> ${JSON.stringify(names)}`)
+                  window.zoomSpeakerForensics?.(`ROSTER via "${sel}" (${names.length} participants)`)
                 } catch {
                   /* bridge unavailable */
                 }
@@ -231,10 +211,31 @@ export class ZoomSpeakersObserver {
         // tile flagged isSpeaking (keeps the audio-capture-failure safety net alive,
         // since there is always exactly one active tile). If the roster isn't
         // available, fall back to the single active tile.
+        let cachedRoster: string[] = []
         function emit(name: string | null): void {
-          const roster = readRoster().filter(
+          let roster = readRoster().filter(
             (n) => !(selfName && n.toLowerCase() === selfName.toLowerCase())
           )
+          // Reuse the last good roster when the pane is temporarily unreadable.
+          // During a SCREEN SHARE Zoom hides the participants pane, so
+          // readRoster() goes empty — without this the emit collapses to a single
+          // active-tile speaker and, because the pane stays closed, never recovers
+          // (this is the "share makes it one speaker forever" bug). Keeping the
+          // cached roster preserves multi-speaker separation through the share.
+          if (roster.length > 0) {
+            cachedRoster = roster
+          } else if (cachedRoster.length > 0) {
+            roster = cachedRoster
+          }
+          // Always include the CURRENT active speaker, even if the (cached) roster
+          // predates them — e.g. someone who JOINS mid screen-share while the pane
+          // is hidden and starts talking: the active tile knows their name before
+          // readRoster() can. Without this they'd be attributed to nobody. Also
+          // seeds the cache so they persist once seen.
+          if (name && !roster.some((n) => n.toLowerCase() === name.toLowerCase())) {
+            roster = [...roster, name]
+            cachedRoster = roster
+          }
           let speakers: SpeakerData[]
           if (roster.length > 0) {
             speakers = roster.map((n, i) => ({
@@ -253,12 +254,8 @@ export class ZoomSpeakersObserver {
           }
         }
 
-        // Selector forensics. The active-speaker selectors above came from vexa,
-        // whose own Zoom speaker module was never wired into their bot — so they
-        // carry no production hours and Zoom shifts this DOM across builds. If we
-        // never resolve a speaker, dump the real participant-tile structure ONCE
-        // so the next run tells us the current selectors instead of silently
-        // producing an unattributed transcript.
+        // If we never resolve a speaker, dump the tile CLASS structure once so the
+        // selectors can be updated. Class names only — no text, so no names leak.
         let probesLeft = 1
         function dumpDomForensics(): void {
           if (probesLeft <= 0) return
@@ -269,19 +266,13 @@ export class ZoomSpeakersObserver {
             present: !!document.querySelector(s)
           }))
           const footers = document.querySelectorAll(NAME_FOOTER_SELECTOR).length
-          // Sweep name-ish / avatar-ish / video-adjacent nodes carrying short text.
           const survey: string[] = []
           const sweep = document.querySelectorAll(
             '[class*="name"],[class*="avatar"],[class*="participant"],[class*="video"],[class*="tile"],[class*="speaker"]'
           )
           for (let i = 0; i < sweep.length && survey.length < 20; i++) {
-            const el = sweep[i] as HTMLElement
-            const cls = String(el.className).slice(0, 70)
-            let own = ""
-            for (const n of Array.from(el.childNodes)) if (n.nodeType === 3) own += n.textContent || ""
-            own = own.trim().slice(0, 30)
-            const hint = HINT.test(cls) ? " [SPEAKING-HINT]" : ""
-            if (cls) survey.push(`${el.tagName.toLowerCase()}.${cls}${own ? ` »${own}` : ""}${hint}`)
+            const cls = String((sweep[i] as HTMLElement).className).slice(0, 70)
+            if (cls) survey.push(`${sweep[i].tagName.toLowerCase()}.${cls}${HINT.test(cls) ? " [HINT]" : ""}`)
           }
           try {
             window.zoomSpeakerForensics?.(
@@ -329,18 +320,16 @@ export class ZoomSpeakersObserver {
         }
 
         // Open the participants panel so readRoster() can see everyone. The panel
-        // is forced off-screen by the html cleaner, so it never shows. Retry a few
-        // seconds; safe to call repeatedly (once open, the "open …" button is gone).
+        // is forced off-screen by the html cleaner, so it never shows. Safe to call
+        // repeatedly (once open, the "open …" button is gone). Keep this running for
+        // the WHOLE meeting: Zoom closes the pane when a screen share starts, so we
+        // must re-open it once the share ends to refresh the roster (the cached
+        // roster covers the gap in the meantime). Throttled to re-open only when the
+        // roster is currently unreadable.
         openParticipantsPanel()
-        let panelAttempts = 0
         const panelOpener = setInterval(() => {
-          panelAttempts++
-          if (readRoster().length > 0 || panelAttempts >= 20) {
-            clearInterval(panelOpener)
-            return
-          }
-          openParticipantsPanel()
-        }, 500)
+          if (readRoster().length === 0) openParticipantsPanel()
+        }, 1500)
 
         tick()
         const timer = setInterval(tick, pollMs)

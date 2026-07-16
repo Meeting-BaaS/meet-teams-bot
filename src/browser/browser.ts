@@ -99,17 +99,28 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   const platform = GLOBAL.get().meeting_platform
   // Zoom Web renders via SwiftShader software-WebGL + a software video decoder;
   // vexa measured the standalone gpu-process at ~357% CPU. --in-process-gpu
-  // folds that into the renderer and drops per-bot demand from ~4.4 cores to
-  // ~115%. Meet/Teams don't need it, so scope it to Zoom.
+  // folds that into the renderer and keeps per-bot demand bounded.
+  //
+  // Crucially we do NOT --disable-gpu for Zoom: that leaves the page with a null
+  // WebGL context (webgl/webgl2 both null), which is a strong bot tell — no real
+  // Chrome reports zero WebGL. Keeping SwiftShader alive lets CloakBrowser hand
+  // the page a spoofed Windows GPU renderer instead. Meet/Teams don't
+  // fingerprint WebGL as hard and want the CPU/stability of a disabled GPU, so
+  // the disable stays scoped to them.
   const gpuArgs =
     platform === "zoom"
-      ? [
-          "--disable-gpu",
-          "--disable-software-rasterizer",
-          "--disable-gpu-compositing",
-          "--in-process-gpu"
-        ]
+      ? ["--in-process-gpu"]
       : ["--disable-gpu", "--disable-software-rasterizer", "--disable-gpu-compositing"]
+
+  // Zoom geometry coherence: our 720p capture window is 1280x720, but
+  // CloakBrowser's seed spoofs a 1920x1080 screen — leaving screen >> viewport,
+  // which reads as a shrunken/VM-ish window. Pin the spoofed screen to a common
+  // 1440x900 laptop so the 1280x720 window looks like a near-maximized browser
+  // on a real display. 1080p already fills a 1920-wide screen, so leave it.
+  const zoomFingerprintArgs =
+    platform === "zoom" && resolution !== "1080"
+      ? ["--fingerprint-screen-width=1440", "--fingerprint-screen-height=900"]
+      : []
   try {
     console.log(`Launching CloakBrowser persistent context (${platform})...`)
 
@@ -123,7 +134,7 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
       ...(timezoneId ? { timezoneId } : {}),
       humanize: true,
       ...(proxyUrl ? { proxy: proxyUrl } : {}),
-      args: [...sharedArgs, ...gpuArgs],
+      args: [...sharedArgs, ...gpuArgs, ...zoomFingerprintArgs],
       contextOptions: {
         permissions: ["microphone", "camera"],
         ignoreHTTPSErrors: true,
