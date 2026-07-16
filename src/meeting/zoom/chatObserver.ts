@@ -11,7 +11,7 @@ declare global {
 }
 
 /**
- * Zoom Web chat reader — DOM observation (no network). Ported from vexa
+ * Zoom Web chat reader — DOM observation (no network).
  * `zoom-capture/zoom-chat.ts`: defensive multi-candidate selectors because
  * Zoom's chat DOM shifts across builds, plus a heuristic fallback (short text =
  * sender, long text = body). The chat panel must be OPEN for messages to exist
