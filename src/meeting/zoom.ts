@@ -7,6 +7,7 @@ import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { buildZoomWebClientUrl, parseZoomMeetingUrl } from "../urlParser/zoomUrlParser"
+import { humanClick, humanType } from "../utils/humanize"
 import { formatError } from "../utils/Logger"
 import { createStateDetector } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
@@ -18,6 +19,9 @@ import { ZOOM_STATE_CONFIG } from "./zoom-state-config"
 //   Classic client(app.zoom.us/wc/join/<id>):  #inputname,       #joinBtn
 const NAME_INPUT = '#input-for-name, #inputname, input[placeholder="Your Name" i]'
 const JOIN_BUTTON = "button.preview-join-button, #joinBtn"
+// Preview device controls. #preview-audio-control-button is verified present on
+// BOTH the Chromium and Firefox/stealthfox clients (live-DOM check), so we resolve
+// by id and read the aria-label for state rather than matching an exact label str.
 const PREVIEW_MUTE = "#preview-audio-control-button"
 const PREVIEW_VIDEO = "#preview-video-control-button"
 const LEAVE_BUTTON = 'button[aria-label="Leave"]'
@@ -111,12 +115,21 @@ export class ZoomProvider implements MeetingProviderInterface {
     // stale-diarization dump went missing on the first live run.
     listenPage(page)
 
-    try {
-      await browserContext.grantPermissions(["microphone", "camera"], {
-        origin: new URL(link).origin
-      })
-    } catch (e) {
-      console.warn("[Zoom] grantPermissions failed (continuing):", formatError(e))
+    // grantPermissions(["microphone","camera"]) is a Chromium-only API — Firefox
+    // rejects those permission names ("Unknown permission: microphone"). Firefox/
+    // stealthfox grants media via its launch prefs instead, so skip the call there
+    // rather than logging a warning every join.
+    const browserName = browserContext.browser()?.browserType().name()
+    if (browserName === "chromium") {
+      try {
+        await browserContext.grantPermissions(["microphone", "camera"], {
+          origin: new URL(link).origin
+        })
+      } catch (e) {
+        console.warn("[Zoom] grantPermissions failed (continuing):", formatError(e))
+      }
+    } else {
+      console.log(`[Zoom] Skipping grantPermissions (browser=${browserName ?? "unknown"}; granted via launch prefs)`)
     }
 
     // Host-not-started retry loop: before the host starts, Zoom serves
@@ -274,7 +287,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     const botName = GLOBAL.get().bot_name
     await page.locator(NAME_INPUT).first().click({ timeout: 5000 }).catch(() => { })
     await page.locator(NAME_INPUT).first().fill("")
-    await page.keyboard.type(botName, { delay: 30 })
+    await humanType(page, botName)
     console.log(`[Zoom] Name typed: "${botName}"`)
 
     // Before waiting on Join, detect the human-gated walls (reCAPTCHA on the
@@ -303,18 +316,28 @@ export class ZoomProvider implements MeetingProviderInterface {
     // virtual mic) — muting that bot means nobody ever hears it, which is how
     // Meet/Teams gate this too. Only mute when we have no input stream.
     const hasStreamingInput = !!GLOBAL.get().streaming_input
-    try {
-      const muteBtn = page.locator(PREVIEW_MUTE)
-      const label = await muteBtn.getAttribute("aria-label")
-      if (!hasStreamingInput && label === "Mute") {
-        await muteBtn.click()
-        console.log("[Zoom] Muted mic in preview (receive-only recorder bot)")
-      } else if (hasStreamingInput && label === "Unmute") {
-        await muteBtn.click()
-        console.log("[Zoom] Unmuted mic in preview (streaming_input — bot speaks)")
+    // Receive-only recorder bots are muted IN-CALL by ensureMuted() after admission.
+    // We deliberately do NOT mute in preview: Zoom's web client resets device state
+    // on join, so a preview mute is immediately undone and the mic visibly flickers
+    // muted → live → muted (looks unprofessional). Only touch the preview mic for a
+    // streaming bot, which must be UNMUTED to speak into the meeting.
+    if (hasStreamingInput) {
+      try {
+        const micBtn = page
+          .locator(PREVIEW_MUTE)
+          .or(page.getByRole("button", { name: /^(un)?mute$/i }))
+          .first()
+        await micBtn.waitFor({ state: "visible", timeout: 8000 }).catch(() => {})
+        const micLabel = ((await micBtn.getAttribute("aria-label").catch(() => null)) ?? "")
+          .trim()
+          .toLowerCase()
+        if (micLabel.includes("unmute")) {
+          await micBtn.click({ timeout: 3000 }).catch(() => {})
+          console.log("[Zoom] Unmuted mic in preview (streaming_input — bot speaks)")
+        }
+      } catch (e) {
+        console.warn("[Zoom] Preview mic toggle failed:", formatError(e))
       }
-    } catch {
-      /* not present */
     }
     // Video: a bot with a configured image must broadcast it on camera (same as
     // Meet/Teams), so KEEP video on when bot_image is set. Key the decision on the
@@ -323,22 +346,29 @@ export class ZoomProvider implements MeetingProviderInterface {
     // the image "usually doesn't show" locally), and Zoom has no post-join
     // ensureCameraOn re-enforcement like Meet. We re-assert it after join below.
     const wantsCameraImage = !!GLOBAL.get().bot_image
+    // Same id-first, substring-of-aria-label approach as the mic control above.
+    // "start video" in the label => camera currently off; "stop video" => on.
     try {
-      const videoBtn = page.locator(PREVIEW_VIDEO)
-      const label = await videoBtn.getAttribute("aria-label")
-      if (wantsCameraImage) {
-        if (label === "Start Video") {
-          await videoBtn.click()
-          console.log("[Zoom] Started video in preview (bot_image configured)")
-        } else {
-          console.log("[Zoom] Video already on for bot_image")
-        }
-      } else if (label === "Stop Video") {
-        await videoBtn.click()
+      const videoBtn = page
+        .locator(PREVIEW_VIDEO)
+        .or(page.getByRole("button", { name: /^(start|stop) video$/i }))
+        .first()
+      await videoBtn.waitFor({ state: "visible", timeout: 6000 }).catch(() => {})
+      const vidLabel = (
+        (await videoBtn.getAttribute("aria-label", { timeout: 2000 }).catch(() => null)) ?? ""
+      ).toLowerCase()
+      const camOff = vidLabel.includes("start video")
+      if (wantsCameraImage && camOff) {
+        await videoBtn.click({ timeout: 3000 }).catch(() => {})
+        console.log("[Zoom] Started video in preview (bot_image configured)")
+      } else if (!wantsCameraImage && vidLabel && !camOff) {
+        await videoBtn.click({ timeout: 3000 }).catch(() => {})
         console.log("[Zoom] Stopped video in preview (no bot_image)")
+      } else {
+        console.log(`[Zoom] Preview video left as-is (aria-label="${vidLabel}")`)
       }
-    } catch {
-      /* already off / not present */
+    } catch (e) {
+      console.warn("[Zoom] Preview video toggle failed:", formatError(e))
     }
 
     if (cancelCheck()) {
@@ -346,30 +376,27 @@ export class ZoomProvider implements MeetingProviderInterface {
       throw new Error("Bot stopped before clicking Join")
     }
 
-    // Click Join through Playwright, NOT via a DOM .click().
+    // Click Join with a REAL, human-like mouse (our own humanization).
     //
-    // This is the most bot-scrutinised action in the whole flow, and an in-page
-    // `element.click()` is a free tell: the MouseEvent it produces has
-    // isTrusted === false, which any anti-bot layer can read in one line.
-    // Playwright dispatches through CDP, so the event is genuinely trusted
-    // (isTrusted === true) AND it routes through CloakBrowser's humanize patches
-    // (real mouse movement, human timing) — the same reason teams.ts prefers a
-    // humanized click and treats a raw DOM click as making "the join look
-    // robotic".
-    //
-    // `force: true` is what lets us keep the trusted path: it skips Playwright's
-    // actionability/hit-test checks — which is why we reached for a DOM click in
-    // the first place, since `.preview-meeting-info` overlays the button and
-    // intercepts pointer events — while still sending real input.
-    //
-    // The DOM click stays ONLY as a last-resort fallback, matching Teams.
-    console.log("[Zoom] Clicking Join (Playwright, trusted + humanized)...")
-    let clicked = false
-    try {
-      await page.locator(JOIN_BUTTON).first().click({ force: true, timeout: 10_000 })
-      clicked = true
-    } catch (e) {
-      console.warn("[Zoom] Humanized Join click failed, falling back to DOM click:", formatError(e))
+    // This is the most bot-scrutinised action in the flow. An in-page
+    // `element.click()` is a free tell (isTrusted === false). We instead drive the
+    // actual mouse to the button and press — a genuinely trusted event, and on
+    // stealthfox the patched Juggler turns the move into a Bezier path. This also
+    // sidesteps locator.click()'s actionability check, which was reporting the Zoom
+    // button as "not visible" on Firefox and forcing the DOM-click fallback every
+    // join. Order: humanized mouse → trusted force-click → DOM click (last resort).
+    console.log("[Zoom] Clicking Join (humanized mouse)...")
+    let clicked = await humanClick(page, page.locator(JOIN_BUTTON).first())
+    if (clicked) {
+      console.log("[Zoom] Join clicked (humanized mouse)")
+    } else {
+      try {
+        await page.locator(JOIN_BUTTON).first().click({ force: true, timeout: 5000 })
+        clicked = true
+        console.log("[Zoom] Join clicked (force-click fallback)")
+      } catch (e) {
+        console.warn("[Zoom] Humanized + force click failed, using DOM click:", formatError(e))
+      }
     }
     if (!clicked) {
       await page
@@ -401,6 +428,17 @@ export class ZoomProvider implements MeetingProviderInterface {
       )
     }
 
+    // Re-assert MUTE after admission for receive-only recorder bots. Zoom resets
+    // device state across the waiting-room → in-call transition, so a mic muted in
+    // preview can come back UNMUTED in-call (the "joined unmuted" symptom, and the
+    // preview id is confirmed present so the preview click did fire). Mirror
+    // ensureVideoOn. Skipped when streaming_input is set — that bot must speak.
+    if (!GLOBAL.get().streaming_input) {
+      await this.ensureMuted(page).catch((e) =>
+        console.warn("[Zoom] ensureMuted failed:", formatError(e))
+      )
+    }
+
     await htmlSnapshot.captureSnapshot(page, "zoom_join_meeting_success")
   }
 
@@ -429,6 +467,37 @@ export class ZoomProvider implements MeetingProviderInterface {
       await sleep(1500)
     }
     console.warn("[Zoom] Could not confirm camera on in-call after retries")
+  }
+
+  /**
+   * Ensure the bot's mic is MUTED in-call (receive-only recorder). The in-call
+   * footer control is labelled "mute my microphone" (live) / "unmute my
+   * microphone" (muted). Clicked IN-PAGE — a Playwright locator click was failing
+   * silently on Firefox and leaving the mic live; an in-page click fires the
+   * button's real onClick (untrusted is fine — it's the bot's own mic). Polls with
+   * positive confirmation: only stops once the label reads "unmute…".
+   */
+  private async ensureMuted(page: Page): Promise<void> {
+    for (let i = 0; i < 15; i++) {
+      const muted = await page
+        .evaluate(() => {
+          const btn = document.querySelector(
+            '#foot-bar [aria-label*="mute" i], #wc-footer [aria-label*="mute" i], .footer [aria-label*="mute" i]'
+          ) as HTMLElement | null
+          if (!btn) return null // footer not mounted yet
+          const label = (btn.getAttribute("aria-label") || "").toLowerCase()
+          if (label.includes("unmute")) return true // already muted
+          btn.click()
+          return false
+        })
+        .catch(() => null)
+      if (muted === true) {
+        console.log("[Zoom] Mic muted in-call")
+        return
+      }
+      await sleep(700)
+    }
+    console.warn("[Zoom] Could not confirm mic muted in-call after retries")
   }
 
   /**

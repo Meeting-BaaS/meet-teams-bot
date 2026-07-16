@@ -33,7 +33,11 @@ export class ZoomSpeakersObserver {
   private onSpeakersChange: (speakers: SpeakerData[]) => void
   private isObserving = false
 
-  private readonly POLL_MS = 250
+  // 100ms poll x 2-poll confirm = ~200ms to switch the active speaker (was
+  // ~500ms at 250ms). Tighter boundary = the next speaker's first words are no
+  // longer bled onto the previous speaker's segment. Audio-gating still filters
+  // non-speech, so the faster poll doesn't add spurious turns.
+  private readonly POLL_MS = 100
   private readonly CONFIRM_POLLS = 2
   private readonly HEARTBEAT_MS = 2000
 

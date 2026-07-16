@@ -131,6 +131,30 @@ export class WaitingRoomState extends BaseState {
 
       // Handle specific error types based on MeetingEndReason
       const endReason = GLOBAL.getEndReason()
+
+      // Zoom: mirror Meet/Teams — any failure while still trying to join is
+      // retryable, because a fresh pod on a fresh exit IP can clear a transient
+      // network/render error, the probabilistic anti-bot wall, or a denial. Only
+      // the deterministic outcomes stay terminal. Scoped to Zoom so Meet/Teams
+      // keep their own per-case retry logic; this catch runs only before InCall,
+      // so an in-meeting failure can never wrongly requeue.
+      if (GLOBAL.get().meeting_platform === "zoom") {
+        const ZOOM_TERMINAL: MeetingEndReason[] = [
+          MeetingEndReason.LoginRequired,
+          MeetingEndReason.BotRemoved,
+          MeetingEndReason.BotRemovedTooEarly,
+          MeetingEndReason.InvalidMeetingUrl,
+          MeetingEndReason.ApiRequest,
+          MeetingEndReason.TimeoutWaitingToStart
+        ]
+        if (!endReason || !ZOOM_TERMINAL.includes(endReason)) {
+          console.log(
+            `[Zoom] Pre-join failure (${endReason ?? "unknown"}) — marking retryable (fresh pod/IP)`
+          )
+          GLOBAL.setShouldRetry(true)
+        }
+      }
+
       if (endReason) {
         switch (endReason) {
           case MeetingEndReason.BotNotAccepted:
@@ -158,8 +182,16 @@ export class WaitingRoomState extends BaseState {
 
     try {
       const meetingInfo = await this.context.provider.parseMeetingUrl(GLOBAL.get().meeting_url)
-      // Store the transformed meeting URL in GLOBAL for later use (e.g., in API calls)
-      GLOBAL.setTransformedMeetingUrl(meetingInfo.meetingId)
+      // transformed_meeting_url must be a valid URL — it goes out in webhooks/API
+      // calls AND into the retry SQS message, whose consumer validates it with
+      // url(). Meet/Teams parsers return a full URL as meetingId; Zoom returns a
+      // bare numeric id, which fails that schema and silently kills the retry.
+      // Fall back to the original meeting_url (always a valid URL) when the parsed
+      // id isn't one, so every platform stores a URL here like Meet/Teams do.
+      const meetingIdIsUrl = /^https?:\/\//i.test(meetingInfo.meetingId)
+      GLOBAL.setTransformedMeetingUrl(
+        meetingIdIsUrl ? meetingInfo.meetingId : GLOBAL.get().meeting_url
+      )
       return meetingInfo
     } catch (error) {
       console.error("Failed to parse meeting URL:", formatError(error))

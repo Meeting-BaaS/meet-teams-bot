@@ -61,7 +61,23 @@ export const envVars = cleanEnv(process.env, {
   // sees (into html_snapshots/, uploaded to the log bucket) so we can measure
   // what a detector saw at a block instead of inferring it from config. Off in
   // prod by default; flip on a single bot to reproduce a wall.
-  BROWSER_DEBUG_CAPTURE: bool({ default: false })
+  BROWSER_DEBUG_CAPTURE: bool({ default: false }),
+  // Use Firefox instead of Chromium/CloakBrowser. When true, launches Firefox
+  // via Playwright to test if Zoom's ISP blocking also affects Firefox browsers.
+  USE_FIREFOX: bool({ default: false }),
+  // FORCE the stealthfox patched Firefox for ALL platforms (A/B override).
+  // Normally leave false and let STEALTHFOX_PLATFORMS scope it per platform.
+  // Either way needs STEALTHFOX_BINARY_PATH. Takes precedence over USE_FIREFOX.
+  USE_STEALTHFOX: bool({ default: false }),
+  // Which platforms launch stealthfox by default — comma-separated
+  // (e.g. "zoom", "zoom,meet", or "all"). Zoom-only by default; expanding to
+  // meet/teams later is a one-value change. Only takes effect when
+  // STEALTHFOX_BINARY_PATH is set, so local/dev without the binary is unaffected.
+  STEALTHFOX_PLATFORMS: str({ default: "zoom" }),
+  // Absolute path to the stealthfox Firefox binary. Baked into the Docker image
+  // at /opt/stealthfox/<tag>/firefox by scripts/fetch-stealthfox.sh. Empty =
+  // stealthfox disabled (falls back to CloakBrowser).
+  STEALTHFOX_BINARY_PATH: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars

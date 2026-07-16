@@ -40,3 +40,6 @@ buildInfo.json
 
 # Backup files
 *.bak
+
+# stealthfox patched Firefox binary fetched by scripts/fetch-stealthfox.sh (large, external)
+.stealthfox/

@@ -169,8 +169,34 @@ export async function captureFingerprint(page: Page, label: string): Promise<voi
           return { present }
         }
 
+        // --- CDP Runtime.enable leak self-test ---
+        // The dominant modern bot tell, and fingerprint-INDEPENDENT: if the
+        // automation layer has sent Runtime.enable (vanilla Playwright/Puppeteer
+        // do it on every frame), Chromium serialises console arguments for the
+        // Runtime.consoleAPICalled event, building an object preview that invokes
+        // property getters. A real user browser with no CDP client attached never
+        // does this. So a getter that fires during console.debug == CDP leaking.
+        // If this reads true, no amount of UA/WebGL/font spoofing will hide the bot.
+        let runtimeEnableLeak: boolean | null = null
+        try {
+          let triggered = false
+          const bait: Record<string, unknown> = {}
+          Object.defineProperty(bait, "id", {
+            get() {
+              triggered = true
+              return 1
+            },
+            enumerable: true
+          })
+          console.debug(bait)
+          runtimeEnableLeak = triggered
+        } catch {
+          runtimeEnableLeak = null
+        }
+
         return {
           navigator: navigatorInfo,
+          cdp: { runtimeEnableLeak },
           webgl: readGl("webgl"),
           webgl2: readGl("webgl2"),
           fonts: {
@@ -201,10 +227,17 @@ export async function captureFingerprint(page: Page, label: string): Promise<voi
       String(fp.navigator.platform).startsWith("Win")
     const winFontCount = fp.fonts.windowsPresent.length
     const linFontCount = fp.fonts.linuxPresent.length
-    const verdict = claimsWindows && winFontCount === 0 && linFontCount > 0 ? "MIXED-OS-TELL" : "ok"
+    // CDP leak is the most severe tell, so it wins the verdict; then the font mix.
+    const verdict =
+      fp.cdp.runtimeEnableLeak === true
+        ? "CDP-RUNTIME-LEAK"
+        : claimsWindows && winFontCount === 0 && linFontCount > 0
+          ? "MIXED-OS-TELL"
+          : "ok"
 
     console.log(
       `[FingerprintProbe:${label}] verdict=${verdict} ` +
+        `cdpRuntimeLeak=${fp.cdp.runtimeEnableLeak} ` +
         `platform=${fp.navigator.platform} webdriver=${fp.navigator.webdriver} ` +
         `winFonts=${winFontCount}/${fp.fonts.windowsProbed} linFonts=${linFontCount}/${fp.fonts.linuxProbed} ` +
         `glRenderer=${fp.webgl?.unmaskedRenderer ?? fp.webgl?.renderer ?? "?"} ` +

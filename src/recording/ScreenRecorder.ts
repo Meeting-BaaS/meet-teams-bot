@@ -381,9 +381,9 @@ export class ScreenRecorder extends EventEmitter {
       "-pix_fmt",
       "yuv420p",
       "-g",
-      "30", // Keyframe every 30 frames (1 sec at 30fps) for precise trimming
+      "20", // Keyframe every 20 frames (1 sec at 20fps) for precise trimming
       "-keyint_min",
-      "30", // Force minimum keyframe interval
+      "20", // Force minimum keyframe interval
       "-bf",
       "0",
       "-refs",
@@ -547,15 +547,15 @@ export class ScreenRecorder extends EventEmitter {
           // Log system resources for diagnostics
           this.logSystemResources()
 
-          // Emit a critical error event
-          ;(this as EventEmitter).emit("error", {
-            type: "fileWriteError",
-            message: "FFmpeg file write error detected",
-            error: output.trim(),
-            recordingDuration: recordingDurationSeconds,
-            currentFileSize,
-            timestamp: now
-          })
+            // Emit a critical error event
+            ; (this as EventEmitter).emit("error", {
+              type: "fileWriteError",
+              message: "FFmpeg file write error detected",
+              error: output.trim(),
+              recordingDuration: recordingDurationSeconds,
+              currentFileSize,
+              timestamp: now
+            })
         }
         // Check for specific PulseAudio errors that indicate audio input failure
         else if (
@@ -1366,8 +1366,8 @@ export class ScreenRecorder extends EventEmitter {
       // SYNC_CONFIDENCE_LOW in bot logs.
       console.warn(
         `⚠️ SYNC_CONFIDENCE_LOW confidence=${syncResult.confidence.toFixed(2)} ` +
-          `audioTs=${syncResult.audioTimestamp.toFixed(3)} videoTs=${syncResult.videoTimestamp.toFixed(3)} ` +
-          `expected=${expectedSyncSec.toFixed(3)} — proceeding without measured correction`
+        `audioTs=${syncResult.audioTimestamp.toFixed(3)} videoTs=${syncResult.videoTimestamp.toFixed(3)} ` +
+        `expected=${expectedSyncSec.toFixed(3)} — proceeding without measured correction`
       )
     }
     const hasMeetingStartTime = this.meetingStartTime > 0
@@ -1837,10 +1837,8 @@ file '${absoluteInputPath}'`
       }
 
       console.log(
-        `🎯 Pause window snapped: [${((w.start - meetingStartTime) / 1000).toFixed(3)}s, ${
-          w.end !== null ? `${((w.end - meetingStartTime) / 1000).toFixed(3)}s` : "end"
-        }] → [${((snappedStart - meetingStartTime) / 1000).toFixed(3)}s, ${
-          snappedEnd !== null ? `${((snappedEnd - meetingStartTime) / 1000).toFixed(3)}s` : "end"
+        `🎯 Pause window snapped: [${((w.start - meetingStartTime) / 1000).toFixed(3)}s, ${w.end !== null ? `${((w.end - meetingStartTime) / 1000).toFixed(3)}s` : "end"
+        }] → [${((snappedStart - meetingStartTime) / 1000).toFixed(3)}s, ${snappedEnd !== null ? `${((snappedEnd - meetingStartTime) / 1000).toFixed(3)}s` : "end"
         }]`
       )
 
@@ -1851,8 +1849,7 @@ file '${absoluteInputPath}'`
         console.warn(
           `⚠️ Dropping post-snap zero-length pause window at ${(
             (snappedStart - meetingStartTime) / 1000
-          ).toFixed(3)}s (pre-snap duration: ${
-            w.end !== null ? ((w.end - w.start) / 1000).toFixed(3) : "∞"
+          ).toFixed(3)}s (pre-snap duration: ${w.end !== null ? ((w.end - w.start) / 1000).toFixed(3) : "∞"
           }s)`
         )
         continue
@@ -2007,7 +2004,7 @@ file '${absoluteInputPath}'`
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
-      let segment: { start_time: number; end_time: number; [key: string]: unknown }
+      let segment: { start_time: number; end_time: number;[key: string]: unknown }
       try {
         segment = JSON.parse(line)
       } catch (err) {
@@ -2016,8 +2013,7 @@ file '${absoluteInputPath}'`
         // with pre-trim wall-clock timestamps. Skip and keep going.
         parseFailures++
         console.warn(
-          `⚠️ Diarization line ${i} in ${diarizationPath} is malformed, skipping: ${
-            err instanceof Error ? err.message : String(err)
+          `⚠️ Diarization line ${i} in ${diarizationPath} is malformed, skipping: ${err instanceof Error ? err.message : String(err)
           }`
         )
         continue
@@ -2042,8 +2038,7 @@ file '${absoluteInputPath}'`
       "utf8"
     )
     console.log(
-      `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${
-        lines.length - adjusted.length
+      `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${lines.length - adjusted.length
       } removed${parseFailures > 0 ? `, of which ${parseFailures} malformed` : ""})`
     )
   }

@@ -46,22 +46,45 @@ export function shouldAttemptRetry(currentRetryCount: number): boolean {
   return true
 }
 
+/** True only for a well-formed http(s) URL (matches the retry schema's url()). */
+function isValidHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value.trim() === "") return false
+  try {
+    const u = new URL(value)
+    return u.protocol === "http:" || u.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
 /**
- * Builds SQS message for retry with incremented retry_count
+ * Builds SQS message for retry with incremented retry_count.
+ *
+ * transformed_meeting_url must be null OR a valid URL: the waiting-room state
+ * overwrites it with the bare meeting ID (not a URL), which fails the retry
+ * consumer's url() schema and silently kills the retry. We null anything that
+ * isn't a real URL; the retry run re-derives it from meeting_url.
  */
 export function buildRetryMessage(): MeetingParams {
   const params = GLOBAL.get()
   const currentRetryCount = GLOBAL.getRetryCount()
 
-  return {
+  const message = {
     ...params,
-    // Reset: the waiting-room state overwrites this with the bare meeting ID
-    // (not a URL), which fails schema validation on the retry consumer and
-    // silently kills the retry. The retry run re-derives it from meeting_url.
-    transformed_meeting_url: null,
-    // Increment retry count
-    retry_count: currentRetryCount + 1
+    transformed_meeting_url: isValidHttpUrl(params.transformed_meeting_url)
+      ? params.transformed_meeting_url
+      : null,
+    retry_count: currentRetryCount + 1,
+    // This process IS the Zoom *web* engine — the native SDK path is a separate
+    // Rust binary (client-zoom) that never runs this code. The consumer schema
+    // defaults a missing zoom_engine to "sdk", so a retry that omits it gets
+    // routed to the SDK bot, which isn't in this image → `spawn … ENOENT` and a
+    // crash before the retry can even proceed. Re-stamp "web" for zoom so the
+    // requeue relaunches on the web engine. Absent (ignored) for meet/teams.
+    ...(params.meeting_platform === "zoom" ? { zoom_engine: "web" as const } : {})
   }
+
+  return message as MeetingParams
 }
 
 /**
@@ -72,6 +95,20 @@ export async function requeueToSQS(message: MeetingParams): Promise<void> {
   const queueUrl = process.env.SQS_QUEUE_URL
   if (!queueUrl) {
     throw new Error("SQS_QUEUE_URL environment variable not set")
+  }
+
+  // Guard the URL BEFORE enqueueing. A bad meeting_url fails the consumer's
+  // schema and the retry dies silently on the other side; throwing here surfaces
+  // it as a normal failure (main.ts catches and falls back) instead.
+  if (!isValidHttpUrl(message.meeting_url)) {
+    throw new Error(
+      `Retry aborted: meeting_url is not a valid URL (${String(message.meeting_url)})`
+    )
+  }
+  if (message.transformed_meeting_url !== null && !isValidHttpUrl(message.transformed_meeting_url)) {
+    throw new Error(
+      `Retry aborted: transformed_meeting_url must be null or a URL (${String(message.transformed_meeting_url)})`
+    )
   }
 
   const client = createSQSClient()
