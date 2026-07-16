@@ -127,12 +127,12 @@ export class ZoomProvider implements MeetingProviderInterface {
     while (true) {
       try {
         await page.goto(link, { waitUntil: "domcontentloaded", timeout: 60_000 })
-        // Clear the retry flag once navigation succeeds. Leaving it set is a
-        // real bug: shouldAttemptRetry() only looks at the flag + count, not at
-        // WHICH failure set it — so one flaky goto followed by a deliberately
-        // NON-retryable terminal failure (the RTMS wall, BotRemoved) would
-        // requeue the job, send a second bot into the same wall, and double-count
-        // the wall in our metrics.
+        // Clear any stale retry flag left by a flaky earlier goto. The real
+        // retry decision is made in main.ts handleFailedRecording, keyed on the
+        // END REASON: a genuinely terminal failure (BotRemoved) stays terminal,
+        // while the RTMS wall is deliberately retried onto a fresh exit IP.
+        // Resetting here just stops a flaky-goto `true` from leaking into an
+        // unrelated terminal failure.
         GLOBAL.setShouldRetry(false)
 
         // Snapshot the runtime fingerprint Zoom's detector reads on the loaded
