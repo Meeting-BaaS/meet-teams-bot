@@ -5,22 +5,37 @@ import { formatError } from "../utils/Logger"
 import { getExitGeo } from "../proxy/toggle-proxy"
 
 export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
-  // stealthfox takes precedence over stock Firefox: it IS a Firefox build, and
-  // when A/B-ing the patched binary we always want it over plain Firefox.
-  if (envVars.USE_STEALTHFOX) {
-    console.log("[Browser] stealthfox mode enabled - using patched Firefox binary")
+  const platform = GLOBAL.get().meeting_platform
+
+  // stealthfox (patched anti-detect Firefox) is the default for the platforms in
+  // STEALTHFOX_PLATFORMS (zoom by default); USE_STEALTHFOX forces it everywhere.
+  // Both need the baked binary — without it we fall through to CloakBrowser, so
+  // meet/teams and any binary-less env keep working unchanged.
+  if (shouldUseStealthfox(platform)) {
+    console.log(`[Browser] stealthfox enabled (platform=${platform}) - patched Firefox binary`)
     return openStealthfoxBrowser(proxyUrl)
   }
 
-  // Check if Firefox mode is enabled via environment variable
-  const useFirefox = envVars.USE_FIREFOX
-
-  if (useFirefox) {
+  // Stock Playwright Firefox A/B path (fingerprint- vs IP-block testing).
+  if (envVars.USE_FIREFOX) {
     console.log("[Browser] Firefox mode enabled - using Firefox instead of CloakBrowser")
     return openFirefoxBrowser(proxyUrl)
   }
 
   return openCloakBrowser(proxyUrl)
+}
+
+// Whether this platform should launch stealthfox. Requires the baked binary
+// (STEALTHFOX_BINARY_PATH). USE_STEALTHFOX=true forces it for all platforms;
+// otherwise it's the STEALTHFOX_PLATFORMS allowlist (default "zoom", "all" = every
+// platform), so widening to meet/teams is a single config change.
+function shouldUseStealthfox(platform: string): boolean {
+  if (!envVars.STEALTHFOX_BINARY_PATH) return false
+  if (envVars.USE_STEALTHFOX) return true
+  const allow = envVars.STEALTHFOX_PLATFORMS.split(",")
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean)
+  return allow.includes("all") || allow.includes(platform.toLowerCase())
 }
 
 // Shared Firefox launch geometry/args/prefs, reused by both the stock-Firefox
@@ -94,6 +109,14 @@ function buildFirefoxLaunchConfig(): {
     // WebGL (important for Zoom)
     "webgl.disabled": false,
     "webgl.force-enabled": true,
+    // Spoof the WebGL renderer/vendor away from "llvmpipe" — the software
+    // rasteriser string on a headless Xvfb pod, which is a dead datacenter/bot
+    // tell that no real user reports. These are NATIVE Firefox prefs (not a JS
+    // override, so there's nothing to catch via Proxy/toString), making the
+    // browser itself report a coherent consumer GPU. Kept a Linux Mesa/Intel GPU
+    // so it stays consistent with the Linux platform the browser presents.
+    "webgl.renderer-string-override": "Mesa Intel(R) UHD Graphics 630 (CML GT2)",
+    "webgl.vendor-string-override": "Intel",
 
     // Software rendering. A headed Firefox on a GL-less Xvfb hangs during
     // launchPersistentContext trying to init hardware GL/WebRender. Force the
