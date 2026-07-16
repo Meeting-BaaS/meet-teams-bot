@@ -159,7 +159,9 @@ export class ZoomProvider implements MeetingProviderInterface {
           MeetingEndReason.BotNotAccepted
         console.log(`[Zoom] Denial on pre-join: "${denied.matchedText}" -> ${reason}`)
         GLOBAL.setError(reason)
-        // ZoomRequiresRtms / LoginRequired are NOT retryable on the same meeting.
+        // LoginRequired is not retryable (deterministic auth wall). ZoomRequiresRtms
+        // IS retried on a fresh exit IP — see the retry decision in main.ts
+        // handleFailedRecording (keyed on the end reason, not thrown here).
         throw new Error(`Zoom pre-join denial: ${reason}`)
       }
 
@@ -392,7 +394,9 @@ export class ZoomProvider implements MeetingProviderInterface {
         throw new Error("API request to stop Zoom recording")
       }
 
-      // Terminal anti-bot wall — can stream in a beat after Join. Non-retryable.
+      // Anti-bot wall — can stream in a beat after Join. Retried on a fresh
+      // exit IP (see main.ts handleFailedRecording), since the wall is
+      // IP-reputation-driven rather than deterministic for this meeting.
       const wall = await this.detectBotWall(page)
       if (wall) {
         GLOBAL.setError(MeetingEndReason.ZoomRequiresRtms)

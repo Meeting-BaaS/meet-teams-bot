@@ -107,7 +107,12 @@ export class InitializationState extends BaseState {
         const platform = GLOBAL.get().meeting_platform
         if (!this.context.proxyUrl && (platform === "meet" || platform === "zoom")) {
           const retryCount = GLOBAL.getRetryCount()
-          if (retryCount >= MAX_RETRY_COUNT) {
+          // Meet's "last retry runs without proxy" fallback does NOT apply to
+          // Zoom: the browser-join wall blocks datacenter/pod IPs outright, so
+          // every Zoom attempt (including the final retry) must egress through
+          // the proxy. Zoom's retry value comes from cycling to a fresh exit IP,
+          // not from dropping the proxy.
+          if (platform === "meet" && retryCount >= MAX_RETRY_COUNT) {
             console.log("[InitializationState] Last retry attempt — running without proxy")
           } else {
             const proxyUrl = await startToggleProxy(GLOBAL.get().bot_uuid, retryCount)
