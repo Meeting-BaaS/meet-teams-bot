@@ -55,6 +55,10 @@ export function buildRetryMessage(): MeetingParams {
 
   return {
     ...params,
+    // Reset: the waiting-room state overwrites this with the bare meeting ID
+    // (not a URL), which fails schema validation on the retry consumer and
+    // silently kills the retry. The retry run re-derives it from meeting_url.
+    transformed_meeting_url: null,
     // Increment retry count
     retry_count: currentRetryCount + 1
   }
