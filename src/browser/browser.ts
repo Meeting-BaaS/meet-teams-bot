@@ -1,10 +1,118 @@
-import { type BrowserContext, chromium } from "@playwright/test"
+import { type BrowserContext, chromium, firefox } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { formatError } from "../utils/Logger"
 import { getExitGeo } from "../proxy/toggle-proxy"
 
 export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
+  // Check if Firefox mode is enabled via environment variable
+  const useFirefox = envVars.USE_FIREFOX
+
+  if (useFirefox) {
+    console.log("[Browser] Firefox mode enabled - using Firefox instead of CloakBrowser")
+    return openFirefoxBrowser(proxyUrl)
+  }
+
+  return openCloakBrowser(proxyUrl)
+}
+
+async function openFirefoxBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
+  // Resolution configuration from environment variable
+  const resolution = envVars.RESOLUTION
+  const { width, height } =
+    resolution === "1080" ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
+
+  const timezoneId = getExitGeo()?.timezone ?? undefined
+  if (timezoneId) console.log(`[Browser] Aligning timezone with exit IP: ${timezoneId}`)
+
+  const firefoxArgs = [
+    // Window size and position
+    `--width=${width}`,
+    `--height=${height}`,
+
+    // Security configurations
+    "-no-remote",
+    "-new-instance",
+
+    // Disable first-run dialogs
+    "-headless=false",
+
+    // Performance optimizations
+    "-purgecaches"
+  ]
+
+  const firefoxPrefs = {
+    // Language and locale
+    "intl.accept_languages": "en-US,en",
+    "intl.locale.requested": "en-US",
+
+    // Media/Audio permissions
+    "media.navigator.permission.disabled": true,
+    "media.navigator.streams.fake": false,
+    "permissions.default.microphone": 1,
+    "permissions.default.camera": 1,
+
+    // WebRTC
+    "media.peerconnection.enabled": true,
+    "media.navigator.enabled": true,
+
+    // Autoplay
+    "media.autoplay.default": 0, // Allow audio and video
+    "media.autoplay.blocking_policy": 0,
+
+    // Disable privacy features that might interfere
+    "privacy.resistFingerprinting": false,
+    "privacy.trackingprotection.enabled": false,
+
+    // Security
+    "security.ssl.enable_ocsp_stapling": false,
+    "security.cert_pinning.enforcement_level": 0,
+
+    // Performance
+    "browser.cache.disk.enable": false,
+    "browser.cache.memory.enable": true,
+    "browser.sessionhistory.max_total_viewers": 0,
+
+    // Disable updates and sync
+    "app.update.enabled": false,
+    "browser.shell.checkDefaultBrowser": false,
+    "services.sync.engine.prefs": false,
+
+    // WebGL (important for Zoom)
+    "webgl.disabled": false,
+    "webgl.force-enabled": true
+  }
+
+  try {
+    console.log(`Launching Firefox persistent context...`)
+
+    const context = await firefox.launchPersistentContext("", {
+      headless: false,
+      viewport: { width, height },
+      locale: "en-US",
+      ...(timezoneId ? { timezoneId } : {}),
+      ...(proxyUrl ? {
+        proxy: {
+          server: proxyUrl
+        }
+      } : {}),
+      args: firefoxArgs,
+      firefoxUserPrefs: firefoxPrefs,
+      permissions: ["microphone", "camera"],
+      ignoreHTTPSErrors: true,
+      acceptDownloads: true,
+      bypassCSP: true
+    })
+
+    console.log(`✅ Firefox launched`)
+    return { browser: context }
+  } catch (error) {
+    console.error("Failed to open Firefox browser:", formatError(error))
+    throw error
+  }
+}
+
+async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
   // Defaults to 720p if RESOLUTION is not set or invalid
   const resolution = envVars.RESOLUTION

@@ -61,7 +61,10 @@ export const envVars = cleanEnv(process.env, {
   // sees (into html_snapshots/, uploaded to the log bucket) so we can measure
   // what a detector saw at a block instead of inferring it from config. Off in
   // prod by default; flip on a single bot to reproduce a wall.
-  BROWSER_DEBUG_CAPTURE: bool({ default: false })
+  BROWSER_DEBUG_CAPTURE: bool({ default: false }),
+  // Use Firefox instead of Chromium/CloakBrowser. When true, launches Firefox
+  // via Playwright to test if Zoom's ISP blocking also affects Firefox browsers.
+  USE_FIREFOX: bool({ default: false })
 })
 
 export type EnvVars = typeof envVars
