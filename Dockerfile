@@ -50,10 +50,16 @@ ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
 ENV CLOAKBROWSER_AUTO_UPDATE=false
 RUN npx cloakbrowser install
 
-# Firefox (USE_FIREFOX=true): Playwright's Firefox, used to A/B whether a Zoom
-# block is fingerprint- or IP-driven. Installed alongside CloakBrowser so one
-# image serves both browsers, switched at runtime by USE_FIREFOX.
-RUN npx playwright install-deps firefox && npx playwright install firefox
+# Firefox system deps (gtk3, libX*, dbus, …). Needed by BOTH Firefox backends:
+# stock Playwright Firefox (USE_FIREFOX) and the stealthfox patched binary
+# (USE_STEALTHFOX) — both link against these shared libs.
+RUN npx playwright install-deps firefox
+# Stock Playwright Firefox — serves the USE_FIREFOX A/B path only (fingerprint-
+# vs IP-driven block testing). USE_STEALTHFOX does NOT use this: its patched
+# Firefox is self-contained and supplied at runtime via STEALTHFOX_BINARY_PATH
+# (fetch it with scripts/fetch-stealthfox.sh), so `executablePath` bypasses this
+# download entirely.
+RUN npx playwright install firefox
 
 # Build application
 COPY . .
