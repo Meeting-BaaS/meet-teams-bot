@@ -55,7 +55,13 @@ export const envVars = cleanEnv(process.env, {
   // Format example:
   //   http://user-<USER>-continent-eu-session-{SESSION}:<PASS>@gate.decodo.com:7000
   // Leave empty to disable residential proxy.
-  RESIDENTIAL_PROXY_TEMPLATE: str({ default: "" })
+  RESIDENTIAL_PROXY_TEMPLATE: str({ default: "" }),
+  // Read-only diagnostic gate. When true, the fingerprint probe dumps the
+  // runtime navigator / WebGL / font-list / geometry the page's JS actually
+  // sees (into html_snapshots/, uploaded to the log bucket) so we can measure
+  // what a detector saw at a block instead of inferring it from config. Off in
+  // prod by default; flip on a single bot to reproduce a wall.
+  BROWSER_DEBUG_CAPTURE: bool({ default: false })
 })
 
 export type EnvVars = typeof envVars
