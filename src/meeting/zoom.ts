@@ -127,12 +127,12 @@ export class ZoomProvider implements MeetingProviderInterface {
     while (true) {
       try {
         await page.goto(link, { waitUntil: "domcontentloaded", timeout: 60_000 })
-        // Clear the retry flag once navigation succeeds. Leaving it set is a
-        // real bug: shouldAttemptRetry() only looks at the flag + count, not at
-        // WHICH failure set it — so one flaky goto followed by a deliberately
-        // NON-retryable terminal failure (the RTMS wall, BotRemoved) would
-        // requeue the job, send a second bot into the same wall, and double-count
-        // the wall in our metrics.
+        // Clear any stale retry flag left by a flaky earlier goto. The real
+        // retry decision is made in main.ts handleFailedRecording, keyed on the
+        // END REASON: a genuinely terminal failure (BotRemoved) stays terminal,
+        // while the RTMS wall is deliberately retried onto a fresh exit IP.
+        // Resetting here just stops a flaky-goto `true` from leaking into an
+        // unrelated terminal failure.
         GLOBAL.setShouldRetry(false)
 
         // Snapshot the runtime fingerprint Zoom's detector reads on the loaded
@@ -159,7 +159,9 @@ export class ZoomProvider implements MeetingProviderInterface {
           MeetingEndReason.BotNotAccepted
         console.log(`[Zoom] Denial on pre-join: "${denied.matchedText}" -> ${reason}`)
         GLOBAL.setError(reason)
-        // ZoomRequiresRtms / LoginRequired are NOT retryable on the same meeting.
+        // LoginRequired is not retryable (deterministic auth wall). ZoomRequiresRtms
+        // IS retried on a fresh exit IP — see the retry decision in main.ts
+        // handleFailedRecording (keyed on the end reason, not thrown here).
         throw new Error(`Zoom pre-join denial: ${reason}`)
       }
 
@@ -270,7 +272,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     // out on `.preview-meeting-info intercepts pointer events`. focus+type
     // drives Zoom's full validation pipeline and enables Join.
     const botName = GLOBAL.get().bot_name
-    await page.locator(NAME_INPUT).first().click({ timeout: 5000 }).catch(() => {})
+    await page.locator(NAME_INPUT).first().click({ timeout: 5000 }).catch(() => { })
     await page.locator(NAME_INPUT).first().fill("")
     await page.keyboard.type(botName, { delay: 30 })
     console.log(`[Zoom] Name typed: "${botName}"`)
@@ -446,7 +448,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     try {
       const agree = page.locator("#disclaimer_agree").first()
       if ((await agree.count()) > 0 && (await agree.isVisible().catch(() => false))) {
-        await agree.click({ timeout: 3000 }).catch(() => {})
+        await agree.click({ timeout: 3000 }).catch(() => { })
         console.log("[Zoom] Accepted entry disclaimer (#disclaimer_agree)")
       }
     } catch {
@@ -464,12 +466,15 @@ export class ZoomProvider implements MeetingProviderInterface {
         throw new Error("API request to stop Zoom recording")
       }
 
-      // Consent/disclaimer gate: some org accounts (e.g. AFNOR "Protection of
-      // personal data and privacy") block entry behind an Agree click. Accept it
-      // so the bot proceeds instead of sitting at the modal until timeout.
+      // Consent/disclaimer gate: some org accounts block entry behind 
+      // an Agree click. Accept it so the bot proceeds instead of sitting 
+      // at the modal until timeout.
       await this.dismissDisclaimer(page)
 
       // Terminal anti-bot wall — can stream in a beat after Join. Non-retryable.
+      // Anti-bot wall — can stream in a beat after Join. Retried on a fresh
+      // exit IP (see main.ts handleFailedRecording), since the wall is
+      // IP-reputation-driven rather than deterministic for this meeting.
       const wall = await this.detectBotWall(page)
       if (wall) {
         GLOBAL.setError(MeetingEndReason.ZoomRequiresRtms)
@@ -613,7 +618,7 @@ export class ZoomProvider implements MeetingProviderInterface {
             return
           }
           console.log("[Zoom] Leave button not found — navigating to about:blank")
-          await page.goto("about:blank").catch(() => {})
+          await page.goto("about:blank").catch(() => { })
         } catch (error) {
           console.error("[Zoom] Error leaving meeting:", formatError(error))
         }

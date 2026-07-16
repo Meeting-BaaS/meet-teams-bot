@@ -24,7 +24,15 @@ const PROXY_ALLOWLIST_SUFFIXES: readonly string[] = [
   "meet.google.com", // SPA + the $rpc scoring endpoints
   "accounts.google.com", // OAuth / login flow
   "apis.google.com", // Google APIs the Meet client calls during join
-  "clients6.google.com" // Meet signaling — hangouts., feedback-pa., scone-pa.
+  "clients6.google.com", // Meet signaling — hangouts., feedback-pa., scone-pa.
+  // Zoom web client — one suffix covers every host the join touches:
+  // app.zoom.us (the /wc/ web client), us05web./<region>.zoom.us and
+  // zoom.us (invite hosts we rewrite from), events.zoom.us. Testing whether
+  // residential egress moves the browser-join anti-bot / RTMS wall.
+  // Bandwidth trade-off: Zoom's pre-join assets are heavier than Meet's, so
+  // this costs more Decodo bytes per join — but setDirectMode() flips the
+  // upstream off at admission, so in-call media stays off the residential link.
+  "zoom.us"
 ]
 
 const PROXY_ALLOWLIST_EXACT: ReadonlySet<string> = new Set([
