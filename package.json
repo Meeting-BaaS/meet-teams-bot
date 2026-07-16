@@ -18,7 +18,7 @@
         "@aws-sdk/client-s3": "^3.873.0",
         "@aws-sdk/client-sqs": "^3.873.0",
         "@aws-sdk/lib-storage": "^3.873.0",
-        "@playwright/test": "^1.55.1",
+        "@playwright/test": "1.55.1",
         "async": "^3.2.6",
         "axios": "^1.16.0",
         "axios-retry": "^4.5.0",
@@ -53,6 +53,9 @@
         "unimported": "^1.31.0"
     },
     "overrides": {
+        "playwright": "1.55.1",
+        "playwright-core": "1.55.1",
+        "@playwright/test": "1.55.1",
         "@babel/core": "^7.29.7",
         "@smithy/config-resolver": "^4.4.0",
         "diff": "^4.0.4",
