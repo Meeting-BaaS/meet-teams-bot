@@ -19,9 +19,12 @@ RUN apt-get update && \
     ffmpeg \
     # System monitoring
     sysstat procps \
-    # Fonts for rendering / fingerprint realism
+    # Fonts for rendering / fingerprint realism. crosextra = metric-compatible
+    # Windows clones (Carlito=Calibri, Caladea=Cambria) so a Windows-spoofed UA
+    # also exposes those font names on enumeration.
     fonts-liberation fonts-dejavu-core \
     fonts-freefont-ttf fonts-noto-color-emoji fonts-ipafont-gothic fonts-wqy-zenhei \
+    fonts-crosextra-carlito fonts-crosextra-caladea fontconfig \
     # Utilities
     wget curl unzip \
     && rm -rf /var/lib/apt/lists/*
