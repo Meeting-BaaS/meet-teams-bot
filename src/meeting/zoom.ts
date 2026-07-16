@@ -1,5 +1,6 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
+import { captureFingerprint } from "../browser/fingerprint-probe"
 import { listenPage } from "../browser/page-logger"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
@@ -122,6 +123,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     // title="Error - Zoom" + "This meeting link is invalid (3,001)". Poll until
     // the pre-join page renders (or the auth wall / anti-bot wall appears).
     const startTime = Date.now()
+    let fingerprintCaptured = false
     while (true) {
       try {
         await page.goto(link, { waitUntil: "domcontentloaded", timeout: 60_000 })
@@ -132,6 +134,15 @@ export class ZoomProvider implements MeetingProviderInterface {
         // requeue the job, send a second bot into the same wall, and double-count
         // the wall in our metrics.
         GLOBAL.setShouldRetry(false)
+
+        // Snapshot the runtime fingerprint Zoom's detector reads on the loaded
+        // pre-join page — once, before the denial check below can throw. No-op
+        // unless BROWSER_DEBUG_CAPTURE is set. Lets us see what Zoom saw at a
+        // wall (navigator/WebGL/fonts/geometry) rather than infer it from config.
+        if (!fingerprintCaptured) {
+          fingerprintCaptured = true
+          await captureFingerprint(page, "zoom_prejoin")
+        }
       } catch (e) {
         console.warn("[Zoom] goto failed, will retry:", formatError(e))
         GLOBAL.setShouldRetry(true)
