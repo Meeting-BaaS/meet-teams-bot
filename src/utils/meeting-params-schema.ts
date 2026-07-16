@@ -41,6 +41,10 @@ export const BotMessageSchema = object({
   meeting_url: url(),
   transformed_meeting_url: url().nullable(),
   meeting_platform: MeetingPlatformSchema,
+  // Must round-trip into the SQS retry message: the consumer routes zoom
+  // messages on this field, and stripping it here made retries fall back to
+  // the native SDK binary, which doesn't exist in the browser-bot image.
+  zoom_engine: zodEnum(["sdk", "web"]).optional(),
   entry_message: string().nullable(),
   recording_mode: RecordingModeSchema.default("speaker_view"),
   streaming_input: url().nullable(),
