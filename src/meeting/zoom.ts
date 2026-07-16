@@ -11,8 +11,8 @@ import { createStateDetector } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { ZOOM_STATE_CONFIG } from "./zoom-state-config"
 
-// Zoom Web Client selectors (ported from vexa join/zoom/selectors.ts — verified
-// against the live DOM). Two client variants co-exist and Zoom picks per-meeting:
+// Zoom Web Client selectors (verified against the live DOM). Two client variants
+// co-exist and Zoom picks per-meeting:
 //   React client  (app.zoom.us/wc/<id>/join):  #input-for-name, .preview-join-button
 //   Classic client(app.zoom.us/wc/join/<id>):  #inputname,       #joinBtn
 const NAME_INPUT = '#input-for-name, #inputname, input[placeholder="Your Name" i]'
@@ -303,12 +303,26 @@ export class ZoomProvider implements MeetingProviderInterface {
     } catch {
       /* not present */
     }
-    // Stop video in preview.
+    // Video: a bot with a configured image must broadcast it on camera (same as
+    // Meet/Teams), so KEEP video on when bot_image is set. Key the decision on the
+    // configured intent, NOT branding readiness — the branding pipeline is
+    // fire-and-forget and often isn't ready yet at preview (this is exactly why
+    // the image "usually doesn't show" locally), and Zoom has no post-join
+    // ensureCameraOn re-enforcement like Meet. We re-assert it after join below.
+    const wantsCameraImage = !!GLOBAL.get().bot_image
     try {
       const videoBtn = page.locator(PREVIEW_VIDEO)
-      if ((await videoBtn.getAttribute("aria-label")) === "Stop Video") {
+      const label = await videoBtn.getAttribute("aria-label")
+      if (wantsCameraImage) {
+        if (label === "Start Video") {
+          await videoBtn.click()
+          console.log("[Zoom] Started video in preview (bot_image configured)")
+        } else {
+          console.log("[Zoom] Video already on for bot_image")
+        }
+      } else if (label === "Stop Video") {
         await videoBtn.click()
-        console.log("[Zoom] Stopped video in preview")
+        console.log("[Zoom] Stopped video in preview (no bot_image)")
       }
     } catch {
       /* already off / not present */
@@ -361,16 +375,74 @@ export class ZoomProvider implements MeetingProviderInterface {
 
     onJoinSuccess()
     console.log("[Zoom] ✅ onJoinSuccess called")
+
+    // Re-assert the camera after admission. Zoom resets device state across the
+    // waiting-room → in-call transition, and the branding pipeline is
+    // fire-and-forget so it may only have become ready AFTER the preview
+    // decision — either leaves a bot_image bot in-call with video OFF (this is
+    // why the image "usually doesn't show" locally). Mirror Meet's post-join
+    // ensureCameraOn. Best-effort with retries while branding warms.
+    if (GLOBAL.get().bot_image) {
+      await this.ensureVideoOn(page).catch((e) =>
+        console.warn("[Zoom] ensureVideoOn failed:", formatError(e))
+      )
+    }
+
     await htmlSnapshot.captureSnapshot(page, "zoom_join_meeting_success")
   }
 
   /**
-   * Poll until the bot is admitted (Leave button visible) or a terminal state
-   * appears. The waiting-room text check runs BEFORE the in-meeting check
-   * because Zoom renders the waiting room inside `.meeting-app` and the bot's
-   * own mic-preview audio stays live across the transition — either would
-   * false-positive as "admitted" (observed vexa meeting_id=36).
+   * Ensure the bot's camera is ON in-call so its bot_image is broadcast. Zoom's
+   * video toggle carries aria-label "Start Video" when off / "Stop Video" when
+   * on — true for both the preview and the (cleaner-hidden but still clickable)
+   * in-meeting toolbar. force:true clicks through the opacity:0 the cleaner
+   * applies (the cleaner never sets pointer-events:none, exactly so controls stay
+   * clickable). Retry a few times because branding may still be warming up.
    */
+  private async ensureVideoOn(page: Page): Promise<void> {
+    for (let i = 0; i < 5; i++) {
+      const startBtn = page.locator('[aria-label="Start Video"]').first()
+      if ((await startBtn.count()) === 0) {
+        console.log("[Zoom] Camera already on in-call (no Start Video control)")
+        return
+      }
+      try {
+        await startBtn.click({ force: true, timeout: 3000 })
+        console.log("[Zoom] Enabled camera in-call for bot_image")
+        return
+      } catch {
+        /* toolbar transiently non-interactive; retry */
+      }
+      await sleep(1500)
+    }
+    console.warn("[Zoom] Could not confirm camera on in-call after retries")
+  }
+
+  /**
+   * Poll until admitted (Leave button visible) or a terminal state appears. The
+   * waiting-room check runs BEFORE the in-meeting check because Zoom renders the
+   * waiting room inside `.meeting-app` and the bot's mic-preview audio stays live
+   * across the transition — either would false-positive as "admitted".
+   */
+  /**
+   * Accept Zoom's entry disclaimer/consent modal if present. Account admins can
+   * set arbitrary custom copy (AFNOR-style privacy notices, NDAs, etc.), so we do
+   * NOT match on text — Zoom keeps the stable `#disclaimer_agree` id for the Agree
+   * button across all custom disclaimers, so that id alone handles every variant.
+   * Best-effort and idempotent (safe to call every poll).
+   */
+  private async dismissDisclaimer(page: Page): Promise<void> {
+    try {
+      const agree = page.locator("#disclaimer_agree").first()
+      if ((await agree.count()) > 0 && (await agree.isVisible().catch(() => false))) {
+        await agree.click({ timeout: 3000 }).catch(() => {})
+        console.log("[Zoom] Accepted entry disclaimer (#disclaimer_agree)")
+      }
+    } catch {
+      /* modal not present */
+    }
+  }
+
   private async waitForAdmission(page: Page, cancelCheck: () => boolean): Promise<void> {
     const timeoutMs = (GLOBAL.get().waiting_room_timeout ?? 600) * 1000
     const start = Date.now()
@@ -380,6 +452,11 @@ export class ZoomProvider implements MeetingProviderInterface {
         if (!GLOBAL.getEndReason()) GLOBAL.setError(MeetingEndReason.ApiRequest)
         throw new Error("API request to stop Zoom recording")
       }
+
+      // Consent/disclaimer gate: some org accounts (e.g. AFNOR "Protection of
+      // personal data and privacy") block entry behind an Agree click. Accept it
+      // so the bot proceeds instead of sitting at the modal until timeout.
+      await this.dismissDisclaimer(page)
 
       // Terminal anti-bot wall — can stream in a beat after Join. Non-retryable.
       const wall = await this.detectBotWall(page)
@@ -461,13 +538,10 @@ export class ZoomProvider implements MeetingProviderInterface {
     }
 
     // Leave button gone → probably removed. But recording-state ends the meeting
-    // on a SINGLE true (`if (botRemovedResult) return getBotRemovedReason()`),
-    // and Zoom AUTO-HIDES its footer toolbar — so one transient repaint would
-    // make the bot declare itself removed and abandon a live meeting.
-    // Require N consecutive misses, and ignore misses during the post-join
-    // window while Zoom's audio-init redirects settle. (vexa's removal monitor
-    // carried the same two guards; they were lost when its polling loop was
-    // collapsed into this one-shot check.)
+    // on a SINGLE true, and Zoom AUTO-HIDES its footer toolbar — so one transient
+    // repaint would make the bot declare itself removed and abandon a live meeting.
+    // Require N consecutive misses, and ignore misses during the post-join window
+    // while Zoom's audio-init redirects settle.
     const leaveVisible = await page
       .locator(LEAVE_BUTTON)
       .first()
