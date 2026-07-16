@@ -50,16 +50,21 @@ ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
 ENV CLOAKBROWSER_AUTO_UPDATE=false
 RUN npx cloakbrowser install
 
-# Firefox system deps (gtk3, libX*, dbus, …). Needed by BOTH Firefox backends:
-# stock Playwright Firefox (USE_FIREFOX) and the stealthfox patched binary
-# (USE_STEALTHFOX) — both link against these shared libs.
+# Firefox shared-lib deps (gtk3, libX*, dbus, …) — REQUIRED: the stealthfox
+# patched binary links against these. We deliberately do NOT run
+# `playwright install firefox`: stealthfox is self-contained and loaded via
+# executablePath, so Playwright's own bundled Firefox would be dead weight.
+# (This retires the USE_FIREFOX stock-Firefox A/B path — stealthfox is the
+# zoom default now.)
 RUN npx playwright install-deps firefox
-# Stock Playwright Firefox — serves the USE_FIREFOX A/B path only (fingerprint-
-# vs IP-driven block testing). USE_STEALTHFOX does NOT use this: its patched
-# Firefox is self-contained and supplied at runtime via STEALTHFOX_BINARY_PATH
-# (fetch it with scripts/fetch-stealthfox.sh), so `executablePath` bypasses this
-# download entirely.
-RUN npx playwright install firefox
+
+# stealthfox (invisible_playwright patched Firefox) — the USE_STEALTHFOX backend.
+# Bake the SHA256-verified patched binary from its GitHub release so it's ready
+# without a runtime fetch (~250MB). Copy just the fetch script first so this
+# download layer caches across app-code changes. Inert unless USE_STEALTHFOX=true.
+COPY scripts/fetch-stealthfox.sh /tmp/fetch-stealthfox.sh
+RUN bash /tmp/fetch-stealthfox.sh -d /opt/stealthfox
+ENV STEALTHFOX_BINARY_PATH=/opt/stealthfox/firefox-16/firefox
 
 # Build application
 COPY . .
