@@ -99,11 +99,14 @@ export class InitializationState extends BaseState {
         })
 
         // Execute the promise to open the browser with a timeout
-        // Start toggle proxy for residential IP routing during join phase (Google Meet only).
-        // Pass bot_uuid so the per-bot sticky session label is unique — different
-        // bots land on different residential IPs, same bot keeps one IP throughout
-        // the join.
-        if (!this.context.proxyUrl && GLOBAL.get().meeting_platform === "meet") {
+        // Start toggle proxy for residential IP routing during the JOIN phase only.
+        // Zoom's anti-bot wall flags datacenter IPs ("automated bots aren't
+        // allowed"), so — like Meet — route the join handshake through a residential
+        // exit, then setDirectMode() flips to direct the moment we're admitted
+        // (see waiting-room-state), so the costly residential traffic is limited to
+        // the handshake. Pass bot_uuid so the per-bot sticky session label is unique.
+        const proxyPlatform = GLOBAL.get().meeting_platform
+        if (!this.context.proxyUrl && (proxyPlatform === "meet" || proxyPlatform === "zoom")) {
           const retryCount = GLOBAL.getRetryCount()
           if (retryCount >= MAX_RETRY_COUNT) {
             console.log("[InitializationState] Last retry attempt — running without proxy")
