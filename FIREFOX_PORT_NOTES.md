@@ -53,6 +53,13 @@ This branch ports the Zoom web browser bot from Chromium/CloakBrowser to Firefox
 - `USE_FIREFOX=false` with documentation
 - Explanation that this is for testing Zoom ISP blocking on Firefox browsers
 
+### 4. Docker Configuration (`apps/api-server/dockerfile.meet-teams-bot`)
+
+**Added:**
+- `playwright install-deps firefox` - Install Firefox system dependencies
+- `playwright install firefox` - Install Firefox browser binary
+- Firefox installed alongside CloakBrowser in the container
+
 ## Testing Instructions
 
 ### Prerequisites
