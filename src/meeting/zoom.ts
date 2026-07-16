@@ -351,11 +351,11 @@ export class ZoomProvider implements MeetingProviderInterface {
     // This is the most bot-scrutinised action in the whole flow, and an in-page
     // `element.click()` is a free tell: the MouseEvent it produces has
     // isTrusted === false, which any anti-bot layer can read in one line.
-    // Playwright dispatches through CDP, so the event is genuinely trusted
-    // (isTrusted === true) AND it routes through CloakBrowser's humanize patches
-    // (real mouse movement, human timing) — the same reason teams.ts prefers a
-    // humanized click and treats a raw DOM click as making "the join look
-    // robotic".
+    // Playwright dispatches through the browser's automation protocol (CDP for
+    // Chromium, WebDriver BiDi for Firefox), so the event is genuinely trusted
+    // (isTrusted === true). In Chromium mode this routes through CloakBrowser's
+    // humanize patches (real mouse movement, human timing). In Firefox mode
+    // there's no humanization layer - the click is trusted but direct.
     //
     // `force: true` is what lets us keep the trusted path: it skips Playwright's
     // actionability/hit-test checks — which is why we reached for a DOM click in
@@ -363,7 +363,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     // intercepts pointer events — while still sending real input.
     //
     // The DOM click stays ONLY as a last-resort fallback, matching Teams.
-    console.log("[Zoom] Clicking Join (Playwright, trusted + humanized)...")
+    console.log("[Zoom] Clicking Join (Playwright, trusted)...")
     let clicked = false
     try {
       await page.locator(JOIN_BUTTON).first().click({ force: true, timeout: 10_000 })

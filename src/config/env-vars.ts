@@ -61,7 +61,21 @@ export const envVars = cleanEnv(process.env, {
   // sees (into html_snapshots/, uploaded to the log bucket) so we can measure
   // what a detector saw at a block instead of inferring it from config. Off in
   // prod by default; flip on a single bot to reproduce a wall.
-  BROWSER_DEBUG_CAPTURE: bool({ default: false })
+  BROWSER_DEBUG_CAPTURE: bool({ default: false }),
+  // Use Firefox instead of Chromium/CloakBrowser. When true, launches Firefox
+  // via Playwright to test if Zoom's ISP blocking also affects Firefox browsers.
+  USE_FIREFOX: bool({ default: false }),
+  // Use the stealthfox (invisible_playwright) patched Firefox build. It IS a
+  // Firefox binary launched through Playwright's firefox channel, so it reuses
+  // the Firefox launch config; it adds a Juggler patch that humanizes mouse
+  // paths (gated on the `stealthfox.humanize` pref) and honors STEALTHFOX_WEBRTC_*
+  // env for srflx spoofing. Takes precedence over USE_FIREFOX.
+  USE_STEALTHFOX: bool({ default: false }),
+  // Absolute path to the stealthfox Firefox binary. Obtain with:
+  //   python -m invisible_playwright fetch   # downloads ~100MB, SHA256-verified, cached
+  //   python -m invisible_playwright path     # prints this path
+  // Required when USE_STEALTHFOX=true.
+  STEALTHFOX_BINARY_PATH: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars

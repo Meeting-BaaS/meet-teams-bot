@@ -50,6 +50,11 @@ ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
 ENV CLOAKBROWSER_AUTO_UPDATE=false
 RUN npx cloakbrowser install
 
+# Firefox (USE_FIREFOX=true): Playwright's Firefox, used to A/B whether a Zoom
+# block is fingerprint- or IP-driven. Installed alongside CloakBrowser so one
+# image serves both browsers, switched at runtime by USE_FIREFOX.
+RUN npx playwright install-deps firefox && npx playwright install firefox
+
 # Build application
 COPY . .
 # Build network interceptor bundle (must be before TypeScript compilation)
