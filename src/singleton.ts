@@ -8,6 +8,7 @@ class Global {
   private endReason: MeetingEndReason | null = null
   private errorMessage: string | null = null
   private shouldRetry = false // NEW: Retry flag
+  private recordingFinalized = false // True once the recording is merged and entering upload (see markRecordingFinalized)
   private artifactKeys: ArtifactKey[] = []
   private audioChunks: ArtifactKey[] = []
   private participants: Participant[] = []
@@ -180,6 +181,22 @@ class Global {
 
   public getShouldRetry(): boolean {
     return this.shouldRetry
+  }
+
+  // Phase marker: true once the recording has been MERGED into its final output
+  // and is entering the upload phase. Crash/eviction handlers use it to decide
+  // requeue vs preserve:
+  //   - BEFORE finalize (join, or mid-recording): the only copy lives in ephemeral
+  //     /tmp, which dies with the pod — so REQUEUE to re-record (nothing to salvage).
+  //   - AFTER finalize (uploading): the merged output exists and the S3Uploader
+  //     EFS-fallback + reconciliation job salvage any upload failure — so do NOT
+  //     requeue (that would re-record and duplicate).
+  public markRecordingFinalized(): void {
+    this.recordingFinalized = true
+  }
+
+  public hasRecordingFinalized(): boolean {
+    return this.recordingFinalized
   }
 
   public getRetryCount(): number {

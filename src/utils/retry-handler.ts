@@ -3,6 +3,23 @@ import { GLOBAL } from "../singleton"
 import type { MeetingParams } from "../types"
 
 export const MAX_RETRY_COUNT = 2
+// Zoom web joins are probabilistic — the anti-bot / RTMS wall keys on the exit
+// IP's reputation, so each retry cycles onto a fresh residential IP. Give Zoom
+// more attempts than the default before giving up.
+export const ZOOM_WEB_MAX_RETRY_COUNT = 5
+
+/**
+ * Max SQS retries for the current bot: higher for Zoom (web) so it can cycle
+ * exit IPs past the anti-bot wall. Guarded so a crash before params are set
+ * (GLOBAL unset) falls back to the default instead of throwing.
+ */
+export function getMaxRetryCount(): number {
+  try {
+    return GLOBAL.get().meeting_platform === "zoom" ? ZOOM_WEB_MAX_RETRY_COUNT : MAX_RETRY_COUNT
+  } catch {
+    return MAX_RETRY_COUNT
+  }
+}
 
 /**
  * Creates SQS client with same credential logic as smart-rabbit
@@ -38,8 +55,8 @@ export function shouldAttemptRetry(currentRetryCount: number): boolean {
     return false
   }
 
-  // Check retry limit
-  if (currentRetryCount >= MAX_RETRY_COUNT) {
+  // Check retry limit (Zoom web gets more attempts — see getMaxRetryCount).
+  if (currentRetryCount >= getMaxRetryCount()) {
     return false
   }
 
@@ -121,7 +138,7 @@ export async function requeueToSQS(message: MeetingParams): Promise<void> {
   await client.send(command)
 
   const retryCount = message.retry_count
-  console.log(`✅ Requeued to SQS for retry ${retryCount}/${MAX_RETRY_COUNT}`)
+  console.log(`✅ Requeued to SQS for retry ${retryCount}/${getMaxRetryCount()}`)
 }
 
 /**
@@ -129,6 +146,6 @@ export async function requeueToSQS(message: MeetingParams): Promise<void> {
  */
 export function formatRetryErrorMessage(originalMessage: string, retryCount: number): string {
   const attemptNumber = retryCount + 1
-  const totalAttempts = MAX_RETRY_COUNT + 1
+  const totalAttempts = getMaxRetryCount() + 1
   return `${originalMessage} - Retrying (${attemptNumber}/${totalAttempts})`
 }

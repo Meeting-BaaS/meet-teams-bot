@@ -21,10 +21,10 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
         "must use Zoom RTMS",
         "detected you may be a bot"
       ],
-      reason: MeetingEndReason.ZoomRequiresRtms,
-      logPrefix: "XXXXXXXXXXXXXXXXXX Zoom anti-bot wall (RTMS required)",
+      reason: MeetingEndReason.ZoomAnonymousJoinNotAllowed,
+      logPrefix: "XXXXXXXXXXXXXXXXXX Zoom anonymous-join wall (anonymous/automated join not allowed)",
       errorMessage:
-        "Zoom blocks automated browser joins for this meeting and requires RTMS"
+        "Zoom rejected the anonymous recording bot for this meeting — recommend recording via Zoom RTMS / the native SDK"
     },
     {
       // Host-restricted entry: only authenticated Zoom users may join. The
