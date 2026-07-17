@@ -20,10 +20,57 @@ import { PathManager } from "./utils/PathManager"
 import {
   buildRetryMessage,
   formatRetryErrorMessage,
-  MAX_RETRY_COUNT,
+  getMaxRetryCount,
   requeueToSQS,
   shouldAttemptRetry
 } from "./utils/retry-handler"
+
+// Display names Zoom hosts commonly auto-reject as "obviously a bot". Surfaced as
+// a LOG hint (never the user-facing error) when a join is rejected.
+const BOT_LIKE_NAME_RE =
+  /note ?taker|recorder|recording|transcri|\bbots?\b|\bai\b|assistant|\bnotes?\b|meeting ?baas|fireflies|otter|read ?ai/i
+
+// Set once the run has finished (success or a handled failure) so a SIGTERM
+// during normal shutdown never double-requeues.
+let settled = false
+
+// k8s evicts / scales down bot pods with SIGTERM. If it arrives BEFORE the run
+// has settled, the meeting would otherwise be lost — so requeue it to a fresh pod
+// (bounded by the retry cap), upload logs, and exit cleanly instead of being
+// force-killed. Best-effort and guarded (GLOBAL may be unset on a very early kill).
+process.on("SIGTERM", async () => {
+  if (settled) {
+    exit(0)
+    return
+  }
+  settled = true
+  console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
+  try {
+    if (!GLOBAL.isServerless()) await uploadLogsToS3()
+  } catch (e) {
+    console.error("[SIGTERM] log upload failed:", formatError(e))
+  }
+  try {
+    if (GLOBAL.hasRecordingFinalized()) {
+      // Eviction during upload: the merged recording exists — preserve it for the
+      // S3/EFS salvage path rather than requeuing (which would re-record).
+      console.log(
+        "[SIGTERM] Recording finalized/uploading — preserving artifacts for salvage (not requeuing)"
+      )
+    } else if (!GLOBAL.isServerless()) {
+      // Join or mid-recording: the only copy is ephemeral /tmp, lost with the pod —
+      // requeue to re-record on a fresh pod.
+      GLOBAL.setShouldRetry(true)
+      if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
+        await requeueToSQS(buildRetryMessage())
+        console.log("[SIGTERM] Requeued to SQS to re-record")
+      }
+    }
+  } catch (e) {
+    console.error("[SIGTERM] requeue failed:", formatError(e))
+  }
+  exit(0)
+})
 
 // Setup console logger first to ensure proper formatting
 setupConsoleLogger()
@@ -102,7 +149,21 @@ async function handleFailedRecording(): Promise<void> {
   console.log(`Recording failed with reason: ${endReason || "Unknown"}`)
   console.log(`Error message: ${originalErrorMessage || "None"}`)
   console.log(`Should retry: ${GLOBAL.getShouldRetry()}`)
-  console.log(`Current retry count: ${currentRetryCount}/${MAX_RETRY_COUNT}`)
+  console.log(`Current retry count: ${currentRetryCount}/${getMaxRetryCount()}`)
+
+  // Zoom hosts frequently auto-reject bot-sounding display names ("Notetaker",
+  // "…Bot", "AI …"). When a Zoom join is rejected, hint at it in the logs — a more
+  // human name often clears the wall. Log-only; not exposed to the user.
+  const botName = GLOBAL.get().bot_name ?? ""
+  if (
+    (endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed ||
+      endReason === MeetingEndReason.BotNotAccepted) &&
+    BOT_LIKE_NAME_RE.test(botName)
+  ) {
+    console.warn(
+      `[Hint] Bot display name "${botName}" contains a bot-indicating keyword; some Zoom hosts auto-reject such names — a more human name may get admitted.`
+    )
+  }
 
   // Early return for serverless mode - no SQS retry available
   if (GLOBAL.isServerless()) {
@@ -116,7 +177,7 @@ async function handleFailedRecording(): Promise<void> {
   // purely the exit IP). Mark the wall retryable so the bot requeues onto a FRESH
   // exit IP — the proxy session token embeds the retry count, so each requeue
   // lands a different IP — cycling past burned ones up to MAX_RETRY_COUNT.
-  if (endReason === MeetingEndReason.ZoomRequiresRtms) {
+  if (endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed) {
     console.log("[Retry] Zoom RTMS wall — marking retryable to cycle exit IP")
     GLOBAL.setShouldRetry(true)
   }
@@ -126,7 +187,7 @@ async function handleFailedRecording(): Promise<void> {
 
   if (shouldRetry) {
     console.log(
-      `🔄 Error marked as retryable - attempting retry ${currentRetryCount + 1}/${MAX_RETRY_COUNT}`
+      `🔄 Error marked as retryable - attempting retry ${currentRetryCount + 1}/${getMaxRetryCount()}`
     )
 
     try {
@@ -152,7 +213,7 @@ async function handleFailedRecording(): Promise<void> {
   } else {
     if (GLOBAL.getShouldRetry()) {
       console.log(
-        `🚫 Maximum retry attempts reached (${currentRetryCount}/${MAX_RETRY_COUNT}) - reporting failure`
+        `🚫 Maximum retry attempts reached (${currentRetryCount}/${getMaxRetryCount()}) - reporting failure`
       )
     } else {
       console.log("🚫 Error not retryable - reporting failure immediately")
@@ -243,6 +304,8 @@ async function handleFailedRecording(): Promise<void> {
     // Delegate to handleFailedRecording which includes retry logic
     await handleFailedRecording()
   } finally {
+    // Mark settled so a SIGTERM during shutdown doesn't requeue an already-handled run.
+    settled = true
     if (!GLOBAL.isServerless()) {
       try {
         await uploadLogsToS3()
