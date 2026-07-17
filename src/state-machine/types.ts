@@ -39,12 +39,12 @@ export enum MeetingEndReason {
   // SamlRejected triggers workspace-level auto-disable; Timeout is treated as transient.
   MeetLoginFailedSamlRejected = "meetLoginFailedSamlRejected",
   MeetLoginFailedTimeout = "meetLoginFailedTimeout",
-  // Zoom web-client (browser) specific failures. ZoomRequiresRtms is the
-  // post-Join anti-bot wall ("automated bots aren't allowed … must use Zoom
-  // RTMS") — keyed to the meeting/account, NOT IP reputation, so it is
-  // NON-RETRYABLE: retrying the same meeting always re-hits the wall. The
-  // api-server should route these to the native SDK / RTMS path instead.
-  ZoomRequiresRtms = "zoomRequiresRtms",
+  // Zoom web-client (browser) specific failures. ZoomAnonymousJoinNotAllowed is
+  // the post-Join anti-bot wall ("automated bots aren't allowed … must use Zoom
+  // RTMS") — the host account rejects anonymous/automated browser joins. Retried
+  // on a fresh exit IP (see main.ts); the durable fix is Zoom RTMS / the native
+  // SDK. Maps to the api-server's ZOOM_ANONYMOUS_JOIN_NOT_ALLOWED error code.
+  ZoomAnonymousJoinNotAllowed = "zoomAnonymousJoinNotAllowed",
   ZoomPasscodeRequired = "zoomPasscodeRequired",
   Internal = "internalError"
 }
@@ -84,8 +84,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "Google rejected our SAML assertion (cert mismatch most likely). Workspace auto-disabled."
     case MeetingEndReason.MeetLoginFailedTimeout:
       return "SAML round-trip with Google did not complete in time."
-    case MeetingEndReason.ZoomRequiresRtms:
-      return "Zoom blocks automated browser joins for this meeting and requires Zoom RTMS. Route to the native SDK / RTMS path."
+    case MeetingEndReason.ZoomAnonymousJoinNotAllowed:
+      return "This Zoom meeting rejected the recording bot because it joined anonymously — the host's account blocks anonymous/automated browser joins. We recommend recording it via Zoom RTMS (or the native SDK with a user-authorized credential)."
     case MeetingEndReason.ZoomPasscodeRequired:
       return "Zoom meeting requires a passcode that was not supplied in the meeting URL (?pwd=)."
     case MeetingEndReason.Internal:
