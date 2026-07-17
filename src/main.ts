@@ -41,7 +41,11 @@ const BOT_LIKE_NAME_RE =
 // exit cleanly.
 process.on("SIGTERM", async () => {
   if (!GLOBAL.claimRecovery()) {
-    exit(0)
+    // Another handler (normal shutdown / crash) already owns recovery and is
+    // awaiting its log-upload + requeue. Exiting here would kill that owner
+    // mid-write and lose the meeting — stand down and let the owner exit once
+    // its recovery completes.
+    console.log("[SIGTERM] Recovery already owned by another handler — standing down (owner will exit)")
     return
   }
   console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")

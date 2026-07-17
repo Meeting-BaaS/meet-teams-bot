@@ -57,6 +57,13 @@ const LEAVE_GRACE_MS = 20_000
 
 const zoomStateDetector = createStateDetector(ZOOM_STATE_CONFIG)
 
+// Outcome of a dismissDisclaimer() pass:
+//   "absent"    – no consent/disclaimer modal was visible.
+//   "dismissed" – a modal was present and an accept click succeeded.
+//   "blocked"   – a modal was visibly present but every click strategy failed,
+//                 so it may still be covering the pre-join / join flow.
+type DisclaimerOutcome = "absent" | "dismissed" | "blocked"
+
 export class ZoomProvider implements MeetingProviderInterface {
   // Cached from getMeetingLink so joinMeeting can fill a passcode field if one
   // renders despite the ?pwd= in the URL.
@@ -223,7 +230,24 @@ export class ZoomProvider implements MeetingProviderInterface {
     // A separate in-page consent/disclaimer can sit alongside the cookie banner on
     // the pre-join page — accept it too (the cookie accept above only clears
     // cookies). Also re-checked every poll during admission (see dismissDisclaimer).
-    await this.dismissDisclaimer(page)
+    // If a modal is visibly present but every click strategy fails ("blocked"),
+    // retry a few times before falling through to name entry, rather than silently
+    // proceeding while a consent modal still covers the pre-join card.
+    let disclaimer = await this.dismissDisclaimer(page)
+    for (let attempt = 0; attempt < 3 && disclaimer === "blocked"; attempt++) {
+      console.warn(
+        `[Zoom] Consent/disclaimer still blocking after click attempts — retrying (${attempt + 1}/3)`
+      )
+      await sleep(800)
+      disclaimer = await this.dismissDisclaimer(page)
+    }
+    if (disclaimer === "blocked") {
+      // Don't hard-fail here: detection can be imperfect, and the admission poll
+      // (waitForAdmission) keeps re-attempting dismissDisclaimer every cycle.
+      console.warn(
+        "[Zoom] Consent/disclaimer still visible after retries — proceeding to name entry; admission poll will keep retrying"
+      )
+    }
 
     // Media-permission dialog(s): Zoom shows "Allow" up to twice (camera+mic,
     // then mic-only). The bot MUST click Allow to join the audio channel — else
@@ -523,7 +547,11 @@ export class ZoomProvider implements MeetingProviderInterface {
    * "Accept All Cookies", "Continue without microphone…", or a Decline/Reject.
    * Best-effort and idempotent (safe to call every poll).
    */
-  private async dismissDisclaimer(page: Page): Promise<void> {
+  private async dismissDisclaimer(page: Page): Promise<DisclaimerOutcome> {
+    // Tracks whether a modal was visibly present but not successfully clicked, so
+    // the caller can distinguish "no modal" (absent) from "modal still blocking".
+    let sawBlockingModal = false
+
     // 1) Zoom's stable entry-disclaimer Agree button.
     try {
       const agree = page.locator("#disclaimer_agree").first()
@@ -532,6 +560,7 @@ export class ZoomProvider implements MeetingProviderInterface {
         // A transient interception/timeout must NOT log success + return, or the
         // disclaimer stays up and the join is wedged behind it — fall through to
         // the text-fallback strategy instead.
+        sawBlockingModal = true
         let clicked = false
         await agree
           .click({ timeout: 3000 })
@@ -541,7 +570,7 @@ export class ZoomProvider implements MeetingProviderInterface {
           .catch(() => { })
         if (clicked) {
           console.log("[Zoom] Accepted entry disclaimer (#disclaimer_agree)")
-          return
+          return "dismissed"
         }
       }
     } catch {
@@ -564,6 +593,7 @@ export class ZoomProvider implements MeetingProviderInterface {
           .catch(() => false)
         if (inCookieBanner) continue
         if (await btn.isVisible().catch(() => false)) {
+          sawBlockingModal = true
           const label = (await btn.textContent().catch(() => ""))?.trim().slice(0, 40)
           // Only return once the click actually SUCCEEDS; a swallowed
           // interception/timeout must not report success and leave the consent
@@ -577,13 +607,17 @@ export class ZoomProvider implements MeetingProviderInterface {
             .catch(() => { })
           if (clicked) {
             console.log(`[Zoom] Accepted in-page consent/disclaimer ("${label}")`)
-            return
+            return "dismissed"
           }
         }
       }
     } catch {
       /* no in-page consent */
     }
+
+    // A modal was visible but no accept click landed → still blocking; otherwise
+    // nothing was there to dismiss.
+    return sawBlockingModal ? "blocked" : "absent"
   }
 
   private async waitForAdmission(page: Page, cancelCheck: () => boolean): Promise<void> {

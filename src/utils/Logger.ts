@@ -425,8 +425,13 @@ export function setupExitHandler() {
         )
       } else if (!GLOBAL.claimRecovery()) {
         // Another termination path (SIGTERM / normal shutdown) already owns
-        // recovery and has requeued (or preserved) — don't requeue again.
-        logger.error("[Crash] Recovery already claimed by another handler — skipping requeue")
+        // recovery and is awaiting its requeue. Falling through to process.exit(1)
+        // here would kill that owner mid-write and lose the meeting — stand down
+        // and let the owner perform the final exit once recovery completes.
+        logger.error(
+          "[Crash] Recovery already owned by another handler — standing down (owner will exit)"
+        )
+        return
       } else {
         const { buildRetryMessage, requeueToSQS, getMaxRetryCount } = await import("./retry-handler")
         GLOBAL.setShouldRetry(true)
