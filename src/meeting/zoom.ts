@@ -34,7 +34,7 @@ const PASSCODE_INPUT =
 //
 // Deliberately does NOT include "sign in to join". That phrase appears both on
 // the anti-bot wall AND on an ordinary auth-required meeting, and matching it
-// here would report every login-gated meeting as ZoomRequiresRtms. That metric
+// here would report every login-gated meeting as ZoomAnonymousJoinNotAllowed. That metric
 // is exactly what decides whether browser Zoom is viable at all, so polluting it
 // would corrupt the decision. Auth-required is already classified correctly as
 // LoginRequired by ZOOM_STATE_CONFIG.denialPatterns.
@@ -172,7 +172,7 @@ export class ZoomProvider implements MeetingProviderInterface {
           MeetingEndReason.BotNotAccepted
         console.log(`[Zoom] Denial on pre-join: "${denied.matchedText}" -> ${reason}`)
         GLOBAL.setError(reason)
-        // LoginRequired is not retryable (deterministic auth wall). ZoomRequiresRtms
+        // LoginRequired is not retryable (deterministic auth wall). ZoomAnonymousJoinNotAllowed
         // IS retried on a fresh exit IP — see the retry decision in main.ts
         // handleFailedRecording (keyed on the end reason, not thrown here).
         throw new Error(`Zoom pre-join denial: ${reason}`)
@@ -220,6 +220,11 @@ export class ZoomProvider implements MeetingProviderInterface {
       }
     }
 
+    // A separate in-page consent/disclaimer can sit alongside the cookie banner on
+    // the pre-join page — accept it too (the cookie accept above only clears
+    // cookies). Also re-checked every poll during admission (see dismissDisclaimer).
+    await this.dismissDisclaimer(page)
+
     // Media-permission dialog(s): Zoom shows "Allow" up to twice (camera+mic,
     // then mic-only). The bot MUST click Allow to join the audio channel — else
     // Zoom never creates <audio> elements for participants and PulseAudio
@@ -258,8 +263,8 @@ export class ZoomProvider implements MeetingProviderInterface {
       // The wall can render here instead of a name field — check before failing.
       const wall = await this.detectBotWall(page)
       if (wall) {
-        GLOBAL.setError(MeetingEndReason.ZoomRequiresRtms)
-        throw new Error(`[Zoom] zoom_requires_rtms: ${wall}`)
+        GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
+        throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
       }
       GLOBAL.setError(MeetingEndReason.CannotJoinMeeting)
       throw new Error("[Zoom] Pre-join name input never appeared")
@@ -295,8 +300,8 @@ export class ZoomProvider implements MeetingProviderInterface {
     // by automation — fail fast rather than holding the browser.
     const wall = await this.detectBotWall(page)
     if (wall) {
-      GLOBAL.setError(MeetingEndReason.ZoomRequiresRtms)
-      throw new Error(`[Zoom] zoom_requires_rtms: ${wall}`)
+      GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
+      throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
     }
 
     // Wait for Join to enable (React enables within ~1-2s of valid name).
@@ -507,27 +512,65 @@ export class ZoomProvider implements MeetingProviderInterface {
    * across the transition — either would false-positive as "admitted".
    */
   /**
-   * Accept Zoom's entry disclaimer/consent modal if present. Account admins can
-   * set arbitrary custom copy (AFNOR-style privacy notices, NDAs, etc.), so we do
-   * NOT match on text — Zoom keeps the stable `#disclaimer_agree` id for the Agree
-   * button across all custom disclaimers, so that id alone handles every variant.
+   * Accept Zoom's entry disclaimer / in-page consent if present. Two distinct
+   * gates exist and BOTH must be handled:
+   *   1) Zoom's stable `#disclaimer_agree` Agree button (custom admin disclaimers).
+   *   2) A separate in-page consent/disclaimer whose Accept/Agree button is NOT
+   *      `#disclaimer_agree` — the old code missed this, so the bot only ever
+   *      dismissed the (separately-handled) OneTrust COOKIE banner and sat behind
+   *      the real consent.
+   * The text match is anchored and excludes the cookie banner, so it never clicks
+   * "Accept All Cookies", "Continue without microphone…", or a Decline/Reject.
    * Best-effort and idempotent (safe to call every poll).
    */
   private async dismissDisclaimer(page: Page): Promise<void> {
+    // 1) Zoom's stable entry-disclaimer Agree button.
     try {
       const agree = page.locator("#disclaimer_agree").first()
       if ((await agree.count()) > 0 && (await agree.isVisible().catch(() => false))) {
         await agree.click({ timeout: 3000 }).catch(() => { })
         console.log("[Zoom] Accepted entry disclaimer (#disclaimer_agree)")
+        return
       }
     } catch {
-      /* modal not present */
+      /* not present */
+    }
+
+    // 2) A separate in-page consent/disclaimer accept (NOT the cookie banner).
+    // Anchored names so "Accept All Cookies" / "Continue without microphone…" /
+    // Decline never match; skip anything inside the OneTrust cookie container.
+    try {
+      const ACCEPT_RE = /^\s*(i\s+)?(agree|accept|continue|got it|i understand)\s*$/i
+      const candidates = page.getByRole("button", { name: ACCEPT_RE })
+      const count = await candidates.count()
+      for (let i = 0; i < count; i++) {
+        const btn = candidates.nth(i)
+        const inCookieBanner = await btn
+          .evaluate(
+            (el) => !!el.closest('#onetrust-banner-sdk, #onetrust-consent-sdk, [id*="onetrust"]')
+          )
+          .catch(() => false)
+        if (inCookieBanner) continue
+        if (await btn.isVisible().catch(() => false)) {
+          const label = (await btn.textContent().catch(() => ""))?.trim().slice(0, 40)
+          await btn.click({ timeout: 3000 }).catch(() => { })
+          console.log(`[Zoom] Accepted in-page consent/disclaimer ("${label}")`)
+          return
+        }
+      }
+    } catch {
+      /* no in-page consent */
     }
   }
 
   private async waitForAdmission(page: Page, cancelCheck: () => boolean): Promise<void> {
     const timeoutMs = (GLOBAL.get().waiting_room_timeout ?? 600) * 1000
     const start = Date.now()
+    // A real connect resolves in a few seconds; if Zoom sits on the "Joining
+    // Meeting…" spinner far longer, the join is wedged. Bail out RETRYABLE so a
+    // fresh pod/IP tries again instead of silently recording the spinner.
+    const JOINING_STUCK_MS = 90_000
+    let joiningSince: number | null = null
 
     while (Date.now() - start < timeoutMs) {
       if (cancelCheck()) {
@@ -546,8 +589,8 @@ export class ZoomProvider implements MeetingProviderInterface {
       // IP-reputation-driven rather than deterministic for this meeting.
       const wall = await this.detectBotWall(page)
       if (wall) {
-        GLOBAL.setError(MeetingEndReason.ZoomRequiresRtms)
-        throw new Error(`[Zoom] zoom_requires_rtms: ${wall}`)
+        GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
+        throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
       }
 
       // Rejected / meeting ended.
@@ -559,6 +602,30 @@ export class ZoomProvider implements MeetingProviderInterface {
         GLOBAL.setError(reason)
         throw new Error(`[Zoom] Rejected during admission: ${reason}`)
       }
+
+      // "Joining Meeting…" / connecting spinner. Zoom mounts an (empty)
+      // #video-share-layout video-player behind it, which the in-meeting detector
+      // would false-positive as "admitted" — so the bot starts recording the
+      // spinner. Treat the spinner as NOT admitted: keep waiting, and if it never
+      // resolves, bail out retryable rather than record a frozen page.
+      if (await this.isJoiningSpinner(page)) {
+        joiningSince ??= Date.now()
+        const stuckFor = Date.now() - joiningSince
+        if (stuckFor > JOINING_STUCK_MS) {
+          console.warn(
+            `[Zoom] Stuck on "Joining Meeting…" spinner for ${Math.round(stuckFor / 1000)}s — bailing out retryable`
+          )
+          GLOBAL.setShouldRetry(true)
+          GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+          throw new Error("[Zoom] Stuck on Joining Meeting spinner")
+        }
+        console.log(
+          `[Zoom] "Joining Meeting…" spinner (${Math.round(stuckFor / 1000)}s) — not admitted yet`
+        )
+        await sleep(2000)
+        continue
+      }
+      joiningSince = null
 
       // Waiting room first (see method doc).
       const waiting = await zoomStateDetector.isWaitingRoom(page)
@@ -587,6 +654,26 @@ export class ZoomProvider implements MeetingProviderInterface {
       }, BOT_BLOCK_TEXTS)
     } catch {
       return null
+    }
+  }
+
+  /**
+   * True while Zoom shows the post-Join "Joining Meeting…" / connecting spinner.
+   * Distinct from the waiting-room copy ("please wait, the host will let you in"),
+   * so it won't shadow a genuine waiting room.
+   */
+  private async isJoiningSpinner(page: Page): Promise<boolean> {
+    try {
+      return await page.evaluate(() => {
+        const t = (document.body?.innerText || "").toLowerCase()
+        return (
+          t.includes("joining meeting") ||
+          t.includes("joining the meeting") ||
+          t.includes("connecting to the meeting")
+        )
+      })
+    } catch {
+      return false
     }
   }
 
