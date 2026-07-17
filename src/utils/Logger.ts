@@ -406,6 +406,12 @@ export function setupExitHandler() {
     if (serverless) {
       process.exit(1)
     }
+    if (!GLOBAL.claimRecovery()) {
+      logger.error(
+        "[Crash] Recovery already owned by another handler — standing down (owner will exit)"
+      )
+      return
+    }
     try {
       await uploadLogsToS3()
     } catch (uploadError) {
@@ -423,15 +429,6 @@ export function setupExitHandler() {
         logger.error(
           "[Crash] Recording finalized/uploading — preserving artifacts for salvage (NOT requeuing)"
         )
-      } else if (!GLOBAL.claimRecovery()) {
-        // Another termination path (SIGTERM / normal shutdown) already owns
-        // recovery and is awaiting its requeue. Falling through to process.exit(1)
-        // here would kill that owner mid-write and lose the meeting — stand down
-        // and let the owner perform the final exit once recovery completes.
-        logger.error(
-          "[Crash] Recovery already owned by another handler — standing down (owner will exit)"
-        )
-        return
       } else {
         const { buildRetryMessage, requeueToSQS, getMaxRetryCount } = await import("./retry-handler")
         GLOBAL.setShouldRetry(true)
