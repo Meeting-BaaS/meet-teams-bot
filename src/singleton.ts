@@ -8,6 +8,7 @@ class Global {
   private endReason: MeetingEndReason | null = null
   private errorMessage: string | null = null
   private shouldRetry = false // NEW: Retry flag
+  private recoveryClaimed = false // True once a termination/crash path has taken ownership of log-upload + requeue (see claimRecovery)
   private recordingFinalized = false // True once the recording is merged and entering upload (see markRecordingFinalized)
   private artifactKeys: ArtifactKey[] = []
   private audioChunks: ArtifactKey[] = []
@@ -181,6 +182,24 @@ class Global {
 
   public getShouldRetry(): boolean {
     return this.shouldRetry
+  }
+
+  /**
+   * Single, atomic recovery-ownership claim shared by EVERY termination path
+   * (SIGTERM handler, normal completion/failure requeue, and the Logger crash
+   * handler). The first caller wins and receives `true`; every subsequent caller
+   * receives `false`. Callers that lose the claim must NOT perform log-upload +
+   * requeue work — this is what prevents concurrent paths (e.g. SIGTERM racing a
+   * crash, or a crash racing normal shutdown) from each requeuing the same
+   * meeting and re-recording it. Node's single-threaded run-to-completion model
+   * makes the check-and-set atomic with respect to other callers.
+   */
+  public claimRecovery(): boolean {
+    if (this.recoveryClaimed) {
+      return false
+    }
+    this.recoveryClaimed = true
+    return true
   }
 
   // Phase marker: true once the recording has been MERGED into its final output

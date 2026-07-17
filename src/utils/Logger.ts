@@ -393,7 +393,17 @@ export function setupExitHandler() {
   // the pod never hangs in a broken state.
   const handleCrash = async (label: string, detail: unknown) => {
     logger.error(`${label}: ${detail}`)
-    if (GLOBAL.isServerless()) {
+    // isServerless() throws when meeting params aren't set yet (a very early
+    // startup crash). Guard it so such a crash still reliably terminates the
+    // process instead of leaving handleCrash rejecting and the pod lingering —
+    // default to the serverless/exit path on any throw.
+    let serverless = true
+    try {
+      serverless = GLOBAL.isServerless()
+    } catch {
+      serverless = true
+    }
+    if (serverless) {
       process.exit(1)
     }
     try {
@@ -413,6 +423,10 @@ export function setupExitHandler() {
         logger.error(
           "[Crash] Recording finalized/uploading — preserving artifacts for salvage (NOT requeuing)"
         )
+      } else if (!GLOBAL.claimRecovery()) {
+        // Another termination path (SIGTERM / normal shutdown) already owns
+        // recovery and has requeued (or preserved) — don't requeue again.
+        logger.error("[Crash] Recovery already claimed by another handler — skipping requeue")
       } else {
         const { buildRetryMessage, requeueToSQS, getMaxRetryCount } = await import("./retry-handler")
         GLOBAL.setShouldRetry(true)

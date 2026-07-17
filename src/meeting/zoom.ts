@@ -528,9 +528,21 @@ export class ZoomProvider implements MeetingProviderInterface {
     try {
       const agree = page.locator("#disclaimer_agree").first()
       if ((await agree.count()) > 0 && (await agree.isVisible().catch(() => false))) {
-        await agree.click({ timeout: 3000 }).catch(() => { })
-        console.log("[Zoom] Accepted entry disclaimer (#disclaimer_agree)")
-        return
+        // Only treat the disclaimer as dismissed if the click actually SUCCEEDS.
+        // A transient interception/timeout must NOT log success + return, or the
+        // disclaimer stays up and the join is wedged behind it — fall through to
+        // the text-fallback strategy instead.
+        let clicked = false
+        await agree
+          .click({ timeout: 3000 })
+          .then(() => {
+            clicked = true
+          })
+          .catch(() => { })
+        if (clicked) {
+          console.log("[Zoom] Accepted entry disclaimer (#disclaimer_agree)")
+          return
+        }
       }
     } catch {
       /* not present */
@@ -553,9 +565,20 @@ export class ZoomProvider implements MeetingProviderInterface {
         if (inCookieBanner) continue
         if (await btn.isVisible().catch(() => false)) {
           const label = (await btn.textContent().catch(() => ""))?.trim().slice(0, 40)
-          await btn.click({ timeout: 3000 }).catch(() => { })
-          console.log(`[Zoom] Accepted in-page consent/disclaimer ("${label}")`)
-          return
+          // Only return once the click actually SUCCEEDS; a swallowed
+          // interception/timeout must not report success and leave the consent
+          // up — keep scanning the remaining candidates instead.
+          let clicked = false
+          await btn
+            .click({ timeout: 3000 })
+            .then(() => {
+              clicked = true
+            })
+            .catch(() => { })
+          if (clicked) {
+            console.log(`[Zoom] Accepted in-page consent/disclaimer ("${label}")`)
+            return
+          }
         }
       }
     } catch {
