@@ -30,20 +30,24 @@ import {
 const BOT_LIKE_NAME_RE =
   /note ?taker|recorder|recording|transcri|\bbots?\b|\bai\b|assistant|\bnotes?\b|meeting ?baas|fireflies|otter|read ?ai/i
 
-// Set once the run has finished (success or a handled failure) so a SIGTERM
-// during normal shutdown never double-requeues.
-let settled = false
-
 // k8s evicts / scales down bot pods with SIGTERM. If it arrives BEFORE the run
 // has settled, the meeting would otherwise be lost — so requeue it to a fresh pod
 // (bounded by the retry cap), upload logs, and exit cleanly instead of being
 // force-killed. Best-effort and guarded (GLOBAL may be unset on a very early kill).
+//
+// Recovery (log-upload + requeue) is guarded by the single shared GLOBAL.claimRecovery()
+// token so a SIGTERM racing the normal shutdown or the crash handler can never
+// double-requeue the same meeting. If another path already owns recovery, just
+// exit cleanly.
 process.on("SIGTERM", async () => {
-  if (settled) {
-    exit(0)
+  if (!GLOBAL.claimRecovery()) {
+    // Another handler (normal shutdown / crash) already owns recovery and is
+    // awaiting its log-upload + requeue. Exiting here would kill that owner
+    // mid-write and lose the meeting — stand down and let the owner exit once
+    // its recovery completes.
+    console.log("[SIGTERM] Recovery already owned by another handler — standing down (owner will exit)")
     return
   }
-  settled = true
   console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
   try {
     if (!GLOBAL.isServerless()) await uploadLogsToS3()
@@ -186,6 +190,14 @@ async function handleFailedRecording(): Promise<void> {
   const shouldRetry = shouldAttemptRetry(currentRetryCount)
 
   if (shouldRetry) {
+    // Take the shared recovery claim before requeuing so a concurrent SIGTERM /
+    // crash handler can't also requeue this same meeting. If another path already
+    // owns recovery, it has (or will) requeue — skip to avoid a duplicate re-record.
+    if (!GLOBAL.claimRecovery()) {
+      console.log("🔁 Recovery already claimed by another handler — skipping requeue")
+      return
+    }
+
     console.log(
       `🔄 Error marked as retryable - attempting retry ${currentRetryCount + 1}/${getMaxRetryCount()}`
     )
@@ -304,8 +316,10 @@ async function handleFailedRecording(): Promise<void> {
     // Delegate to handleFailedRecording which includes retry logic
     await handleFailedRecording()
   } finally {
-    // Mark settled so a SIGTERM during shutdown doesn't requeue an already-handled run.
-    settled = true
+    // Take the shared recovery claim so a SIGTERM during shutdown doesn't requeue
+    // an already-handled run. Idempotent: if a retry path already claimed it, this
+    // is a no-op; either way recovery is now owned by this normal path.
+    GLOBAL.claimRecovery()
     if (!GLOBAL.isServerless()) {
       try {
         await uploadLogsToS3()

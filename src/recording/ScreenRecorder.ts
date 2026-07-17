@@ -911,11 +911,6 @@ export class ScreenRecorder extends EventEmitter {
       return
     }
 
-    // The recording is merged and we're now uploading — from here a crash/eviction
-    // must NOT requeue (that would re-record); the S3Uploader EFS-fallback +
-    // reconciliation job salvage any upload failure instead.
-    GLOBAL.markRecordingFinalized()
-
     const identifier = PathManager.getInstance().getIdentifier()
 
     try {
@@ -1276,6 +1271,13 @@ export class ScreenRecorder extends EventEmitter {
     try {
       // Sync and merge separate audio/video files
       await this.syncAndMergeFiles()
+
+      // The merged output now exists on disk. Record the finalize marker
+      // IMMEDIATELY — before the upload / S3Uploader-availability guard — so the
+      // merged-output-exists invariant holds regardless of whether upload runs.
+      // From here a crash/eviction must NOT requeue (that would re-record); the
+      // S3Uploader EFS-fallback + reconciliation job salvage any upload failure.
+      GLOBAL.markRecordingFinalized()
 
       // Auto-upload if not serverless and wait for completion
       if (!GLOBAL.isServerless()) {
