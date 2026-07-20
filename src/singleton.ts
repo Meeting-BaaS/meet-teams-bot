@@ -9,6 +9,7 @@ class Global {
   private errorMessage: string | null = null
   private shouldRetry = false // NEW: Retry flag
   private recoveryClaimed = false // True once a termination/crash path has taken ownership of log-upload + requeue (see claimRecovery)
+  private endMeetingReportClaimed = false // True while/after a path owns the end-meeting-trampoline report (see claimEndMeetingReport)
   private recordingFinalized = false // True once the recording is merged and entering upload (see markRecordingFinalized)
   private artifactKeys: ArtifactKey[] = []
   private audioChunks: ArtifactKey[] = []
@@ -241,6 +242,29 @@ class Global {
    */
   public isRecoveryClaimed(): boolean {
     return this.recoveryClaimed
+  }
+
+  /**
+   * Atomic ownership claim for the end-meeting-trampoline report, shared by the
+   * happy path (handleSuccessfulRecording → handleEndMeetingWithRetry) and the
+   * crash handler's finalized branch (Logger handleCrash). The first caller wins;
+   * a loser can safely conclude another path is reporting (or already reported)
+   * and skip — a double POST would double-submit transcription server-side.
+   *
+   * Same claim/release discipline as claimRecovery(): release ONLY when every
+   * attempt to send the report failed, so a later path (e.g. the crash handler
+   * after the happy path crashed mid-flight) can take over.
+   */
+  public claimEndMeetingReport(): boolean {
+    if (this.endMeetingReportClaimed) {
+      return false
+    }
+    this.endMeetingReportClaimed = true
+    return true
+  }
+
+  public releaseEndMeetingReport(): void {
+    this.endMeetingReportClaimed = false
   }
 
   // Phase marker: true once the recording has been MERGED into its final output
