@@ -431,12 +431,17 @@ export class ScreenRecorder extends EventEmitter {
       "-map",
       "1:a:0",
       "-vn",
-      // Stretch/pad audio to match capture timestamps: PulseAudio xruns and
-      // sample-clock drift otherwise accumulate against the wall-clock-paced
-      // video (x11grab dups/drops frames to hold 30fps), desyncing long
-      // recordings even when the start was aligned perfectly.
+      // Reconcile the audio sample-clock against the wall-clock-paced video
+      // (x11grab dups/drops frames to hold 30fps) so long recordings don't desync.
+      // async=1 caps soft compensation at ~1 sample/sec, so ANY drift beyond that
+      // is corrected by HARD fill/trim (insert silence / drop samples) at every
+      // timestamp discontinuity from PulseAudio xruns — each a click/glitch, which
+      // shows up as the vertical-streak artefacts in the recording's spectrogram.
+      // async=1000 lets it absorb drift by gently STRETCHING (up to ~1000 samples/
+      // sec ≈ 21 ms/sec) instead of hard-cutting, removing the per-discontinuity
+      // clicks while still holding A/V sync over long recordings.
       "-af",
-      "aresample=async=1:first_pts=0",
+      "aresample=async=1000:first_pts=0",
       "-sample_fmt",
       "s16",
       "-ac",
