@@ -1,5 +1,10 @@
 import { dehumanize } from "../../utils/dehumanize"
 import { notifyJoinReady } from "../../branding"
+import {
+  establishBrowserSession,
+  teardownBrowserSession
+} from "../../browser/browser-session"
+import { envVars } from "../../config/env-vars"
 import { Events } from "../../events"
 import { setDirectMode } from "../../proxy/toggle-proxy"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
@@ -85,43 +90,10 @@ export class WaitingRoomState extends BaseState {
         }
       }
 
-      // Open the meeting page
-      await this.openMeetingPage(meetingLink)
-
-      // Start Pulse → output WebSocket capture only when output streaming is enabled.
-      // Input-only bots still need Streaming (for input WebSocket) but must not run FFmpeg capture.
-      if (this.context.streamingService && GLOBAL.get().streaming_output) {
-        this.context.streamingService.startAudioCapture()
-      }
-
-      // Signal that the meeting page is open and the platform has confirmed
-      // the camera works. If multi-image branding was deferred, this triggers
-      // the switch from warmup placeholder to real branding.
-      notifyJoinReady()
-
-      // Start the dialog observer immediately after page is opened
-      // This ensures it can start monitoring dialogs right away
-      this.startDialogObserver()
-
-      // Capture DOM state after meeting page is opened (void to avoid blocking)
-      if (this.context.playwrightPage) {
-        const htmlSnapshot = HtmlSnapshotService.getInstance()
-        void htmlSnapshot.captureSnapshot(this.context.playwrightPage, "waiting_room_page_opened")
-      }
-
-      // Capture DOM state after meeting page is opened (void to avoid blocking)
-      if (this.context.playwrightPage) {
-        const htmlSnapshot = HtmlSnapshotService.getInstance()
-        void htmlSnapshot.captureSnapshot(this.context.playwrightPage, "waiting_room_page_opened")
-      }
-
-      ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
-
-      // Send waiting room event after the page is open
-      Events.inWaitingRoom()
-
-      // Wait for acceptance into the meeting
-      await this.waitForAcceptance()
+      // Open the page and wait for admission, with bounded in-process retries on
+      // Zoom's IP-keyed anti-bot wall (relaunch on a fresh exit IP in this warm
+      // pod before the SQS requeue). Non-Zoom platforms run exactly one attempt.
+      await this.joinWithInProcessRetry(meetingLink)
       console.info("Successfully joined meeting")
 
       // If everything is fine, move to the InCall state
@@ -172,6 +144,75 @@ export class WaitingRoomState extends BaseState {
       }
 
       return this.handleError(error as Error)
+    }
+  }
+
+  /**
+   * Open the meeting page and wait for admission. On Zoom's IP-keyed anti-bot
+   * wall (zoomAnonymousJoinNotAllowed) — and only that reason — relaunch the
+   * browser on a fresh residential exit IP in THIS pod, up to
+   * IN_PROCESS_RETRY_MAX times, before letting the failure propagate to the SQS
+   * requeue (a genuinely fresh pod). Xvfb/PulseAudio/screen-recorder scaffolding
+   * stays up across attempts; only the browser context + proxy session recycle.
+   * The one-time, device/display-level side effects (audio capture, branding
+   * switch, dialog observer, waiting-room webhook) run only on the first attempt.
+   */
+  private async joinWithInProcessRetry(meetingLink: string): Promise<void> {
+    const isZoom = GLOBAL.get().meeting_platform === "zoom"
+    const maxInProc = isZoom ? envVars.IN_PROCESS_RETRY_MAX : 0
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.openMeetingPage(meetingLink)
+
+        if (attempt === 0) {
+          // Pulse → output WebSocket capture (output streaming only). Device-level
+          // and self-guarded, so it survives a browser relaunch — start it once.
+          if (this.context.streamingService && GLOBAL.get().streaming_output) {
+            this.context.streamingService.startAudioCapture()
+          }
+          // Branding switch (warmup placeholder → real image) — idempotent trigger.
+          notifyJoinReady()
+          // Dialog observer polls context.playwrightPage live, so wiring it once
+          // picks up the relaunched page automatically (Meet-only; no-op on Zoom).
+          this.startDialogObserver()
+          // Waiting-room webhook — fire once, not per relaunch.
+          Events.inWaitingRoom()
+        }
+
+        if (this.context.playwrightPage) {
+          void HtmlSnapshotService.getInstance().captureSnapshot(
+            this.context.playwrightPage,
+            "waiting_room_page_opened"
+          )
+        }
+
+        // x11grab captures the display, self-guards on isRecording (no-op after
+        // the first attempt), so the recording spans the relaunch seamlessly.
+        ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
+
+        await this.waitForAcceptance()
+        return
+      } catch (error) {
+        const reason = GLOBAL.getEndReason()
+        // Only the IP-reputation wall is worth an in-process relaunch; every other
+        // reason (invalid URL, host denial, passcode, timeout) is not IP-keyed and
+        // must fall through to the outer catch → SQS requeue / terminal failure.
+        const canInProcessRetry =
+          attempt < maxInProc && reason === MeetingEndReason.ZoomAnonymousJoinNotAllowed
+        if (!canInProcessRetry) throw error
+
+        console.log(
+          `[Zoom] Anti-bot wall (${reason}) — in-process retry ${attempt + 1}/${maxInProc} on a fresh exit IP`
+        )
+        // Wipe the wall's error/end-reason/retry flags so the cleared attempt
+        // doesn't leak into the next join or the final wasRecordingSuccessful check.
+        GLOBAL.resetErrorState()
+        // Recycle browser + proxy onto a new Decodo session id (suffix "x<n>") →
+        // a different residential exit IP for the next launch.
+        await teardownBrowserSession(this.context)
+        await establishBrowserSession(this.context, { sessionSuffix: `x${attempt + 1}` })
+      }
     }
   }
 
