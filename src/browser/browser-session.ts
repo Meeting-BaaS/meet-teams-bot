@@ -49,16 +49,23 @@ export async function establishBrowserSession(
   for (let attempt = 1; attempt <= LAUNCH_ATTEMPTS; attempt++) {
     try {
       console.info(`Browser setup attempt ${attempt}/${LAUNCH_ATTEMPTS}`)
+      // Hoist the timer id so it's cleared once the race settles (either side).
+      // Leaving it pending keeps the event loop alive, delays shutdown, and — in
+      // the in-process retry loop — accumulates one dangling 60s timer per attempt.
+      let timeoutId: ReturnType<typeof setTimeout> | undefined
       const timeoutPromise = new Promise<never>((_, reject) => {
-        const id = setTimeout(() => {
-          clearTimeout(id)
+        timeoutId = setTimeout(() => {
           reject(new Error(`Browser setup timeout (${LAUNCH_TIMEOUT_MS}ms)`))
         }, LAUNCH_TIMEOUT_MS)
       })
-      const result = await Promise.race([openBrowser(session.proxyUrl), timeoutPromise])
-      session.browserContext = result.browser
-      console.info("Browser setup completed successfully")
-      return
+      try {
+        const result = await Promise.race([openBrowser(session.proxyUrl), timeoutPromise])
+        session.browserContext = result.browser
+        console.info("Browser setup completed successfully")
+        return
+      } finally {
+        clearTimeout(timeoutId)
+      }
     } catch (error) {
       lastError = error as Error
       console.error(`Browser setup attempt ${attempt} failed:`, formatError(error))
