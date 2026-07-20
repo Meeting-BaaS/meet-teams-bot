@@ -162,6 +162,12 @@ export class Streaming {
       stdio: ["pipe", "pipe", "pipe"]
     })
 
+    // stdin is piped but unused; still guard it so a stray EPIPE on teardown
+    // can't escalate to an uncaughtException (see media_context.ts).
+    this.ffmpegProcess.stdin?.on("error", (err) => {
+      console.warn(`[Streaming] ffmpeg stdin error (ignored): ${err}`)
+    })
+
     this.ffmpegProcess.stderr?.on("data", (data: Buffer) => {
       const output = data.toString().trim()
       // FFmpeg outputs diagnostic info to stderr; only log non-progress lines

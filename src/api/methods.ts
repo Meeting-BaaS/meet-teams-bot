@@ -111,15 +111,36 @@ export class Api {
       return
     }
 
-    try {
-      await this.endMeetingTrampoline()
-      console.log("API call to endMeetingTrampoline succeeded")
-    } catch (error) {
-      console.warn(
-        "API call to endMeetingTrampoline failed (continuing execution):",
-        error instanceof Error ? error.message : error
-      )
-      // Don't throw - continue execution even if API call fails
+    // The trampoline is NOT idempotent server-side (it kicks off transcription
+    // submission), so exactly one path may report it: the happy path or the
+    // crash handler's finalized branch. Loser of the claim stands down.
+    if (!GLOBAL.claimEndMeetingReport()) {
+      console.log("endMeetingTrampoline already reported (or in flight) — skipping duplicate")
+      return
     }
+
+    // A failed trampoline orphans the bot at recording_succeeded (the api-server
+    // never learns artifacts/duration and never starts transcription), so retry
+    // transient failures before giving up.
+    const delaysMs = [0, 2000, 6000]
+    for (let attempt = 1; attempt <= delaysMs.length; attempt++) {
+      try {
+        if (delaysMs[attempt - 1] > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt - 1]))
+        }
+        await this.endMeetingTrampoline()
+        console.log(`API call to endMeetingTrampoline succeeded (attempt ${attempt})`)
+        return
+      } catch (error) {
+        console.warn(
+          `API call to endMeetingTrampoline failed (attempt ${attempt}/${delaysMs.length}):`,
+          error instanceof Error ? error.message : error
+        )
+      }
+    }
+    // All attempts failed — release the claim so a later path (e.g. the crash
+    // handler) can still try, and continue execution rather than throwing.
+    GLOBAL.releaseEndMeetingReport()
+    console.warn("endMeetingTrampoline exhausted all attempts (continuing execution)")
   }
 }
