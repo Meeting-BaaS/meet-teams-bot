@@ -133,6 +133,16 @@ export class SimpleDialogObserver {
    */
   private isRunning = false
 
+  /**
+   * Dedicated 1s timer for Zoom receive-only mute enforcement.
+   * Dismissing the recording-consent modal re-connects audio UNMUTED, and the
+   * 5s modal-only interval would leave the bot audible for up to 5 seconds.
+   * This separate timer runs a lightweight mute-only check every 1s so the bot
+   * stays silent while keeping the heavier modal-dismiss path at 5s.
+   */
+  private zoomMuteTimer: NodeJS.Timeout | null = null
+  private zoomMuteRunning = false
+
   static pause() {
     SimpleDialogObserver._paused = true
     console.info("[SimpleDialogObserver] Observer paused")
@@ -193,12 +203,25 @@ export class SimpleDialogObserver {
       this.dialogObserverInterval = undefined
       console.info("[SimpleDialogObserver] Stopped dialog observer")
     }
+    this.stopZoomMuteTimer()
   }
 
   protected startGlobalDialogObserver() {
     console.info("[SimpleDialogObserver] Starting dialog observer")
-    // Check every 2 seconds for faster modal dismissal during join
-    this.dialogObserverInterval = setInterval(this.observer, 2000)
+    // Check every 5 seconds. A 2 s interval was contending with FFmpeg's stdout
+    // reader on the Node event loop (CDP round-trips every 2 s), which
+    // back-pressured the audio pipe and produced xruns/clicks. The isRunning
+    // guard already prevents overlap; 5 s is plenty for in-call modal dismissal
+    // and the join-phase handshake happens before the ScreenRecorder starts.
+    this.dialogObserverInterval = setInterval(this.observer, 5000)
+
+    // Zoom-specific: fast mute enforcement at 1s. Modal dismissal unmutes the
+    // mic — waiting up to 5s for the next modal cycle would leave the bot
+    // audible. This separate timer tackles mute only and is lightweight enough
+    // not to contend with the FFmpeg stdout reader on the event loop.
+    if (GLOBAL.get().meeting_platform === "zoom") {
+      this.startZoomMuteTimer()
+    }
   }
 
   protected observer = async (): Promise<void> => {
@@ -585,6 +608,104 @@ export class SimpleDialogObserver {
       },
       { receiveOnly }
     )
+  }
+
+  /**
+   * Start the dedicated 1s Zoom mute enforcement timer.
+   * Separate from the 5s modal polling so the bot is re-muted quickly after
+   * the recording-consent modal unmutes it, without adding CDP backpressure
+   * to the modal observer's heavier DOM walk.
+   */
+  private startZoomMuteTimer(): void {
+    this.stopZoomMuteTimer()
+    this.zoomMuteTimer = setInterval(async () => {
+      if (this.zoomMuteRunning) return
+      this.zoomMuteRunning = true
+      try {
+        await this.checkZoomMuteOnly()
+      } finally {
+        this.zoomMuteRunning = false
+      }
+    }, 1000)
+  }
+
+  private stopZoomMuteTimer(): void {
+    if (this.zoomMuteTimer) {
+      clearInterval(this.zoomMuteTimer)
+      this.zoomMuteTimer = null
+    }
+  }
+
+  /**
+   * Lightweight mute-only check for Zoom receive-only bots.
+   * Same DOM walk + visibility gate as checkZoomInPage but skips all modal
+   * detection logic, keeping it fast enough to run every 1s without CPU
+   * contention.
+   */
+  private async checkZoomMuteOnly(): Promise<void> {
+    const page = this.context.playwrightPage
+    if (!page || page.isClosed()) {
+      this.stopZoomMuteTimer()
+      return
+    }
+    if (SimpleDialogObserver._paused) return
+
+    let receiveOnly = true
+    try {
+      receiveOnly = !GLOBAL.get().streaming_input
+    } catch {
+      /* params not set yet — default to receive-only (safe) */
+    }
+    if (!receiveOnly) return
+
+    try {
+      const didMute = await page.evaluate((): boolean => {
+        const nodes: Element[] = []
+        const walk = (root: Document | ShadowRoot) => {
+          for (const el of Array.from(root.querySelectorAll("*"))) {
+            nodes.push(el)
+            const sr = (el as HTMLElement).shadowRoot
+            if (sr) walk(sr)
+          }
+        }
+        walk(document)
+
+        const isVisible = (el: Element) => {
+          if (!el.getClientRects().length) return false
+          const s = getComputedStyle(el)
+          return s.visibility !== "hidden" && s.display !== "none" && Number(s.opacity || "1") > 0
+        }
+
+        const micLabel = (el: Element) => (el.getAttribute("aria-label") || "").toLowerCase()
+        const buttons = nodes.filter(
+          (el) => (el.tagName === "BUTTON" || el.getAttribute("role") === "button") && isVisible(el)
+        )
+        const mic =
+          buttons.find((el) => micLabel(el).includes("microphone")) ||
+          buttons.find((el) => /^\s*(un)?mute\s*$/.test(micLabel(el)))
+        if (mic) {
+          const ml = micLabel(mic)
+          if (ml.includes("mute") && !ml.includes("unmute")) {
+            ;(mic as HTMLElement).click()
+            return true
+          }
+        }
+        return false
+      })
+
+      if (didMute) {
+        console.info("[SimpleDialogObserver] Zoom: re-muted bot mic (fast timer)")
+      }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("Target page, context or browser has been closed")
+      ) {
+        this.stopZoomMuteTimer()
+      } else {
+        console.warn(`[SimpleDialogObserver] Zoom mute-only check error: ${error}`)
+      }
+    }
   }
 
   /**

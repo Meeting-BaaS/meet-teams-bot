@@ -1,6 +1,7 @@
-import { type ChildProcess, execSync, spawn } from "node:child_process"
+import { type ChildProcess, exec, execSync, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import * as fs from "node:fs"
+import { promisify } from "node:util"
 import * as path from "node:path"
 import type { Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
@@ -15,6 +16,8 @@ import { S3Uploader } from "../utils/S3Uploader"
 import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
 import { SoundLevelMonitor } from "../utils/sound-level-monitor"
+
+const execAsync = promisify(exec)
 
 const TRANSCRIPTION_CHUNK_DURATION = 7200 // Increased from 3600 to 7200, i.e. 2 hours because Gladia can now accept a 135 minutes long audio file
 const GRACE_PERIOD_SECONDS = 3
@@ -380,7 +383,8 @@ export class ScreenRecorder extends EventEmitter {
       // === AUDIO INPUT ===
       "-f",
       "pulse",
-      // Bigger capture queue + normal buffering. `-fflags nobuffer` was forcing
+      // 16384 packets of capture queue (~170 ms at 48 kHz) absorbs PulseAudio
+      // bursts under x264 load without starving. `-fflags nobuffer` was forcing
       // ffmpeg to drop rather than buffer PulseAudio samples: under load (12 bots
       // per node, each also running the x264 encoder) that starves the audio
       // thread and produces xruns — the "electrified"/crackly artefact in the
@@ -388,11 +392,7 @@ export class ScreenRecorder extends EventEmitter {
       // pipe uses its own `-flush_packets 1`), so buffer normally and give the
       // capture generous headroom instead.
       "-thread_queue_size",
-      "65536",
-      "-rtbufsize",
-      "256k",
-      "-fflags",
-      "nobuffer",
+      "16384",
       "-i",
       VIRTUAL_SPEAKER_MONITOR,
 
@@ -586,7 +586,7 @@ export class ScreenRecorder extends EventEmitter {
           console.error(`   🔍 Error details: ${output.trim()}`)
 
           // Log system resources for diagnostics
-          this.logSystemResources()
+          void this.logSystemResources()
 
             // Emit a critical error event
             ; (this as EventEmitter).emit("error", {
@@ -624,7 +624,7 @@ export class ScreenRecorder extends EventEmitter {
           console.warn(`   🔍 Error details: ${output.trim()}`)
 
           // Log system resource status
-          this.logSystemResources()
+          void this.logSystemResources()
 
           // Only emit warning if enough errors accumulate
           if (errorCount >= maxErrors && now - lastErrorTime > errorCooldownMs) {
@@ -777,7 +777,7 @@ export class ScreenRecorder extends EventEmitter {
             // sink (virtual_speaker.monitor). Capture the PulseAudio routing state so
             // we can confirm the failure mode from prod logs (which sink the browser
             // is on vs the server default) rather than guessing at a fix.
-            this.logAudioPipelineDiagnostics(recordingDurationSeconds)
+            void this.logAudioPipelineDiagnostics(recordingDurationSeconds)
           } else {
             console.log(
               `📊 Raw audio file size: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s | No growth detected (${consecutiveNoGrowthCount}/${MAX_CONSECUTIVE_NO_GROWTH})`
@@ -806,7 +806,7 @@ export class ScreenRecorder extends EventEmitter {
    * logs: the server default sink, every sink, and which sink each browser stream is
    * on (plus corked/mute). Diagnostic-only, throttled, best-effort — never throws.
    */
-  private logAudioPipelineDiagnostics(recordingDurationSeconds: number): void {
+  private async logAudioPipelineDiagnostics(recordingDurationSeconds: number): Promise<void> {
     const now = Date.now()
     // Throttle: at most one dump per file-size check window (30s).
     if (now - this.lastAudioDiagAt < 30_000) {
@@ -816,21 +816,22 @@ export class ScreenRecorder extends EventEmitter {
     this.audioDiagCount++
 
     try {
+      // Use async exec (not execSync) so the three pactl spawns don't block
+      // the Node event loop. While blocked, FFmpeg's stdout pipe fills, which
+      // back-pressures FFmpeg's audio thread and produces xruns/clicks.
+      const { stdout: defaultSinkOut } = await execAsync("pactl info", { timeout: 5000 })
       const defaultSink =
-        execSync("pactl info", { timeout: 5000 })
-          .toString()
+        defaultSinkOut
           .split("\n")
           .find((l) => l.startsWith("Default Sink:"))
           ?.trim() ?? "Default Sink: <unknown>"
 
-      const sinks = execSync("pactl list sinks short", { timeout: 5000 })
-        .toString()
-        .trim()
-        .replace(/\n/g, " ; ")
+      const { stdout: sinksOut } = await execAsync("pactl list sinks short", { timeout: 5000 })
+      const sinks = sinksOut.trim().replace(/\n/g, " ; ")
 
       // Keep only routing-relevant fields from the sink-input dump.
-      const routing = execSync("pactl list sink-inputs", { timeout: 5000 })
-        .toString()
+      const { stdout: routingOut } = await execAsync("pactl list sink-inputs", { timeout: 5000 })
+      const routing = routingOut
         .split("\n")
         .map((l) => l.trim())
         .filter((l) =>
@@ -1276,31 +1277,39 @@ export class ScreenRecorder extends EventEmitter {
     )
   }
 
-  private logSystemResources(): void {
+  private logSystemResourcesRunning = false
+
+  private async logSystemResources(): Promise<void> {
+    if (this.logSystemResourcesRunning) return
+    this.logSystemResourcesRunning = true
     try {
-      // Log FFmpeg process count
-      const ffmpegCount = execSync("pgrep -c ffmpeg || echo 0", {
-        encoding: "utf8"
-      }).trim()
-      const pulseCount = execSync("pgrep -c pulseaudio || echo 0", {
-        encoding: "utf8"
-      }).trim()
+      // Log FFmpeg process count (async so a slow lookup doesn't block
+      // the stderr handler and stall FFmpeg output draining).
+      const { stdout: ffOut } = await execAsync("pgrep -c ffmpeg || echo 0", {
+        timeout: 3000
+      })
+      const { stdout: pulseOut } = await execAsync("pgrep -c pulseaudio || echo 0", {
+        timeout: 3000
+      })
 
       console.warn(
-        `   🔍 System status: FFmpeg processes=${ffmpegCount}, PulseAudio processes=${pulseCount}`
+        `   🔍 System status: FFmpeg processes=${ffOut.trim()}, PulseAudio processes=${pulseOut.trim()}`
       )
 
-      // Log file descriptor count if available
+      // Log file descriptor count if available (best-effort).
       try {
-        const fdCount = execSync(`lsof -p ${process.pid} | wc -l`, {
-          encoding: "utf8"
-        }).trim()
-        console.warn(`   📁 File descriptors: ${fdCount}`)
+        const { stdout: fdOut } = await execAsync(
+          `lsof -p ${process.pid} | wc -l`,
+          { timeout: 3000 }
+        )
+        console.warn(`   📁 File descriptors: ${fdOut.trim()}`)
       } catch (_e) {
-        // Ignore if lsof not available
+        // lsof not available
       }
     } catch (error) {
       console.warn(`   ⚠️ Could not gather system resource info: ${error}`)
+    } finally {
+      this.logSystemResourcesRunning = false
     }
   }
 
