@@ -5,6 +5,15 @@ import axios from "./axios-instance"
 export class Api {
   public static instance: Api | null = null // Singleton class
 
+  /**
+   * In-flight end-meeting report owned by the path that won
+   * GLOBAL.claimEndMeetingReport(). A path that loses the claim awaits this
+   * instead of returning immediately — otherwise the crash handler would
+   * "skip the duplicate", fall through to process.exit(1), and kill the
+   * owner's POST/backoff mid-flight.
+   */
+  private endMeetingReportPromise: Promise<boolean> | null = null
+
   constructor() {
     if (Api.instance instanceof Api) {
       console.error("Class is singleton, constructor cannot be called multiple times.")
@@ -26,6 +35,11 @@ export class Api {
     const resp = await axios({
       method: "POST",
       url: "/bot-process/end-meeting-trampoline",
+      // The shared instance retries network/5xx errors 3× (axios-instance.ts) —
+      // stacked under handleEndMeetingWithRetry's own 3 attempts that would be
+      // up to 12 sends of this non-idempotent POST. Retrying is owned by the
+      // manual loop ONLY; disable the transport-level layer for this request.
+      "axios-retry": { retries: 0 },
       params: {
         botId: GLOBAL.get().bot_id
       },
@@ -113,12 +127,29 @@ export class Api {
 
     // The trampoline is NOT idempotent server-side (it kicks off transcription
     // submission), so exactly one path may report it: the happy path or the
-    // crash handler's finalized branch. Loser of the claim stands down.
+    // crash handler's finalized branch. A loser of the claim must NOT return
+    // immediately — the crash handler would then exit(1) and kill the owner's
+    // in-flight POST — so it awaits the owner's promise instead.
     if (!GLOBAL.claimEndMeetingReport()) {
-      console.log("endMeetingTrampoline already reported (or in flight) — skipping duplicate")
+      console.log("endMeetingTrampoline already owned by another path — awaiting it")
+      if (this.endMeetingReportPromise) {
+        const ownerSucceeded = await this.endMeetingReportPromise
+        if (!ownerSucceeded) {
+          // The owner exhausted its attempts and released the claim. This path
+          // was already waiting to recover the report, so let it claim a fresh
+          // bounded attempt set instead of returning and exiting the process.
+          await this.handleEndMeetingWithRetry()
+        }
+      }
       return
     }
+    // No await between the claim above and this assignment, so a losing path
+    // always observes the promise (Node run-to-completion).
+    this.endMeetingReportPromise = this.runEndMeetingAttempts()
+    await this.endMeetingReportPromise
+  }
 
+  private async runEndMeetingAttempts(): Promise<boolean> {
     // A failed trampoline orphans the bot at recording_succeeded (the api-server
     // never learns artifacts/duration and never starts transcription), so retry
     // transient failures before giving up.
@@ -130,7 +161,7 @@ export class Api {
         }
         await this.endMeetingTrampoline()
         console.log(`API call to endMeetingTrampoline succeeded (attempt ${attempt})`)
-        return
+        return true
       } catch (error) {
         console.warn(
           `API call to endMeetingTrampoline failed (attempt ${attempt}/${delaysMs.length}):`,
@@ -138,9 +169,12 @@ export class Api {
         )
       }
     }
-    // All attempts failed — release the claim so a later path (e.g. the crash
-    // handler) can still try, and continue execution rather than throwing.
+    // All attempts failed — clear the in-flight handle and release the claim so
+    // a later path (e.g. the crash handler) can still try; continue execution
+    // rather than throwing.
+    this.endMeetingReportPromise = null
     GLOBAL.releaseEndMeetingReport()
     console.warn("endMeetingTrampoline exhausted all attempts (continuing execution)")
+    return false
   }
 }

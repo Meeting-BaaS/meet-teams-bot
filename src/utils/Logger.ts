@@ -440,14 +440,40 @@ export function setupExitHandler() {
         // orphaning the bot at recording_succeeded: artifacts in S3 but the
         // api-server never told to start transcription/completion — and no
         // server-side job sweeps that state. Best-effort report it from here.
-        // handleEndMeetingWithRetry claims the shared report token, so this is a
-        // no-op when the happy path already reported (or is in flight).
+        // handleEndMeetingWithRetry claims the shared report token (and awaits
+        // the owner when the happy path is mid-report), so it never double-POSTs.
+        //
+        // hasRecordingFinalized() is set BEFORE uploadToS3(), so a crash can land
+        // here before the artifact manifest is complete. Mirror any remaining
+        // outputs to EFS first; copyDirToEFS records them as pending so the
+        // api-server defers the bot to awaiting_reconciliation instead of
+        // completing it with missing audio/video.
         try {
-          const { Api } = await import("../api/methods")
-          if (Api.instance) {
-            await Api.instance.handleEndMeetingWithRetry()
+          if (!GLOBAL.hasEndMeetingPayloadReady()) {
+            logger.error("[Crash] Artifact manifest incomplete — mirroring final outputs to EFS")
+            await S3Uploader.getInstance()?.copyDirToEFS(PathManager.getInstance().getBasePath())
+          }
+
+          const requiredArtifactTypes =
+            GLOBAL.get().recording_mode === "audio_only" ? ["audio"] : ["audio", "video"]
+          // Uploaded chunks can preserve transcription, but they cannot replace
+          // missing customer-facing recording outputs. Require final artifact
+          // metadata after the EFS mirror instead of treating chunks as ready.
+          const artifactManifestReady = requiredArtifactTypes.every((type) =>
+            GLOBAL.getArtifactKeys().some((artifact) => artifact.type === type)
+          )
+
+          if (GLOBAL.hasEndMeetingPayloadReady() || artifactManifestReady) {
+            const { Api } = await import("../api/methods")
+            if (Api.instance) {
+              await Api.instance.handleEndMeetingWithRetry()
+            } else {
+              logger.error("[Crash] Api instance not initialized — cannot report end-meeting")
+            }
           } else {
-            logger.error("[Crash] Api instance not initialized — cannot report end-meeting")
+            logger.error(
+              "[Crash] Recording manifest still incomplete after EFS mirror — NOT reporting end-meeting"
+            )
           }
         } catch (trampolineError) {
           logger.error(`[Crash] end-meeting report failed (non-fatal): ${trampolineError}`)

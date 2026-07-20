@@ -923,6 +923,16 @@ export class ScreenRecorder extends EventEmitter {
     }
   }
 
+  private removeUploadedFile(filePath: string): void {
+    try {
+      fs.unlinkSync(filePath)
+    } catch (error) {
+      // Upload already succeeded and its manifest entry is authoritative. Local
+      // cleanup failure must not append a conflicting UPLOAD_FAILED entry.
+      console.warn(`Failed to remove uploaded local file ${filePath}:`, formatError(error))
+    }
+  }
+
   public async uploadToS3(): Promise<void> {
     if (this.filesUploaded || !S3Uploader.getInstance()) {
       return
@@ -961,7 +971,7 @@ export class ScreenRecorder extends EventEmitter {
           errorCode: null,
           errorMessage: null
         })
-        fs.unlinkSync(this.audioOutputPath)
+        this.removeUploadedFile(this.audioOutputPath)
       } else {
         GLOBAL.addArtifactKey({
           s3Key: null,
@@ -1005,7 +1015,6 @@ export class ScreenRecorder extends EventEmitter {
             envVars.AWS_S3_ARTIFACTS_BUCKET,
             s3Key
           )
-          fs.unlinkSync(this.outputPath)
           GLOBAL.addArtifactKey({
             s3Key,
             filePath: this.outputPath,
@@ -1016,6 +1025,7 @@ export class ScreenRecorder extends EventEmitter {
             errorCode: null,
             errorMessage: null
           })
+          this.removeUploadedFile(this.outputPath)
         } else {
           const recordingMode = GLOBAL.get().recording_mode
           GLOBAL.addArtifactKey({
@@ -1090,8 +1100,6 @@ export class ScreenRecorder extends EventEmitter {
             envVars.AWS_S3_ARTIFACTS_BUCKET,
             s3Key
           )
-          fs.unlinkSync(diarizationPath)
-          console.log("Diarization file uploaded successfully")
           GLOBAL.addArtifactKey({
             s3Key,
             filePath: diarizationPath,
@@ -1102,6 +1110,8 @@ export class ScreenRecorder extends EventEmitter {
             errorCode: null,
             errorMessage: null
           })
+          this.removeUploadedFile(diarizationPath)
+          console.log("Diarization file uploaded successfully")
         }
       } else {
         GLOBAL.addArtifactKey({
@@ -1131,6 +1141,10 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     this.filesUploaded = true
+    // Every expected artifact now has a manifest entry, including failed
+    // uploads copied to EFS. Crash recovery may safely submit this payload:
+    // the api-server can either continue or defer it for reconciliation.
+    GLOBAL.markEndMeetingPayloadReady()
   }
 
   public async stopRecording(): Promise<void> {
