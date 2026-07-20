@@ -35,17 +35,22 @@ const BOT_LIKE_NAME_RE =
 // (bounded by the retry cap), upload logs, and exit cleanly instead of being
 // force-killed. Best-effort and guarded (GLOBAL may be unset on a very early kill).
 //
-// Recovery (log-upload + requeue) is guarded by the single shared GLOBAL.claimRecovery()
-// token so a SIGTERM racing the normal shutdown or the crash handler can never
-// double-requeue the same meeting. If another path already owns recovery, just
-// exit cleanly.
+// Recovery double-requeue safety (#224 regression fix): the shared
+// GLOBAL.claimRecovery() token is taken ONLY at the moment of a requeue, never up
+// front. Up-front claiming here used to starve the primary failure-retry in
+// handleFailedRecording() whenever this handler won the claim but then took a
+// non-requeuing branch (finalized / serverless). Now we (a) stand down WITHOUT
+// exiting if a requeue is already in flight elsewhere — so we never kill it
+// mid-write — and (b) claim atomically only right before our own requeue, so at
+// most one requeue ever happens.
 process.on("SIGTERM", async () => {
-  if (!GLOBAL.claimRecovery()) {
-    // Another handler (normal shutdown / crash) already owns recovery and is
-    // awaiting its log-upload + requeue. Exiting here would kill that owner
-    // mid-write and lose the meeting — stand down and let the owner exit once
-    // its recovery completes.
-    console.log("[SIGTERM] Recovery already owned by another handler — standing down (owner will exit)")
+  if (GLOBAL.isRecoveryClaimed()) {
+    // A requeue-performing path already owns recovery and may be mid-write.
+    // Exiting here would kill it and lose the meeting — stand down (do NOT exit)
+    // and let that owner finish its requeue and exit.
+    console.log(
+      "[SIGTERM] Recovery already owned by a requeuing handler — standing down (owner will exit)"
+    )
     return
   }
   console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
@@ -57,7 +62,8 @@ process.on("SIGTERM", async () => {
   try {
     if (GLOBAL.hasRecordingFinalized()) {
       // Eviction during upload: the merged recording exists — preserve it for the
-      // S3/EFS salvage path rather than requeuing (which would re-record).
+      // S3/EFS salvage path rather than requeuing (which would re-record). NB: no
+      // claim on this branch — a non-requeuing path must never take the token.
       console.log(
         "[SIGTERM] Recording finalized/uploading — preserving artifacts for salvage (not requeuing)"
       )
@@ -66,8 +72,15 @@ process.on("SIGTERM", async () => {
       // requeue to re-record on a fresh pod.
       GLOBAL.setShouldRetry(true)
       if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
-        await requeueToSQS(buildRetryMessage())
-        console.log("[SIGTERM] Requeued to SQS to re-record")
+        // Claim immediately before requeuing. If a concurrent path grabbed it
+        // first it has already requeued this meeting — skip to avoid a double
+        // re-record.
+        if (GLOBAL.claimRecovery()) {
+          await requeueToSQS(buildRetryMessage())
+          console.log("[SIGTERM] Requeued to SQS to re-record")
+        } else {
+          console.log("[SIGTERM] Recovery claimed concurrently — skipping duplicate requeue")
+        }
       }
     }
   } catch (e) {
@@ -190,14 +203,6 @@ async function handleFailedRecording(): Promise<void> {
   const shouldRetry = shouldAttemptRetry(currentRetryCount)
 
   if (shouldRetry) {
-    // Take the shared recovery claim before requeuing so a concurrent SIGTERM /
-    // crash handler can't also requeue this same meeting. If another path already
-    // owns recovery, it has (or will) requeue — skip to avoid a duplicate re-record.
-    if (!GLOBAL.claimRecovery()) {
-      console.log("🔁 Recovery already claimed by another handler — skipping requeue")
-      return
-    }
-
     console.log(
       `🔄 Error marked as retryable - attempting retry ${currentRetryCount + 1}/${getMaxRetryCount()}`
     )
@@ -205,6 +210,23 @@ async function handleFailedRecording(): Promise<void> {
     try {
       // Build and send retry message to SQS
       const retryMessage = buildRetryMessage()
+
+      // Take the shared recovery claim IMMEDIATELY before requeuing. #224
+      // regression fix: the claim is now held ONLY by paths that actually requeue,
+      // so losing it here means another handler (SIGTERM / crash) has ALREADY
+      // requeued this exact meeting — skip to avoid a duplicate re-record. This is
+      // the single-threaded PRIMARY retry path and must never be starved: the old
+      // code claimed up front in the SIGTERM / crash handlers (and the finally
+      // block), so a handler that won the claim but then took a NON-requeuing
+      // branch would make this claim fail and silently skip the retry — terminally
+      // failing Zoom web bots on attempt 1 instead of cycling exit IPs past the
+      // probabilistic anti-bot wall.
+      if (!GLOBAL.claimRecovery()) {
+        console.log(
+          "🔁 Recovery already requeued by another handler — skipping duplicate requeue"
+        )
+        return
+      }
       await requeueToSQS(retryMessage)
 
       // Send webhook with retry indication
@@ -316,9 +338,12 @@ async function handleFailedRecording(): Promise<void> {
     // Delegate to handleFailedRecording which includes retry logic
     await handleFailedRecording()
   } finally {
-    // Take the shared recovery claim so a SIGTERM during shutdown doesn't requeue
-    // an already-handled run. Idempotent: if a retry path already claimed it, this
-    // is a no-op; either way recovery is now owned by this normal path.
+    // Mark the run fully handled so a late SIGTERM / crash arriving during this
+    // final log upload stands down instead of spuriously re-recording an
+    // already-decided (e.g. terminally-failed) meeting. This runs AFTER
+    // handleFailedRecording(), so — unlike the old up-front claims in the SIGTERM /
+    // crash handlers — it can NEVER starve the primary retry's own claim (that
+    // claim, if the run retried, was already taken). It performs no requeue itself.
     GLOBAL.claimRecovery()
     if (!GLOBAL.isServerless()) {
       try {
