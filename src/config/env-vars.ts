@@ -1,5 +1,5 @@
 import dotenv from "dotenv"
-import { bool, cleanEnv, port, str } from "envalid"
+import { bool, cleanEnv, num, port, str } from "envalid"
 
 dotenv.config()
 
@@ -77,7 +77,15 @@ export const envVars = cleanEnv(process.env, {
   // Absolute path to the stealthfox Firefox binary. Baked into the Docker image
   // at /opt/stealthfox/<tag>/firefox by scripts/fetch-stealthfox.sh. Empty =
   // stealthfox disabled (falls back to CloakBrowser).
-  STEALTHFOX_BINARY_PATH: str({ default: "" })
+  STEALTHFOX_BINARY_PATH: str({ default: "" }),
+  // Zoom web only: how many times to relaunch the browser on a FRESH proxy exit
+  // IP inside the SAME warm pod before falling back to the SQS requeue (fresh
+  // pod). The anti-bot wall keys on the exit IP, so an in-pod relaunch on a new
+  // residential IP clears it in ~5-10s vs the ~20-40s of a pod cold-start. 0
+  // disables in-process retry entirely (pure requeue behavior). Envalid-validated
+  // here; consumed/re-exported via config/retry-config.ts, the single retry-count
+  // source (total-budget math lives there).
+  IN_PROCESS_RETRY_MAX: num({ default: 2 })
 })
 
 export type EnvVars = typeof envVars

@@ -1,3 +1,4 @@
+import { getMaxRetryCount } from "../../config/retry-config"
 import { Events } from "../../events"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import { GLOBAL } from "../../singleton"
@@ -70,6 +71,26 @@ export class ErrorState extends BaseState {
         reason: endReason,
         message: errorMessage
       })
+
+      // If a retry is pending, the requeue path (handleFailedRecording) will emit
+      // the non-terminal `retrying` status. Suppress the terminal error webhooks
+      // here so the customer doesn't receive a scary meeting_error/bot_rejected
+      // between attempts (observed live on bot 4d2c5040: meeting_error then
+      // retrying 5s later, then recovery). This mirrors handleFailedRecording's
+      // decision EXACTLY — same shouldRetry flag, same Zoom-anti-bot-wall retryable
+      // rule, same retry-count cap — so the two paths always agree on whether a
+      // terminal event should fire. ErrorState runs BEFORE handleFailedRecording,
+      // so the wall's late setShouldRetry(true) is OR'd in explicitly here.
+      const retryPending =
+        (GLOBAL.getShouldRetry() ||
+          endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed) &&
+        GLOBAL.getRetryCount() < getMaxRetryCount()
+      if (retryPending) {
+        console.log(
+          `[ErrorState] Retry pending (reason: ${endReason}, attempt ${GLOBAL.getRetryCount()}/${getMaxRetryCount()}) — suppressing terminal error webhook; retrying status will be emitted on requeue`
+        )
+        return
+      }
 
       try {
         switch (endReason) {

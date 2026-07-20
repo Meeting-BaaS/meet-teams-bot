@@ -406,9 +406,15 @@ export function setupExitHandler() {
     if (serverless) {
       process.exit(1)
     }
-    if (!GLOBAL.claimRecovery()) {
+    // #224 regression fix: do NOT claim recovery up front. When this crash handler
+    // hit the finalized/preserve branch below it used to grab the shared token
+    // without requeuing, starving the primary failure-retry in
+    // handleFailedRecording(). Instead, stand down WITHOUT exiting if a
+    // requeue-performing path already owns recovery (so we don't kill its in-flight
+    // requeue), and otherwise claim atomically only right before our own requeue.
+    if (GLOBAL.isRecoveryClaimed()) {
       logger.error(
-        "[Crash] Recovery already owned by another handler — standing down (owner will exit)"
+        "[Crash] Recovery already owned by a requeuing handler — standing down (owner will exit)"
       )
       return
     }
@@ -430,11 +436,34 @@ export function setupExitHandler() {
           "[Crash] Recording finalized/uploading — preserving artifacts for salvage (NOT requeuing)"
         )
       } else {
-        const { buildRetryMessage, requeueToSQS, getMaxRetryCount } = await import("./retry-handler")
+        const { buildRetryMessage, requeueToSQS } = await import("./retry-handler")
+        const { getMaxRetryCount } = await import("../config/retry-config")
         GLOBAL.setShouldRetry(true)
         if (GLOBAL.getRetryCount() < getMaxRetryCount()) {
-          await requeueToSQS(buildRetryMessage())
-          logger.error("[Crash] Early crash — requeued to SQS for retry")
+          // Claim immediately before requeuing; if a concurrent path grabbed it
+          // first it has already requeued — skip to avoid a double re-record.
+          if (GLOBAL.claimRecovery()) {
+            try {
+              await requeueToSQS(buildRetryMessage())
+              logger.error("[Crash] Early crash — requeued to SQS for retry")
+            } catch (e) {
+              // Send failed — release so another path can requeue (see releaseRecovery).
+              GLOBAL.releaseRecovery()
+              throw e
+            }
+            // Requeue succeeded — surface the non-terminal `retrying` status so the
+            // dashboard shows "Retrying" for crash-path requeues too, not only the
+            // graceful handleFailedRecording path. Best-effort; a failed emit must
+            // NOT release the (successful) recovery claim, so isolate it.
+            try {
+              const { Events } = await import("../events")
+              await Events.retrying(GLOBAL.getRetryCount() + 1, getMaxRetryCount())
+            } catch (evErr) {
+              logger.error(`[Crash] retrying status emit failed (non-fatal): ${evErr}`)
+            }
+          } else {
+            logger.error("[Crash] Recovery claimed concurrently — skipping duplicate requeue")
+          }
         } else {
           logger.error("[Crash] Max retries reached — not requeuing")
         }

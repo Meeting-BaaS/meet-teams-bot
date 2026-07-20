@@ -16,9 +16,104 @@ const TIMEOUTS: DismissTimeouts = {
   PAGE_TIMEOUT: 2000
 }
 
+interface ModalPattern {
+  name: string
+  selector: string
+  buttonTexts: string[]
+  exitByEscape: boolean
+}
+
 /**
- * Simplified dialog observer specifically for Google Meet
- * Focuses on common Google Meet modal patterns
+ * Google Meet modal patterns.
+ * IMPORTANT: Order matters! More specific patterns must come before generic ones
+ * to avoid misidentification (e.g., transcription modal matching camera_permission).
+ */
+const MEET_MODAL_PATTERNS: ModalPattern[] = [
+  // People hover dialog (new UI Dec 2025) - dismiss with Escape
+  {
+    name: "people_hover_dialog",
+    selector: 'div[role="dialog"][aria-label*="people in the call" i]:has-text("People")',
+    buttonTexts: [], // No buttons to click, just dismiss with Escape
+    exitByEscape: true
+  },
+  // Recording/transcription modals - MUST come first (they may contain "camera"/"microphone" text)
+  {
+    name: "recording_notification",
+    selector: 'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
+    buttonTexts: ["Join now"],
+    exitByEscape: false
+  },
+  {
+    name: "transcribe_notification",
+    selector: 'div[role="dialog"]:has-text("video call is being transcribed"):has(button)',
+    buttonTexts: ["Join now"],
+    exitByEscape: false
+  },
+  // Gemini/notes modal
+  {
+    name: "gemini_notification",
+    selector: 'div[role="dialog"]:has-text("Gemini"):has-text("taking notes"):has(button)',
+    buttonTexts: ["Join now"],
+    exitByEscape: false
+  },
+  // Privacy/notification modals
+  {
+    name: "privacy_notification",
+    selector: 'div[role="dialog"]:has-text("Others may see"):has(button)',
+    buttonTexts: ["Got it", "OK", "Dismiss", "Close"],
+    exitByEscape: false
+  },
+  // Video privacy modals
+  {
+    name: "video_privacy",
+    selector: 'div[role="dialog"]:has-text("video differently"):has(button)',
+    buttonTexts: ["Got it", "OK", "Continue"],
+    exitByEscape: false
+  },
+  // Background/feed modals
+  {
+    name: "background_feed",
+    selector:
+      'div[role="dialog"]:has-text("background"):has(button), div[role="dialog"]:has-text("feed"):has(button)',
+    buttonTexts: ["Got it", "OK", "Dismiss"],
+    exitByEscape: false
+  },
+  // Camera/microphone permission modals - after specific modals to avoid false positives
+  // These can be dismissed with Escape key if buttons are not found
+  {
+    name: "camera_permission",
+    selector:
+      'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
+    buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now"],
+    exitByEscape: true
+  },
+  // Generic dismiss modals (fallback)
+  {
+    name: "generic_dismiss",
+    selector: 'div[role="dialog"]:has(button)',
+    buttonTexts: ["Join now", "Got it", "OK", "Dismiss", "Close", "Continue"],
+    exitByEscape: false
+  }
+]
+
+/**
+ * Zoom (web client, app.zoom.us/wc) does NOT use Playwright's locator/isVisible
+ * path — the rest of the Zoom code (see zoom.ts) documents that Zoom's overlays
+ * make Playwright report its own controls as not-visible / not-actionable, so a
+ * locator.click() stalls and isVisible() gates skip the element entirely. That is
+ * exactly why the pattern-based observer never dismissed the "This meeting is
+ * being recorded" modal. Zoom is instead handled by checkAndDismissZoomModals(),
+ * which runs a single in-page pass that pierces open shadow roots, ignores
+ * Playwright visibility, and clicks with a full pointer/mouse/click sequence so
+ * the React handler always fires. Its trigger/acknowledge/never lists live inside
+ * that page.evaluate() (browser scope) rather than here.
+ */
+
+/**
+ * Simplified dialog observer for auto-dismissing in-call modals.
+ * Handles Google Meet's notification/permission dialogs and Zoom's
+ * "This meeting is being recorded" consent modal via platform-keyed
+ * pattern sets sharing a single detect/dismiss code path.
  */
 export class SimpleDialogObserver {
   protected context: MeetingContext
@@ -79,10 +174,11 @@ export class SimpleDialogObserver {
   }
 
   setupGlobalDialogObserver() {
-    // Only start observer for Google Meet
-    if (GLOBAL.get().meeting_platform !== "meet") {
+    // Start observer for Google Meet and Zoom; no-op on other platforms.
+    const platform = GLOBAL.get().meeting_platform
+    if (platform !== "meet" && platform !== "zoom") {
       console.info(
-        `[SimpleDialogObserver] Observer not started: provider is not Google Meet (${GLOBAL.get().meeting_platform})`
+        `[SimpleDialogObserver] Observer not started: provider is not Meet or Zoom (${platform})`
       )
       return
     }
@@ -155,12 +251,22 @@ export class SimpleDialogObserver {
   }
 
   /**
-   * Simplified modal detection focusing on Google Meet's common patterns
+   * Simplified modal detection. Meet uses the Playwright locator + isVisible
+   * pattern loop below. Zoom takes an entirely different in-page path (see
+   * checkAndDismissZoomModals and the note above ZOOM patterns) because Zoom's
+   * web client defeats Playwright's visibility/actionability checks.
    */
   protected async checkAndDismissModals(
     page: Page,
     customTimeout = 0
   ): Promise<DialogObserverResult> {
+    const platform = GLOBAL.get().meeting_platform
+
+    // Zoom: robust in-page dismissal (shadow-piercing, no visibility gate).
+    if (platform === "zoom") {
+      return this.checkAndDismissZoomModals(page)
+    }
+
     const timeouts =
       customTimeout === 0
         ? TIMEOUTS
@@ -170,81 +276,19 @@ export class SimpleDialogObserver {
             PAGE_TIMEOUT: customTimeout
           }
 
-    try {
-      // Google Meet specific modal patterns
-      // IMPORTANT: Order matters! More specific patterns must come before generic ones
-      // to avoid misidentification (e.g., transcription modal matching camera_permission)
-      const modalPatterns = [
-        // People hover dialog (new UI Dec 2025) - dismiss with Escape
-        {
-          name: "people_hover_dialog",
-          selector: 'div[role="dialog"][aria-label*="people in the call" i]:has-text("People")',
-          buttonTexts: [], // No buttons to click, just dismiss with Escape
-          exitByEscape: true
-        },
-        // Recording/transcription modals - MUST come first (they may contain "camera"/"microphone" text)
-        {
-          name: "recording_notification",
-          selector: 'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
-          buttonTexts: ["Join now"],
-          exitByEscape: false
-        },
-        {
-          name: "transcribe_notification",
-          selector: 'div[role="dialog"]:has-text("video call is being transcribed"):has(button)',
-          buttonTexts: ["Join now"],
-          exitByEscape: false
-        },
-        // Gemini/notes modal
-        {
-          name: "gemini_notification",
-          selector: 'div[role="dialog"]:has-text("Gemini"):has-text("taking notes"):has(button)',
-          buttonTexts: ["Join now"],
-          exitByEscape: false
-        },
-        // Privacy/notification modals
-        {
-          name: "privacy_notification",
-          selector: 'div[role="dialog"]:has-text("Others may see"):has(button)',
-          buttonTexts: ["Got it", "OK", "Dismiss", "Close"],
-          exitByEscape: false
-        },
-        // Video privacy modals
-        {
-          name: "video_privacy",
-          selector: 'div[role="dialog"]:has-text("video differently"):has(button)',
-          buttonTexts: ["Got it", "OK", "Continue"],
-          exitByEscape: false
-        },
-        // Background/feed modals
-        {
-          name: "background_feed",
-          selector:
-            'div[role="dialog"]:has-text("background"):has(button), div[role="dialog"]:has-text("feed"):has(button)',
-          buttonTexts: ["Got it", "OK", "Dismiss"],
-          exitByEscape: false
-        },
-        // Camera/microphone permission modals - after specific modals to avoid false positives
-        // These can be dismissed with Escape key if buttons are not found
-        {
-          name: "camera_permission",
-          selector:
-            'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
-          buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now"],
-          exitByEscape: true
-        },
-        // Generic dismiss modals (fallback)
-        {
-          name: "generic_dismiss",
-          selector: 'div[role="dialog"]:has(button)',
-          buttonTexts: ["Join now", "Got it", "OK", "Dismiss", "Close", "Continue"],
-          exitByEscape: false
-        }
-      ]
+    const detectionMethod = `simple_${platform}`
+    // Meet's ordered pattern set: more specific patterns before generic ones.
+    const modalPatterns = MEET_MODAL_PATTERNS
 
+    try {
       for (const pattern of modalPatterns) {
         try {
-          const modal = page.locator(pattern.selector)
+          // .first(): Zoom's consent modal selector (div:has-text(...)) matches
+          // several nested ancestor divs, so a bare locator throws Playwright's
+          // strict-mode "resolved to N elements" on isVisible(). Narrowing to the
+          // first (outermost) match — which still :has the OK button — makes the
+          // check single-element and lets tryDismissModal find the button inside.
+          const modal = page.locator(pattern.selector).first()
           const isVisible = await modal.isVisible({
             timeout: timeouts.VISIBLE_TIMEOUT
           })
@@ -279,7 +323,7 @@ export class SimpleDialogObserver {
               found: true,
               dismissed: true,
               modalType: pattern.name,
-              detectionMethod: "simple_google_meet"
+              detectionMethod
             }
           }
 
@@ -287,7 +331,7 @@ export class SimpleDialogObserver {
             found: true,
             dismissed: false,
             modalType: pattern.name,
-            detectionMethod: "simple_google_meet"
+            detectionMethod
           }
         } catch (error) {
           console.warn(`[SimpleDialogObserver] Error with pattern ${pattern.name}: ${error}`)
@@ -302,6 +346,143 @@ export class SimpleDialogObserver {
         dismissed: false,
         modalType: "detection_error"
       }
+    }
+  }
+
+  /**
+   * Zoom-only in-page dialog dismissal.
+   *
+   * Runs ONE pass inside the page (page.evaluate) instead of via Playwright
+   * locators, because Zoom's web client makes Playwright report its own modals as
+   * not-visible / not-actionable (documented throughout zoom.ts) — which is why
+   * the locator/isVisible pattern loop never dismissed the "This meeting is being
+   * recorded" modal. The in-page pass:
+   *   1. Walks the light DOM AND all open shadow roots (Zoom nests UI in shadow DOM).
+   *   2. Considers only acknowledge buttons (OK / Got it / Continue / Dismiss / …)
+   *      and never destructive ones (Leave / End / Cancel / Decline / No).
+   *   3. Confirms the button belongs to a recording/consent modal (trigger text in
+   *      an ancestor, crossing shadow boundaries) OR sits inside a real dialog /
+   *      Zoom modal container — so a stray page button is never clicked.
+   *   4. Clicks with a full pointerdown→mousedown→mouseup→click→.click() sequence so
+   *      whichever event Zoom's React handler listens for fires.
+   * Safe by construction: it can only ever click an acknowledge button, so the
+   * worst case is a no-op — never a destructive or meeting-exiting action.
+   */
+  private async checkAndDismissZoomModals(page: Page): Promise<DialogObserverResult> {
+    const detectionMethod = "inpage_zoom"
+    try {
+      if (page.isClosed()) {
+        return { found: false, dismissed: false, modalType: null }
+      }
+
+      const dismissed = await page.evaluate<string | null>(() => {
+        const TRIGGER =
+          /being recorded|may view or share|is being recorded|is being transcribed|consent to/i
+        const ACK = /^(ok|okay|got it|continue|i understand|accept|agree|dismiss|close)$/i
+        const NEVER = /leave|end\b|cancel|decline|\bno\b|sign out|log out|don't|do not/i
+
+        // Collect every element across the light DOM and all OPEN shadow roots.
+        const nodes: Element[] = []
+        const walk = (root: Document | ShadowRoot) => {
+          for (const el of Array.from(root.querySelectorAll("*"))) {
+            nodes.push(el)
+            const sr = (el as HTMLElement).shadowRoot
+            if (sr) walk(sr)
+          }
+        }
+        walk(document)
+
+        const label = (el: Element) => (el.textContent || "").replace(/\s+/g, " ").trim()
+
+        // Hop up the ancestor chain, crossing shadow-root boundaries via host.
+        const parentAcross = (el: Element): Element | null => {
+          if (el.parentElement) return el.parentElement
+          const root = el.getRootNode()
+          return root instanceof ShadowRoot ? root.host : null
+        }
+
+        const clickHard = (btn: Element) => {
+          const opts: MouseEventInit = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window
+          }
+          try {
+            btn.dispatchEvent(new PointerEvent("pointerdown", opts))
+          } catch {}
+          btn.dispatchEvent(new MouseEvent("mousedown", opts))
+          try {
+            btn.dispatchEvent(new PointerEvent("pointerup", opts))
+          } catch {}
+          btn.dispatchEvent(new MouseEvent("mouseup", opts))
+          btn.dispatchEvent(new MouseEvent("click", opts))
+          ;(btn as HTMLElement).click?.()
+        }
+
+        const ackButtons = nodes.filter((el) => {
+          if (el.tagName !== "BUTTON" && el.getAttribute("role") !== "button") return false
+          const t = label(el)
+          return ACK.test(t) && !NEVER.test(t)
+        })
+
+        // Pass 1: acknowledge button tied to a recording/consent modal via ancestor text.
+        for (const btn of ackButtons) {
+          let node: Element | null = btn
+          let hops = 0
+          while (node && hops < 10) {
+            if (TRIGGER.test(node.textContent || "")) {
+              clickHard(btn)
+              return "zoom_recording_consent"
+            }
+            node = parentAcross(node)
+            hops++
+          }
+        }
+
+        // Pass 2: acknowledge button inside any real dialog / Zoom modal container.
+        const inDialog = (el: Element): boolean => {
+          let node: Element | null = el
+          let hops = 0
+          while (node && hops < 10) {
+            const role = node.getAttribute("role")
+            const cls = typeof node.className === "string" ? node.className : ""
+            if (
+              role === "dialog" ||
+              role === "alertdialog" ||
+              /zm-modal|zmu-modal|zm-dialog|ReactModal__Content/i.test(cls)
+            ) {
+              return true
+            }
+            node = parentAcross(node)
+            hops++
+          }
+          return false
+        }
+        for (const btn of ackButtons) {
+          if (inDialog(btn)) {
+            clickHard(btn)
+            return "zoom_generic_dialog"
+          }
+        }
+
+        return null
+      })
+
+      if (dismissed) {
+        console.info(`[SimpleDialogObserver] Zoom: dismissed ${dismissed} (in-page)`)
+        return { found: true, dismissed: true, modalType: dismissed, detectionMethod }
+      }
+      return { found: false, dismissed: false, modalType: null }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("Target page, context or browser has been closed")
+      ) {
+        return { found: false, dismissed: false, modalType: null }
+      }
+      console.warn(`[SimpleDialogObserver] Zoom in-page dismissal error: ${error}`)
+      return { found: false, dismissed: false, modalType: "detection_error" }
     }
   }
 

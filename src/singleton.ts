@@ -166,6 +166,18 @@ class Global {
     this.errorMessage = null
   }
 
+  /**
+   * Fully wipe the transient error / end-reason / retry flags so a bounded
+   * in-process join retry (fresh proxy IP, same pod) starts clean and a
+   * subsequent admission isn't treated as a failed run. Only call BETWEEN
+   * in-process attempts — never after a terminal decision.
+   */
+  public resetErrorState(): void {
+    this.endReason = null
+    this.errorMessage = null
+    this.shouldRetry = false
+  }
+
   public clearMeetSsoConfig(): void {
     if (this.meetingParams) {
       this.meetingParams.meet_sso_config = null
@@ -185,14 +197,20 @@ class Global {
   }
 
   /**
-   * Single, atomic recovery-ownership claim shared by EVERY termination path
-   * (SIGTERM handler, normal completion/failure requeue, and the Logger crash
-   * handler). The first caller wins and receives `true`; every subsequent caller
-   * receives `false`. Callers that lose the claim must NOT perform log-upload +
-   * requeue work — this is what prevents concurrent paths (e.g. SIGTERM racing a
-   * crash, or a crash racing normal shutdown) from each requeuing the same
-   * meeting and re-recording it. Node's single-threaded run-to-completion model
-   * makes the check-and-set atomic with respect to other callers.
+   * Single, atomic recovery-ownership claim shared by the requeue sites (the
+   * primary failure-retry in handleFailedRecording, the SIGTERM handler's requeue
+   * branch, and the Logger crash handler's requeue branch). The first caller wins
+   * and receives `true`; every subsequent caller receives `false`.
+   *
+   * INVARIANT (see the #224 regression note in main.ts): this token is taken ONLY
+   * immediately before an actual requeueToSQS() — never up front by a handler that
+   * might then take a non-requeuing branch. Because of that, a caller that loses
+   * the claim can safely conclude the meeting has ALREADY been requeued by another
+   * path and skip its own requeue. Taking the claim without requeuing would starve
+   * the primary retry (which is exactly the #224 bug this rule fixes).
+   *
+   * Node's single-threaded run-to-completion model makes the check-and-set atomic
+   * with respect to other callers.
    */
   public claimRecovery(): boolean {
     if (this.recoveryClaimed) {
@@ -200,6 +218,29 @@ class Global {
     }
     this.recoveryClaimed = true
     return true
+  }
+
+  /**
+   * Release a claim taken by claimRecovery() when the requeueToSQS() it guarded
+   * FAILED to send. Without this, a failed send leaves recoveryClaimed=true, so
+   * every other requeue path (SIGTERM / crash handler) sees isRecoveryClaimed()
+   * and stands down — and the meeting is never requeued (silently lost). Callers
+   * MUST release ONLY on send failure, and ONLY the caller that won the claim, so
+   * another path can take over the requeue. Never release after a successful send.
+   */
+  public releaseRecovery(): void {
+    this.recoveryClaimed = false
+  }
+
+  /**
+   * Read-only peek at whether a recovery path already owns the claim. Terminator
+   * handlers (SIGTERM / crash) use it only to STAND DOWN — return without calling
+   * exit(), so they don't kill an in-flight requeue mid-write. They must NOT use it
+   * to gate a requeue: only claimRecovery(), taken immediately before the requeue,
+   * may do that.
+   */
+  public isRecoveryClaimed(): boolean {
+    return this.recoveryClaimed
   }
 
   // Phase marker: true once the recording has been MERGED into its final output

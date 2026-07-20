@@ -149,9 +149,16 @@ export class SoundContext extends MediaContext {
       "pcm_s16le",
       MICRO_DEVICE
     )
-    return super.execute(args, () => {
+    const stdin = super.execute(args, () => {
       console.warn("[play_stdin] Sequence ended")
     }).stdin
+    // Same EPIPE guard as the video feeder: audio writes (streaming.ts) can flush
+    // into ffmpeg's stdin after SIGTERM closes it, emitting EPIPE. Handle it here
+    // so it never escalates to an uncaughtException that kills finalization.
+    stdin.on("error", (err) => {
+      console.warn(`[play_stdin] ffmpeg stdin error (ignored during teardown): ${err}`)
+    })
+    return stdin
   }
 
   public async stop() {
@@ -279,6 +286,14 @@ export class VideoContext extends MediaContext {
     }
 
     this.ffmpegStdin = proc.stdin
+    // EPIPE guard: on teardown, ffmpeg is SIGTERM'd and closes its stdin read-end
+    // while buffered frames are still flushing. Without an "error" listener that
+    // EPIPE becomes an uncaughtException, which aborts finalization (the
+    // end-meeting trampoline that reports artifacts + duration) and orphans the
+    // bot record at recording_succeeded. Log and swallow it.
+    this.ffmpegStdin.on("error", (err) => {
+      console.warn(`[video feeder] ffmpeg stdin error (ignored during teardown): ${err}`)
+    })
     this.startFeeder()
   }
 

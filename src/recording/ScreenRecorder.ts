@@ -152,7 +152,13 @@ export class ScreenRecorder extends EventEmitter {
 
   public async startRecording(page: Page): Promise<void> {
     if (this.isRecording) {
-      throw new Error("Recording is already in progress")
+      // Already recording — no-op instead of throwing. The in-process retry loop
+      // relaunches the browser but the x11grab recording spans it (it captures the
+      // Xvfb display, not the page), so a second start is expected. Throwing here
+      // produced an unhandled rejection that crashed the pod and forced a futile
+      // SQS requeue (defeating the fast in-pod retry).
+      console.warn("[ScreenRecorder] startRecording called while already recording — ignoring")
+      return
     }
 
     // Capture DOM state before starting screen recording (void to avoid blocking)
