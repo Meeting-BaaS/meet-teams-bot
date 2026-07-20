@@ -294,7 +294,12 @@ export class SimpleDialogObserver {
     try {
       for (const pattern of modalPatterns) {
         try {
-          const modal = page.locator(pattern.selector)
+          // .first(): Zoom's consent modal selector (div:has-text(...)) matches
+          // several nested ancestor divs, so a bare locator throws Playwright's
+          // strict-mode "resolved to N elements" on isVisible(). Narrowing to the
+          // first (outermost) match — which still :has the OK button — makes the
+          // check single-element and lets tryDismissModal find the button inside.
+          const modal = page.locator(pattern.selector).first()
           const isVisible = await modal.isVisible({
             timeout: timeouts.VISIBLE_TIMEOUT
           })
