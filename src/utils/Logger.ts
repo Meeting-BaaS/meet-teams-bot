@@ -451,6 +451,16 @@ export function setupExitHandler() {
               GLOBAL.releaseRecovery()
               throw e
             }
+            // Requeue succeeded — surface the non-terminal `retrying` status so the
+            // dashboard shows "Retrying" for crash-path requeues too, not only the
+            // graceful handleFailedRecording path. Best-effort; a failed emit must
+            // NOT release the (successful) recovery claim, so isolate it.
+            try {
+              const { Events } = await import("../events")
+              await Events.retrying(GLOBAL.getRetryCount() + 1, getMaxRetryCount())
+            } catch (evErr) {
+              logger.error(`[Crash] retrying status emit failed (non-fatal): ${evErr}`)
+            }
           } else {
             logger.error("[Crash] Recovery claimed concurrently — skipping duplicate requeue")
           }

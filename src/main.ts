@@ -62,6 +62,14 @@ process.on("SIGTERM", async () => {
             GLOBAL.releaseRecovery()
             throw e
           }
+          // Requeue succeeded — surface `retrying` for SIGTERM-path requeues too,
+          // matching the graceful path. Best-effort; isolated so a failed emit
+          // can't release the successful recovery claim.
+          try {
+            await Events.retrying(GLOBAL.getRetryCount() + 1, getMaxRetryCount())
+          } catch (evErr) {
+            console.error("[SIGTERM] retrying status emit failed (non-fatal):", formatError(evErr))
+          }
         } else {
           console.log("[SIGTERM] Recovery claimed concurrently — skipping duplicate requeue")
         }
