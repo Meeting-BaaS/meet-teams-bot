@@ -370,12 +370,67 @@ export class SimpleDialogObserver {
    */
   private async checkAndDismissZoomModals(page: Page): Promise<DialogObserverResult> {
     const detectionMethod = "inpage_zoom"
+    // Receive-only recorder bots must stay muted; a streaming_input bot speaks and
+    // must NOT be re-muted. Read once per cycle (guarded — params are always set
+    // by the time the observer runs, but never let this throw the cycle).
+    let receiveOnly = true
+    try {
+      receiveOnly = !GLOBAL.get().streaming_input
+    } catch {
+      /* params not set yet — default to receive-only (safe: keeps mic muted) */
+    }
+
     try {
       if (page.isClosed()) {
         return { found: false, dismissed: false, modalType: null }
       }
 
-      const dismissed = await page.evaluate<string | null>(() => {
+      // Playwright's page.evaluate has NO timeout — a hung/unresponsive page would
+      // never resolve, the observer's isRunning guard would never clear, and this
+      // bot's watcher would be wedged forever (the "1 of 12 bots never dismissed
+      // the modal" symptom). Race the evaluate against a wall clock so a stuck page
+      // just skips this cycle and retries on the next tick.
+      const evalResult = this.checkZoomInPage(page, receiveOnly)
+      const timeout = new Promise<{ modal: string | null; remuted: boolean }>((resolve) =>
+        setTimeout(() => resolve({ modal: null, remuted: false }), 8000)
+      )
+      const { modal, remuted } = await Promise.race([evalResult, timeout])
+
+      if (remuted) {
+        console.info("[SimpleDialogObserver] Zoom: re-muted bot mic (was live)")
+      }
+      if (modal) {
+        console.info(`[SimpleDialogObserver] Zoom: dismissed ${modal} (in-page)`)
+        return { found: true, dismissed: true, modalType: modal, detectionMethod }
+      }
+      return { found: false, dismissed: false, modalType: null }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("Target page, context or browser has been closed")
+      ) {
+        return { found: false, dismissed: false, modalType: null }
+      }
+      console.warn(`[SimpleDialogObserver] Zoom in-page dismissal error: ${error}`)
+      return { found: false, dismissed: false, modalType: "detection_error" }
+    }
+  }
+
+  /**
+   * The single in-page pass for Zoom, run every observer tick: (1) dismiss any
+   * recording-consent / stray dialog, and (2) re-mute the bot if it went live.
+   * Both are needed because dismissing Zoom's "being recorded" modal re-connects
+   * audio UNMUTED, and ensureMuted() only runs once at admission — so without a
+   * standing re-mute the bot goes live, gets promoted to the active-speaker tile
+   * (which blanks the temporal diarization and pins the recording on the bot's own
+   * image), and is audible in the meeting. Returns what it did so the caller logs.
+   */
+  private checkZoomInPage(
+    page: Page,
+    receiveOnly: boolean
+  ): Promise<{ modal: string | null; remuted: boolean }> {
+    return page.evaluate<{ modal: string | null; remuted: boolean }, { receiveOnly: boolean }>(
+      ({ receiveOnly }) => {
         const TRIGGER =
           /being recorded|may view or share|is being recorded|is being transcribed|consent to/i
         const ACK = /^(ok|okay|got it|continue|i understand|accept|agree|dismiss|close)$/i
@@ -392,7 +447,15 @@ export class SimpleDialogObserver {
         }
         walk(document)
 
-        const label = (el: Element) => (el.textContent || "").replace(/\s+/g, " ").trim()
+        const clean = (s: string | null) => (s || "").replace(/\s+/g, " ").trim()
+        // Consider BOTH the visible text and the aria-label so icon-only / labelled
+        // buttons (e.g. an OK with the text in an aria-label) still match.
+        const isAck = (el: Element) => {
+          const txt = clean(el.textContent)
+          const aria = clean(el.getAttribute("aria-label"))
+          const ok = (s: string) => !!s && ACK.test(s) && !NEVER.test(s)
+          return ok(txt) || ok(aria)
+        }
 
         // Hop up the ancestor chain, crossing shadow-root boundaries via host.
         const parentAcross = (el: Element): Element | null => {
@@ -420,11 +483,11 @@ export class SimpleDialogObserver {
           ;(btn as HTMLElement).click?.()
         }
 
-        const ackButtons = nodes.filter((el) => {
-          if (el.tagName !== "BUTTON" && el.getAttribute("role") !== "button") return false
-          const t = label(el)
-          return ACK.test(t) && !NEVER.test(t)
-        })
+        const ackButtons = nodes.filter(
+          (el) => (el.tagName === "BUTTON" || el.getAttribute("role") === "button") && isAck(el)
+        )
+
+        let modal: string | null = null
 
         // Pass 1: acknowledge button tied to a recording/consent modal via ancestor text.
         for (const btn of ackButtons) {
@@ -433,57 +496,67 @@ export class SimpleDialogObserver {
           while (node && hops < 10) {
             if (TRIGGER.test(node.textContent || "")) {
               clickHard(btn)
-              return "zoom_recording_consent"
+              modal = "zoom_recording_consent"
+              break
             }
             node = parentAcross(node)
             hops++
           }
+          if (modal) break
         }
 
         // Pass 2: acknowledge button inside any real dialog / Zoom modal container.
-        const inDialog = (el: Element): boolean => {
-          let node: Element | null = el
-          let hops = 0
-          while (node && hops < 10) {
-            const role = node.getAttribute("role")
-            const cls = typeof node.className === "string" ? node.className : ""
-            if (
-              role === "dialog" ||
-              role === "alertdialog" ||
-              /zm-modal|zmu-modal|zm-dialog|ReactModal__Content/i.test(cls)
-            ) {
-              return true
+        if (!modal) {
+          const inDialog = (el: Element): boolean => {
+            let node: Element | null = el
+            let hops = 0
+            while (node && hops < 10) {
+              const role = node.getAttribute("role")
+              const cls = typeof node.className === "string" ? node.className : ""
+              if (
+                role === "dialog" ||
+                role === "alertdialog" ||
+                /zm-modal|zmu-modal|zm-dialog|ReactModal__Content/i.test(cls)
+              ) {
+                return true
+              }
+              node = parentAcross(node)
+              hops++
             }
-            node = parentAcross(node)
-            hops++
+            return false
           }
-          return false
-        }
-        for (const btn of ackButtons) {
-          if (inDialog(btn)) {
-            clickHard(btn)
-            return "zoom_generic_dialog"
+          for (const btn of ackButtons) {
+            if (inDialog(btn)) {
+              clickHard(btn)
+              modal = "zoom_generic_dialog"
+              break
+            }
           }
         }
 
-        return null
-      })
+        // Standing mute enforcement for receive-only recorders. The in-call footer
+        // mic control reads "mute my microphone" when LIVE and "unmute my
+        // microphone" when already muted — so click ONLY when live. No-op in the
+        // waiting room (footer not mounted) and for streaming bots. A plain click
+        // fires Zoom's React handler (same as ensureMuted); it's the bot's own mic.
+        let remuted = false
+        if (receiveOnly) {
+          const mic = document.querySelector(
+            '#foot-bar [aria-label*="mute" i], #wc-footer [aria-label*="mute" i], .footer [aria-label*="mute" i]'
+          ) as HTMLElement | null
+          if (mic) {
+            const ml = (mic.getAttribute("aria-label") || "").toLowerCase()
+            if (ml.includes("mute") && !ml.includes("unmute")) {
+              mic.click()
+              remuted = true
+            }
+          }
+        }
 
-      if (dismissed) {
-        console.info(`[SimpleDialogObserver] Zoom: dismissed ${dismissed} (in-page)`)
-        return { found: true, dismissed: true, modalType: dismissed, detectionMethod }
-      }
-      return { found: false, dismissed: false, modalType: null }
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes("Target page, context or browser has been closed")
-      ) {
-        return { found: false, dismissed: false, modalType: null }
-      }
-      console.warn(`[SimpleDialogObserver] Zoom in-page dismissal error: ${error}`)
-      return { found: false, dismissed: false, modalType: "detection_error" }
-    }
+        return { modal, remuted }
+      },
+      { receiveOnly }
+    )
   }
 
   /**

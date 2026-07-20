@@ -704,6 +704,37 @@ export class ZoomProvider implements MeetingProviderInterface {
 
   private async detectBotWall(page: Page): Promise<string | null> {
     try {
+      // Zoom's own pre-join image CAPTCHA ("Type the characters you see"). It can
+      // render pre-Join OR persist through the Join click and the admission wait,
+      // so this runs both pre-click and every admission poll. Detection is a raw
+      // querySelector against the light DOM — NOT a Playwright locator/isVisible
+      // check: Zoom's web client reports its own controls as not-visible/not-
+      // actionable, so a locator-based check false-negatives (documented by Amr).
+      // The captcha is IP-reputation-driven — a fresh residential exit IP may not
+      // be served it — so we route it to the same ZoomAnonymousJoinNotAllowed reason
+      // as the other walls, which triggers the fast in-pod relaunch on a new exit IP
+      // (joinWithInProcessRetry) instead of blocking until the 600s timeout.
+      const captcha = await page
+        .evaluate(() => {
+          // Only fire on a captcha that is actually RENDERED. Zoom injects the
+          // container only when it challenges the bot (verified: absent on normal
+          // joins), but guard with offsetParent !== null so a hidden pre-render
+          // could never false-positive a normal join into the retry path. innerText
+          // already reflects only visible text, so the text check is visibility-safe.
+          const els = document.querySelectorAll(
+            '.component_smart_captcha, .CaptchaContainer, input[placeholder*="captcha" i]'
+          )
+          const shown = Array.from(els).some(
+            (el) => (el as HTMLElement).offsetParent !== null
+          )
+          const textShown = (document.body?.innerText || "")
+            .toLowerCase()
+            .includes("type the characters you see")
+          return shown || textShown
+        })
+        .catch(() => false)
+      if (captcha) return "zoom smart captcha"
+
       return await page.evaluate((phrases: string[]) => {
         const body = (document.body?.innerText || "").toLowerCase()
         for (const p of phrases) if (body.includes(p)) return p
