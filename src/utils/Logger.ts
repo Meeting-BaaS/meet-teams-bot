@@ -406,9 +406,15 @@ export function setupExitHandler() {
     if (serverless) {
       process.exit(1)
     }
-    if (!GLOBAL.claimRecovery()) {
+    // #224 regression fix: do NOT claim recovery up front. When this crash handler
+    // hit the finalized/preserve branch below it used to grab the shared token
+    // without requeuing, starving the primary failure-retry in
+    // handleFailedRecording(). Instead, stand down WITHOUT exiting if a
+    // requeue-performing path already owns recovery (so we don't kill its in-flight
+    // requeue), and otherwise claim atomically only right before our own requeue.
+    if (GLOBAL.isRecoveryClaimed()) {
       logger.error(
-        "[Crash] Recovery already owned by another handler — standing down (owner will exit)"
+        "[Crash] Recovery already owned by a requeuing handler — standing down (owner will exit)"
       )
       return
     }
@@ -433,8 +439,14 @@ export function setupExitHandler() {
         const { buildRetryMessage, requeueToSQS, getMaxRetryCount } = await import("./retry-handler")
         GLOBAL.setShouldRetry(true)
         if (GLOBAL.getRetryCount() < getMaxRetryCount()) {
-          await requeueToSQS(buildRetryMessage())
-          logger.error("[Crash] Early crash — requeued to SQS for retry")
+          // Claim immediately before requeuing; if a concurrent path grabbed it
+          // first it has already requeued — skip to avoid a double re-record.
+          if (GLOBAL.claimRecovery()) {
+            await requeueToSQS(buildRetryMessage())
+            logger.error("[Crash] Early crash — requeued to SQS for retry")
+          } else {
+            logger.error("[Crash] Recovery claimed concurrently — skipping duplicate requeue")
+          }
         } else {
           logger.error("[Crash] Max retries reached — not requeuing")
         }
