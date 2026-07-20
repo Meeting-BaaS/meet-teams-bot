@@ -81,7 +81,16 @@ export class Events {
   // retries are exhausted. Waits for delivery because the pod exits right after.
   static async retrying(attempt: number, max: number) {
     console.log(`📤 Events.retrying called: attempt ${attempt}/${max}`)
-    return Events.EVENTS?.sendOnce("retrying", { attempt, max }, true)
+    const delivered = await Events.EVENTS?.sendReliable("retrying", { attempt, max })
+    if (delivered === false) {
+      // The job is ALREADY requeued to SQS, so a stale status here is
+      // self-correcting (the retry pod emits joining_call). Never downgrade to
+      // recording_failed — just surface that the retrying status didn't land.
+      console.warn(
+        "[Events] 'retrying' status not confirmed delivered after retries — will refresh when the retry pod joins"
+      )
+    }
+    return delivered
   }
 
   // Final webhook events (replacing sendWebhookOnce)
@@ -124,10 +133,35 @@ export class Events {
     }
   }
 
+  // Fire-and-forget wrapper (delivery failure is swallowed — used by sendOnce).
   private async send(code: string, additionalData: Record<string, unknown> = {}): Promise<void> {
+    await this.postStatus(code, additionalData)
+  }
+
+  // Deliver a status with bounded retries; returns whether it was confirmed
+  // delivered. Use for statuses that must land before the pod exits (e.g. the
+  // retrying status emitted right before an SQS requeue).
+  private async sendReliable(
+    code: string,
+    additionalData: Record<string, unknown> = {},
+    attempts = 3
+  ): Promise<boolean> {
+    for (let i = 1; i <= attempts; i++) {
+      if (await this.postStatus(code, additionalData)) return true
+      if (i < attempts) await new Promise((resolve) => setTimeout(resolve, i * 500))
+    }
+    return false
+  }
+
+  // POST a status update. Returns true on delivery (or serverless skip), false
+  // on failure — so callers can observe success instead of silently continuing.
+  private async postStatus(
+    code: string,
+    additionalData: Record<string, unknown> = {}
+  ): Promise<boolean> {
     if (envVars.SERVERLESS) {
       console.log(`Serverless mode, skipping event delivery for ${code}`)
-      return
+      return true
     }
     try {
       await axios({
@@ -142,6 +176,7 @@ export class Events {
         }
       })
       console.log("Event sent successfully:", code, this.botId)
+      return true
     } catch (error) {
       if (error instanceof Error) {
         console.warn(
@@ -151,6 +186,7 @@ export class Events {
           error.message
         )
       }
+      return false
     }
   }
 }
