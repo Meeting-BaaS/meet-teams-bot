@@ -174,7 +174,8 @@ export class WaitingRoomState extends BaseState {
           // Branding switch (warmup placeholder → real image) — idempotent trigger.
           notifyJoinReady()
           // Dialog observer polls context.playwrightPage live, so wiring it once
-          // picks up the relaunched page automatically (Meet-only; no-op on Zoom).
+          // picks up the relaunched page automatically (runs on Meet + Zoom;
+          // no-op on other platforms).
           this.startDialogObserver()
           // Waiting-room webhook — fire once, not per relaunch.
           Events.inWaitingRoom()

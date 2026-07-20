@@ -16,9 +16,119 @@ const TIMEOUTS: DismissTimeouts = {
   PAGE_TIMEOUT: 2000
 }
 
+interface ModalPattern {
+  name: string
+  selector: string
+  buttonTexts: string[]
+  exitByEscape: boolean
+}
+
 /**
- * Simplified dialog observer specifically for Google Meet
- * Focuses on common Google Meet modal patterns
+ * Google Meet modal patterns.
+ * IMPORTANT: Order matters! More specific patterns must come before generic ones
+ * to avoid misidentification (e.g., transcription modal matching camera_permission).
+ */
+const MEET_MODAL_PATTERNS: ModalPattern[] = [
+  // People hover dialog (new UI Dec 2025) - dismiss with Escape
+  {
+    name: "people_hover_dialog",
+    selector: 'div[role="dialog"][aria-label*="people in the call" i]:has-text("People")',
+    buttonTexts: [], // No buttons to click, just dismiss with Escape
+    exitByEscape: true
+  },
+  // Recording/transcription modals - MUST come first (they may contain "camera"/"microphone" text)
+  {
+    name: "recording_notification",
+    selector: 'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
+    buttonTexts: ["Join now"],
+    exitByEscape: false
+  },
+  {
+    name: "transcribe_notification",
+    selector: 'div[role="dialog"]:has-text("video call is being transcribed"):has(button)',
+    buttonTexts: ["Join now"],
+    exitByEscape: false
+  },
+  // Gemini/notes modal
+  {
+    name: "gemini_notification",
+    selector: 'div[role="dialog"]:has-text("Gemini"):has-text("taking notes"):has(button)',
+    buttonTexts: ["Join now"],
+    exitByEscape: false
+  },
+  // Privacy/notification modals
+  {
+    name: "privacy_notification",
+    selector: 'div[role="dialog"]:has-text("Others may see"):has(button)',
+    buttonTexts: ["Got it", "OK", "Dismiss", "Close"],
+    exitByEscape: false
+  },
+  // Video privacy modals
+  {
+    name: "video_privacy",
+    selector: 'div[role="dialog"]:has-text("video differently"):has(button)',
+    buttonTexts: ["Got it", "OK", "Continue"],
+    exitByEscape: false
+  },
+  // Background/feed modals
+  {
+    name: "background_feed",
+    selector:
+      'div[role="dialog"]:has-text("background"):has(button), div[role="dialog"]:has-text("feed"):has(button)',
+    buttonTexts: ["Got it", "OK", "Dismiss"],
+    exitByEscape: false
+  },
+  // Camera/microphone permission modals - after specific modals to avoid false positives
+  // These can be dismissed with Escape key if buttons are not found
+  {
+    name: "camera_permission",
+    selector:
+      'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
+    buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now"],
+    exitByEscape: true
+  },
+  // Generic dismiss modals (fallback)
+  {
+    name: "generic_dismiss",
+    selector: 'div[role="dialog"]:has(button)',
+    buttonTexts: ["Join now", "Got it", "OK", "Dismiss", "Close", "Continue"],
+    exitByEscape: false
+  }
+]
+
+/**
+ * Zoom (browser web-client) modal patterns.
+ * Zoom renders these modals inside its web-client shadow DOM, so page.content()
+ * won't serialize them and a bare class selector is brittle. Playwright's
+ * text/role locators DO pierce open shadow roots, so we anchor on visible TEXT
+ * and keep the button INSIDE the matched container so tryDismissModal finds it.
+ * We deliberately do NOT assume div[role="dialog"] — Zoom may not set that role.
+ * IMPORTANT: Order matters! Specific patterns before the generic fallback.
+ */
+const ZOOM_MODAL_PATTERNS: ModalPattern[] = [
+  // "This meeting is being recorded" consent modal — single OK button, no Leave.
+  // Left un-clicked it sits centered over the video for the whole recording and
+  // corrupts the MP4, so this is the primary reason the observer runs on Zoom.
+  {
+    name: "zoom_recording_consent",
+    selector: ':has-text("This meeting is being recorded"):has(button)',
+    buttonTexts: ["OK", "Got it", "Continue"],
+    exitByEscape: false
+  },
+  // Generic consent/notification fallback — keep LAST.
+  {
+    name: "zoom_generic_dismiss",
+    selector: 'div:has-text("being recorded"):has(button), div:has-text("consent"):has(button)',
+    buttonTexts: ["OK", "Got it", "Continue", "Dismiss", "Close"],
+    exitByEscape: false
+  }
+]
+
+/**
+ * Simplified dialog observer for auto-dismissing in-call modals.
+ * Handles Google Meet's notification/permission dialogs and Zoom's
+ * "This meeting is being recorded" consent modal via platform-keyed
+ * pattern sets sharing a single detect/dismiss code path.
  */
 export class SimpleDialogObserver {
   protected context: MeetingContext
@@ -79,10 +189,11 @@ export class SimpleDialogObserver {
   }
 
   setupGlobalDialogObserver() {
-    // Only start observer for Google Meet
-    if (GLOBAL.get().meeting_platform !== "meet") {
+    // Start observer for Google Meet and Zoom; no-op on other platforms.
+    const platform = GLOBAL.get().meeting_platform
+    if (platform !== "meet" && platform !== "zoom") {
       console.info(
-        `[SimpleDialogObserver] Observer not started: provider is not Google Meet (${GLOBAL.get().meeting_platform})`
+        `[SimpleDialogObserver] Observer not started: provider is not Meet or Zoom (${platform})`
       )
       return
     }
@@ -155,7 +266,9 @@ export class SimpleDialogObserver {
   }
 
   /**
-   * Simplified modal detection focusing on Google Meet's common patterns
+   * Simplified modal detection using platform-keyed pattern sets.
+   * Meet and Zoom each supply their own ordered patterns (specific before
+   * generic); the detect/snapshot/dismiss loop below is shared.
    */
   protected async checkAndDismissModals(
     page: Page,
@@ -170,78 +283,13 @@ export class SimpleDialogObserver {
             PAGE_TIMEOUT: customTimeout
           }
 
-    try {
-      // Google Meet specific modal patterns
-      // IMPORTANT: Order matters! More specific patterns must come before generic ones
-      // to avoid misidentification (e.g., transcription modal matching camera_permission)
-      const modalPatterns = [
-        // People hover dialog (new UI Dec 2025) - dismiss with Escape
-        {
-          name: "people_hover_dialog",
-          selector: 'div[role="dialog"][aria-label*="people in the call" i]:has-text("People")',
-          buttonTexts: [], // No buttons to click, just dismiss with Escape
-          exitByEscape: true
-        },
-        // Recording/transcription modals - MUST come first (they may contain "camera"/"microphone" text)
-        {
-          name: "recording_notification",
-          selector: 'div[role="dialog"]:has-text("video call is being recorded"):has(button)',
-          buttonTexts: ["Join now"],
-          exitByEscape: false
-        },
-        {
-          name: "transcribe_notification",
-          selector: 'div[role="dialog"]:has-text("video call is being transcribed"):has(button)',
-          buttonTexts: ["Join now"],
-          exitByEscape: false
-        },
-        // Gemini/notes modal
-        {
-          name: "gemini_notification",
-          selector: 'div[role="dialog"]:has-text("Gemini"):has-text("taking notes"):has(button)',
-          buttonTexts: ["Join now"],
-          exitByEscape: false
-        },
-        // Privacy/notification modals
-        {
-          name: "privacy_notification",
-          selector: 'div[role="dialog"]:has-text("Others may see"):has(button)',
-          buttonTexts: ["Got it", "OK", "Dismiss", "Close"],
-          exitByEscape: false
-        },
-        // Video privacy modals
-        {
-          name: "video_privacy",
-          selector: 'div[role="dialog"]:has-text("video differently"):has(button)',
-          buttonTexts: ["Got it", "OK", "Continue"],
-          exitByEscape: false
-        },
-        // Background/feed modals
-        {
-          name: "background_feed",
-          selector:
-            'div[role="dialog"]:has-text("background"):has(button), div[role="dialog"]:has-text("feed"):has(button)',
-          buttonTexts: ["Got it", "OK", "Dismiss"],
-          exitByEscape: false
-        },
-        // Camera/microphone permission modals - after specific modals to avoid false positives
-        // These can be dismissed with Escape key if buttons are not found
-        {
-          name: "camera_permission",
-          selector:
-            'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
-          buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now"],
-          exitByEscape: true
-        },
-        // Generic dismiss modals (fallback)
-        {
-          name: "generic_dismiss",
-          selector: 'div[role="dialog"]:has(button)',
-          buttonTexts: ["Join now", "Got it", "OK", "Dismiss", "Close", "Continue"],
-          exitByEscape: false
-        }
-      ]
+    const platform = GLOBAL.get().meeting_platform
+    const detectionMethod = `simple_${platform}`
+    // Select the platform's ordered pattern set. Order matters within each set:
+    // more specific patterns must come before generic ones.
+    const modalPatterns = platform === "zoom" ? ZOOM_MODAL_PATTERNS : MEET_MODAL_PATTERNS
 
+    try {
       for (const pattern of modalPatterns) {
         try {
           const modal = page.locator(pattern.selector)
@@ -279,7 +327,7 @@ export class SimpleDialogObserver {
               found: true,
               dismissed: true,
               modalType: pattern.name,
-              detectionMethod: "simple_google_meet"
+              detectionMethod
             }
           }
 
@@ -287,7 +335,7 @@ export class SimpleDialogObserver {
             found: true,
             dismissed: false,
             modalType: pattern.name,
-            detectionMethod: "simple_google_meet"
+            detectionMethod
           }
         } catch (error) {
           console.warn(`[SimpleDialogObserver] Error with pattern ${pattern.name}: ${error}`)
