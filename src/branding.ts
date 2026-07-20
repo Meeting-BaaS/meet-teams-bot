@@ -2,7 +2,6 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 
 import { VideoContext } from "./media_context"
-import { GLOBAL } from "./singleton"
 
 export let brandingReady = false
 
@@ -69,20 +68,8 @@ export type BrandingHandle = {
 
 export function generateBranding(botImage: string): BrandingHandle {
   try {
-    // Zoom mirrors the bot's OWN self-view, and the recording captures that view —
-    // so an asymmetric bot_image (a face, text, a logo) comes out flipped left↔right
-    // in the final video. Pre-flip the source ONLY for Zoom so the two mirrors
-    // cancel and the recording reads correctly. Trade-off: live participants (who
-    // see the un-mirrored feed) then see it pre-flipped — acceptable since the
-    // recording is the deliverable. Meet/Teams are left untouched.
-    let mirror = false
-    try {
-      mirror = GLOBAL.get().meeting_platform === "zoom"
-    } catch {
-      /* params not set yet — default to no mirror */
-    }
     const command = spawn("../generate_custom_branding.sh", [botImage], {
-      env: { ...process.env, BRANDING_MIRROR: mirror ? "1" : "" }
+      env: { ...process.env }
     })
     const stdoutListener = (data: Buffer) => {
       console.log(data.toString())
