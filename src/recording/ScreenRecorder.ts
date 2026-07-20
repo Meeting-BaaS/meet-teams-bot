@@ -369,6 +369,8 @@ export class ScreenRecorder extends EventEmitter {
       "-f",
       "x11grab",
       "-video_size",
+      "-thread_queue_size",
+      "1024",   // video frames are large; small queue avoids bloat
       `${res.width}x${res.captureHeight}`,
       "-framerate",
       "30",
@@ -386,7 +388,11 @@ export class ScreenRecorder extends EventEmitter {
       // pipe uses its own `-flush_packets 1`), so buffer normally and give the
       // capture generous headroom instead.
       "-thread_queue_size",
-      "16384",
+      "65536", // ~1.4s at 48kHz = enough headroom for x264 CPA bursts
+      "-rtbufsize",
+      "256k",    // Real-time buffer matching thread_queue_size
+      "-fflags",
+      "nobuffer",
       "-i",
       VIRTUAL_SPEAKER_MONITOR,
 
