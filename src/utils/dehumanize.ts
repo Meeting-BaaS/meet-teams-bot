@@ -86,15 +86,30 @@ export function dehumanize(page: Page): void {
 
   // Frame-level methods — patchFrames patches as own properties marked with
   // _humanPatched. Deleting them exposes the Playwright prototype originals.
-  for (const frame of page.frames()) {
-    const f = frame as unknown as Record<string, unknown>
-    if (!f._humanPatched) continue
-    for (const method of HUMANIZED_METHODS) {
-      if (Object.prototype.hasOwnProperty.call(f, method)) {
-        delete f[method]
+  //
+  // Guard the page: during an in-process retry (browser relaunched on a fresh
+  // exit IP) the page/context can be torn down while this runs. page.frames()
+  // then reads childFrames off an undefined mainFrame → an unhandled TypeError
+  // that trips the crash handler and wastes a whole SQS attempt. A closed page
+  // has nothing left to un-patch, so skip it.
+  if (page.isClosed()) {
+    console.log("[Humanize] Page already closed — skipping frame dehumanize")
+    return
+  }
+  try {
+    for (const frame of page.frames()) {
+      const f = frame as unknown as Record<string, unknown>
+      if (!f._humanPatched) continue
+      for (const method of HUMANIZED_METHODS) {
+        if (Object.prototype.hasOwnProperty.call(f, method)) {
+          delete f[method]
+        }
       }
+      delete f._humanPatched
     }
-    delete f._humanPatched
+  } catch (e) {
+    console.warn(`[Humanize] Frame dehumanize skipped (page torn down): ${e}`)
+    return
   }
 
   console.log("[Humanize] ✅ Dehumanized — native Playwright methods restored (page + frames)")
