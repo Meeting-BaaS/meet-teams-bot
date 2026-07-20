@@ -25,32 +25,19 @@ import {
   shouldAttemptRetry
 } from "./utils/retry-handler"
 
-// Display names Zoom hosts commonly auto-reject as "obviously a bot". Surfaced as
-// a LOG hint (never the user-facing error) when a join is rejected.
+// Bot-like display-name tokens; log-only hint when a Zoom join is rejected.
 const BOT_LIKE_NAME_RE =
-  /note ?taker|recorder|recording|transcri|\bbots?\b|\bai\b|assistant|\bnotes?\b|meeting ?baas|fireflies|otter|read ?ai/i
+  /note ?taker|recorder|recording|transcri|\bbots?\b|\bai\b|assistant|\bnotes?\b/i
 
-// k8s evicts / scales down bot pods with SIGTERM. If it arrives BEFORE the run
-// has settled, the meeting would otherwise be lost — so requeue it to a fresh pod
-// (bounded by the retry cap), upload logs, and exit cleanly instead of being
-// force-killed. Best-effort and guarded (GLOBAL may be unset on a very early kill).
-//
-// Recovery double-requeue safety (#224 regression fix): the shared
-// GLOBAL.claimRecovery() token is taken ONLY at the moment of a requeue, never up
-// front. Up-front claiming here used to starve the primary failure-retry in
-// handleFailedRecording() whenever this handler won the claim but then took a
-// non-requeuing branch (finalized / serverless). Now we (a) stand down WITHOUT
-// exiting if a requeue is already in flight elsewhere — so we never kill it
-// mid-write — and (b) claim atomically only right before our own requeue, so at
-// most one requeue ever happens.
+// On SIGTERM (k8s eviction), requeue the meeting to a fresh pod so it isn't lost.
+// The shared GLOBAL.claimRecovery() token is taken ONLY right before a requeue, so
+// at most one requeue happens; a non-requeuing path must never take it (that would
+// starve the primary retry in handleFailedRecording).
 process.on("SIGTERM", async () => {
   if (GLOBAL.isRecoveryClaimed()) {
-    // A requeue-performing path already owns recovery and may be mid-write.
-    // Exiting here would kill it and lose the meeting — stand down (do NOT exit)
-    // and let that owner finish its requeue and exit.
-    console.log(
-      "[SIGTERM] Recovery already owned by a requeuing handler — standing down (owner will exit)"
-    )
+    // A requeuing path already owns recovery and may be mid-write — stand down
+    // (do NOT exit) so we don't kill it.
+    console.log("[SIGTERM] Recovery already owned by a requeuing handler — standing down")
     return
   }
   console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
@@ -61,20 +48,12 @@ process.on("SIGTERM", async () => {
   }
   try {
     if (GLOBAL.hasRecordingFinalized()) {
-      // Eviction during upload: the merged recording exists — preserve it for the
-      // S3/EFS salvage path rather than requeuing (which would re-record). NB: no
-      // claim on this branch — a non-requeuing path must never take the token.
-      console.log(
-        "[SIGTERM] Recording finalized/uploading — preserving artifacts for salvage (not requeuing)"
-      )
+      // Merged recording exists — preserve for S3/EFS salvage, don't requeue (no claim).
+      console.log("[SIGTERM] Recording finalized — preserving artifacts (not requeuing)")
     } else if (!GLOBAL.isServerless()) {
-      // Join or mid-recording: the only copy is ephemeral /tmp, lost with the pod —
-      // requeue to re-record on a fresh pod.
       GLOBAL.setShouldRetry(true)
       if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
-        // Claim immediately before requeuing. If a concurrent path grabbed it
-        // first it has already requeued this meeting — skip to avoid a double
-        // re-record.
+        // Claim right before requeue; a lost claim means another path already requeued.
         if (GLOBAL.claimRecovery()) {
           await requeueToSQS(buildRetryMessage())
           console.log("[SIGTERM] Requeued to SQS to re-record")
@@ -188,18 +167,13 @@ async function handleFailedRecording(): Promise<void> {
     return
   }
 
-  // The Zoom browser-join anti-bot / RTMS wall is probabilistic: it keys on the
-  // exit IP's reputation, and our proxy pool mixes clean and burned IPs (a live
-  // test joined 1 of 4 bots with identical fingerprints — the pass/fail split was
-  // purely the exit IP). Mark the wall retryable so the bot requeues onto a FRESH
-  // exit IP — the proxy session token embeds the retry count, so each requeue
-  // lands a different IP — cycling past burned ones up to MAX_RETRY_COUNT.
+  // The Zoom anti-bot wall is probabilistic (keys on exit-IP reputation), so mark
+  // it retryable — each requeue lands a fresh exit IP, cycling past burned ones.
   if (endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed) {
-    console.log("[Retry] Zoom RTMS wall — marking retryable to cycle exit IP")
+    console.log("[Retry] Zoom anti-bot wall — marking retryable to cycle exit IP")
     GLOBAL.setShouldRetry(true)
   }
 
-  // Check if we should retry instead of failing permanently
   const shouldRetry = shouldAttemptRetry(currentRetryCount)
 
   if (shouldRetry) {
@@ -208,23 +182,12 @@ async function handleFailedRecording(): Promise<void> {
     )
 
     try {
-      // Build and send retry message to SQS
       const retryMessage = buildRetryMessage()
 
-      // Take the shared recovery claim IMMEDIATELY before requeuing. #224
-      // regression fix: the claim is now held ONLY by paths that actually requeue,
-      // so losing it here means another handler (SIGTERM / crash) has ALREADY
-      // requeued this exact meeting — skip to avoid a duplicate re-record. This is
-      // the single-threaded PRIMARY retry path and must never be starved: the old
-      // code claimed up front in the SIGTERM / crash handlers (and the finally
-      // block), so a handler that won the claim but then took a NON-requeuing
-      // branch would make this claim fail and silently skip the retry — terminally
-      // failing Zoom web bots on attempt 1 instead of cycling exit IPs past the
-      // probabilistic anti-bot wall.
+      // Claim right before requeuing (primary retry path). A lost claim means a
+      // SIGTERM/crash handler already requeued this meeting — skip the duplicate.
       if (!GLOBAL.claimRecovery()) {
-        console.log(
-          "🔁 Recovery already requeued by another handler — skipping duplicate requeue"
-        )
+        console.log("🔁 Recovery already requeued by another handler — skipping duplicate requeue")
         return
       }
       await requeueToSQS(retryMessage)
