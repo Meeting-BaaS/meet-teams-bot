@@ -166,6 +166,18 @@ class Global {
     this.errorMessage = null
   }
 
+  /**
+   * Fully wipe the transient error / end-reason / retry flags so a bounded
+   * in-process join retry (fresh proxy IP, same pod) starts clean and a
+   * subsequent admission isn't treated as a failed run. Only call BETWEEN
+   * in-process attempts — never after a terminal decision.
+   */
+  public resetErrorState(): void {
+    this.endReason = null
+    this.errorMessage = null
+    this.shouldRetry = false
+  }
+
   public clearMeetSsoConfig(): void {
     if (this.meetingParams) {
       this.meetingParams.meet_sso_config = null
