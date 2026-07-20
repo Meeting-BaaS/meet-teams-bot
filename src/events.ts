@@ -74,6 +74,16 @@ export class Events {
     })
   }
 
+  // Non-terminal retry event. Emitted when a failed attempt is being re-queued
+  // to SQS for a fresh pod (fresh exit IP). Carries the attempt number and cap so
+  // the dashboard can show "Retrying… (attempt N/max)" instead of flashing a
+  // failure between attempts. A terminal recording_failed follows ONLY if all
+  // retries are exhausted. Waits for delivery because the pod exits right after.
+  static async retrying(attempt: number, max: number) {
+    console.log(`📤 Events.retrying called: attempt ${attempt}/${max}`)
+    return Events.EVENTS?.sendOnce("retrying", { attempt, max }, true)
+  }
+
   // Final webhook events (replacing sendWebhookOnce)
   static async recordingSucceeded() {
     return Events.EVENTS?.sendOnce("recording_succeeded", {}, true)

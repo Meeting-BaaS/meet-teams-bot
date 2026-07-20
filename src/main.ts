@@ -19,7 +19,6 @@ import { BotMessageSchema } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
 import {
   buildRetryMessage,
-  formatRetryErrorMessage,
   getMaxRetryCount,
   requeueToSQS,
   shouldAttemptRetry
@@ -207,12 +206,16 @@ async function handleFailedRecording(): Promise<void> {
       const retryMessage = buildRetryMessage()
       await requeueToSQS(retryMessage)
 
-      // Send webhook with retry indication
-      const retryErrorMessage = formatRetryErrorMessage(
-        originalErrorMessage || "Recording failed",
-        currentRetryCount
+      // A retry is now pending. Emit the non-terminal `retrying` status (NOT
+      // recording_failed) so the dashboard shows "Retrying… (attempt N/max)"
+      // instead of flashing a failure between attempts. The real reason is only
+      // surfaced on the terminal path below once all retries are exhausted.
+      const attempt = currentRetryCount + 1
+      const cap = getMaxRetryCount()
+      console.log(
+        `📤 Emitting retrying status (attempt ${attempt}/${cap}) — reason: ${originalErrorMessage || endReason || "Recording failed"}`
       )
-      await Events.recordingFailed(retryErrorMessage)
+      await Events.retrying(attempt, cap)
 
       console.log("✅ Job requeued successfully - exiting without calling backend")
       // Exit cleanly - new pod will handle retry
