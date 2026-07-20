@@ -175,6 +175,16 @@ export class WaitingRoomState extends BaseState {
       try {
         await this.openMeetingPage(meetingLink)
 
+        // (Re)start the dialog observer for THIS attempt's page, EVERY attempt.
+        // The observer self-stops when the page closes during an in-process retry
+        // teardown ("Page closed -> stop"), so wiring it once (attempt 0) leaves a
+        // bot that hits the anti-bot wall with NO observer on the relaunched page —
+        // and the in-call "This meeting is being recorded" consent modal is never
+        // dismissed on the successful retry (seen live: bot 26f60d13). setupGlobal
+        // DialogObserver stops-then-starts, so re-arming each attempt is idempotent.
+        // Meet + Zoom only; no-op on other platforms.
+        this.startDialogObserver()
+
         if (attempt === 0) {
           // Pulse → output WebSocket capture (output streaming only). Device-level
           // and self-guarded, so it survives a browser relaunch — start it once.
@@ -183,10 +193,6 @@ export class WaitingRoomState extends BaseState {
           }
           // Branding switch (warmup placeholder → real image) — idempotent trigger.
           notifyJoinReady()
-          // Dialog observer polls context.playwrightPage live, so wiring it once
-          // picks up the relaunched page automatically (runs on Meet + Zoom;
-          // no-op on other platforms).
-          this.startDialogObserver()
           // Waiting-room webhook — fire once, not per relaunch.
           Events.inWaitingRoom()
         }
