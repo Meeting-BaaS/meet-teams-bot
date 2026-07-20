@@ -266,7 +266,14 @@ export class ChatManager {
       await page.evaluate((sel) => {
         ;(document.querySelector(sel) as HTMLElement | null)?.focus()
       }, activeSelector)
-      await page.keyboard.type(message, { delay: 20 })
+      // Zoom's composer is a TipTap/ProseMirror contenteditable, which processes
+      // input asynchronously as editor transactions. Per-key `keyboard.type` (even
+      // with a delay) races that pipeline — keys land before the previous
+      // transaction commits, so characters get dropped or reordered (the garbled
+      // messages seen in prod). `insertText` dispatches the whole string as a
+      // single `insertText` input event, which ProseMirror applies as one atomic
+      // transaction — no per-key race, so the text is verbatim.
+      await page.keyboard.insertText(message)
       await page.keyboard.press("Enter")
 
       this.persistBotSentMessage(message)
