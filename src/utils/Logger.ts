@@ -456,6 +456,9 @@ export function setupExitHandler() {
 
           const requiredArtifactTypes =
             GLOBAL.get().recording_mode === "audio_only" ? ["audio"] : ["audio", "video"]
+          // Uploaded chunks can preserve transcription, but they cannot replace
+          // missing customer-facing recording outputs. Require final artifact
+          // metadata after the EFS mirror instead of treating chunks as ready.
           const artifactManifestReady = requiredArtifactTypes.every((type) =>
             GLOBAL.getArtifactKeys().some((artifact) => artifact.type === type)
           )

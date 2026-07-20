@@ -923,6 +923,16 @@ export class ScreenRecorder extends EventEmitter {
     }
   }
 
+  private removeUploadedFile(filePath: string): void {
+    try {
+      fs.unlinkSync(filePath)
+    } catch (error) {
+      // Upload already succeeded and its manifest entry is authoritative. Local
+      // cleanup failure must not append a conflicting UPLOAD_FAILED entry.
+      console.warn(`Failed to remove uploaded local file ${filePath}:`, formatError(error))
+    }
+  }
+
   public async uploadToS3(): Promise<void> {
     if (this.filesUploaded || !S3Uploader.getInstance()) {
       return
@@ -961,7 +971,7 @@ export class ScreenRecorder extends EventEmitter {
           errorCode: null,
           errorMessage: null
         })
-        fs.unlinkSync(this.audioOutputPath)
+        this.removeUploadedFile(this.audioOutputPath)
       } else {
         GLOBAL.addArtifactKey({
           s3Key: null,
@@ -1015,7 +1025,7 @@ export class ScreenRecorder extends EventEmitter {
             errorCode: null,
             errorMessage: null
           })
-          fs.unlinkSync(this.outputPath)
+          this.removeUploadedFile(this.outputPath)
         } else {
           const recordingMode = GLOBAL.get().recording_mode
           GLOBAL.addArtifactKey({
@@ -1100,7 +1110,7 @@ export class ScreenRecorder extends EventEmitter {
             errorCode: null,
             errorMessage: null
           })
-          fs.unlinkSync(diarizationPath)
+          this.removeUploadedFile(diarizationPath)
           console.log("Diarization file uploaded successfully")
         }
       } else {
