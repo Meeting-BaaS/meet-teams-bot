@@ -440,14 +440,31 @@ export function setupExitHandler() {
         // orphaning the bot at recording_succeeded: artifacts in S3 but the
         // api-server never told to start transcription/completion — and no
         // server-side job sweeps that state. Best-effort report it from here.
-        // handleEndMeetingWithRetry claims the shared report token, so this is a
-        // no-op when the happy path already reported (or is in flight).
+        // handleEndMeetingWithRetry claims the shared report token (and awaits
+        // the owner when the happy path is mid-report), so it never double-POSTs.
+        //
+        // Gate: hasRecordingFinalized() is set BEFORE uploadToS3(), so a crash
+        // mid-upload can land here with nothing (or only part) in S3. Reporting
+        // an empty payload would COMPLETE the bot with no transcript/artifacts —
+        // strictly worse than staying at recording_succeeded, which is at least
+        // salvageable. Only report when the payload is useful: an uploaded audio
+        // chunk (transcription possible) or an uploaded recording artifact.
         try {
-          const { Api } = await import("../api/methods")
-          if (Api.instance) {
-            await Api.instance.handleEndMeetingWithRetry()
+          const chunkUploaded = GLOBAL.getAudioChunks().some((c) => c.uploaded)
+          const artifactUploaded = GLOBAL.getArtifactKeys().some(
+            (a) => a.uploaded && (a.type === "video" || a.type === "audio")
+          )
+          if (chunkUploaded || artifactUploaded) {
+            const { Api } = await import("../api/methods")
+            if (Api.instance) {
+              await Api.instance.handleEndMeetingWithRetry()
+            } else {
+              logger.error("[Crash] Api instance not initialized — cannot report end-meeting")
+            }
           } else {
-            logger.error("[Crash] Api instance not initialized — cannot report end-meeting")
+            logger.error(
+              "[Crash] No uploaded audio/video yet — NOT reporting end-meeting (empty payload would complete the bot with no artifacts)"
+            )
           }
         } catch (trampolineError) {
           logger.error(`[Crash] end-meeting report failed (non-fatal): ${trampolineError}`)

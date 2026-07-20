@@ -73,16 +73,22 @@ abstract class MediaContext {
         resolve(code)
       })
       this.process.on("error", (err) => {
-        console.error(err)
+        // Spawn/process failure (e.g. ENOENT). Log loudly and reset state so a
+        // later play()/switchTo() can start a fresh ffmpeg instead of hitting
+        // the "Already on execution" guard against a dead process forever.
+        console.error("[MediaContext] ffmpeg process failed:", err)
         // Remove event listeners to prevent memory leaks
-        this.process.stdout.removeListener("data", stdoutListener)
-        this.process.stderr.removeListener("data", stderrListener)
+        this.process?.stdout?.removeListener("data", stdoutListener)
+        this.process?.stderr?.removeListener("data", stderrListener)
+        this.process = null
         reject(err)
       })
     })
     // Nobody awaits this.promise until stop_process(), so a spawn/process
     // "error" before then would surface as an unhandledRejection and trip the
-    // crash handler. Mark it handled here; stop_process() still observes the
+    // crash handler — crashing the whole bot over a degraded side-channel
+    // (branding camera / spoken audio), while the recording itself is
+    // unaffected. Mark it handled here; stop_process() still observes the
     // rejection through its own .catch().
     this.promise.catch(() => {})
     return this.process
