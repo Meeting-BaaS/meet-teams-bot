@@ -97,34 +97,17 @@ const MEET_MODAL_PATTERNS: ModalPattern[] = [
 ]
 
 /**
- * Zoom (browser web-client) modal patterns.
- * Zoom renders these modals inside its web-client shadow DOM, so page.content()
- * won't serialize them and a bare class selector is brittle. Playwright's
- * text/role locators DO pierce open shadow roots, so we anchor on visible TEXT
- * and keep the button INSIDE the matched container so tryDismissModal finds it.
- * We deliberately do NOT assume div[role="dialog"] — Zoom may not set that role.
- * IMPORTANT: Order matters! Specific patterns before the generic fallback.
+ * Zoom (web client, app.zoom.us/wc) does NOT use Playwright's locator/isVisible
+ * path — the rest of the Zoom code (see zoom.ts) documents that Zoom's overlays
+ * make Playwright report its own controls as not-visible / not-actionable, so a
+ * locator.click() stalls and isVisible() gates skip the element entirely. That is
+ * exactly why the pattern-based observer never dismissed the "This meeting is
+ * being recorded" modal. Zoom is instead handled by checkAndDismissZoomModals(),
+ * which runs a single in-page pass that pierces open shadow roots, ignores
+ * Playwright visibility, and clicks with a full pointer/mouse/click sequence so
+ * the React handler always fires. Its trigger/acknowledge/never lists live inside
+ * that page.evaluate() (browser scope) rather than here.
  */
-const ZOOM_MODAL_PATTERNS: ModalPattern[] = [
-  // "This meeting is being recorded" consent modal — single OK button, no Leave.
-  // Left un-clicked it sits centered over the video for the whole recording and
-  // corrupts the MP4, so this is the primary reason the observer runs on Zoom.
-  {
-    name: "zoom_recording_consent",
-    // Anchor on a div (not a bare *:has-text) so it resolves to the modal
-    // container, not every html/body ancestor that also contains the text.
-    selector: 'div:has-text("This meeting is being recorded"):has(button)',
-    buttonTexts: ["OK", "Got it", "Continue"],
-    exitByEscape: false
-  },
-  // Generic consent/notification fallback — keep LAST.
-  {
-    name: "zoom_generic_dismiss",
-    selector: 'div:has-text("being recorded"):has(button), div:has-text("consent"):has(button)',
-    buttonTexts: ["OK", "Got it", "Continue", "Dismiss", "Close"],
-    exitByEscape: false
-  }
-]
 
 /**
  * Simplified dialog observer for auto-dismissing in-call modals.
@@ -268,14 +251,22 @@ export class SimpleDialogObserver {
   }
 
   /**
-   * Simplified modal detection using platform-keyed pattern sets.
-   * Meet and Zoom each supply their own ordered patterns (specific before
-   * generic); the detect/snapshot/dismiss loop below is shared.
+   * Simplified modal detection. Meet uses the Playwright locator + isVisible
+   * pattern loop below. Zoom takes an entirely different in-page path (see
+   * checkAndDismissZoomModals and the note above ZOOM patterns) because Zoom's
+   * web client defeats Playwright's visibility/actionability checks.
    */
   protected async checkAndDismissModals(
     page: Page,
     customTimeout = 0
   ): Promise<DialogObserverResult> {
+    const platform = GLOBAL.get().meeting_platform
+
+    // Zoom: robust in-page dismissal (shadow-piercing, no visibility gate).
+    if (platform === "zoom") {
+      return this.checkAndDismissZoomModals(page)
+    }
+
     const timeouts =
       customTimeout === 0
         ? TIMEOUTS
@@ -285,11 +276,9 @@ export class SimpleDialogObserver {
             PAGE_TIMEOUT: customTimeout
           }
 
-    const platform = GLOBAL.get().meeting_platform
     const detectionMethod = `simple_${platform}`
-    // Select the platform's ordered pattern set. Order matters within each set:
-    // more specific patterns must come before generic ones.
-    const modalPatterns = platform === "zoom" ? ZOOM_MODAL_PATTERNS : MEET_MODAL_PATTERNS
+    // Meet's ordered pattern set: more specific patterns before generic ones.
+    const modalPatterns = MEET_MODAL_PATTERNS
 
     try {
       for (const pattern of modalPatterns) {
@@ -357,6 +346,143 @@ export class SimpleDialogObserver {
         dismissed: false,
         modalType: "detection_error"
       }
+    }
+  }
+
+  /**
+   * Zoom-only in-page dialog dismissal.
+   *
+   * Runs ONE pass inside the page (page.evaluate) instead of via Playwright
+   * locators, because Zoom's web client makes Playwright report its own modals as
+   * not-visible / not-actionable (documented throughout zoom.ts) — which is why
+   * the locator/isVisible pattern loop never dismissed the "This meeting is being
+   * recorded" modal. The in-page pass:
+   *   1. Walks the light DOM AND all open shadow roots (Zoom nests UI in shadow DOM).
+   *   2. Considers only acknowledge buttons (OK / Got it / Continue / Dismiss / …)
+   *      and never destructive ones (Leave / End / Cancel / Decline / No).
+   *   3. Confirms the button belongs to a recording/consent modal (trigger text in
+   *      an ancestor, crossing shadow boundaries) OR sits inside a real dialog /
+   *      Zoom modal container — so a stray page button is never clicked.
+   *   4. Clicks with a full pointerdown→mousedown→mouseup→click→.click() sequence so
+   *      whichever event Zoom's React handler listens for fires.
+   * Safe by construction: it can only ever click an acknowledge button, so the
+   * worst case is a no-op — never a destructive or meeting-exiting action.
+   */
+  private async checkAndDismissZoomModals(page: Page): Promise<DialogObserverResult> {
+    const detectionMethod = "inpage_zoom"
+    try {
+      if (page.isClosed()) {
+        return { found: false, dismissed: false, modalType: null }
+      }
+
+      const dismissed = await page.evaluate<string | null>(() => {
+        const TRIGGER =
+          /being recorded|may view or share|is being recorded|is being transcribed|consent to/i
+        const ACK = /^(ok|okay|got it|continue|i understand|accept|agree|dismiss|close)$/i
+        const NEVER = /leave|end\b|cancel|decline|\bno\b|sign out|log out|don't|do not/i
+
+        // Collect every element across the light DOM and all OPEN shadow roots.
+        const nodes: Element[] = []
+        const walk = (root: Document | ShadowRoot) => {
+          for (const el of Array.from(root.querySelectorAll("*"))) {
+            nodes.push(el)
+            const sr = (el as HTMLElement).shadowRoot
+            if (sr) walk(sr)
+          }
+        }
+        walk(document)
+
+        const label = (el: Element) => (el.textContent || "").replace(/\s+/g, " ").trim()
+
+        // Hop up the ancestor chain, crossing shadow-root boundaries via host.
+        const parentAcross = (el: Element): Element | null => {
+          if (el.parentElement) return el.parentElement
+          const root = el.getRootNode()
+          return root instanceof ShadowRoot ? root.host : null
+        }
+
+        const clickHard = (btn: Element) => {
+          const opts: MouseEventInit = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window
+          }
+          try {
+            btn.dispatchEvent(new PointerEvent("pointerdown", opts))
+          } catch {}
+          btn.dispatchEvent(new MouseEvent("mousedown", opts))
+          try {
+            btn.dispatchEvent(new PointerEvent("pointerup", opts))
+          } catch {}
+          btn.dispatchEvent(new MouseEvent("mouseup", opts))
+          btn.dispatchEvent(new MouseEvent("click", opts))
+          ;(btn as HTMLElement).click?.()
+        }
+
+        const ackButtons = nodes.filter((el) => {
+          if (el.tagName !== "BUTTON" && el.getAttribute("role") !== "button") return false
+          const t = label(el)
+          return ACK.test(t) && !NEVER.test(t)
+        })
+
+        // Pass 1: acknowledge button tied to a recording/consent modal via ancestor text.
+        for (const btn of ackButtons) {
+          let node: Element | null = btn
+          let hops = 0
+          while (node && hops < 10) {
+            if (TRIGGER.test(node.textContent || "")) {
+              clickHard(btn)
+              return "zoom_recording_consent"
+            }
+            node = parentAcross(node)
+            hops++
+          }
+        }
+
+        // Pass 2: acknowledge button inside any real dialog / Zoom modal container.
+        const inDialog = (el: Element): boolean => {
+          let node: Element | null = el
+          let hops = 0
+          while (node && hops < 10) {
+            const role = node.getAttribute("role")
+            const cls = typeof node.className === "string" ? node.className : ""
+            if (
+              role === "dialog" ||
+              role === "alertdialog" ||
+              /zm-modal|zmu-modal|zm-dialog|ReactModal__Content/i.test(cls)
+            ) {
+              return true
+            }
+            node = parentAcross(node)
+            hops++
+          }
+          return false
+        }
+        for (const btn of ackButtons) {
+          if (inDialog(btn)) {
+            clickHard(btn)
+            return "zoom_generic_dialog"
+          }
+        }
+
+        return null
+      })
+
+      if (dismissed) {
+        console.info(`[SimpleDialogObserver] Zoom: dismissed ${dismissed} (in-page)`)
+        return { found: true, dismissed: true, modalType: dismissed, detectionMethod }
+      }
+      return { found: false, dismissed: false, modalType: null }
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message.includes("Target page, context or browser has been closed")
+      ) {
+        return { found: false, dismissed: false, modalType: null }
+      }
+      console.warn(`[SimpleDialogObserver] Zoom in-page dismissal error: ${error}`)
+      return { found: false, dismissed: false, modalType: "detection_error" }
     }
   }
 
