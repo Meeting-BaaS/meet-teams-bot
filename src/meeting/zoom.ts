@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { captureFingerprint } from "../browser/fingerprint-probe"
 import { listenPage } from "../browser/page-logger"
+import { injectZoomWsSpike } from "./zoom/ws-spike"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
@@ -121,6 +122,16 @@ export class ZoomProvider implements MeetingProviderInterface {
     // selector forensics — is silently discarded, which is exactly how the
     // stale-diarization dump went missing on the first live run.
     listenPage(page)
+
+    // DIAGNOSTIC (ZOOM_WS_SPIKE): inject the WebSocket/Worker logger before goto
+    // so it wraps sockets Zoom opens on load. Off by default; no-op in prod.
+    if (envVars.ZOOM_WS_SPIKE) {
+      try {
+        await injectZoomWsSpike(page)
+      } catch (e) {
+        console.warn("[WS-SPIKE] inject failed (continuing):", formatError(e))
+      }
+    }
 
     // grantPermissions(["microphone","camera"]) is a Chromium-only API — Firefox
     // rejects those permission names ("Unknown permission: microphone"). Firefox/
