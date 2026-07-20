@@ -702,6 +702,8 @@ export class SimpleDialogObserver {
         error.message.includes("Target page, context or browser has been closed")
       ) {
         this.stopZoomMuteTimer()
+      } else {
+        console.warn(`[SimpleDialogObserver] Zoom mute-only check error: ${error}`)
       }
     }
   }

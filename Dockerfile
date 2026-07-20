@@ -112,12 +112,12 @@ unclutter -display :99 -idle 0 -root &\n\
 x11vnc -display :99 -forever -passwd debug -listen 0.0.0.0 -rfbport 5900 \\\n    -shared -noxdamage -noxfixes -noscr -fixscreen 3 -bg -o /tmp/x11vnc.log \\\n    -nocursor -noxfixes -nomodtweak &\n\
 VNC_PID=$!\n\
 \n# Configure PulseAudio daemon before start: native 48 kHz matching the\n\
-# ScreenRecorder's AUDIO_SAMPLE_RATE so FFmpeg does a passthrough (no\n\
+# AUDIO_SAMPLE_RATE used by the ScreenRecorder so FFmpeg does a passthrough (no\n\
 # 44100->48000 non-integer resample that, combined with aresample=async=1,\n\
 # warbles/clicks under capture jitter). Larger fragment count/size gives\n\
 # PulseAudio headroom against xruns under x264 + Chromium load.\n\
 mkdir -p /etc/pulse\n\
-cat > /etc/pulse/daemon.conf <<'PULSECONF'\n\
+cat > /etc/pulse/daemon.conf <<PULSECONF\n\
 default-sample-rate = 48000\n\
 default-sample-format = s16le\n\
 default-fragments = 8\n\

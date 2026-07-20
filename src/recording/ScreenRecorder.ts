@@ -383,7 +383,8 @@ export class ScreenRecorder extends EventEmitter {
       // === AUDIO INPUT ===
       "-f",
       "pulse",
-      // Bigger capture queue + normal buffering. `-fflags nobuffer` was forcing
+      // 16384 packets of capture queue (~170 ms at 48 kHz) absorbs PulseAudio
+      // bursts under x264 load without starving. `-fflags nobuffer` was forcing
       // ffmpeg to drop rather than buffer PulseAudio samples: under load (12 bots
       // per node, each also running the x264 encoder) that starves the audio
       // thread and produces xruns — the "electrified"/crackly artefact in the
@@ -585,7 +586,7 @@ export class ScreenRecorder extends EventEmitter {
           console.error(`   🔍 Error details: ${output.trim()}`)
 
           // Log system resources for diagnostics
-          this.logSystemResources()
+          void this.logSystemResources()
 
             // Emit a critical error event
             ; (this as EventEmitter).emit("error", {
@@ -623,7 +624,7 @@ export class ScreenRecorder extends EventEmitter {
           console.warn(`   🔍 Error details: ${output.trim()}`)
 
           // Log system resource status
-          this.logSystemResources()
+          void this.logSystemResources()
 
           // Only emit warning if enough errors accumulate
           if (errorCount >= maxErrors && now - lastErrorTime > errorCooldownMs) {
@@ -1276,31 +1277,39 @@ export class ScreenRecorder extends EventEmitter {
     )
   }
 
-  private logSystemResources(): void {
+  private logSystemResourcesRunning = false
+
+  private async logSystemResources(): Promise<void> {
+    if (this.logSystemResourcesRunning) return
+    this.logSystemResourcesRunning = true
     try {
-      // Log FFmpeg process count
-      const ffmpegCount = execSync("pgrep -c ffmpeg || echo 0", {
-        encoding: "utf8"
-      }).trim()
-      const pulseCount = execSync("pgrep -c pulseaudio || echo 0", {
-        encoding: "utf8"
-      }).trim()
+      // Log FFmpeg process count (async so a slow lookup doesn't block
+      // the stderr handler and stall FFmpeg output draining).
+      const { stdout: ffOut } = await execAsync("pgrep -c ffmpeg || echo 0", {
+        timeout: 3000
+      })
+      const { stdout: pulseOut } = await execAsync("pgrep -c pulseaudio || echo 0", {
+        timeout: 3000
+      })
 
       console.warn(
-        `   🔍 System status: FFmpeg processes=${ffmpegCount}, PulseAudio processes=${pulseCount}`
+        `   🔍 System status: FFmpeg processes=${ffOut.trim()}, PulseAudio processes=${pulseOut.trim()}`
       )
 
-      // Log file descriptor count if available
+      // Log file descriptor count if available (best-effort).
       try {
-        const fdCount = execSync(`lsof -p ${process.pid} | wc -l`, {
-          encoding: "utf8"
-        }).trim()
-        console.warn(`   📁 File descriptors: ${fdCount}`)
+        const { stdout: fdOut } = await execAsync(
+          `lsof -p ${process.pid} | wc -l`,
+          { timeout: 3000 }
+        )
+        console.warn(`   📁 File descriptors: ${fdOut.trim()}`)
       } catch (_e) {
-        // Ignore if lsof not available
+        // lsof not available
       }
     } catch (error) {
       console.warn(`   ⚠️ Could not gather system resource info: ${error}`)
+    } finally {
+      this.logSystemResourcesRunning = false
     }
   }
 
