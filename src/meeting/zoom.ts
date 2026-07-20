@@ -716,14 +716,21 @@ export class ZoomProvider implements MeetingProviderInterface {
       // (joinWithInProcessRetry) instead of blocking until the 600s timeout.
       const captcha = await page
         .evaluate(() => {
-          return (
-            !!document.querySelector(".component_smart_captcha") ||
-            !!document.querySelector(".CaptchaContainer") ||
-            !!document.querySelector('input[placeholder*="captcha" i]') ||
-            (document.body?.innerText || "")
-              .toLowerCase()
-              .includes("type the characters you see")
+          // Only fire on a captcha that is actually RENDERED. Zoom injects the
+          // container only when it challenges the bot (verified: absent on normal
+          // joins), but guard with offsetParent !== null so a hidden pre-render
+          // could never false-positive a normal join into the retry path. innerText
+          // already reflects only visible text, so the text check is visibility-safe.
+          const els = document.querySelectorAll(
+            '.component_smart_captcha, .CaptchaContainer, input[placeholder*="captcha" i]'
           )
+          const shown = Array.from(els).some(
+            (el) => (el as HTMLElement).offsetParent !== null
+          )
+          const textShown = (document.body?.innerText || "")
+            .toLowerCase()
+            .includes("type the characters you see")
+          return shown || textShown
         })
         .catch(() => false)
       if (captcha) return "zoom smart captcha"
