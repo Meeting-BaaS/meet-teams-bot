@@ -18,7 +18,15 @@ import { SoundLevelMonitor } from "../utils/sound-level-monitor"
 
 const TRANSCRIPTION_CHUNK_DURATION = 7200 // Increased from 3600 to 7200, i.e. 2 hours because Gladia can now accept a 135 minutes long audio file
 const GRACE_PERIOD_SECONDS = 3
-const AUDIO_SAMPLE_RATE = 44_100 // Improved audio quality
+// Match the 48 kHz source (Zoom → PulseAudio virtual_speaker.monitor is s16 2ch
+// 48000 Hz). Using 44100 forced a 48000→44100 non-integer resample (ratio 1.0884)
+// on every capture; combined with `aresample=async=1` (which stretches/drops
+// samples to fix drift), that warbled/garbled the recorded audio under any capture
+// jitter. 48000 makes it a native passthrough — no rate conversion — so the async
+// filter only corrects drift. NOTE: this is the RECORDING rate only; the WebSocket
+// stream has its own independent rate (streaming.ts DEFAULT_SAMPLE_RATE / user
+// config) and does NOT use this constant, so consumers are unaffected.
+const AUDIO_SAMPLE_RATE = 48_000
 const AUDIO_BITRATE = "192k" // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
 const SCREENSHOT_PERIOD = 5 // every 5 seconds instead of 2
