@@ -370,6 +370,8 @@ export class ScreenRecorder extends EventEmitter {
       "x11grab",
       "-video_size",
       `${res.width}x${res.captureHeight}`,
+      "-thread_queue_size",
+      "1024",   // 1024 packets — ~34 s at 30 fps, generous without memory bloat
       "-framerate",
       "30",
       "-i",
@@ -386,7 +388,11 @@ export class ScreenRecorder extends EventEmitter {
       // pipe uses its own `-flush_packets 1`), so buffer normally and give the
       // capture generous headroom instead.
       "-thread_queue_size",
-      "16384",
+      "65536",
+      "-rtbufsize",
+      "256k",
+      "-fflags",
+      "nobuffer",
       "-i",
       VIRTUAL_SPEAKER_MONITOR,
 

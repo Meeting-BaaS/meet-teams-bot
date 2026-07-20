@@ -146,6 +146,7 @@ export class Streaming {
       "-analyzeduration", "0",
       "-fflags", "nobuffer",
       "-flags", "low_delay",
+      "-thread_queue_size", "256",
       "-f", "pulse",
       "-i", source,
       // Output: mono Float32 at target rate, flush every packet
