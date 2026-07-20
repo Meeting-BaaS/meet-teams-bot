@@ -177,6 +177,12 @@ export class ScreenRecorder extends EventEmitter {
         stdio: ["pipe", "pipe", "pipe"]
       })
 
+      // stdin is piped but unused; guard it so a stray EPIPE at kill time can't
+      // escalate to an uncaughtException mid-finalization (see media_context.ts).
+      this.ffmpegProcess.stdin?.on("error", (err) => {
+        console.warn(`[ScreenRecorder] ffmpeg stdin error (ignored): ${err}`)
+      })
+
       this.isRecording = true
       this.recordingStartTime = Date.now()
       this.gracePeriodActive = false
@@ -275,6 +281,9 @@ export class ScreenRecorder extends EventEmitter {
 
         const exitCode = await new Promise<number>((resolve) => {
           checkProcess.on("close", resolve)
+          // Without an "error" listener a spawn failure (e.g. ENOENT) is an
+          // uncaughtException AND "close" never fires, hanging this await.
+          checkProcess.on("error", () => resolve(-1))
         })
 
         if (exitCode === 0 && output.includes(VIRTUAL_SPEAKER_MONITOR)) {
@@ -312,6 +321,8 @@ export class ScreenRecorder extends EventEmitter {
 
       const testExitCode = await new Promise<number>((resolve) => {
         testProcess.on("close", resolve)
+        // Same spawn-failure guard as checkProcess above.
+        testProcess.on("error", () => resolve(-1))
       })
 
       if (testExitCode === 0) {
