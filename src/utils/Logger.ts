@@ -443,8 +443,14 @@ export function setupExitHandler() {
           // Claim immediately before requeuing; if a concurrent path grabbed it
           // first it has already requeued — skip to avoid a double re-record.
           if (GLOBAL.claimRecovery()) {
-            await requeueToSQS(buildRetryMessage())
-            logger.error("[Crash] Early crash — requeued to SQS for retry")
+            try {
+              await requeueToSQS(buildRetryMessage())
+              logger.error("[Crash] Early crash — requeued to SQS for retry")
+            } catch (e) {
+              // Send failed — release so another path can requeue (see releaseRecovery).
+              GLOBAL.releaseRecovery()
+              throw e
+            }
           } else {
             logger.error("[Crash] Recovery claimed concurrently — skipping duplicate requeue")
           }

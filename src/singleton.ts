@@ -221,6 +221,18 @@ class Global {
   }
 
   /**
+   * Release a claim taken by claimRecovery() when the requeueToSQS() it guarded
+   * FAILED to send. Without this, a failed send leaves recoveryClaimed=true, so
+   * every other requeue path (SIGTERM / crash handler) sees isRecoveryClaimed()
+   * and stands down — and the meeting is never requeued (silently lost). Callers
+   * MUST release ONLY on send failure, and ONLY the caller that won the claim, so
+   * another path can take over the requeue. Never release after a successful send.
+   */
+  public releaseRecovery(): void {
+    this.recoveryClaimed = false
+  }
+
+  /**
    * Read-only peek at whether a recovery path already owns the claim. Terminator
    * handlers (SIGTERM / crash) use it only to STAND DOWN — return without calling
    * exit(), so they don't kill an in-flight requeue mid-write. They must NOT use it

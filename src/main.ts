@@ -54,8 +54,14 @@ process.on("SIGTERM", async () => {
       if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
         // Claim right before requeue; a lost claim means another path already requeued.
         if (GLOBAL.claimRecovery()) {
-          await requeueToSQS(buildRetryMessage())
-          console.log("[SIGTERM] Requeued to SQS to re-record")
+          try {
+            await requeueToSQS(buildRetryMessage())
+            console.log("[SIGTERM] Requeued to SQS to re-record")
+          } catch (e) {
+            // Send failed — release so another path can requeue (see releaseRecovery).
+            GLOBAL.releaseRecovery()
+            throw e
+          }
         } else {
           console.log("[SIGTERM] Recovery claimed concurrently — skipping duplicate requeue")
         }
@@ -189,7 +195,15 @@ async function handleFailedRecording(): Promise<void> {
         console.log("🔁 Recovery already requeued by another handler — skipping duplicate requeue")
         return
       }
-      await requeueToSQS(retryMessage)
+      try {
+        await requeueToSQS(retryMessage)
+      } catch (requeueError) {
+        // Send failed — release the claim so a SIGTERM/crash handler can take over
+        // the requeue instead of standing down on a stuck claim (and losing the
+        // meeting). Rethrow into the outer catch → normal failure flow.
+        GLOBAL.releaseRecovery()
+        throw requeueError
+      }
 
       // A retry is now pending. Emit the non-terminal `retrying` status (NOT
       // recording_failed) so the dashboard shows "Retrying… (attempt N/max)"
