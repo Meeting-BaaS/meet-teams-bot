@@ -117,7 +117,17 @@ export class WaitingRoomState extends BaseState {
           MeetingEndReason.BotRemovedTooEarly,
           MeetingEndReason.InvalidMeetingUrl,
           MeetingEndReason.ApiRequest,
-          MeetingEndReason.TimeoutWaitingToStart
+          MeetingEndReason.TimeoutWaitingToStart,
+          // A plain waiting-room timeout / host denial is a NORMAL outcome (host
+          // never admitted, no one joined, or entry was refused), not something a
+          // fresh exit IP can fix — so it must be terminal, not requeued. This is
+          // safe precisely because a detected captcha now fails FAST with
+          // ZoomAnonymousJoinNotAllowed (see detectBotWall, polled every ~2s during
+          // admission) well before the 600s timeout, so it keeps retrying while a
+          // genuine no-captcha timeout ends here as ExitingMeetingBeforeRecord /
+          // TimeoutWaitingToStart and stops.
+          MeetingEndReason.ExitingMeetingBeforeRecord,
+          MeetingEndReason.BotNotAccepted
         ]
         if (!endReason || !ZOOM_TERMINAL.includes(endReason)) {
           console.log(
