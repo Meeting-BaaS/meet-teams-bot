@@ -188,9 +188,15 @@ export class WaitingRoomState extends BaseState {
           )
         }
 
-        // x11grab captures the display, self-guards on isRecording (no-op after
-        // the first attempt), so the recording spans the relaunch seamlessly.
-        ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
+        // Start the display recording once, on the first attempt only. x11grab
+        // captures the Xvfb display (not the page), so it spans in-process browser
+        // relaunches. Calling it again on a retry throws "Recording is already in
+        // progress" — an un-awaited, uncaught rejection that crashed the pod and
+        // forced a futile SQS requeue (defeating the fast in-pod retry). Gated here
+        // like the other one-time setup; startRecording is also idempotent now.
+        if (attempt === 0) {
+          ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
+        }
 
         await this.waitForAcceptance()
         return
