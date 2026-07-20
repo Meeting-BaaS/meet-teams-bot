@@ -17,10 +17,10 @@ import {
 } from "./utils/Logger"
 import { BotMessageSchema } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
+import { getMaxRetryCount } from "./config/retry-config"
 import {
   buildRetryMessage,
   formatRetryErrorMessage,
-  getMaxRetryCount,
   requeueToSQS,
   shouldAttemptRetry
 } from "./utils/retry-handler"

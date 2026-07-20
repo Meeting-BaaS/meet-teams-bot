@@ -4,7 +4,7 @@ import {
   establishBrowserSession,
   teardownBrowserSession
 } from "../../browser/browser-session"
-import { envVars } from "../../config/env-vars"
+import { IN_PROCESS_RETRY_MAX } from "../../config/retry-config"
 import { Events } from "../../events"
 import { setDirectMode } from "../../proxy/toggle-proxy"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
@@ -159,7 +159,7 @@ export class WaitingRoomState extends BaseState {
    */
   private async joinWithInProcessRetry(meetingLink: string): Promise<void> {
     const isZoom = GLOBAL.get().meeting_platform === "zoom"
-    const maxInProc = isZoom ? envVars.IN_PROCESS_RETRY_MAX : 0
+    const maxInProc = isZoom ? IN_PROCESS_RETRY_MAX : 0
 
     for (let attempt = 0; ; attempt++) {
       try {

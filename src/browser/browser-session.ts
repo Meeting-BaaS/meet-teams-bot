@@ -1,7 +1,7 @@
 import type { BrowserContext } from "@playwright/test"
 import { startToggleProxy, stopToggleProxy } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
-import { MAX_RETRY_COUNT } from "../utils/retry-handler"
+import { MAX_RETRY_COUNT } from "../config/retry-config"
 import { formatError } from "../utils/Logger"
 import { openBrowser } from "./browser"
 
