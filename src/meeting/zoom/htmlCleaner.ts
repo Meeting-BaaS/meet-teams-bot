@@ -33,7 +33,7 @@ export class ZoomHtmlCleaner {
     // showed up), so route through an exposed function like the speaker observer.
     await this.page
       .exposeFunction("zoomCleanerLog", (msg: string) => console.log(msg))
-      .catch(() => {})
+      .catch(() => { })
     await this.page.evaluate(() => {
       const clog = (m: string) => {
         try {
@@ -111,6 +111,18 @@ export class ZoomHtmlCleaner {
           "#video-share-layout:not(.video-share-standrad) video-player video {",
           "  width: 100% !important; height: 100% !important;",
           "  object-fit: cover !important;",
+          "}",
+          // The blanket pin above stacks EVERY tile full-frame at the same z-index,
+          // so the recording paints whichever video-player is last in the DOM —
+          // usually the bot's own camera — and never follows Zoom's active-speaker
+          // switch (Zoom flips a class, not DOM order). Raise the CURRENT
+          // active-speaker main tile above the rest so the recording tracks the
+          // speaker instead of sticking on the bot. Additive: if none of these
+          // match it falls back to the existing behaviour.
+          "#video-share-layout:not(.video-share-standrad) .speaker-active-container__video-frame video-player,",
+          "#video-share-layout:not(.video-share-standrad) .single-main-container__video-frame video-player,",
+          "#video-share-layout:not(.video-share-standrad) .single-suspension-container__video-frame video-player {",
+          "  z-index: 2147483010 !important;",
           "}",
           // ── Speaker-bar strip — hidden from the recording in BOTH modes ────
           // The horizontal strip of participant tiles (speaker-bar-container__*,
