@@ -457,6 +457,19 @@ export class SimpleDialogObserver {
           return ok(txt) || ok(aria)
         }
 
+        // Zoom PRE-RENDERS a hidden i18n template of this modal elsewhere in the
+        // DOM — same "being recorded" text and an OK button. Without a visibility
+        // gate the finder matched that GHOST button, clicked a no-op, and reported
+        // "dismissed" every tick while the REAL modal stayed up (the false
+        // positive). Use getClientRects() — NOT offsetParent, which is null for the
+        // position:fixed modal even when it's visible — plus the computed-style
+        // checks, so we only ever act on the actually-visible control.
+        const isVisible = (el: Element) => {
+          if (!el.getClientRects().length) return false
+          const s = getComputedStyle(el)
+          return s.visibility !== "hidden" && s.display !== "none" && Number(s.opacity || "1") > 0
+        }
+
         // Hop up the ancestor chain, crossing shadow-root boundaries via host.
         const parentAcross = (el: Element): Element | null => {
           if (el.parentElement) return el.parentElement
@@ -484,7 +497,10 @@ export class SimpleDialogObserver {
         }
 
         const ackButtons = nodes.filter(
-          (el) => (el.tagName === "BUTTON" || el.getAttribute("role") === "button") && isAck(el)
+          (el) =>
+            (el.tagName === "BUTTON" || el.getAttribute("role") === "button") &&
+            isAck(el) &&
+            isVisible(el)
         )
 
         let modal: string | null = null
@@ -534,20 +550,32 @@ export class SimpleDialogObserver {
           }
         }
 
-        // Standing mute enforcement for receive-only recorders. The in-call footer
-        // mic control reads "mute my microphone" when LIVE and "unmute my
-        // microphone" when already muted — so click ONLY when live. No-op in the
-        // waiting room (footer not mounted) and for streaming bots. A plain click
-        // fires Zoom's React handler (same as ensureMuted); it's the bot's own mic.
+        // Standing mute enforcement for receive-only recorders. Zoom re-connects
+        // audio UNMUTED after the recording-consent modal and ensureMuted only runs
+        // once at admission, so re-mute every tick. Find the mic toggle across the
+        // light DOM AND open shadow roots (reuse the walked `nodes`) — a plain
+        // querySelector on #foot-bar/.footer missed it on the layout where Zoom
+        // nests the footer in a shadow root, which is why the occasional bot stayed
+        // live. Match the self control by its "microphone" aria-label ("mute my
+        // microphone" live / "unmute my microphone" muted), falling back to a bare
+        // "mute"/"unmute" button. Click ONLY when live, and a SINGLE plain click
+        // (never the multi-event clickHard — a toggle clicked twice flips straight
+        // back). No-op in the waiting room / for streaming bots.
         let remuted = false
         if (receiveOnly) {
-          const mic = document.querySelector(
-            '#foot-bar [aria-label*="mute" i], #wc-footer [aria-label*="mute" i], .footer [aria-label*="mute" i]'
-          ) as HTMLElement | null
+          const micLabel = (el: Element) => (el.getAttribute("aria-label") || "").toLowerCase()
+          // Same visibility gate — Zoom's hidden template ships a ghost mic button too.
+          const buttons = nodes.filter(
+            (el) =>
+              (el.tagName === "BUTTON" || el.getAttribute("role") === "button") && isVisible(el)
+          )
+          const mic =
+            buttons.find((el) => micLabel(el).includes("microphone")) ||
+            buttons.find((el) => /^\s*(un)?mute\s*$/.test(micLabel(el)))
           if (mic) {
-            const ml = (mic.getAttribute("aria-label") || "").toLowerCase()
+            const ml = micLabel(mic)
             if (ml.includes("mute") && !ml.includes("unmute")) {
-              mic.click()
+              ;(mic as HTMLElement).click()
               remuted = true
             }
           }
