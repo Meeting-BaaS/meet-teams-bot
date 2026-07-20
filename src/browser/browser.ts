@@ -76,7 +76,12 @@ function buildFirefoxLaunchConfig(): {
 
     // Media/Audio permissions
     "media.navigator.permission.disabled": true,
-    "media.navigator.streams.fake": false,
+    // Local dev has no v4l2loopback camera (/dev/video10), so Firefox's real
+    // camera fails and the bot joins with no video. On ENVIRON=local only, let
+    // Firefox synthesize a FAKE camera/mic so the bot has a working video tile to
+    // test with. Stays false in preprod/prod, which use the real branding feed —
+    // so this must never be enabled off-local (it would drop the real branding).
+    "media.navigator.streams.fake": envVars.ENVIRON === "local",
     "permissions.default.microphone": 1,
     "permissions.default.camera": 1,
 
