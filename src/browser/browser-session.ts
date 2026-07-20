@@ -1,3 +1,4 @@
+import { execFile } from "child_process"
 import type { BrowserContext } from "@playwright/test"
 import { startToggleProxy, stopToggleProxy } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
@@ -7,6 +8,25 @@ import { openBrowser } from "./browser"
 
 const LAUNCH_ATTEMPTS = 3
 const LAUNCH_TIMEOUT_MS = 60_000
+// Cap how long we wait for a graceful context.close() before force-reaping the
+// process tree — a hung/stuck page (anti-bot wall) can make close() never resolve.
+const BROWSER_CLOSE_TIMEOUT_MS = 8_000
+
+/**
+ * Force-reap any Firefox/stealthfox processes still alive after context.close().
+ * One stealthfox is ~15 processes (main + content/utility/RDD/socket children,
+ * ~2.4GB total); a hung or botched close leaves that tree running, and each
+ * in-process retry then stacks another ~2.4GB → OOMKill at the 8Gi limit. Each
+ * pod runs exactly ONE bot and teardown only runs on the in-process-retry recycle
+ * (never during a live good recording), so SIGKILL-ing every firefox process is
+ * safe. Best-effort — a missing pkill / no matching process must not throw.
+ */
+async function killBrowserProcesses(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    // -9: content processes ignore SIGTERM; -f: match the binary path in argv.
+    execFile("pkill", ["-9", "-f", "firefox"], () => resolve())
+  })
+}
 
 // Minimal slice of MeetingContext this module owns: the residential proxy URL
 // and the live browser context. Kept structural so both the state machine
@@ -87,12 +107,20 @@ export async function establishBrowserSession(
  */
 export async function teardownBrowserSession(session: BrowserSession): Promise<void> {
   try {
-    // Closing the context closes all its pages.
-    await session.browserContext?.close()
+    // Closing a persistent context closes its pages AND the browser — but on a
+    // hung/stuck page (e.g. the anti-bot wall) close() can hang or reject. Bound
+    // it so a stuck close can't block the in-process retry indefinitely.
+    await Promise.race([
+      session.browserContext?.close() ?? Promise.resolve(),
+      new Promise<void>((resolve) => setTimeout(resolve, BROWSER_CLOSE_TIMEOUT_MS))
+    ])
   } catch (error) {
     console.warn("[BrowserSession] Error closing browser context:", formatError(error))
   }
   session.browserContext = undefined
+  // Reap any Firefox tree that survived (or outran) the close, so the next
+  // establishBrowserSession() never stacks a second ~2.4GB browser → OOMKill.
+  await killBrowserProcesses()
   await stopToggleProxy()
   session.proxyUrl = undefined
 }
