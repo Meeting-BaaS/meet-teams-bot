@@ -405,6 +405,7 @@ run_with_config() {
         -e ENVIRON="local" \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/recordings" \
+        -v "$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate_custom_branding.sh:/generate_custom_branding.sh:ro" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
@@ -528,6 +529,7 @@ run_with_config_and_overrides() {
         -e ENVIRON="local" \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/recordings" \
+        -v "$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate_custom_branding.sh:/generate_custom_branding.sh:ro" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
             if [[ $line == *"Starting virtual display"* ]]; then
                 print_info "${ICON_DISPLAY} $line"
@@ -648,6 +650,7 @@ run_with_json() {
         -e ENVIRON="local" \
         $debug_env \
         -v "$(pwd)/$output_dir:/app/recordings" \
+        -v "$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate_custom_branding.sh:/generate_custom_branding.sh:ro" \
         "$(get_docker_image)"
     
     print_success "Bot execution completed"
@@ -918,6 +921,7 @@ test_api_request() {
         -e RECORDING=true \
         -e ENVIRON="local" \
         -v "$(pwd)/$output_dir:/app/recordings" \
+        -v "$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate_custom_branding.sh:/generate_custom_branding.sh:ro" \
         "$(get_docker_image)" 2>&1 | tee "$log_file" &
     
     local docker_pid=$!
