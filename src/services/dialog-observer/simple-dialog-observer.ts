@@ -197,8 +197,12 @@ export class SimpleDialogObserver {
 
   protected startGlobalDialogObserver() {
     console.info("[SimpleDialogObserver] Starting dialog observer")
-    // Check every 2 seconds for faster modal dismissal during join
-    this.dialogObserverInterval = setInterval(this.observer, 2000)
+    // Check every 5 seconds. A 2 s interval was contending with FFmpeg's stdout
+    // reader on the Node event loop (CDP round-trips every 2 s), which
+    // back-pressured the audio pipe and produced xruns/clicks. The isRunning
+    // guard already prevents overlap; 5 s is plenty for in-call modal dismissal
+    // and the join-phase handshake happens before the ScreenRecorder starts.
+    this.dialogObserverInterval = setInterval(this.observer, 5000)
   }
 
   protected observer = async (): Promise<void> => {
