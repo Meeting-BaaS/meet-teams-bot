@@ -8,9 +8,13 @@ import { openBrowser } from "./browser"
 
 const LAUNCH_ATTEMPTS = 3
 const LAUNCH_TIMEOUT_MS = 60_000
-// Cap how long we wait for a graceful context.close() before force-reaping the
-// process tree — a hung/stuck page (anti-bot wall) can make close() never resolve.
-const BROWSER_CLOSE_TIMEOUT_MS = 8_000
+// Give the graceful context.close() only a tiny window before force-reaping the
+// tree. This isn't about flushing data (the profile is a throwaway temp dir) — a
+// brief close lets Playwright's local juggler transport detach cleanly, so a cold
+// SIGKILL doesn't leave in-flight page ops rejecting with "Target closed" (which
+// would trip the crash handler). It's a local transport, not a network round-trip,
+// so ~750ms is plenty; pkill -9 below is instant, keeping the fast retry fast.
+const BROWSER_CLOSE_TIMEOUT_MS = 750
 
 /**
  * Force-reap any Firefox/stealthfox processes still alive after context.close().
