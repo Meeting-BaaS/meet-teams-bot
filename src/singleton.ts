@@ -11,6 +11,7 @@ class Global {
   private recoveryClaimed = false // True once a termination/crash path has taken ownership of log-upload + requeue (see claimRecovery)
   private endMeetingReportClaimed = false // True while/after a path owns the end-meeting-trampoline report (see claimEndMeetingReport)
   private recordingFinalized = false // True once the recording is merged and entering upload (see markRecordingFinalized)
+  private endMeetingPayloadReady = false // True once uploadToS3 has recorded the complete artifact manifest
   private artifactKeys: ArtifactKey[] = []
   private audioChunks: ArtifactKey[] = []
   private participants: Participant[] = []
@@ -281,6 +282,14 @@ class Global {
 
   public hasRecordingFinalized(): boolean {
     return this.recordingFinalized
+  }
+
+  public markEndMeetingPayloadReady(): void {
+    this.endMeetingPayloadReady = true
+  }
+
+  public hasEndMeetingPayloadReady(): boolean {
+    return this.endMeetingPayloadReady
   }
 
   public getRetryCount(): number {

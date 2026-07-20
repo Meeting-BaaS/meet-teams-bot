@@ -1005,7 +1005,6 @@ export class ScreenRecorder extends EventEmitter {
             envVars.AWS_S3_ARTIFACTS_BUCKET,
             s3Key
           )
-          fs.unlinkSync(this.outputPath)
           GLOBAL.addArtifactKey({
             s3Key,
             filePath: this.outputPath,
@@ -1016,6 +1015,7 @@ export class ScreenRecorder extends EventEmitter {
             errorCode: null,
             errorMessage: null
           })
+          fs.unlinkSync(this.outputPath)
         } else {
           const recordingMode = GLOBAL.get().recording_mode
           GLOBAL.addArtifactKey({
@@ -1090,8 +1090,6 @@ export class ScreenRecorder extends EventEmitter {
             envVars.AWS_S3_ARTIFACTS_BUCKET,
             s3Key
           )
-          fs.unlinkSync(diarizationPath)
-          console.log("Diarization file uploaded successfully")
           GLOBAL.addArtifactKey({
             s3Key,
             filePath: diarizationPath,
@@ -1102,6 +1100,8 @@ export class ScreenRecorder extends EventEmitter {
             errorCode: null,
             errorMessage: null
           })
+          fs.unlinkSync(diarizationPath)
+          console.log("Diarization file uploaded successfully")
         }
       } else {
         GLOBAL.addArtifactKey({
@@ -1131,6 +1131,10 @@ export class ScreenRecorder extends EventEmitter {
     }
 
     this.filesUploaded = true
+    // Every expected artifact now has a manifest entry, including failed
+    // uploads copied to EFS. Crash recovery may safely submit this payload:
+    // the api-server can either continue or defer it for reconciliation.
+    GLOBAL.markEndMeetingPayloadReady()
   }
 
   public async stopRecording(): Promise<void> {
