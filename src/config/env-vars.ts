@@ -82,8 +82,9 @@ export const envVars = cleanEnv(process.env, {
   // IP inside the SAME warm pod before falling back to the SQS requeue (fresh
   // pod). The anti-bot wall keys on the exit IP, so an in-pod relaunch on a new
   // residential IP clears it in ~5-10s vs the ~20-40s of a pod cold-start. 0
-  // disables in-process retry entirely (pure requeue behavior). Total budget =
-  // this + the remaining SQS pod requeues (see getMaxRetryCount, zoom=5).
+  // disables in-process retry entirely (pure requeue behavior). Envalid-validated
+  // here; consumed/re-exported via config/retry-config.ts, the single retry-count
+  // source (total-budget math lives there).
   IN_PROCESS_RETRY_MAX: num({ default: 2 })
 })
 

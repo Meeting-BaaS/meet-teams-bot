@@ -430,7 +430,8 @@ export function setupExitHandler() {
           "[Crash] Recording finalized/uploading — preserving artifacts for salvage (NOT requeuing)"
         )
       } else {
-        const { buildRetryMessage, requeueToSQS, getMaxRetryCount } = await import("./retry-handler")
+        const { buildRetryMessage, requeueToSQS } = await import("./retry-handler")
+        const { getMaxRetryCount } = await import("../config/retry-config")
         GLOBAL.setShouldRetry(true)
         if (GLOBAL.getRetryCount() < getMaxRetryCount()) {
           await requeueToSQS(buildRetryMessage())
