@@ -111,7 +111,9 @@ const ZOOM_MODAL_PATTERNS: ModalPattern[] = [
   // corrupts the MP4, so this is the primary reason the observer runs on Zoom.
   {
     name: "zoom_recording_consent",
-    selector: ':has-text("This meeting is being recorded"):has(button)',
+    // Anchor on a div (not a bare *:has-text) so it resolves to the modal
+    // container, not every html/body ancestor that also contains the text.
+    selector: 'div:has-text("This meeting is being recorded"):has(button)',
     buttonTexts: ["OK", "Got it", "Continue"],
     exitByEscape: false
   },
