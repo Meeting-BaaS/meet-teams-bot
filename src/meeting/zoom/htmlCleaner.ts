@@ -153,30 +153,23 @@ export class ZoomHtmlCleaner {
       const STYLE_ID = "baas-zoom-rec-fix"
       const STYLE_TEXT = [
         // ── Speaker view ONLY (no share) ──────────────────────────────────
-        // Active-speaker video fills the recorded frame. Scoped with
-        // :not(.video-share-standrad): during a share #video-share-layout gains
-        // that class, and pinning its video-players there is what stacked/offset
-        // the recording. So this rule switches OFF automatically once a share starts.
-        "#video-share-layout:not(.video-share-standrad) video-player {",
-        "  position: fixed !important; inset: 0 !important;",
-        "  top: 0 !important; left: 0 !important;",
-        "  width: 100vw !important; height: 100vh !important;",
-        "  z-index: 2147483000 !important;",
-        "}",
-        "#video-share-layout:not(.video-share-standrad) video-player video {",
-        "  width: 100% !important; height: 100% !important;",
-        "  object-fit: cover !important;",
-        "}",
-        // DETERMINISTIC RULE: exactly ONE tile is visible — the winner
-        // (.baas-active-tile), pinned full-frame below. EVERY other video-player is
-        // forced invisible, so nothing can bleed into the recording: not the bot's own
-        // camera, not Zoom's FOOTERLESS self-view main tile (a node with no name that
-        // hideBotTile can't identify), not other participants. This replaces the old
-        // "pin everything + boost the main tile + fight z-index" approach, under which a
-        // boosted footerless self-view tile painted its camera (branding / fake-camera
-        // colours) right over the chosen speaker.
+        // PERFORMANCE + CORRECTNESS. Pin ONLY the winner tile (.baas-active-tile,
+        // chosen in JS) full-frame — see its rule below — and take EVERY other
+        // <video-player> out of the render tree entirely with display:none.
+        //
+        // The previous rule pinned *every* video-player to 100vw×100vh, so with N
+        // participants the (software-rendering) Firefox had to scale and composite N
+        // full-screen 720p videos every single frame. THAT is the cause of the
+        // Zoom-only stutter/laggy audio in prod — Meet/Teams pin just the one active
+        // video and stay smooth on the same hardware. display:none also lets the
+        // browser stop decoding the off-screen streams (freeing CPU for x264 and the
+        // audio capture thread), and it guarantees nothing bleeds into the frame (the
+        // bot's camera, Zoom's footerless self-view main tile, other participants).
+        //
+        // Scoped :not(.video-share-standrad) so it switches off during a screen share,
+        // where #sharee-container owns the frame.
         "#video-share-layout:not(.video-share-standrad) video-player:not(.baas-active-tile) {",
-        "  opacity: 0 !important; visibility: hidden !important;",
+        "  display: none !important;",
         "}",
         // ── Speaker-bar strip — hidden from the recording in BOTH modes ────
         // The horizontal strip of participant tiles is clutter over the main
