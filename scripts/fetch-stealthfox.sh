@@ -24,7 +24,7 @@
 #   export USE_STEALTHFOX=true
 #
 # Env overrides mirror the flags: STEALTHFOX_DEST, STEALTHFOX_TAG, STEALTHFOX_FF_VERSION.
-set -euo pipefail
+set -eu
 
 DEST="${STEALTHFOX_DEST:-.stealthfox}"
 TAG="${STEALTHFOX_TAG:-firefox-16}"
