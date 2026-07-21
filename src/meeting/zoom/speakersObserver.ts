@@ -100,9 +100,14 @@ export class ZoomSpeakersObserver {
 
     await this.page.evaluate(
       ({ selfName, pollMs, confirmPolls, heartbeatMs }) => {
+        // Fallback order (used only before the html cleaner has pinned a winner, or
+        // during a share). `.speaker-bar-container__video-frame--active` is Zoom's real
+        // "talking now" marker and comes FIRST; `.speaker-active-container__video-frame`
+        // can be a fixed/pinned main tile that never tracks the speaker, so it's a lower
+        // fallback. This matches the cleaner's WINNER_TIERS order exactly.
         const ACTIVE_CONTAINER_SELECTORS = [
-          ".speaker-active-container__video-frame",
           ".speaker-bar-container__video-frame--active",
+          ".speaker-active-container__video-frame",
           // Speaker-view main tile — Zoom's active-speaker pick (stays valid during
           // a share; the shared screen is a separate .sharee-container__canvas).
           ".single-main-container__video-frame",
@@ -135,6 +140,28 @@ export class ZoomSpeakersObserver {
         // one-tile UI is handled by the downstream provider-diarization fallback.
         let reportedSelector: string | null = null
         function readActiveSpeaker(): string | null {
+          // SINGLE SOURCE OF TRUTH. The html cleaner pins exactly one tile to the
+          // recorded frame and marks it `.baas-winner-frame`. Read the active speaker
+          // from THAT tile, so the person labeled in the transcript is always the person
+          // shown in the video — they are literally the same DOM element and cannot
+          // diverge. Fall through to Zoom's own markers only before the cleaner has
+          // marked a winner (first tick) or during a share (the cleaner yields the frame).
+          const pinned = document.querySelector(".baas-winner-frame")
+          if (pinned) {
+            const name = nameFromContainer(pinned)
+            if (name) {
+              if (reportedSelector !== ".baas-winner-frame") {
+                reportedSelector = ".baas-winner-frame"
+                try {
+                  window.zoomSpeakerForensics?.(`RESOLVED via cleaner-pinned ".baas-winner-frame"`)
+                } catch {
+                  /* bridge unavailable */
+                }
+              }
+              if (selfName && name.toLowerCase() === selfName.toLowerCase()) return null
+              return name
+            }
+          }
           for (const sel of ACTIVE_CONTAINER_SELECTORS) {
             const name = nameFromContainer(document.querySelector(sel))
             if (name) {
