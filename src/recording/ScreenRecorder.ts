@@ -23,7 +23,7 @@ const TRANSCRIPTION_CHUNK_DURATION = 7200 // Increased from 3600 to 7200, i.e. 2
 const GRACE_PERIOD_SECONDS = 3
 // Match the 48 kHz source (Zoom → PulseAudio virtual_speaker.monitor is s16 2ch
 // 48000 Hz). Using 44100 forced a 48000→44100 non-integer resample (ratio 1.0884)
-// on every capture; combined with `aresample=async=1` (which stretches/drops
+// on every capture; combined with `aresample` resampler (which stretches/drops
 // samples to fix drift), that warbled/garbled the recorded audio under any capture
 // jitter. 48000 makes it a native passthrough — no rate conversion — so the async
 // filter only corrects drift. NOTE: this is the RECORDING rate only; the WebSocket
@@ -383,16 +383,17 @@ export class ScreenRecorder extends EventEmitter {
       // === AUDIO INPUT ===
       "-f",
       "pulse",
-      // 16384 packets of capture queue (~170 ms at 48 kHz) absorbs PulseAudio
-      // bursts under x264 load without starving. `-fflags nobuffer` was forcing
-      // ffmpeg to drop rather than buffer PulseAudio samples: under load (12 bots
-      // per node, each also running the x264 encoder) that starves the audio
-      // thread and produces xruns — the "electrified"/crackly artefact in the
-      // recording. Recording isn't latency-critical (the low-latency sound-level
-      // pipe uses its own `-flush_packets 1`), so buffer normally and give the
-      // capture generous headroom instead.
+      // 32768 packets of capture queue (~2x the previous 16384) doubles burst
+      // absorption for x264 CPA load spikes without the memory(~2.6 MB ring array)
+      // or starvation risk of 65536+nobuffer. Recording isn't latency-critical
+      // (the low-latency sound-level pipe uses its own `-flush_packets 1`).
+      // aresample=async=1000 (already in OUTPUT 2) softens any remaining xrun
+      // discontinuities by stretching instead of hard-cutting, so the queue just
+      // needs to reduce xrun frequency, not eliminate them.
       "-thread_queue_size",
-      "16384",
+      "32768",
+      "-rtbufsize",
+      "128k",
       "-i",
       VIRTUAL_SPEAKER_MONITOR,
 
