@@ -39,6 +39,36 @@ interface TeamsChatWindow extends Window {
 // Create a singleton detector instance for Microsoft Teams
 const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
 
+/**
+ * Fetch the meeting URL out-of-band to learn its HTTP status. Used to classify
+ * a goto() that threw ERR_HTTP_RESPONSE_CODE_FAILURE (Firefox throws instead of
+ * resolving the response, so the in-page status check never runs). Returns the
+ * final status after redirects, or null when the probe itself failed — callers
+ * must treat null as "unknown", not as an error status.
+ */
+async function probeUrlStatus(url: string): Promise<number | null> {
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000)
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        signal: controller.signal
+      })
+      return response.status
+    } finally {
+      clearTimeout(timeout)
+    }
+  } catch (probeError) {
+    console.warn(
+      "[Teams] URL status probe failed:",
+      probeError instanceof Error ? probeError.message : probeError
+    )
+    return null
+  }
+}
+
 export class TeamsProvider implements MeetingProviderInterface {
   async parseMeetingUrl(meeting_url: string) {
     return parseMeetingUrlFromJoinInfos(meeting_url)
@@ -386,6 +416,34 @@ export class TeamsProvider implements MeetingProviderInterface {
       return page
     } catch (error) {
       console.error("Error in openMeetingPage:", formatError(error))
+      // Firefox/cloakbrowser goto() THROWS net::ERR_HTTP_RESPONSE_CODE_FAILURE
+      // on ANY HTTP error status — unlike Chromium, which resolves the response
+      // and reaches the >=500 check above. So both a dead link (4xx) and a Teams
+      // outage (5xx) land here and used to fail as retryable UNKNOWN_ERROR
+      // (bot eb1eaceb, 2026-07-21: customer sent teams.microsoft.com/123 and
+      // burned 3 SQS attempts on a URL that can never work). Probe the URL
+      // out-of-band to classify:
+      //   4xx -> terminal InvalidMeetingUrl, do NOT retry;
+      //   5xx -> CannotJoinMeeting, retryable (transient edge failure);
+      //   probe failed -> keep the generic retryable path.
+      const errMsg = error instanceof Error ? error.message : String(error)
+      if (errMsg.includes("ERR_HTTP_RESPONSE_CODE_FAILURE")) {
+        const status = await probeUrlStatus(link)
+        if (status !== null && status >= 400 && status < 500) {
+          console.log(`🔴 Teams URL returned HTTP ${status} — invalid meeting URL, not retrying`)
+          GLOBAL.setError(
+            MeetingEndReason.InvalidMeetingUrl,
+            `Teams returned HTTP ${status} for the meeting URL — the link is invalid or expired`
+          )
+          throw error
+        }
+        if (status !== null && status >= 500) {
+          GLOBAL.setError(
+            MeetingEndReason.CannotJoinMeeting,
+            `Teams returned HTTP ${status} - service unavailable`
+          )
+        }
+      }
       // Mark as retryable - bot hasn't joined yet, so retrying is safe
       console.log("🔄 Error occurred before joining - marking as retryable")
       GLOBAL.setShouldRetry(true)
