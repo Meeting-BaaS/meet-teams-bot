@@ -1,3 +1,4 @@
+import { DiarizationTracker } from "../../diarization-tracker"
 import { Events } from "../../events"
 import { stopNetworkInterception } from "../../meeting/meet/network-interception"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
@@ -49,6 +50,13 @@ const ALONE_IN_MEETING_GRACE_PERIOD_MS = 5 * 60 * 1000
 
 // How many consecutive stale events trigger fallback to UI-based diarization - increased from 5 to 10 to avoid false positives
 const STALE_EVENT_THRESHOLD = 10
+// Fast-path threshold when network diarization has NEVER produced a single
+// segment: the source is dead, not flapping, so 10 events (>=50s of speech at
+// the 5s health-check throttle) only loses labels. Two events (~10s of sound
+// with zero segments ever) is enough evidence to fall back. Short meetings
+// (e.g. ticket 19961784714714: 60s solo test calls, transcript speakers all
+// "Unknown") could mathematically never reach the 10-event threshold.
+const NEVER_PRODUCED_STALE_THRESHOLD = 2
 
 export class RecordingState extends BaseState {
   private isProcessing = true
@@ -424,20 +432,25 @@ export class RecordingState extends BaseState {
       if (status.status === "stale") {
         this.consecutiveStaleCount++
         const meetingPlatform = GLOBAL.get().meeting_platform
+        // Never-produced = the network source is dead, not flapping — use the
+        // fast threshold so short meetings still get speaker labels via the UI
+        // observer instead of ending with an empty diarization ("Unknown").
+        const neverProduced = !DiarizationTracker.getInstance().hasEverTrackedSegment()
+        const threshold = neverProduced ? NEVER_PRODUCED_STALE_THRESHOLD : STALE_EVENT_THRESHOLD
         console.log(
-          `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${STALE_EVENT_THRESHOLD}`
+          `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? " (no segment ever produced — fast fallback)" : ""}`
         )
 
-        // Check if we should trigger fallback (Meet only, network diarization active, 5 consecutive stale events)
+        // Check if we should trigger fallback (Meet only, network diarization active)
         if (
-          this.consecutiveStaleCount >= STALE_EVENT_THRESHOLD &&
+          this.consecutiveStaleCount >= threshold &&
           meetingPlatform === "meet" &&
           !GLOBAL.hasNetworkInterceptionSetupFailed() &&
           !GLOBAL.hasDiarizationFallbackTriggered() &&
           this.context.playwrightPage
         ) {
           console.log(
-            `[DiarizationHealth] [${meetingPlatform}] 🔄 Triggering fallback to UI-based diarization after ${STALE_EVENT_THRESHOLD} consecutive stale events`
+            `[DiarizationHealth] [${meetingPlatform}] 🔄 Triggering fallback to UI-based diarization after ${this.consecutiveStaleCount} consecutive stale events`
           )
 
           // Stop network interception to prevent duplicate logs

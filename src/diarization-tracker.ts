@@ -35,6 +35,7 @@ export class DiarizationTracker {
   private recentSegments: DiarizationSegment[] = [] // Last 5 closed segments
   private filePath: string
   private isEnded = false
+  private hasTrackedAnySegment = false // True once ANY speaker segment was ever opened
 
   private constructor(tempDir: string) {
     this.filePath = join(tempDir, "diarization.jsonl")
@@ -87,6 +88,17 @@ export class DiarizationTracker {
       startTime: relativeTime,
       userId: speaker.id
     }
+    this.hasTrackedAnySegment = true
+  }
+
+  /**
+   * True once at least one speaker segment was ever opened this meeting.
+   * Distinguishes "network diarization NEVER produced data" (source is dead —
+   * fall back fast) from "was producing, currently quiet" (normal silence —
+   * debounce before falling back).
+   */
+  public hasEverTrackedSegment(): boolean {
+    return this.hasTrackedAnySegment
   }
 
   /**
