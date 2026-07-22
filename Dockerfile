@@ -147,8 +147,8 @@ pactl set-default-sink virtual_speaker\n\
 pactl set-sink-volume virtual_speaker 100%\n\
 # 10ms latency offset gives PulseAudio buffer headroom against CPU\n\
 # contention (x264 CPA bursts) — recording doesn't need sub-ms latency.\n\
-pactl set-sink-latency-offset virtual_speaker 10000 2>/dev/null || true\n\
-pactl set-source-latency-offset virtual_speaker.monitor 10000 2>/dev/null || true\n\
+pactl set-sink-latency-offset virtual_speaker 10000 2>/dev/null || echo '[pulse] failed to set sink latency-offset — may be unsupported on this PulseAudio version' >&2\n\
+pactl set-source-latency-offset virtual_speaker.monitor 10000 2>/dev/null || echo '[pulse] failed to set source-monitor latency-offset — may be unsupported on this PulseAudio version' >&2\n\
 \n\
 # speex-float-3 balances quality and CPU (vs speex-float-10) — speech audio is\n\
 # not perceptibly different and the lower CPU leaves headroom for x264 encoding.\n\

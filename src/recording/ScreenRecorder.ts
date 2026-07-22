@@ -188,13 +188,21 @@ export class ScreenRecorder extends EventEmitter {
       // xrun/click at recording start (especially on new pods where the
       // sink was just created and no audio has flowed yet).
       try {
-        await execAsync(
-          `ffmpeg -f lavfi -i anullsrc=r=48000:cl=mono -t 0.3 -f pulse ${VIRTUAL_SPEAKER} -y 2>/dev/null`,
-          { timeout: 5000 }
-        )
+        const primeFfmpeg = spawn("ffmpeg", [
+          "-f", "lavfi",
+          "-i", "anullsrc=r=48000:cl=mono",
+          "-t", "0.3",
+          "-f", "pulse",
+          VIRTUAL_SPEAKER,
+          "-y"
+        ], { stdio: "ignore", timeout: 5000 })
+        await new Promise<void>((resolve) => {
+          primeFfmpeg.on("close", () => resolve())
+          primeFfmpeg.on("error", () => resolve())
+        })
       } catch (_e) {
         // best-effort — recording still works even if priming fails
-          console.warn("[ScreenRecorder] audio buffer priming failed — initial capture may have xrun", _e)
+        console.warn("[ScreenRecorder] audio buffer priming failed — initial capture may have xrun", _e)
       }
 
       const ffmpegArgs = this.buildNativeFFmpegArgs()
