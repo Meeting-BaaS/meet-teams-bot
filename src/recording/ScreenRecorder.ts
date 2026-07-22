@@ -182,6 +182,21 @@ export class ScreenRecorder extends EventEmitter {
       // Wait for audio devices to be ready before starting FFmpeg
       await this.waitForAudioDevices()
 
+      // Prime the PulseAudio monitor buffer with a short silent burst so
+      // FFmpeg doesn't read an empty buffer on its first capture — a cold
+      // PulseAudio null-sink has zero samples buffered, causing an initial
+      // xrun/click at recording start (especially on new pods where the
+      // sink was just created and no audio has flowed yet).
+      try {
+        await execAsync(
+          `ffmpeg -f lavfi -i anullsrc=r=48000:cl=mono -t 0.3 -f pulse ${VIRTUAL_SPEAKER} -y 2>/dev/null`,
+          { timeout: 5000 }
+        )
+      } catch (_e) {
+        // best-effort — recording still works even if priming fails
+          console.warn("[ScreenRecorder] audio buffer priming failed — initial capture may have xrun", _e)
+      }
+
       const ffmpegArgs = this.buildNativeFFmpegArgs()
 
       this.ffmpegProcess = spawn("ffmpeg", ffmpegArgs, {
