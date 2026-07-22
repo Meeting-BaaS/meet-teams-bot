@@ -196,9 +196,12 @@ export class ScreenRecorder extends EventEmitter {
           VIRTUAL_SPEAKER,
           "-y"
         ], { stdio: "ignore", timeout: 5000 })
-        await new Promise<void>((resolve) => {
-          primeFfmpeg.on("close", () => resolve())
-          primeFfmpeg.on("error", () => resolve())
+        await new Promise<void>((resolve, reject) => {
+          primeFfmpeg.on("close", (code, signal) => {
+            if (code === 0 && !signal) return resolve()
+            reject(new Error(`ffmpeg prime exited code=${code} signal=${signal}`))
+          })
+          primeFfmpeg.on("error", (err) => reject(err))
         })
       } catch (_e) {
         // best-effort — recording still works even if priming fails
