@@ -120,7 +120,7 @@ mkdir -p /etc/pulse\n\
 cat > /etc/pulse/daemon.conf <<PULSECONF\n\
 default-sample-rate = 48000\n\
 default-sample-format = s16le\n\
-default-fragments = 8\n\
+default-fragments = 12\n\
 default-fragment-size-msec = 10\n\
 resample-method = speex-float-3\n\
 PULSECONF\n\
@@ -145,8 +145,10 @@ pactl set-default-sink virtual_speaker\n\
 \n\
 # Optimize audio quality and latency\n\
 pactl set-sink-volume virtual_speaker 100%\n\
-pactl set-sink-latency-offset virtual_speaker 0 2>/dev/null || true\n\
-pactl set-source-latency-offset virtual_speaker.monitor 0 2>/dev/null || true\n\
+# 10ms latency offset gives PulseAudio buffer headroom against CPU\n\
+# contention (x264 CPA bursts) — recording doesn't need sub-ms latency.\n\
+pactl set-sink-latency-offset virtual_speaker 10000 2>/dev/null || true\n\
+pactl set-source-latency-offset virtual_speaker.monitor 10000 2>/dev/null || true\n\
 \n\
 # speex-float-3 balances quality and CPU (vs speex-float-10) — speech audio is\n\
 # not perceptibly different and the lower CPU leaves headroom for x264 encoding.\n\
