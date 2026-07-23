@@ -160,7 +160,17 @@ export class MeetProvider implements MeetingProviderInterface {
           console.log(
             `[Meet][SSO] Landed on ${landedUrl} — navigating to meeting URL (attempt ${attempt}/3)`
           )
-          await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 })
+          try {
+            await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 })
+          } catch (navError) {
+            // page.goto rejects on timeout / navigation failure. Don't let a
+            // single failed attempt abort the whole SSO landing sequence — log
+            // and keep trying; a later attempt often lands on meet.google.com.
+            console.warn(
+              `[Meet][SSO] navigation attempt ${attempt}/3 failed (continuing):`,
+              formatError(navError)
+            )
+          }
         }
       }
 

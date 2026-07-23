@@ -85,16 +85,22 @@ export function markProxyDisabledReason(reason: string): void {
 
 export function getProxyTelemetry(): ProxyTelemetry {
   const configured = Boolean(envVars.RESIDENTIAL_PROXY_TEMPLATE)
+  // Report UPSTREAM routing state, not local-server existence. The local proxy
+  // server stays alive after setDirectMode() (useUpstream=false) so it can be
+  // flipped back on — but while direct, traffic does NOT go through the exit,
+  // so enabled/mode/exit_* must reflect useUpstream or the detection telemetry
+  // records a proxied join that was actually direct.
+  const upstreamEnabled = server !== null && useUpstream
   return {
-    enabled: server !== null,
-    mode: server !== null ? "selective" : "none",
+    enabled: upstreamEnabled,
+    mode: upstreamEnabled ? "selective" : "none",
     provider: configured ? inferProxyProvider() : null,
     type: configured ? "residential" : null,
-    exit_ip: server !== null ? exitIp : null,
-    exit_country: server !== null ? (exitGeo?.country ?? null) : null,
-    exit_timezone: server !== null ? (exitGeo?.timezone ?? null) : null,
+    exit_ip: upstreamEnabled ? exitIp : null,
+    exit_country: upstreamEnabled ? (exitGeo?.country ?? null) : null,
+    exit_timezone: upstreamEnabled ? (exitGeo?.timezone ?? null) : null,
     session_id: currentSessionId,
-    disabled_reason: server === null ? proxyDisabledReason : null
+    disabled_reason: upstreamEnabled ? null : proxyDisabledReason
   }
 }
 
