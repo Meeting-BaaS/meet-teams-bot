@@ -227,6 +227,13 @@ export function setupConsoleLogger() {
 }
 
 export async function uploadScreenshotsToS3(): Promise<void> {
+  // Compliance belt-and-braces: audio_only bots no longer capture screenshots
+  // at all (ScreenRecorder skips the ffmpeg image output), but never upload
+  // any that might exist either — the customer opted out of visual capture.
+  if (GLOBAL.get().recording_mode === "audio_only") {
+    console.log("Skipping screenshot upload — audio_only mode (no visual capture)")
+    return
+  }
   const pathManager = PathManager.getInstance()
   const logPath = currentBotLogFile || pathManager.getIdentifier()
 
