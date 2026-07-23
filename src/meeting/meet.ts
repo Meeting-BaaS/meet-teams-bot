@@ -134,10 +134,23 @@ export class MeetProvider implements MeetingProviderInterface {
       // redirect before waiting for that heavy page to reach networkidle (~20-30s).
       // For unauthenticated bots: networkidle as before.
       const isSsoBot = !!GLOBAL.get().meet_sso_config
-      const response = await page.goto(link, {
-        waitUntil: isSsoBot ? "domcontentloaded" : "networkidle",
-        timeout: 30000
-      })
+      let response: Awaited<ReturnType<typeof page.goto>> = null
+      try {
+        response = await page.goto(link, {
+          waitUntil: isSsoBot ? "domcontentloaded" : "networkidle",
+          timeout: 30000
+        })
+      } catch (navError) {
+        // page.goto rejects on timeout / nav failure. For SSO bots fall through
+        // to the in-process retry loop below (which re-navigates up to 3×)
+        // instead of aborting the whole join to a full SQS requeue. Non-SSO
+        // bots keep the original behavior: rethrow → outer retryable handler.
+        if (!isSsoBot) throw navError
+        console.warn(
+          "[Meet][SSO] initial navigation failed (SSO retry loop will re-navigate):",
+          formatError(navError)
+        )
+      }
       console.log("Navigation completed")
 
       // Catch transient Google edge failures (503/502/504): the page resolves with
