@@ -272,7 +272,7 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     // ========================================
     "--use-pulseaudio", // Force Chromium to use PulseAudio
     "--enable-audio-service-sandbox=false", // Disable audio service sandbox for virtual devices
-    "--audio-buffer-size=2048", // Set buffer size for better audio handling
+    "--audio-buffer-size=8192", // ~170ms at 48kHz — absorbs CPU contention xruns
     "--disable-features=AudioServiceSandbox", // Additional sandbox disable
     "--autoplay-policy=no-user-gesture-required", // Allow autoplay for meeting platforms
 
