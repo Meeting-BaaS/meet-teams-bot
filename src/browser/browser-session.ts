@@ -125,8 +125,28 @@ export async function establishBrowserSession(
               session.proxyUrl = rotated
             }
             // Region exhausted and still burned → outer loop advances to the
-            // next selected region. All regions exhausted → proceed with the
-            // last residential exit (fail-soft; a burned IP may still admit).
+            // next selected region.
+          }
+
+          // Every selected region was ASN-burned. Rather than launch on a
+          // known-burned pinned exit, drop the geo pin entirely for one random
+          // residential exit (a different ASN pool) — the same final degradation
+          // the regional-outage path takes (skipGeoPin). Only when we still hold
+          // a live proxy (a null rotation above already fell back to direct).
+          if (!cleared && session.proxyUrl) {
+            const asn = getExitAsn()
+            if (asn !== null && burned.includes(asn)) {
+              console.warn(
+                "[BrowserSession] all selected regions ASN-burned on Meet — dropping geo pin for a random exit"
+              )
+              const rotated = await startToggleProxy(
+                GLOBAL.get().bot_uuid,
+                retryCount,
+                `${opts.sessionSuffix ?? ""}rNoPin`,
+                { skipGeoPin: true }
+              )
+              session.proxyUrl = rotated ?? undefined
+            }
           }
         }
       }
