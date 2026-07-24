@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from "@playwright/test"
+import { Api } from "../api/methods"
 import { brandingReady } from "../branding"
 import { listenPage } from "../browser/page-logger"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
@@ -106,7 +107,9 @@ export class MeetProvider implements MeetingProviderInterface {
         // CreateMeetingDevice RPC). Must be installed before page.goto so the
         // response listener is in place when the join handshake fires.
         await setupBotDetectionRoute(page, (signal) => {
-          if (signal.detectedAsBot) {
+          if (!signal.decoded) {
+            console.warn("[Meet] ⚠️ Meet bot-detection response could not be decoded")
+          } else if (signal.detectedAsBot) {
             console.error(
               `[Meet] 🚨 Meet flagged this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`
             )
@@ -115,6 +118,7 @@ export class MeetProvider implements MeetingProviderInterface {
               `[Meet] ✅ Meet did NOT flag this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`
             )
           }
+          Api.instance?.reportMeetBotDetection(signal, attempts)
         })
       } catch (error) {
         console.warn(
@@ -130,10 +134,23 @@ export class MeetProvider implements MeetingProviderInterface {
       // redirect before waiting for that heavy page to reach networkidle (~20-30s).
       // For unauthenticated bots: networkidle as before.
       const isSsoBot = !!GLOBAL.get().meet_sso_config
-      const response = await page.goto(link, {
-        waitUntil: isSsoBot ? "domcontentloaded" : "networkidle",
-        timeout: 30000
-      })
+      let response: Awaited<ReturnType<typeof page.goto>> = null
+      try {
+        response = await page.goto(link, {
+          waitUntil: isSsoBot ? "domcontentloaded" : "networkidle",
+          timeout: 30000
+        })
+      } catch (navError) {
+        // page.goto rejects on timeout / nav failure. For SSO bots fall through
+        // to the in-process retry loop below (which re-navigates up to 3×)
+        // instead of aborting the whole join to a full SQS requeue. Non-SSO
+        // bots keep the original behavior: rethrow → outer retryable handler.
+        if (!isSsoBot) throw navError
+        console.warn(
+          "[Meet][SSO] initial navigation failed (SSO retry loop will re-navigate):",
+          formatError(navError)
+        )
+      }
       console.log("Navigation completed")
 
       // Catch transient Google edge failures (503/502/504): the page resolves with
@@ -153,11 +170,21 @@ export class MeetProvider implements MeetingProviderInterface {
         for (let attempt = 1; attempt <= 3; attempt++) {
           const landedUrl = page.url()
           if (landedUrl.includes("meet.google.com")) break
-          console.log(`[Meet][SSO] Landed on ${landedUrl} — navigating to meeting URL (attempt ${attempt}/3)`)
-          await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 })
+          console.log(
+            `[Meet][SSO] Landed on ${landedUrl} — navigating to meeting URL (attempt ${attempt}/3)`
+          )
+          try {
+            await page.goto(link, { waitUntil: "domcontentloaded", timeout: 20_000 })
+          } catch (navError) {
+            // page.goto rejects on timeout / navigation failure. Don't let a
+            // single failed attempt abort the whole SSO landing sequence — log
+            // and keep trying; a later attempt often lands on meet.google.com.
+            console.warn(
+              `[Meet][SSO] navigation attempt ${attempt}/3 failed (continuing):`,
+              formatError(navError)
+            )
+          }
         }
-        // Settled on Meet — wait for the page to fully load.
-        await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => { })
       }
 
       // Check for page freeze after goto (same as Teams)
@@ -381,10 +408,7 @@ export class MeetProvider implements MeetingProviderInterface {
     }
   }
 
-  async findEndMeeting(
-    page: Page,
-    opts?: { ignoreAloneSignals?: boolean }
-  ): Promise<boolean> {
+  async findEndMeeting(page: Page, opts?: { ignoreAloneSignals?: boolean }): Promise<boolean> {
     try {
       try {
         await Promise.race([
