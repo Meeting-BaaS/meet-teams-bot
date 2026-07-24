@@ -43,3 +43,7 @@ buildInfo.json
 
 # stealthfox patched Firefox binary fetched by scripts/fetch-stealthfox.sh (large, external)
 .stealthfox/
+
+# node_modules can be a symlink in worktrees; ignore the bare name too (the
+# trailing-slash pattern above only matches real directories).
+node_modules
