@@ -192,7 +192,10 @@ function logStats(label: string): void {
 export async function startToggleProxy(
   sessionId: string,
   retryCount = 0,
-  sessionSuffix = ""
+  sessionSuffix = "",
+  // Internal: set on the one-shot recursive retry that drops a failing country
+  // pin. Not passed by external callers.
+  opts: { skipGeoPin?: boolean } = {}
 ): Promise<string | null> {
   if (!envVars.RESIDENTIAL_PROXY_TEMPLATE) {
     currentSessionId = null
@@ -212,7 +215,7 @@ export async function startToggleProxy(
   // per-bot region the user picked in settings, falling back to the env
   // default; empty → no pinning (backward compatible). Only alpha-2 letters
   // are accepted so a bad value can't corrupt the auth string.
-  const rawCountry = resolveProxyCountry()
+  const rawCountry = opts.skipGeoPin ? "" : resolveProxyCountry()
   const country = /^[a-z]{2}$/i.test(rawCountry) ? rawCountry.toLowerCase() : ""
   const geoParam = country ? `-country-${country}` : ""
   if (country && !envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
@@ -297,6 +300,17 @@ export async function startToggleProxy(
     if (!upstreamOk) {
       await server.close(true).catch(() => {})
       server = null
+      // If a country pin made the exit unreachable (e.g. a regional Decodo
+      // outage — ISP pools are per-country), drop the pin and retry once so the
+      // bot still gets a working residential exit elsewhere instead of forcing
+      // the dead region on every SQS retry. One-shot: the retry sets skipGeoPin
+      // so a genuinely-down upstream can't recurse.
+      if (country && !opts.skipGeoPin) {
+        console.warn(
+          `[ToggleProxy] pinned country ${country} exit unreachable — retrying without the pin`
+        )
+        return startToggleProxy(sessionId, retryCount, sessionSuffix, { skipGeoPin: true })
+      }
       proxyDisabledReason = "upstream_unreachable"
       return null
     }
