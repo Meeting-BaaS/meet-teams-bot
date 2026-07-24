@@ -149,7 +149,7 @@ export class TeamsHtmlCleaner {
           stage.style.left = "0"
           stage.style.width = "100vw"
           stage.style.height = "100vh"
-          stage.style.zIndex = "9998"
+          stage.style.zIndex = "2147483000"
           stage.style.backgroundColor = "black"
         }
 
@@ -158,6 +158,81 @@ export class TeamsHtmlCleaner {
             "[Teams] light: hid",
             hiddenLight,
             "chrome element(s); stage promoted:",
+            stage instanceof HTMLElement,
+          )
+        }
+      }
+
+      // The AUTHENTICATED teams.microsoft.com/v2 client differs from BOTH the classic
+      // client and the teams.live.com "light" client. Its chat / people rail renders at
+      // a very high z-index, so cleanLightClient's stage promotion doesn't cover it and
+      // the chat panel (kept open for compose + network capture) shows in the recording.
+      // Here we (a) hide the right rail / chat / roster panels and (b) promote the
+      // meeting video stage above everything — falling back to the common ancestor of
+      // the <video> tiles when no known stage tid matches. No-op on other clients.
+      function cleanModernClient(documentRoot: Document) {
+        let hidden = 0
+        const railSelectors = [
+          '[data-tid="chat-pane-list"]',
+          '[data-tid="chat-pane-compose-message-footer"]',
+          '[data-tid="right-rail"]',
+          '[data-tid="calling-right-side-panel"]',
+          '[data-tid="roster-panel"]',
+          '[data-tid="people-panel"]',
+          '[role="complementary"]',
+        ]
+        for (const sel of railSelectors) {
+          documentRoot.querySelectorAll(sel).forEach((el) => {
+            if (!(el instanceof HTMLElement)) return
+            el.style.display = "none"
+            hidden++
+            // Collapse the immediate rail wrapper too, but never a layout root.
+            const parent = el.parentElement
+            if (
+              parent instanceof HTMLElement &&
+              parent.id !== "call-screen-wrapper" &&
+              parent.id !== "root" &&
+              parent.tagName !== "BODY"
+            ) {
+              parent.style.display = "none"
+            }
+          })
+        }
+
+        // Promote the meeting stage to fullscreen, above the chat rail. Prefer known
+        // modern stage tids; fall back to the smallest common ancestor of the video
+        // tiles so this keeps working even if Teams renames the stage container.
+        let stage: Element | null =
+          documentRoot.querySelector('[data-tid="calling-stage"]') ||
+          documentRoot.querySelector('[data-tid="modern-stage"]') ||
+          documentRoot.querySelector('[data-tid="stage-layout"]') ||
+          documentRoot.querySelector('[data-tid="modern-stage-wrapper"]') ||
+          documentRoot.querySelector('[data-tid="only-videos-wrapper"]')
+        if (!(stage instanceof HTMLElement)) {
+          const videos = Array.from(documentRoot.querySelectorAll("video"))
+          if (videos.length > 0) {
+            let common: HTMLElement | null = videos[0].parentElement
+            while (common && !videos.every((v) => (common as HTMLElement).contains(v))) {
+              common = common.parentElement
+            }
+            stage = common
+          }
+        }
+        if (stage instanceof HTMLElement) {
+          stage.style.position = "fixed"
+          stage.style.top = "0"
+          stage.style.left = "0"
+          stage.style.width = "100vw"
+          stage.style.height = "100vh"
+          stage.style.zIndex = "2147483000"
+          stage.style.backgroundColor = "black"
+        }
+
+        if (hidden > 0) {
+          console.log(
+            "[Teams] modern: hid",
+            hidden,
+            "rail element(s); stage promoted:",
             stage instanceof HTMLElement,
           )
         }
@@ -208,6 +283,7 @@ export class TeamsHtmlCleaner {
         }
 
         cleanLightClient(documentRoot)
+        cleanModernClient(documentRoot)
       }
 
       function removeShityHtml() {
@@ -258,6 +334,7 @@ export class TeamsHtmlCleaner {
         }
 
         cleanLightClient(documentRoot)
+        cleanModernClient(documentRoot)
       }
 
       // Execute Teams provider
