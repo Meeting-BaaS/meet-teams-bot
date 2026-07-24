@@ -123,6 +123,12 @@ export class WaitingRoomState extends BaseState {
                       ? MeetingEndReason.TeamsLoginFailedMfaRequired
                       : MeetingEndReason.TeamsLoginFailedTimeout
               GLOBAL.setError(reason)
+              // TIMEOUT is transient (network / Microsoft slowness) — let the SQS
+              // retry try again on a fresh attempt. Credential/captcha/MFA failures
+              // are terminal (the account is auto-disabled) and must NOT retry.
+              if (err.code === "TEAMS_LOGIN_FAILED_TIMEOUT") {
+                GLOBAL.setShouldRetry(true)
+              }
               throw err
             }
           } else {
