@@ -42,5 +42,36 @@ export const TEAMS_STATE_CONFIG: StateDetectionConfig = {
     ],
     threshold: 3,
     checkVisibility: false
+  },
+  // Launcher screen: teams(.microsoft.com|.cloud.microsoft)/dl/launcher/... offers to
+  // open the desktop app; the bot stays on the web by clicking one of these. Several
+  // label/markup variants across tenants and the old/new domains, so match any.
+  continueOnBrowserPattern: {
+    selectors: [
+      'button:has-text("Continue on this browser")',
+      'a:has-text("Continue on this browser")',
+      '[data-tid="joinOnWeb"]',
+      'button:has-text("Join on the web instead")',
+      'a:has-text("Join on the web instead")',
+      'button:has-text("Watch on the web instead")',
+      'button:has-text("Use the web app instead")'
+    ],
+    threshold: 2,
+    checkVisibility: true
+  },
+  // Pre-join screen: where the (signed-in or guest) participant commits to joining.
+  // "Join now" is the common label; the data-tid / id are stable fallbacks if the
+  // visible text is localized or changes.
+  preJoinPattern: {
+    selectors: [
+      'button:has-text("Join now")',
+      'button[data-tid="prejoin-join-button"]',
+      "#prejoin-join-button",
+      'button[aria-label*="Join now" i]',
+      'button[title*="Join now" i]',
+      'button:has-text("Join")'
+    ],
+    threshold: 2,
+    checkVisibility: true
   }
 }
