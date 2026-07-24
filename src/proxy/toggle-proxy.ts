@@ -121,13 +121,23 @@ export function getProxyTelemetry(): ProxyTelemetry {
  * Returns "" for no pinning. The per-bot value is fed via GLOBAL once the
  * settings field ships; until then this resolves to the env default.
  */
-function resolveProxyCountry(): string {
-  // Only let a VALID per-bot value override the env default — an invalid
-  // non-empty value (e.g. "USA") must not win and then get blanked downstream,
-  // silently discarding a valid RESIDENTIAL_PROXY_COUNTRY.
-  const perBot = GLOBAL.get().proxy_country
-  if (typeof perBot === "string" && /^[a-z]{2}$/i.test(perBot.trim())) return perBot.trim()
-  return envVars.RESIDENTIAL_PROXY_COUNTRY
+function resolveProxyCountries(): string[] {
+  // Per-bot set (the team's selected regions) takes precedence over the single
+  // RESIDENTIAL_PROXY_COUNTRY env default. Only valid alpha-2 codes survive, so
+  // a bad value can't corrupt the auth string; deduped, lowercased.
+  const perBot = GLOBAL.get().proxy_countries
+  const list = Array.isArray(perBot) ? perBot : []
+  const valid = list
+    .filter((c): c is string => typeof c === "string" && /^[a-z]{2}$/i.test(c.trim()))
+    .map((c) => c.trim().toLowerCase())
+  if (valid.length > 0) return [...new Set(valid)]
+  const envC = envVars.RESIDENTIAL_PROXY_COUNTRY
+  return /^[a-z]{2}$/i.test(envC) ? [envC.toLowerCase()] : []
+}
+
+/** First selected region not yet tried this attempt, or "" if none remain. */
+function pickProxyCountry(exclude: readonly string[]): string {
+  return resolveProxyCountries().find((c) => !exclude.includes(c)) ?? ""
 }
 
 function inferProxyProvider(): string {
@@ -193,9 +203,10 @@ export async function startToggleProxy(
   sessionId: string,
   retryCount = 0,
   sessionSuffix = "",
-  // Internal: set on the one-shot recursive retry that drops a failing country
-  // pin. Not passed by external callers.
-  opts: { skipGeoPin?: boolean } = {}
+  // Internal recursion state (not passed by external callers): skipGeoPin drops
+  // pinning entirely; triedCountries are the selected regions already attempted
+  // this join, so an outage falls through to the next selected region.
+  opts: { skipGeoPin?: boolean; triedCountries?: string[] } = {}
 ): Promise<string | null> {
   if (!envVars.RESIDENTIAL_PROXY_TEMPLATE) {
     currentSessionId = null
@@ -215,8 +226,7 @@ export async function startToggleProxy(
   // per-bot region the user picked in settings, falling back to the env
   // default; empty → no pinning (backward compatible). Only alpha-2 letters
   // are accepted so a bad value can't corrupt the auth string.
-  const rawCountry = opts.skipGeoPin ? "" : resolveProxyCountry()
-  const country = /^[a-z]{2}$/i.test(rawCountry) ? rawCountry.toLowerCase() : ""
+  const country = opts.skipGeoPin ? "" : pickProxyCountry(opts.triedCountries ?? [])
   const geoParam = country ? `-country-${country}` : ""
   if (country && !envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
     console.warn(
@@ -300,14 +310,22 @@ export async function startToggleProxy(
     if (!upstreamOk) {
       await server.close(true).catch(() => {})
       server = null
-      // If a country pin made the exit unreachable (e.g. a regional Decodo
-      // outage — ISP pools are per-country), drop the pin and retry once so the
-      // bot still gets a working residential exit elsewhere instead of forcing
-      // the dead region on every SQS retry. One-shot: the retry sets skipGeoPin
-      // so a genuinely-down upstream can't recurse.
-      if (country && !opts.skipGeoPin) {
+      // A pinned region's pool is unreachable (e.g. a regional Decodo outage —
+      // ISP pools are per-country). Fall through the team's OTHER selected
+      // regions first, then, once exhausted, drop pinning entirely so the bot
+      // still gets a working residential exit instead of looping on the outage.
+      // Terminates: each step either adds to triedCountries or sets skipGeoPin.
+      if (country) {
+        const tried = [...(opts.triedCountries ?? []), country]
+        const nextCountry = pickProxyCountry(tried)
+        if (nextCountry) {
+          console.warn(
+            `[ToggleProxy] region ${country} exit unreachable — trying next selected region ${nextCountry}`
+          )
+          return startToggleProxy(sessionId, retryCount, sessionSuffix, { triedCountries: tried })
+        }
         console.warn(
-          `[ToggleProxy] pinned country ${country} exit unreachable — retrying without the pin`
+          "[ToggleProxy] all selected regions unreachable — retrying without a region pin"
         )
         return startToggleProxy(sessionId, retryCount, sessionSuffix, { skipGeoPin: true })
       }
