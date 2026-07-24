@@ -59,12 +59,22 @@ export async function establishBrowserSession(
   const retryCount = GLOBAL.getRetryCount()
 
   if (!session.proxyUrl && (platform === "meet" || platform === "zoom")) {
-    // Meet's "last retry runs without proxy" fallback does NOT apply to Zoom:
-    // the browser-join wall blocks datacenter/pod IPs outright, so every Zoom
-    // attempt must egress through the proxy — its retry value comes from cycling
-    // to a fresh exit IP, not from dropping the proxy.
+    // On the last retry, Meet used to run WITHOUT a proxy — but a datacenter/pod
+    // IP is the single strongest bot signal and gets flagged on sight (verified
+    // in prod: the no-proxy attempt is the one that flags). So even the last
+    // attempt egresses through the proxy; it just drops the geo pin for a random
+    // residential exit (skipGeoPin) — a fresh network to shake things up, minus
+    // the datacenter IP. (Zoom never went proxy-less either — its browser-join
+    // wall blocks datacenter IPs outright.)
     if (platform === "meet" && retryCount >= MAX_RETRY_COUNT) {
-      console.log("[BrowserSession] Last retry attempt — running without proxy")
+      console.log("[BrowserSession] Last retry — random residential exit (skipGeoPin)")
+      const proxyUrl = await startToggleProxy(
+        GLOBAL.get().bot_uuid,
+        retryCount,
+        opts.sessionSuffix,
+        { skipGeoPin: true }
+      )
+      if (proxyUrl) session.proxyUrl = proxyUrl
     } else {
       const proxyUrl = await startToggleProxy(
         GLOBAL.get().bot_uuid,
@@ -97,12 +107,24 @@ export async function establishBrowserSession(
             // same exclusion is reused for that region's rotations so they stay
             // in-region and only advance the exit IP.
             const triedCountries = regions.slice(0, r)
+            let lastAsn: number | null = null
             for (let rot = 1; rot <= ROTATIONS_PER_REGION; rot++) {
               const asn = getExitAsn()
               if (asn === null || !burned.includes(asn)) {
                 cleared = true
                 break
               }
+              // A rotation that hands back the SAME burned ASN means this region's
+              // pool won't diversify — a country served by one dominant ISP (e.g.
+              // FR ≈ Orange AS5511). Don't waste the remaining rotations here;
+              // advance to the next selected region instead.
+              if (asn === lastAsn) {
+                console.warn(
+                  `[BrowserSession] ${regions[r] ? `region ${regions[r]}` : "current region"} keeps returning burned ASN ${asn} — skipping to next region`
+                )
+                break
+              }
+              lastAsn = asn
               const where = regions[r] ? `region ${regions[r]}` : "current region"
               console.warn(
                 `[BrowserSession] exit ASN ${asn} is burned on Meet — rotating Decodo session → ${where} (${rot}/${ROTATIONS_PER_REGION})`

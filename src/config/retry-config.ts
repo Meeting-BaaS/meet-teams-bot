@@ -16,8 +16,10 @@ import { envVars } from "./env-vars"
  * deliberately separate cap in a different app. Keep the two independent.
  */
 
-// SQS pod-requeue cap (Meet/Teams default).
-export const MAX_RETRY_COUNT = 2
+// SQS pod-requeue cap (Meet/Teams default). 4 requeues = 5 total attempts, so a
+// bot has several chances to cycle its residential exit IP past a burned network
+// / Meet flag before giving up (same reasoning as the Zoom web cap below).
+export const MAX_RETRY_COUNT = 4
 
 // SQS pod-requeue cap for Zoom web — higher to cycle exit IPs past the
 // probabilistic anti-bot / RTMS wall, which keys on the exit IP's reputation.
