@@ -5,6 +5,26 @@ import { GLOBAL } from "../singleton"
 import { getErrorMessageFromCode, type MeetingEndReason } from "../state-machine/types"
 import axios from "./axios-instance"
 
+/**
+ * Fetch the set of Google-Meet-"burned" exit ASNs (high flagged rate) from the
+ * api-server. Used by the pre-join proxy rotation to avoid landing on a burned
+ * network. Fail-soft: any error returns [] (avoid nothing) rather than blocking
+ * the join.
+ */
+export async function fetchBurnedAsns(): Promise<number[]> {
+  try {
+    const resp = await axios.get("/bot-process/meet-burned-asns", { timeout: 5000 })
+    const asns = (resp.data as { data?: { asns?: unknown } })?.data?.asns
+    return Array.isArray(asns) ? asns.filter((n): n is number => typeof n === "number") : []
+  } catch (error) {
+    console.warn(
+      "[BurnedAsns] fetch failed (avoiding nothing):",
+      error instanceof Error ? error.message : error
+    )
+    return []
+  }
+}
+
 export class Api {
   public static instance: Api | null = null // Singleton class
 

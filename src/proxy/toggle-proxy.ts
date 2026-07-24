@@ -8,6 +8,7 @@ import { HttpsProxyAgent } from "https-proxy-agent"
 import type { ConnectionStats } from "proxy-chain"
 import { Server } from "proxy-chain"
 import { envVars } from "../config/env-vars"
+import { GLOBAL } from "../singleton"
 
 // Allowlist of hosts that route through the residential upstream. Everything
 // else goes direct from the pod IP. Default-direct is intentional: if Google
@@ -61,6 +62,9 @@ let proxyDisabledReason: string | null = null
 // browser can align its locale/timezone with the proxied egress geo instead of a
 // hardcoded en-US/UTC. Null until the exit-IP probe runs.
 let exitGeo: { country: string | null; timezone: string | null } | null = null
+// ASN of the current exit IP (set by logExitIp). The burned-network unit —
+// residential IPs rarely repeat but ASNs do. Null until the probe runs.
+let exitAsn: number | null = null
 
 export type ProxyTelemetry = {
   enabled: boolean
@@ -68,6 +72,7 @@ export type ProxyTelemetry = {
   provider: string | null
   type: "residential" | null
   exit_ip: string | null
+  exit_asn: number | null
   exit_country: string | null
   exit_timezone: string | null
   session_id: string | null
@@ -77,6 +82,11 @@ export type ProxyTelemetry = {
 /** Country code + IANA timezone of the current exit IP, or null until probed. */
 export function getExitGeo(): { country: string | null; timezone: string | null } | null {
   return exitGeo
+}
+
+/** ASN of the current exit IP, or null until the exit-IP probe runs. */
+export function getExitAsn(): number | null {
+  return exitAsn
 }
 
 export function markProxyDisabledReason(reason: string): void {
@@ -97,11 +107,37 @@ export function getProxyTelemetry(): ProxyTelemetry {
     provider: configured ? inferProxyProvider() : null,
     type: configured ? "residential" : null,
     exit_ip: upstreamEnabled ? exitIp : null,
+    exit_asn: upstreamEnabled ? exitAsn : null,
     exit_country: upstreamEnabled ? (exitGeo?.country ?? null) : null,
     exit_timezone: upstreamEnabled ? (exitGeo?.timezone ?? null) : null,
     session_id: currentSessionId,
     disabled_reason: upstreamEnabled ? null : proxyDisabledReason
   }
+}
+
+/**
+ * Country to pin the residential exit to. Per-bot region (set by the user in
+ * settings) takes precedence over the RESIDENTIAL_PROXY_COUNTRY env default.
+ * Returns "" for no pinning. The per-bot value is fed via GLOBAL once the
+ * settings field ships; until then this resolves to the env default.
+ */
+export function resolveProxyCountries(): string[] {
+  // Per-bot set (the team's selected regions) takes precedence over the single
+  // RESIDENTIAL_PROXY_COUNTRY env default. Only valid alpha-2 codes survive, so
+  // a bad value can't corrupt the auth string; deduped, lowercased.
+  const perBot = GLOBAL.get().proxy_countries
+  const list = Array.isArray(perBot) ? perBot : []
+  const valid = list
+    .filter((c): c is string => typeof c === "string" && /^[a-z]{2}$/i.test(c.trim()))
+    .map((c) => c.trim().toLowerCase())
+  if (valid.length > 0) return [...new Set(valid)]
+  const envC = envVars.RESIDENTIAL_PROXY_COUNTRY
+  return /^[a-z]{2}$/i.test(envC) ? [envC.toLowerCase()] : []
+}
+
+/** First selected region not yet tried this attempt, or "" if none remain. */
+function pickProxyCountry(exclude: readonly string[]): string {
+  return resolveProxyCountries().find((c) => !exclude.includes(c)) ?? ""
 }
 
 function inferProxyProvider(): string {
@@ -166,7 +202,11 @@ function logStats(label: string): void {
 export async function startToggleProxy(
   sessionId: string,
   retryCount = 0,
-  sessionSuffix = ""
+  sessionSuffix = "",
+  // Internal recursion state (not passed by external callers): skipGeoPin drops
+  // pinning entirely; triedCountries are the selected regions already attempted
+  // this join, so an outage falls through to the next selected region.
+  opts: { skipGeoPin?: boolean; triedCountries?: string[] } = {}
 ): Promise<string | null> {
   if (!envVars.RESIDENTIAL_PROXY_TEMPLATE) {
     currentSessionId = null
@@ -179,7 +219,27 @@ export async function startToggleProxy(
   // residential IP; sessionSuffix (e.g. "x1") advances the IP again for an
   // in-process retry within the SAME pod without touching retry_count.
   const session = `${sessionId.replace(/-/g, "")}${retryCount}${sessionSuffix}`
-  const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session)
+
+  // Optional geo pinning. Decodo username params are dash-appended and go
+  // BEFORE `-session-`, so the template must carry a `{GEO}` placeholder there
+  // (e.g. `user-<u>{GEO}-session-{SESSION}`). Resolve the country from the
+  // per-bot region the user picked in settings, falling back to the env
+  // default; empty → no pinning (backward compatible). Only alpha-2 letters
+  // are accepted so a bad value can't corrupt the auth string.
+  const country = opts.skipGeoPin ? "" : pickProxyCountry(opts.triedCountries ?? [])
+  const geoParam = country ? `-country-${country}` : ""
+  if (country && !envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
+    console.warn(
+      `[ToggleProxy] country=${country} requested but template has no {GEO} placeholder — proceeding without geo pinning`
+    )
+  }
+  const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session).replaceAll(
+    "{GEO}",
+    geoParam
+  )
+  if (country && envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
+    console.log(`[ToggleProxy] 🌍 Pinning residential exit to country: ${country}`)
+  }
   currentSessionId = session
   proxyDisabledReason = null
   useUpstream = true
@@ -190,7 +250,18 @@ export async function startToggleProxy(
   stats.connectionCount = 0
   proxiedConnectionIds.clear()
   exitIp = null
+  exitAsn = null
   exitGeo = null
+
+  // Re-entrant: the burned-ASN rotation calls startToggleProxy again within the
+  // same pod. Tear down any existing server before creating a new one — otherwise
+  // its listening socket leaks for the pod's lifetime, and a later failure path
+  // (server = null) would leave the browser proxying through an orphaned server
+  // while telemetry reports the join as direct.
+  if (server) {
+    await server.close(true).catch(() => {})
+    server = null
+  }
 
   try {
     server = new Server({
@@ -239,6 +310,25 @@ export async function startToggleProxy(
     if (!upstreamOk) {
       await server.close(true).catch(() => {})
       server = null
+      // A pinned region's pool is unreachable (e.g. a regional Decodo outage —
+      // ISP pools are per-country). Fall through the team's OTHER selected
+      // regions first, then, once exhausted, drop pinning entirely so the bot
+      // still gets a working residential exit instead of looping on the outage.
+      // Terminates: each step either adds to triedCountries or sets skipGeoPin.
+      if (country) {
+        const tried = [...(opts.triedCountries ?? []), country]
+        const nextCountry = pickProxyCountry(tried)
+        if (nextCountry) {
+          console.warn(
+            `[ToggleProxy] region ${country} exit unreachable — trying next selected region ${nextCountry}`
+          )
+          return startToggleProxy(sessionId, retryCount, sessionSuffix, { triedCountries: tried })
+        }
+        console.warn(
+          "[ToggleProxy] all selected regions unreachable — retrying without a region pin"
+        )
+        return startToggleProxy(sessionId, retryCount, sessionSuffix, { skipGeoPin: true })
+      }
       proxyDisabledReason = "upstream_unreachable"
       return null
     }
@@ -279,6 +369,7 @@ async function logExitIp(upstreamProxyUrl: string): Promise<boolean> {
     const d = res.data
     const ip = d.proxy?.ip ?? null
     exitIp = ip
+    exitAsn = d.isp?.asn ?? null
     exitGeo = { country: d.country?.code ?? null, timezone: d.city?.time_zone ?? null }
     const geo = `${d.country?.code ?? "?"}/${d.city?.name ?? "?"}`
     const isp = `${d.isp?.isp ?? "?"} (AS${d.isp?.asn ?? "?"})`

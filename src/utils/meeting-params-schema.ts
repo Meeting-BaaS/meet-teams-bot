@@ -56,6 +56,12 @@ export const BotMessageSchema = object({
   speech_to_text_provider: SpeechToTextProviderSchema.default("none"),
   retry_count: number().int().nonnegative().default(0),
 
+  // ISO-3166 alpha-2 countries the residential proxy exit may pin to, chosen by
+  // the team in settings (api-server passes them through). The bot picks one;
+  // if that region's pool is unreachable it falls through to the next. Empty =
+  // no pinning (env RESIDENTIAL_PROXY_COUNTRY default applies).
+  proxy_countries: array(string()).default([]),
+
   // Meet SSO authenticated bot config — present when api-server assigned a meet_login.
   // Bot uses these to sign in to Google before joining the meeting.
   meet_sso_config: optional(
