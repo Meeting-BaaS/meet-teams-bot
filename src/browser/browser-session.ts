@@ -88,7 +88,14 @@ export async function establishBrowserSession(
               retryCount,
               `${opts.sessionSuffix ?? ""}r${rot}`
             )
-            if (!rotated) break
+            if (!rotated) {
+              // The rotation tore down the previous proxy (startToggleProxy is
+              // now re-entrant) and did not bring a new one up — don't launch
+              // against a dead proxy URL; fall through to a direct Meet join
+              // (the same degradation as the last-retry no-proxy path).
+              session.proxyUrl = undefined
+              break
+            }
             session.proxyUrl = rotated
           }
         }

@@ -221,7 +221,9 @@ export async function startToggleProxy(
     "{GEO}",
     geoParam
   )
-  if (country) console.log(`[ToggleProxy] 🌍 Pinning residential exit to country: ${country}`)
+  if (country && envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
+    console.log(`[ToggleProxy] 🌍 Pinning residential exit to country: ${country}`)
+  }
   currentSessionId = session
   proxyDisabledReason = null
   useUpstream = true
@@ -234,6 +236,16 @@ export async function startToggleProxy(
   exitIp = null
   exitAsn = null
   exitGeo = null
+
+  // Re-entrant: the burned-ASN rotation calls startToggleProxy again within the
+  // same pod. Tear down any existing server before creating a new one — otherwise
+  // its listening socket leaks for the pod's lifetime, and a later failure path
+  // (server = null) would leave the browser proxying through an orphaned server
+  // while telemetry reports the join as direct.
+  if (server) {
+    await server.close(true).catch(() => {})
+    server = null
+  }
 
   try {
     server = new Server({
