@@ -194,8 +194,8 @@ export class Api {
       })
   }
 
-  public reportMetrics(payload: BotMetricsPayload): void {
-    axios({
+  public async reportMetrics(payload: BotMetricsPayload): Promise<void> {
+    await axios({
       method: "POST",
       url: "/bot-process/metrics",
       data: payload,

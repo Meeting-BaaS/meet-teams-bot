@@ -344,7 +344,13 @@ async function handleFailedRecording(): Promise<void> {
         const collector = GLOBAL.getMetricsCollector()
         if (collector.isRunning() && Api.instance) {
           collector.stop()
-          Api.instance.reportMetrics(collector.getPayload())
+          const payload = collector.getPayload()
+          await Promise.race([
+            Api.instance.reportMetrics(payload),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("metrics shutdown timeout")), 3000)
+            )
+          ]).catch(() => {})
         }
       } catch {
         // metrics report is best-effort, never block exit
