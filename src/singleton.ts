@@ -1,4 +1,5 @@
 import { envVars } from "./config/env-vars"
+import { MetricsCollector } from "./services/metrics-collector"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
 import type { ArtifactKey, MeetingParams, Participant, RecordingMode } from "./types"
@@ -393,6 +394,15 @@ class Global {
    */
   public hasDiarizationFallbackTriggered(): boolean {
     return this.hasTriggeredDiarizationFallback
+  }
+
+  private metricsCollector: MetricsCollector | null = null
+
+  public getMetricsCollector(): MetricsCollector {
+    if (!this.metricsCollector) {
+      this.metricsCollector = new MetricsCollector()
+    }
+    return this.metricsCollector
   }
 }
 

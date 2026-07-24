@@ -80,6 +80,8 @@ export class RecordingState extends BaseState {
       // Initialize recording
       await this.initializeRecording()
 
+      GLOBAL.getMetricsCollector().start()
+
       // Set a global timeout for the recording state
       const startTime = Date.now()
       // Note: startTime is already set in in-call state to prevent race conditions

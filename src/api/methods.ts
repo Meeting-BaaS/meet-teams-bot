@@ -3,6 +3,7 @@ import type { MeetBotDetectionSignal } from "../meeting/meet/network-interceptio
 import { getProxyTelemetry } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
 import { getErrorMessageFromCode, type MeetingEndReason } from "../state-machine/types"
+import type { BotMetricsPayload } from "../services/metrics-collector"
 import axios from "./axios-instance"
 
 /**
@@ -191,6 +192,18 @@ export class Api {
           error instanceof Error ? error.message : error
         )
       })
+  }
+
+  public reportMetrics(payload: BotMetricsPayload): void {
+    axios({
+      method: "POST",
+      url: "/bot-process/metrics",
+      data: payload,
+      "axios-retry": { retries: 0 },
+      timeout: 5000
+    }).catch((error) => {
+      console.warn("Failed to report bot metrics (continuing):", error.message)
+    })
   }
 
   // Handle end meeting with retry logic

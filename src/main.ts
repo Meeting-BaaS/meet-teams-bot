@@ -339,6 +339,16 @@ async function handleFailedRecording(): Promise<void> {
       } catch (error) {
         console.error("Failed to upload logs to S3:", formatError(error))
       }
+
+      try {
+        const collector = GLOBAL.getMetricsCollector()
+        if (collector.isRunning() && Api.instance) {
+          collector.stop()
+          Api.instance.reportMetrics(collector.getPayload())
+        }
+      } catch {
+        // metrics report is best-effort, never block exit
+      }
     }
     console.log("exiting instance")
     exit(0)
