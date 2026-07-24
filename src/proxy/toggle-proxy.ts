@@ -122,8 +122,11 @@ export function getProxyTelemetry(): ProxyTelemetry {
  * settings field ships; until then this resolves to the env default.
  */
 function resolveProxyCountry(): string {
+  // Only let a VALID per-bot value override the env default — an invalid
+  // non-empty value (e.g. "USA") must not win and then get blanked downstream,
+  // silently discarding a valid RESIDENTIAL_PROXY_COUNTRY.
   const perBot = GLOBAL.get().proxy_country
-  if (typeof perBot === "string" && perBot.trim()) return perBot.trim()
+  if (typeof perBot === "string" && /^[a-z]{2}$/i.test(perBot.trim())) return perBot.trim()
   return envVars.RESIDENTIAL_PROXY_COUNTRY
 }
 
