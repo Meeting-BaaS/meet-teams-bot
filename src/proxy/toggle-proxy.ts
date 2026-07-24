@@ -8,6 +8,7 @@ import { HttpsProxyAgent } from "https-proxy-agent"
 import type { ConnectionStats } from "proxy-chain"
 import { Server } from "proxy-chain"
 import { envVars } from "../config/env-vars"
+import { GLOBAL } from "../singleton"
 
 // Allowlist of hosts that route through the residential upstream. Everything
 // else goes direct from the pod IP. Default-direct is intentional: if Google
@@ -104,6 +105,18 @@ export function getProxyTelemetry(): ProxyTelemetry {
   }
 }
 
+/**
+ * Country to pin the residential exit to. Per-bot region (set by the user in
+ * settings) takes precedence over the RESIDENTIAL_PROXY_COUNTRY env default.
+ * Returns "" for no pinning. The per-bot value is fed via GLOBAL once the
+ * settings field ships; until then this resolves to the env default.
+ */
+function resolveProxyCountry(): string {
+  const perBot = GLOBAL.get().proxy_country
+  if (typeof perBot === "string" && perBot.trim()) return perBot.trim()
+  return envVars.RESIDENTIAL_PROXY_COUNTRY
+}
+
 function inferProxyProvider(): string {
   try {
     const host = new URL(envVars.RESIDENTIAL_PROXY_TEMPLATE).hostname
@@ -179,7 +192,26 @@ export async function startToggleProxy(
   // residential IP; sessionSuffix (e.g. "x1") advances the IP again for an
   // in-process retry within the SAME pod without touching retry_count.
   const session = `${sessionId.replace(/-/g, "")}${retryCount}${sessionSuffix}`
-  const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session)
+
+  // Optional geo pinning. Decodo username params are dash-appended and go
+  // BEFORE `-session-`, so the template must carry a `{GEO}` placeholder there
+  // (e.g. `user-<u>{GEO}-session-{SESSION}`). Resolve the country from the
+  // per-bot region the user picked in settings, falling back to the env
+  // default; empty → no pinning (backward compatible). Only alpha-2 letters
+  // are accepted so a bad value can't corrupt the auth string.
+  const rawCountry = resolveProxyCountry()
+  const country = /^[a-z]{2}$/i.test(rawCountry) ? rawCountry.toLowerCase() : ""
+  const geoParam = country ? `-country-${country}` : ""
+  if (country && !envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
+    console.warn(
+      `[ToggleProxy] country=${country} requested but template has no {GEO} placeholder — proceeding without geo pinning`
+    )
+  }
+  const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session).replaceAll(
+    "{GEO}",
+    geoParam
+  )
+  if (country) console.log(`[ToggleProxy] 🌍 Pinning residential exit to country: ${country}`)
   currentSessionId = session
   proxyDisabledReason = null
   useUpstream = true
