@@ -61,6 +61,9 @@ let proxyDisabledReason: string | null = null
 // browser can align its locale/timezone with the proxied egress geo instead of a
 // hardcoded en-US/UTC. Null until the exit-IP probe runs.
 let exitGeo: { country: string | null; timezone: string | null } | null = null
+// ASN of the current exit IP (set by logExitIp). The burned-network unit —
+// residential IPs rarely repeat but ASNs do. Null until the probe runs.
+let exitAsn: number | null = null
 
 export type ProxyTelemetry = {
   enabled: boolean
@@ -68,6 +71,7 @@ export type ProxyTelemetry = {
   provider: string | null
   type: "residential" | null
   exit_ip: string | null
+  exit_asn: number | null
   exit_country: string | null
   exit_timezone: string | null
   session_id: string | null
@@ -77,6 +81,11 @@ export type ProxyTelemetry = {
 /** Country code + IANA timezone of the current exit IP, or null until probed. */
 export function getExitGeo(): { country: string | null; timezone: string | null } | null {
   return exitGeo
+}
+
+/** ASN of the current exit IP, or null until the exit-IP probe runs. */
+export function getExitAsn(): number | null {
+  return exitAsn
 }
 
 export function markProxyDisabledReason(reason: string): void {
@@ -97,6 +106,7 @@ export function getProxyTelemetry(): ProxyTelemetry {
     provider: configured ? inferProxyProvider() : null,
     type: configured ? "residential" : null,
     exit_ip: upstreamEnabled ? exitIp : null,
+    exit_asn: upstreamEnabled ? exitAsn : null,
     exit_country: upstreamEnabled ? (exitGeo?.country ?? null) : null,
     exit_timezone: upstreamEnabled ? (exitGeo?.timezone ?? null) : null,
     session_id: currentSessionId,
@@ -190,6 +200,7 @@ export async function startToggleProxy(
   stats.connectionCount = 0
   proxiedConnectionIds.clear()
   exitIp = null
+  exitAsn = null
   exitGeo = null
 
   try {
@@ -279,6 +290,7 @@ async function logExitIp(upstreamProxyUrl: string): Promise<boolean> {
     const d = res.data
     const ip = d.proxy?.ip ?? null
     exitIp = ip
+    exitAsn = d.isp?.asn ?? null
     exitGeo = { country: d.country?.code ?? null, timezone: d.city?.time_zone ?? null }
     const geo = `${d.country?.code ?? "?"}/${d.city?.name ?? "?"}`
     const isp = `${d.isp?.isp ?? "?"} (AS${d.isp?.asn ?? "?"})`

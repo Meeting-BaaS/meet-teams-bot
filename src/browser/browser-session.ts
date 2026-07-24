@@ -1,6 +1,7 @@
 import { execFile } from "child_process"
 import type { BrowserContext } from "@playwright/test"
-import { startToggleProxy, stopToggleProxy } from "../proxy/toggle-proxy"
+import { fetchBurnedAsns } from "../api/methods"
+import { getExitAsn, startToggleProxy, stopToggleProxy } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
 import { MAX_RETRY_COUNT } from "../config/retry-config"
 import { formatError } from "../utils/Logger"
@@ -66,6 +67,32 @@ export async function establishBrowserSession(
         opts.sessionSuffix
       )
       if (proxyUrl) session.proxyUrl = proxyUrl
+
+      // Burned-ASN avoidance (Meet only). startToggleProxy already probed the
+      // exit IP + ASN. If we landed on a network Google is currently flagging,
+      // rotate the Decodo session to a fresh IP BEFORE spending a browser launch
+      // + join on it — cheap because we're still pre-launch. Bounded; fail-soft
+      // (an empty burned list or exhausted rotations just proceeds).
+      if (session.proxyUrl && platform === "meet") {
+        const burned = await fetchBurnedAsns()
+        if (burned.length > 0) {
+          const MAX_ASN_ROTATIONS = 3
+          for (let rot = 1; rot <= MAX_ASN_ROTATIONS; rot++) {
+            const asn = getExitAsn()
+            if (asn === null || !burned.includes(asn)) break
+            console.warn(
+              `[BrowserSession] exit ASN ${asn} is burned on Meet — rotating Decodo session (${rot}/${MAX_ASN_ROTATIONS})`
+            )
+            const rotated = await startToggleProxy(
+              GLOBAL.get().bot_uuid,
+              retryCount,
+              `${opts.sessionSuffix ?? ""}r${rot}`
+            )
+            if (!rotated) break
+            session.proxyUrl = rotated
+          }
+        }
+      }
     }
   }
 
