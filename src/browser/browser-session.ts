@@ -1,7 +1,12 @@
 import { execFile } from "child_process"
 import type { BrowserContext } from "@playwright/test"
 import { fetchBurnedAsns } from "../api/methods"
-import { getExitAsn, startToggleProxy, stopToggleProxy } from "../proxy/toggle-proxy"
+import {
+  getExitAsn,
+  resolveProxyCountries,
+  startToggleProxy,
+  stopToggleProxy
+} from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
 import { MAX_RETRY_COUNT } from "../config/retry-config"
 import { formatError } from "../utils/Logger"
@@ -76,27 +81,52 @@ export async function establishBrowserSession(
       if (session.proxyUrl && platform === "meet") {
         const burned = await fetchBurnedAsns()
         if (burned.length > 0) {
-          const MAX_ASN_ROTATIONS = 3
-          for (let rot = 1; rot <= MAX_ASN_ROTATIONS; rot++) {
-            const asn = getExitAsn()
-            if (asn === null || !burned.includes(asn)) break
-            console.warn(
-              `[BrowserSession] exit ASN ${asn} is burned on Meet — rotating Decodo session (${rot}/${MAX_ASN_ROTATIONS})`
-            )
-            const rotated = await startToggleProxy(
-              GLOBAL.get().bot_uuid,
-              retryCount,
-              `${opts.sessionSuffix ?? ""}r${rot}`
-            )
-            if (!rotated) {
-              // The rotation tore down the previous proxy (startToggleProxy is
-              // now re-entrant) and did not bring a new one up — don't launch
-              // against a dead proxy URL; fall through to a direct Meet join
-              // (the same degradation as the last-retry no-proxy path).
-              session.proxyUrl = undefined
-              break
+          const ROTATIONS_PER_REGION = 3
+          // The team's selected regions, in order ([] = no pin / env default).
+          // Try each region in turn; within a region, rotate the Decodo session
+          // up to N times hunting a non-burned ASN. When a region's pool keeps
+          // handing back burned networks, fall through to the NEXT selected
+          // region before giving up — the same fallthrough contract a regional
+          // outage already gets, so ASN exhaustion no longer strands us on one
+          // region's burned pool.
+          const regions = resolveProxyCountries()
+          const passes = Math.max(regions.length, 1)
+          let cleared = false
+          for (let r = 0; r < passes && !cleared; r++) {
+            // Excluding regions[0..r-1] pins startToggleProxy to region r; the
+            // same exclusion is reused for that region's rotations so they stay
+            // in-region and only advance the exit IP.
+            const triedCountries = regions.slice(0, r)
+            for (let rot = 1; rot <= ROTATIONS_PER_REGION; rot++) {
+              const asn = getExitAsn()
+              if (asn === null || !burned.includes(asn)) {
+                cleared = true
+                break
+              }
+              const where = regions[r] ? `region ${regions[r]}` : "current region"
+              console.warn(
+                `[BrowserSession] exit ASN ${asn} is burned on Meet — rotating Decodo session → ${where} (${rot}/${ROTATIONS_PER_REGION})`
+              )
+              const rotated = await startToggleProxy(
+                GLOBAL.get().bot_uuid,
+                retryCount,
+                `${opts.sessionSuffix ?? ""}r${r}s${rot}`,
+                { triedCountries }
+              )
+              if (!rotated) {
+                // The rotation tore down the previous proxy (startToggleProxy is
+                // now re-entrant) and did not bring a new one up — don't launch
+                // against a dead proxy URL; fall through to a direct Meet join
+                // (the same degradation as the last-retry no-proxy path).
+                session.proxyUrl = undefined
+                cleared = true
+                break
+              }
+              session.proxyUrl = rotated
             }
-            session.proxyUrl = rotated
+            // Region exhausted and still burned → outer loop advances to the
+            // next selected region. All regions exhausted → proceed with the
+            // last residential exit (fail-soft; a burned IP may still admit).
           }
         }
       }

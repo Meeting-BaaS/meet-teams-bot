@@ -121,7 +121,7 @@ export function getProxyTelemetry(): ProxyTelemetry {
  * Returns "" for no pinning. The per-bot value is fed via GLOBAL once the
  * settings field ships; until then this resolves to the env default.
  */
-function resolveProxyCountries(): string[] {
+export function resolveProxyCountries(): string[] {
   // Per-bot set (the team's selected regions) takes precedence over the single
   // RESIDENTIAL_PROXY_COUNTRY env default. Only valid alpha-2 codes survive, so
   // a bad value can't corrupt the auth string; deduped, lowercased.
