@@ -187,6 +187,12 @@ class Global {
     }
   }
 
+  public clearTeamsLoginConfig(): void {
+    if (this.meetingParams) {
+      this.meetingParams.teams_login_config = null
+    }
+  }
+
   // NEW: Retry flag methods
   public setShouldRetry(value: boolean): void {
     this.shouldRetry = value

@@ -5,7 +5,7 @@ import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/teamsUrlParser"
 import { formatError } from "../utils/Logger"
-import { createStateDetector } from "../utils/meeting-state-detector"
+import { createStateDetector, patternLocator } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from "./teams/audio-capture"
 import { TEAMS_STATE_CONFIG } from "./teams-state-config"
@@ -84,7 +84,29 @@ export class TeamsProvider implements MeetingProviderInterface {
     attempts = 0
   ): Promise<Page> {
     const url = new URL(link)
-    const page = await browserContext.newPage()
+
+    // Authenticated Teams bots: reuse the page the sign-in flow left open on
+    // teams.microsoft.com (it holds the live MSAL session). Opening a FRESH page
+    // forces a silent re-auth that loses the race to the meeting redirect and lands
+    // on the anonymous /light-meetings launcher (anon=true → guest/name prompt).
+    // Reusing the already-signed-in tab is how a human joins. Anonymous bots (no
+    // teams_login_config) open a fresh page exactly as before.
+    // Match every Teams host: the signed-in page is bounced from teams.microsoft.com
+    // to teams.cloud.microsoft (the ocdiRedirect migration), so a teams.microsoft.com-
+    // only filter misses the authenticated tab entirely and we fall back to a fresh
+    // page — which re-auths, loses the race, and joins anonymously.
+    const isAuthenticatedTeams = Boolean(GLOBAL.get().teams_login_config)
+    const reusablePage = isAuthenticatedTeams
+      ? browserContext
+          .pages()
+          .find((p) =>
+            /(teams\.microsoft\.com|teams\.cloud\.microsoft|teams\.live\.com)/i.test(p.url())
+          )
+      : undefined
+    const page = reusablePage ?? (await browserContext.newPage())
+    if (reusablePage) {
+      console.log("[teams] reusing the authenticated sign-in page for the meeting join")
+    }
 
     page.setDefaultTimeout(30000)
     page.setDefaultNavigationTimeout(30000)
@@ -218,7 +240,8 @@ export class TeamsProvider implements MeetingProviderInterface {
         Element.prototype.setAttribute = function (name: string, value: string): void {
           const n = typeof name === "string" ? name.toLowerCase() : ""
           if (
-            ((n === "src" && this.tagName === "IFRAME") || (n === "href" && this.tagName === "A")) &&
+            ((n === "src" && this.tagName === "IFRAME") ||
+              (n === "href" && this.tagName === "A")) &&
             isExternal(value)
           ) {
             log(`setAttribute:${n}`, String(value))
@@ -247,6 +270,53 @@ export class TeamsProvider implements MeetingProviderInterface {
         },
         true
       )
+
+      // Statically-parsed <iframe src="scheme:…"> / <a href="scheme:…"> from the
+      // SERVER HTML never hit the JS src/href setters or setAttribute above — the
+      // parser sets them natively. The Teams launcher ships exactly this: a static
+      // <iframe id="teamsLauncher" src="msteams:…"> that fires Chromium's tab-modal
+      // "Open Microsoft Teams?" dialog and freezes the join. Neutralise such nodes
+      // the instant they're inserted (MutationObserver microtask fires before the
+      // browser processes the pending subframe navigation), and sweep any already
+      // present. Kept scoped to external (non-http) schemes via isExternal().
+      const neutralise = (el: Element): void => {
+        try {
+          if (el.tagName === "IFRAME" && isExternal(el.getAttribute("src"))) {
+            log("static-iframe.src", String(el.getAttribute("src")))
+            ;(el as HTMLIFrameElement).src = "about:blank"
+            el.remove()
+          } else if (el.tagName === "A" && isExternal(el.getAttribute("href"))) {
+            log("static-anchor.href", String(el.getAttribute("href")))
+            el.removeAttribute("href")
+          }
+        } catch (_e) {
+          /* best-effort */
+        }
+      }
+      const sweep = (root: ParentNode | null): void => {
+        try {
+          root?.querySelectorAll?.("iframe[src], a[href]").forEach(neutralise)
+        } catch (_e) {
+          /* best-effort */
+        }
+      }
+      const mo = new MutationObserver((records: MutationRecord[]) => {
+        for (const rec of records) {
+          rec.addedNodes.forEach((node: Node) => {
+            if (node instanceof Element) {
+              neutralise(node)
+              sweep(node)
+            }
+          })
+        }
+      })
+      try {
+        mo.observe(document, { childList: true, subtree: true })
+      } catch (_e) {
+        /* document not observable yet — retry when the tree exists */
+        document.addEventListener("DOMContentLoaded", () => sweep(document))
+      }
+      sweep(document)
     })
 
     // Audio track layer for track detection
@@ -297,9 +367,11 @@ export class TeamsProvider implements MeetingProviderInterface {
                   const text = stripHtml(message.content)
                   if (!text) continue
 
-
                   // Filter out Teams system/metadata messages
-                  if (text.includes("\n") && (text.includes("callEnded") || text.includes("api.flightproxy"))) {
+                  if (
+                    text.includes("\n") &&
+                    (text.includes("callEnded") || text.includes("api.flightproxy"))
+                  ) {
                     continue
                   }
 
@@ -462,6 +534,12 @@ export class TeamsProvider implements MeetingProviderInterface {
     const htmlSnapshot = HtmlSnapshotService.getInstance()
     await htmlSnapshot.captureSnapshot(page, "teams_join_meeting_start")
 
+    // Authenticated bots go through the FULL Teams web pre-join (Continue on this
+    // browser → Join now). The "Continue without audio or video" button is a
+    // light/anonymous-interface prompt that never appears there, so its extra retry
+    // loops below are skipped for authenticated bots (they were pure dead wait).
+    const isAuthenticatedTeams = Boolean(GLOBAL.get().teams_login_config)
+
     try {
       await ensurePageLoaded(page)
     } catch (error) {
@@ -470,8 +548,54 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
 
     try {
-      // Try multiple approaches to handle Teams button scenarios
-      const maxAttempts = 15 // Increased for better reliability
+      // Authenticated bots: page-based pre-join driven by TEAMS_STATE_CONFIG's
+      // multi-selector patterns (launcher "Continue on this browser" → pre-join
+      // "Join now"). Wait for the indicator to be visible, then click through
+      // Playwright so CloakBrowser's humanized click applies — no blind retry loop.
+      // (Anonymous/other interfaces fall through to the generic button loop below.)
+      if (isAuthenticatedTeams) {
+        const continuePat = TEAMS_STATE_CONFIG.continueOnBrowserPattern
+        const preJoinPat = TEAMS_STATE_CONFIG.preJoinPattern
+
+        // This link may open the launcher OR land straight on the pre-join.
+        if (continuePat && preJoinPat) {
+          await patternLocator(page, continuePat)
+            .or(patternLocator(page, preJoinPat))
+            .first()
+            .waitFor({ state: "visible", timeout: 30_000 })
+            .catch(() => {})
+        }
+        if (await isOnMicrosoftLoginPage(page)) throw new Error("LoginRequired")
+
+        // On the launcher, click through to the web pre-join, then wait for it.
+        const onLauncher =
+          !!continuePat &&
+          (await patternLocator(page, continuePat)
+            .first()
+            .isVisible()
+            .catch(() => false))
+        if (onLauncher && continuePat) {
+          await patternLocator(page, continuePat)
+            .first()
+            .click({ timeout: 3_000 })
+            .then(() => console.log('✅ [teams] clicked "Continue on this browser"'))
+            .catch((e) =>
+              console.warn(`[teams] continue-on-browser click failed: ${formatError(e)}`)
+            )
+          if (preJoinPat) {
+            await patternLocator(page, preJoinPat)
+              .first()
+              .waitFor({ state: "visible", timeout: 30_000 })
+              .catch(() => {})
+          }
+        } else {
+          console.log("✅ [teams] already at the pre-join (Join now) screen")
+        }
+      }
+
+      // Try multiple approaches to handle Teams button scenarios (anonymous/other
+      // interfaces). Authenticated bots handled the pre-join page-based above, so skip.
+      const maxAttempts = isAuthenticatedTeams ? 0 : 15
 
       for (let i = 0; i < maxAttempts; i++) {
         if (cancelCheck?.()) break
@@ -510,29 +634,32 @@ export class TeamsProvider implements MeetingProviderInterface {
         await sleep(300) // Slightly reduced wait time
       }
 
-      // Extra attempts for "Continue without audio" in light interface
-      console.log('🔄 Extra attempts for "Continue without audio or video"...')
-      for (let i = 0; i < 5; i++) {
-        if (cancelCheck?.()) break
+      // Extra attempts for "Continue without audio" in light interface (skip for
+      // authenticated bots — that button isn't part of the authenticated pre-join).
+      if (!isAuthenticatedTeams) {
+        console.log('🔄 Extra attempts for "Continue without audio or video"...')
+        for (let i = 0; i < 5; i++) {
+          if (cancelCheck?.()) break
 
-        // Check if we've been redirected to a login page
-        if (await isOnMicrosoftLoginPage(page)) {
-          throw new Error("LoginRequired")
-        }
+          // Check if we've been redirected to a login page
+          if (await isOnMicrosoftLoginPage(page)) {
+            throw new Error("LoginRequired")
+          }
 
-        const found = await clickWithInnerText(
-          page,
-          "button",
-          "Continue without audio or video",
-          3,
-          true
-        )
-        if (found) {
-          console.log('✅ Successfully clicked "Continue without audio" (extra attempt)')
-          await sleep(1000)
-          break
+          const found = await clickWithInnerText(
+            page,
+            "button",
+            "Continue without audio or video",
+            3,
+            true
+          )
+          if (found) {
+            console.log('✅ Successfully clicked "Continue without audio" (extra attempt)')
+            await sleep(1000)
+            break
+          }
+          await sleep(500)
         }
-        await sleep(500)
       }
     } catch (e) {
       if (e instanceof Error && e.message === "LoginRequired") {
@@ -553,33 +680,39 @@ export class TeamsProvider implements MeetingProviderInterface {
     )
 
     try {
-      await clickWithInnerText(page, "button", "Join now", 100, false)
+      // Wait for the pre-join "Join now" to render (detection barrier; the real click
+      // happens below). 12 attempts with the capped backoff is up to ~6s if it's slow,
+      // and returns the instant it appears — the old count of 100 could wait minutes.
+      await clickWithInnerText(page, "button", "Join now", 12, false)
     } catch (e) {
       console.warn('Failed to find "Join now" button (first attempt):', e)
     }
 
-    // Additional attempt for "Continue without audio" in case it appears later
-    try {
-      console.log('🔄 Additional attempt for "Continue without audio or video"...')
-      for (let i = 0; i < 3; i++) {
-        if (cancelCheck?.()) break
+    // Additional attempt for "Continue without audio" in case it appears later (skip
+    // for authenticated bots — not part of the authenticated pre-join).
+    if (!isAuthenticatedTeams) {
+      try {
+        console.log('🔄 Additional attempt for "Continue without audio or video"...')
+        for (let i = 0; i < 3; i++) {
+          if (cancelCheck?.()) break
 
-        const found = await clickWithInnerText(
-          page,
-          "button",
-          "Continue without audio or video",
-          2,
-          true
-        )
-        if (found) {
-          console.log('✅ Successfully clicked "Continue without audio" (delayed attempt)')
-          await sleep(1000)
-          break
+          const found = await clickWithInnerText(
+            page,
+            "button",
+            "Continue without audio or video",
+            2,
+            true
+          )
+          if (found) {
+            console.log('✅ Successfully clicked "Continue without audio" (delayed attempt)')
+            await sleep(1000)
+            break
+          }
+          await sleep(500)
         }
-        await sleep(500)
+      } catch (e) {
+        console.warn('Additional "Continue without audio" attempt failed:', e)
       }
-    } catch (e) {
-      console.warn('Additional "Continue without audio" attempt failed:', e)
     }
 
     const streaming_input = GLOBAL.get().streaming_input
@@ -610,14 +743,35 @@ export class TeamsProvider implements MeetingProviderInterface {
 
     // Final stop check before the irreversible "Join now" click
     if (cancelCheck()) {
-      console.log('Stop request detected before clicking Join now — aborting')
+      console.log("Stop request detected before clicking Join now — aborting")
       GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
       throw new Error("Bot stopped before joining meeting")
     }
 
     try {
-      await typeBotName(page, GLOBAL.get().bot_name, 20)
-      await clickWithInnerText(page, "button", "Join now", 20)
+      // Authenticated bots join AS the signed-in user — the name comes from the
+      // Microsoft account, and the authenticated pre-join has no guest-name field.
+      // Only type a guest name on the anonymous path; the waiting-room clears
+      // teams_login_config when it falls back to anonymous, so its presence here
+      // means sign-in succeeded and we must NOT type a name (doing so is the "types
+      // the name / joins as guest" bug). Respects the fallback config by construction.
+      if (isAuthenticatedTeams) {
+        // Join AS the signed-in user (no guest-name field). Click via the multi-selector
+        // pre-join pattern; fall back to the exact-text click if it didn't resolve.
+        console.log("[teams] authenticated bot — joining as signed-in user (no guest name)")
+        const preJoinPat = TEAMS_STATE_CONFIG.preJoinPattern
+        const clicked = preJoinPat
+          ? await patternLocator(page, preJoinPat)
+              .first()
+              .click({ timeout: 5_000 })
+              .then(() => true)
+              .catch(() => false)
+          : false
+        if (!clicked) await clickWithInnerText(page, "button", "Join now", 20)
+      } else {
+        await typeBotName(page, GLOBAL.get().bot_name, 20)
+        await clickWithInnerText(page, "button", "Join now", 20)
+      }
     } catch (e) {
       console.error('Error during bot name typing or second "Join now" click:', e)
       throw new Error("RetryableError")
@@ -710,10 +864,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
   }
 
-  async findEndMeeting(
-    page: Page,
-    _opts?: { ignoreAloneSignals?: boolean }
-  ): Promise<boolean> {
+  async findEndMeeting(page: Page, _opts?: { ignoreAloneSignals?: boolean }): Promise<boolean> {
     // Teams end-detection (login page / freeze / removed) has no "alone" signal,
     // so _opts.ignoreAloneSignals is not applicable here.
     // Check if we're on a Microsoft login page
@@ -851,8 +1002,7 @@ async function clickWithInnerText(
       // can't land during the join.
       if (continueButton && click) {
         const humanizeActive = Boolean((page as unknown as { _original?: unknown })._original)
-        const humanized =
-          humanizeActive && (await clickButtonHumanized(page, htmlType, innerText))
+        const humanized = humanizeActive && (await clickButtonHumanized(page, htmlType, innerText))
         if (!humanized) {
           await page.evaluate(
             ({ innerText, htmlType }) => {
@@ -873,7 +1023,10 @@ async function clickWithInnerText(
     }
 
     if (!continueButton) {
-      await page.waitForTimeout(100 + i * 100)
+      // Cap the backoff: the old `100 + i * 100` grew unbounded, so a high iteration
+      // count (e.g. 100) waited minutes for a button that was slow or absent. Capped at
+      // 500ms per attempt it stays responsive while still yielding between polls.
+      await page.waitForTimeout(Math.min(100 + i * 100, 500))
     }
 
     // Only log if found or on final attempt

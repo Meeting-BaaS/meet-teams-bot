@@ -31,7 +31,9 @@ function convertLightMeetingToStandard(url: URL): string {
       ...(organizerId ? { Oid: organizerId } : {})
     }
 
-    return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${conversationId}/${messageId}?context=${encodeURIComponent(JSON.stringify(context))}&anon=true`
+    // Authenticated bots join as the signed-in user; only anonymous bots pass anon=true.
+    const anonSuffix = GLOBAL.get().teams_login_config ? "" : "&anon=true"
+    return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${conversationId}/${messageId}?context=${encodeURIComponent(JSON.stringify(context))}${anonSuffix}`
   } catch (e) {
     console.error("🥕❌ Error converting light meeting URL:", formatError(e))
     GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
@@ -47,6 +49,14 @@ function transformTeamsLink(originalLink: string): string {
     }
 
     const url = new URL(originalLink)
+
+    // NOTE on authenticated bots: teams.microsoft.com/meet/<code> server-redirects to
+    // the "anon=true" launcher even for a signed-in user — but that's just the launcher
+    // shell. A human signed into Teams who opens this exact raw link clicks "Continue on
+    // this browser" and joins AUTHENTICATED, because the browser session (login.micro-
+    // softonline.com + teams cookies) carries through. So we pass the raw /meet/ link
+    // UNCHANGED and let the signed-in page + "Continue on this browser" do the rest.
+    // (An earlier /v2/#/meet/<code> rewrite was unverified and did not help.)
 
     // Handle light-meetings format
     if (url.pathname.includes("/light-meetings/launch")) {
@@ -65,8 +75,10 @@ function transformTeamsLink(originalLink: string): string {
 
     const [_, threadId, timestamp, context] = match
 
-    // Build the working link format
-    return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${threadId}/${timestamp}?context=${context}&anon=true`
+    // Build the working link format. Authenticated bots join as the signed-in user;
+    // only anonymous bots pass anon=true.
+    const anonSuffix = GLOBAL.get().teams_login_config ? "" : "&anon=true"
+    return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${threadId}/${timestamp}?context=${context}${anonSuffix}`
   } catch (error) {
     console.error("Error transforming Teams link:", formatError(error))
     return originalLink

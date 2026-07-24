@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test"
+import type { Locator, Page } from "@playwright/test"
 import type { MeetingEndReason } from "../state-machine/types"
 
 /**
@@ -30,6 +30,11 @@ export type StateDetectionConfig = {
   denialPatterns: DenialPattern[]
   waitingRoomPattern?: SelectorPattern
   inMeetingPattern: SelectorPattern
+  // Pre-join flow screens, each identified by any one of several selectors so a
+  // single label/markup change doesn't strand the join. Consumed page-based via
+  // patternLocator() (wait for the first match) rather than a blind retry loop.
+  continueOnBrowserPattern?: SelectorPattern
+  preJoinPattern?: SelectorPattern
 }
 
 export type StateDetectionResult = {
@@ -202,3 +207,13 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
 
   return detector
 }
+
+/**
+ * Fold a SelectorPattern's selectors into ONE Playwright locator that matches ANY of
+ * them (`.or()` chain). Lets callers wait page-based on a whole pattern with
+ * `patternLocator(page, pattern).first().waitFor({ state: "visible" })` — multi-selector
+ * and event-driven (resolves the instant one matches), no polling/retry loop. Throws on
+ * an empty selector list (a pattern must have at least one selector).
+ */
+export const patternLocator = (page: Page, pattern: SelectorPattern): Locator =>
+  pattern.selectors.map((s) => page.locator(s)).reduce((a, b) => a.or(b))

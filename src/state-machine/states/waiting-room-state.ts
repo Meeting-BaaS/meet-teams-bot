@@ -17,6 +17,7 @@ import { handleTimingControl } from "../../utils/timing-control"
 import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
 import { loginToGoogleMeetWithSso, MeetSsoLoginError } from "./google-meet-sso-login"
+import { loginToTeamsWithCredentials, TeamsLoginError } from "./microsoft-teams-login"
 
 export class WaitingRoomState extends BaseState {
   async execute(): StateExecuteResult {
@@ -82,6 +83,52 @@ export class WaitingRoomState extends BaseState {
                   ? MeetingEndReason.MeetLoginFailedSamlRejected
                   : MeetingEndReason.MeetLoginFailedTimeout
               GLOBAL.setError(reason)
+              throw err
+            }
+          } else {
+            throw err
+          }
+        }
+      }
+
+      // Authenticated Teams bot: sign in with the assigned Microsoft account BEFORE
+      // opening the meeting page. Microsoft auth cookies persist for the
+      // teams.microsoft.com navigation that follows.
+      const teamsLoginConfig = GLOBAL.get().teams_login_config
+      const isTeams = GLOBAL.get().meeting_platform === "teams"
+      if (isTeams && teamsLoginConfig) {
+        if (!this.context.browserContext) {
+          throw new Error("Browser context not initialized for Teams login")
+        }
+        try {
+          await loginToTeamsWithCredentials(this.context.browserContext, teamsLoginConfig)
+        } catch (err) {
+          if (err instanceof TeamsLoginError) {
+            if (teamsLoginConfig.fallback === "anonymous") {
+              console.warn(
+                `[teams-login] login failed (${err.code}): ${err.message}. Falling back to anonymous join.`
+              )
+              GLOBAL.clearTeamsLoginConfig()
+              // Continue — openMeetingPage runs next as an unauthenticated bot.
+            } else {
+              console.error(
+                `[teams-login] login failed (${err.code}): ${err.message}. Reporting failure to api-server.`
+              )
+              const reason =
+                err.code === "TEAMS_LOGIN_FAILED_INVALID_CREDENTIALS"
+                  ? MeetingEndReason.TeamsLoginFailedInvalidCredentials
+                  : err.code === "TEAMS_LOGIN_FAILED_CAPTCHA"
+                    ? MeetingEndReason.TeamsLoginFailedCaptcha
+                    : err.code === "TEAMS_LOGIN_FAILED_MFA_REQUIRED"
+                      ? MeetingEndReason.TeamsLoginFailedMfaRequired
+                      : MeetingEndReason.TeamsLoginFailedTimeout
+              GLOBAL.setError(reason)
+              // TIMEOUT is transient (network / Microsoft slowness) — let the SQS
+              // retry try again on a fresh attempt. Credential/captcha/MFA failures
+              // are terminal (the account is auto-disabled) and must NOT retry.
+              if (err.code === "TEAMS_LOGIN_FAILED_TIMEOUT") {
+                GLOBAL.setShouldRetry(true)
+              }
               throw err
             }
           } else {
