@@ -66,7 +66,20 @@ export async function setupTeamsNetworkInterceptionCallback(
   onSpeakersChange: (payload: NetworkPayload) => void
 ): Promise<boolean> {
   try {
-    await page.exposeFunction("onNetworkSpeakerUpdate", onSpeakersChange)
+    // DIAG: count/log speaker updates reaching Node. Empty diarization means either
+    // none arrive (browser-side data-channel issue — see the [NetworkInterceptor]
+    // datachannel logs) or the write path downstream drops them.
+    let speakerUpdateCount = 0
+    const wrapped = (payload: NetworkPayload) => {
+      speakerUpdateCount++
+      if (speakerUpdateCount <= 30 || speakerUpdateCount % 25 === 0) {
+        console.log(
+          `[Teams][speaker-diag] update #${speakerUpdateCount}: ${JSON.stringify(payload).slice(0, 220)}`
+        )
+      }
+      onSpeakersChange(payload)
+    }
+    await page.exposeFunction("onNetworkSpeakerUpdate", wrapped)
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
     return verifyTeamsNetworkInterception(page)
   } catch (error) {

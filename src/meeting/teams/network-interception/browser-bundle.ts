@@ -402,9 +402,12 @@ export function teamsBrowserInterceptionLogic() {
     {
       const OriginalRTCPeerConnection = (window as any).RTCPeerConnection
       const attachMainChannel = (channel: any) => {
+        // DIAG: log EVERY data-channel label so we can see what the v2 app opens
+        // (empty diarization ⇒ maybe it isn't "main-channel", or the proxy loaded late).
+        console.warn(`${LOG} 📡 datachannel label="${channel?.label}"`)
         if (channel?.label !== "main-channel") return
         channel.addEventListener("message", (event: any) => handleMainChannelEvent(event))
-        debug("🔌 main-channel attached")
+        console.warn(`${LOG} 🔌 main-channel attached`)
       }
       const ProxiedRTCPeerConnection = function (this: any, ...args: any[]) {
         const pc = Reflect.construct(OriginalRTCPeerConnection, args) as RTCPeerConnection
@@ -429,6 +432,7 @@ export function teamsBrowserInterceptionLogic() {
           OriginalRTCPeerConnection.generateCertificate(...a)
       }
       ;(window as any).RTCPeerConnection = ProxiedRTCPeerConnection
+      console.warn(`${LOG} 🔌 RTCPeerConnection proxied (waiting for data channels)`)
     }
 
     // Poll loop for CSRC-based per-participant speaking.
