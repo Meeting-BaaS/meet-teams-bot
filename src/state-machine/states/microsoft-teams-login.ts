@@ -165,6 +165,18 @@ export async function loginToTeamsWithCredentials(
 
 /** One-time fetch of the decrypted credentials for the assigned session. */
 async function resolveCredentials(config: TeamsLoginConfig): Promise<ResolvedCredentials> {
+  // LOCAL TESTING ONLY: if TEAMS_LOGIN_LOCAL_PASSWORD is set, skip the api-server
+  // resolve-session fetch and sign in with login_email + this password directly.
+  // Lets `run_bot.sh` drive an authenticated Teams bot without api-server/SQS.
+  // NEVER set this in a deployed environment.
+  const localPassword = process.env.TEAMS_LOGIN_LOCAL_PASSWORD
+  if (localPassword) {
+    console.warn(
+      `[teams-login] TEAMS_LOGIN_LOCAL_PASSWORD set — LOCAL TEST MODE, using it for ${config.login_email} (skipping resolve-session)`
+    )
+    return { email: config.login_email, password: localPassword }
+  }
+
   const res = await fetch(config.resolve_url, {
     headers: {
       "x-teams-session-id": config.session_id,

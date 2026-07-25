@@ -1,0 +1,30 @@
+{
+    "bot_id": 1,
+    "bot_uuid": "will-be-generated-by-run-bot-sh",
+    "bot_name": "Recording Bot",
+    "bot_image": "https://branding-template.s3.fr-par.scw.cloud/branding_template.png",
+    "meeting_url": "https://teams.microsoft.com/meet/321925760113664?p=0if95sfx8BsKlD4yrv",
+    "meeting_platform": "teams",
+    "entry_message": "Recording bot has joined the meeting",
+    "recording_mode": "speaker_view",
+    "data_retention_days": 30,
+    "transformed_meeting_url": null,
+    "streaming_input": null,
+    "streaming_output": null,
+    "streaming_audio_frequency": 24000,
+    "start_time": 0,
+    "exit_time": 0,
+    "waiting_room_timeout": 600,
+    "no_one_joined_timeout": 600,
+    "silence_timeout": 600,
+    "grace_period": 0,
+    "speech_to_text_provider": "gladia",
+    "retry_count": 0,
+    "teams_login_config": {
+        "session_id": "00000000-0000-4000-8000-000000000000",
+        "login_email": "bot1@kapipass.onmicrosoft.com",
+        "resolve_url": "http://localhost:3001/v2/teams-login/resolve-session",
+        "fallback": "fail"
+    },
+    "extra": {}
+}
