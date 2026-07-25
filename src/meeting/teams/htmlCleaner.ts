@@ -163,6 +163,68 @@ export class TeamsHtmlCleaner {
         }
       }
 
+      // DIAGNOSTIC: dump the live meeting DOM so we can target the exact v2 selectors
+      // for the chat rail, the video stage, and the camera/mic controls. Logged once
+      // at cleaner start; remove once the modern selectors are pinned down.
+      function logCleanerDiag(documentRoot: Document) {
+        try {
+          const win = documentRoot.defaultView || window
+          const lines: string[] = [`[Teams][cleaner-diag] url=${location.href}`]
+          const videos = Array.from(documentRoot.querySelectorAll("video"))
+          lines.push(`videos=${videos.length}`)
+          videos.slice(0, 4).forEach((v, i) => {
+            const chain: string[] = []
+            let n: Element | null = v
+            for (let d = 0; d < 10 && n; d++) {
+              const tid = n.getAttribute("data-tid")
+              chain.push(`${n.tagName}${n.id ? `#${n.id}` : ""}${tid ? `[${tid}]` : ""}`)
+              n = n.parentElement
+            }
+            const r = v.getBoundingClientRect()
+            lines.push(
+              `  video#${i} ${Math.round(r.width)}x${Math.round(r.height)} @${Math.round(r.left)},${Math.round(r.top)} chain=${chain.join(" < ")}`,
+            )
+          })
+          const big: Array<{ tid: string; w: number; h: number; x: number; z: string }> = []
+          documentRoot.querySelectorAll("[data-tid]").forEach((el) => {
+            if (!(el instanceof HTMLElement)) return
+            const r = el.getBoundingClientRect()
+            if (r.width < 150 || r.height < 150) return
+            big.push({
+              tid: el.getAttribute("data-tid") || "",
+              w: Math.round(r.width),
+              h: Math.round(r.height),
+              x: Math.round(r.left),
+              z: win.getComputedStyle(el).zIndex,
+            })
+          })
+          big.sort((a, b) => b.w * b.h - a.w * a.h)
+          lines.push("large-containers (rails/stage):")
+          big.slice(0, 18).forEach((b) => lines.push(`  tid=${b.tid} ${b.w}x${b.h} @x${b.x} z=${b.z}`))
+          const btns: string[] = []
+          documentRoot.querySelectorAll('button, [role="button"]').forEach((el) => {
+            if (!(el instanceof HTMLElement)) return
+            const r = el.getBoundingClientRect()
+            if (r.width === 0 || r.height === 0) return
+            const label = (
+              el.getAttribute("aria-label") ||
+              el.getAttribute("title") ||
+              el.textContent ||
+              ""
+            )
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 40)
+            const tid = el.getAttribute("data-tid")
+            if (label || tid) btns.push(`${tid ? `[${tid}]` : ""} ${label}`.trim())
+          })
+          lines.push(`buttons(${btns.length}): ${JSON.stringify(btns.slice(0, 40))}`)
+          console.log(lines.join("\n"))
+        } catch (e) {
+          console.warn("[Teams][cleaner-diag] failed", e)
+        }
+      }
+
       // The AUTHENTICATED teams.microsoft.com/v2 client differs from BOTH the classic
       // client and the teams.live.com "light" client. Its chat / people rail renders at
       // a very high z-index, so cleanLightClient's stage promotion doesn't cover it and
