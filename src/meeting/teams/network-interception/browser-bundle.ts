@@ -40,6 +40,12 @@ export function teamsBrowserInterceptionLogic() {
     let dominantSpeakerStreamId: string | null = null
     // when true, CSRC is authoritative; when false, fall back to dsh
     let csrcAvailable = false
+    // Watchdog state: when the audio sub-path (dsh + CSRC) never signals
+    // despite an active meeting, the hooks are dead (PC escaped the proxy or
+    // Teams session has no main-channel) — tell the Node side to fall back.
+    let lastAudioPathSignalAt = 0
+    let audioPathDeadReported = false
+    const interceptorInstalledAt = Date.now()
     // CSRC becomes authoritative only after a source maps to a participant.
     let hasObservedCsrcMapping = false
 
@@ -222,6 +228,7 @@ export function teamsBrowserInterceptionLogic() {
           if (item?.type === "dsh") {
             const newDominantStreamId = item.history?.[0]
             if (newDominantStreamId != null) {
+              lastAudioPathSignalAt = Date.now()
               setDominantSpeakerStreamId(newDominantStreamId)
               debug("🗣️ dsh dominant stream", newDominantStreamId)
               // only emit here when CSRC isn't the authoritative source
@@ -298,7 +305,10 @@ export function teamsBrowserInterceptionLogic() {
 
         const recent = contributingSources.filter((cs) => now - cs.timestamp <= 50)
         const mappedIds = getSpeakingParticipantIds(recent)
-        if (mappedIds.size > 0) mappedCsrcThisPoll = true
+        if (mappedIds.size > 0) {
+          mappedCsrcThisPoll = true
+          lastAudioPathSignalAt = Date.now()
+        }
         for (const id of mappedIds) speakingParticipantIds.add(id)
       }
 
@@ -446,6 +456,43 @@ export function teamsBrowserInterceptionLogic() {
     // Poll loop for CSRC-based per-participant speaking.
     const pollInterval = setInterval(pollReceivers, 100)
 
+    // Audio-path watchdog: setup-time verification only proves the hooks were
+    // INSTALLED, not that they see traffic. Observed live (bot 54084d8c): the
+    // roster path worked while dsh + CSRC stayed silent through real speech —
+    // recording fine, zero attributed speakers. If the meeting has other
+    // active participants and the audio sub-path has signalled nothing for
+    // AUDIO_PATH_DEAD_AFTER_MS since install, report it ONCE so the Node side
+    // can fall back to UI-based observation.
+    const AUDIO_PATH_DEAD_AFTER_MS = 45_000
+    const watchdogInterval = setInterval(() => {
+      try {
+        if ((window as any).__teamsNetworkInterceptorStopped) return
+        if (audioPathDeadReported) return
+        if (typeof (window as any).onNetworkSpeakerUpdate !== "function") return
+        const others = Array.from(participantsByDeviceId.values()).filter(
+          (p) => !p.isCurrentUser && p.status === 1
+        )
+        if (others.length < 1) return
+        const sinceSignal =
+          lastAudioPathSignalAt > 0
+            ? Date.now() - lastAudioPathSignalAt
+            : Date.now() - interceptorInstalledAt
+        if (sinceSignal < AUDIO_PATH_DEAD_AFTER_MS) return
+        audioPathDeadReported = true
+        console.warn(
+          `${LOG} 🚨 audio path dead: no dsh/CSRC signal for ${Math.round(sinceSignal / 1000)}s with ${others.length} other participant(s) — requesting UI fallback`
+        )
+        ;(window as any).onNetworkSpeakerUpdate({
+          users: [],
+          timestamp: Date.now(),
+          source: "roster",
+          audioPathDead: true
+        })
+      } catch (e) {
+        console.error(`${LOG} ❌ watchdog error:`, e)
+      }
+    }, 5_000)
+
     // Replay hook: broadcastSpeakerUpdate silently drops emissions until the
     // Node side exposes onNetworkSpeakerUpdate (post-admission). Retained state
     // (roster + dominantSpeakerStreamId) survives, so the Node side calls this
@@ -462,6 +509,7 @@ export function teamsBrowserInterceptionLogic() {
     }
 
     ;(window as any).__teamsStopNetworkInterception = () => {
+      clearInterval(watchdogInterval)
       ;(window as any).__teamsNetworkInterceptorStopped = true
       try {
         clearInterval(pollInterval)

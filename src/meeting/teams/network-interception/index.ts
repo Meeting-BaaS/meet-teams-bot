@@ -22,8 +22,32 @@ declare global {
  * Inject interception scripts; must run BEFORE page.goto() (addInitScript only
  * applies to later navigations).
  */
+// Pages whose console we already forward — avoid duplicate listeners.
+const consoleForwardedPages = new WeakSet<Page>()
+
+/**
+ * Forward the bundle's in-page console lines into the bot log. Without this,
+ * the interceptor's own diagnostics (hooks attached, receivers added,
+ * speaking=[...] transitions, watchdog verdicts) are invisible post-mortem.
+ */
+function forwardInterceptorConsole(page: Page): void {
+  if (consoleForwardedPages.has(page)) return
+  consoleForwardedPages.add(page)
+  page.on("console", (msg) => {
+    try {
+      const text = msg.text()
+      if (text.includes("[NetworkInterceptor][Teams]")) {
+        console.log(`[TeamsPage] ${text}`)
+      }
+    } catch {
+      // console message already disposed — ignore
+    }
+  })
+}
+
 export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<boolean> {
   try {
+    forwardInterceptorConsole(page)
     const pakoPath = require.resolve("pako/dist/pako.min.js")
     await page.addInitScript({ path: pakoPath })
     console.log("[Teams NetworkInterceptor] ✅ pako loaded from file")
@@ -86,6 +110,7 @@ export async function setupTeamsNetworkInterceptionCallback(
       if (interceptionPaused) return
       onSpeakersChange(payload)
     })
+    forwardInterceptorConsole(page)
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
     // Replay the interceptor's retained state to the freshly-bound callback.
     // Emissions before this point were silently dropped (no listener); a

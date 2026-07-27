@@ -17,6 +17,10 @@ export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
   source: "roster" | "audio"
+  // Set by the in-page watchdog when the audio sub-path (dsh main-channel +
+  // CSRC) has produced nothing despite an active multi-participant meeting —
+  // the Node side should fall back to UI-based speaker observation.
+  audioPathDead?: boolean
 }
 
 // --- Teams raw wire shapes (decoded from WebSocket / data-channel) ---

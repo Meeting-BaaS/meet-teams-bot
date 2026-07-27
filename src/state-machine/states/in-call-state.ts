@@ -18,6 +18,7 @@ import { verifyMeetAudioCapture } from '../../meeting/meet/audio-capture'
 
 export class InCallState extends BaseState {
     private isStartingUIObserver = false
+    private teamsNetworkFallbackTriggered: boolean = false
     private lastNetworkSpeakingKey?: string
 
     async execute(): StateExecuteResult {
@@ -231,6 +232,23 @@ export class InCallState extends BaseState {
         )
         const onNetworkSpeakersChange = async (payload: NetworkPayload) => {
             try {
+                // In-page watchdog verdict: audio sub-path (dsh/CSRC) is dead
+                // while the meeting is active. Gate further network payloads
+                // and fall back to UI-based observation — once.
+                if (payload.audioPathDead) {
+                    if (!this.teamsNetworkFallbackTriggered) {
+                        this.teamsNetworkFallbackTriggered = true
+                        console.warn(
+                            '[NetworkSpeaker][Teams] 🚨 Audio path dead — switching to UI-based speaker observation',
+                        )
+                        const { pauseTeamsNetworkInterception } = await import(
+                            '../../meeting/teams/network-interception'
+                        )
+                        pauseTeamsNetworkInterception()
+                        await this.startUIBasedObservation()
+                    }
+                    return
+                }
                 const networkUsers = payload.users as NetworkUser[]
                 const speakingNames = networkUsers
                     .filter((u) => u.isSpeaking)
