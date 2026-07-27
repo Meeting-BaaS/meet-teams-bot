@@ -13,6 +13,7 @@ class Global {
     private soundDetectedInMeeting: boolean = false // True if sound was detected during meeting
     private recordingStartTime: number = 0 // Timestamp when FFmpeg recording started (ms)
     private shouldRetry: boolean = false // Retry flag
+    private recordingFinalized: boolean = false // True once the recording is merged and entering upload
 
     // Cumulative list of participant names seen during the meeting.
     // Used by alone-in-meeting detection as a proof-of-life gate:
@@ -218,6 +219,22 @@ class Global {
         if (value) {
             console.log('🔄 Marking error as retryable')
         }
+    }
+
+    // Phase marker: true once the recording has been MERGED into its final
+    // output and is entering the upload phase. Crash/eviction handlers use it
+    // to decide requeue vs preserve:
+    //   - BEFORE finalize (join, or mid-recording): the only copy lives in
+    //     ephemeral /tmp, which dies with the pod - REQUEUE to re-record.
+    //   - AFTER finalize (uploading): the merged output exists and the
+    //     S3Uploader EFS-fallback + reconciliation salvage any upload failure
+    //     - do NOT requeue (that would re-record and duplicate).
+    public markRecordingFinalized(): void {
+        this.recordingFinalized = true
+    }
+
+    public hasRecordingFinalized(): boolean {
+        return this.recordingFinalized
     }
 
     public getShouldRetry(): boolean {

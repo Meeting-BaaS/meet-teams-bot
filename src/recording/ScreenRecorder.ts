@@ -956,6 +956,11 @@ export class ScreenRecorder extends EventEmitter {
             return
         }
 
+        // The recording is merged and we're now uploading — from here a
+        // crash/eviction must NOT requeue (that would re-record); the
+        // S3Uploader EFS-fallback + reconciliation salvage any upload failure.
+        GLOBAL.markRecordingFinalized()
+
         const identifier = PathManager.getInstance().getIdentifier()
 
         try {

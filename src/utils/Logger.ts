@@ -372,38 +372,63 @@ export async function uploadLogsToS3(options: {
 }
 
 export function setupExitHandler() {
-    process.on('uncaughtException', async (error) => {
-        logger.error('Uncaught Exception: ' + error)
-        if (!GLOBAL.isServerless()) {
-            try {
-                await uploadLogsToS3({ error })
-            } catch (uploadError) {
-                logger.error(
-                    'Failed to upload crash logs to S3: ' + uploadError,
-                )
-            }
+    // Shared crash path for both uncaughtException and unhandledRejection:
+    // log, upload logs, best-effort requeue so the meeting retries instead of
+    // being lost (e.g. a setup ENOENT from a failed child-process spawn), then
+    // ALWAYS exit so the pod never hangs in a broken state.
+    const handleCrash = async (label: string, detail: unknown) => {
+        const error =
+            detail instanceof Error ? detail : new Error(String(detail))
+        logger.error(label + ': ' + String(detail))
+        if (GLOBAL.isServerless()) {
+            process.exit(1)
         }
+        try {
+            await uploadLogsToS3({ error })
+        } catch (uploadError) {
+            logger.error('Failed to upload crash logs to S3: ' + uploadError)
+        }
+        // Phase-aware recovery:
+        //  - AFTER finalize (recording merged, uploading) -> do NOT requeue;
+        //    that would re-record. The merged output + S3Uploader EFS-fallback
+        //    / reconciliation salvage any upload failure.
+        //  - BEFORE finalize (join, or mid-recording where the only copy is
+        //    ephemeral /tmp that dies with the pod) -> requeue to re-record.
+        // Dynamic import avoids a static import cycle (retry-handler ->
+        // singleton).
+        try {
+            if (GLOBAL.hasRecordingFinalized()) {
+                logger.error(
+                    '[Crash] Recording finalized/uploading — preserving artifacts for salvage (NOT requeuing)',
+                )
+            } else {
+                const { buildRetryMessage, requeueToSQS, shouldAttemptRetry } =
+                    await import('./retry-handler')
+                GLOBAL.setShouldRetry(true)
+                if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
+                    await requeueToSQS(buildRetryMessage())
+                    logger.error(
+                        '[Crash] Early crash — requeued to SQS for retry',
+                    )
+                } else {
+                    logger.error('[Crash] Max retries reached — not requeuing')
+                }
+            }
+        } catch (e) {
+            logger.error('[Crash] requeue skipped/failed: ' + e)
+        }
+        process.exit(1)
+    }
+
+    process.on('uncaughtException', (error) => {
+        void handleCrash('Uncaught Exception', error)
     })
 
-    process.on('unhandledRejection', async (reason, promise) => {
-        logger.error(
-            'Unhandled Rejection at: ' + promise + ' reason: ' + reason,
+    process.on('unhandledRejection', (reason, promise) => {
+        // handleCrash exits the process itself after upload/requeue complete.
+        void handleCrash(
+            'Unhandled Rejection at: ' + promise + ' reason',
+            reason,
         )
-        if (!GLOBAL.isServerless()) {
-            try {
-                await uploadLogsToS3({
-                    error:
-                        reason instanceof Error
-                            ? reason
-                            : new Error(String(reason)),
-                })
-            } catch (uploadError) {
-                logger.error(
-                    'Failed to upload crash logs to S3: ' + uploadError,
-                )
-            }
-        }
-        // Force exit to avoid hanging processes
-        process.exit(1)
     })
 }
