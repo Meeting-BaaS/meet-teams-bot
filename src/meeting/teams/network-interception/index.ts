@@ -12,6 +12,7 @@ declare global {
     __teamsNetworkInterceptorMain?: boolean
     __teamsNetworkInterceptorInitialized?: boolean
     __teamsStopNetworkInterception?: () => void
+    __teamsNetworkBroadcastNow?: () => void
     onNetworkSpeakerUpdate?: (payload: NetworkPayload) => void
     pako?: unknown
   }
@@ -86,6 +87,17 @@ export async function setupTeamsNetworkInterceptionCallback(
       onSpeakersChange(payload)
     })
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
+    // Replay the interceptor's retained state to the freshly-bound callback.
+    // Emissions before this point were silently dropped (no listener); a
+    // dominant-speaker transition that fired in that window would otherwise
+    // only surface on the NEXT transition — which a single-speaker meeting may
+    // never produce.
+    try {
+      await page.evaluate(() => window.__teamsNetworkBroadcastNow?.())
+      console.log("[Teams NetworkInterceptor] 🔁 Replayed current speaker state to new callback")
+    } catch (replayError) {
+      console.warn("[Teams NetworkInterceptor] Replay broadcast failed (non-fatal):", replayError)
+    }
     return verifyTeamsNetworkInterception(page)
   } catch (error) {
     console.error("[Teams NetworkInterceptor] Failed to expose function:", error)

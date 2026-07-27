@@ -96,15 +96,19 @@ export function teamsBrowserInterceptionLogic() {
       return JSON.parse((window as any).pako.inflate(byteArray, { to: "string" }))
     }
 
-    function syncVirtualStreamsFromParticipant(participant: any): void {
+    function syncVirtualStreamsFromParticipant(participant: any): boolean {
       const participantId = participant?.details?.id
-      if (!participantId) return
+      if (!participantId) return false
 
+      let mappingChanged = false
       if (participant.state === "inactive") {
         for (const [streamId, vs] of virtualStreams) {
-          if (vs.participantId === participantId) virtualStreams.delete(streamId)
+          if (vs.participantId === participantId) {
+            virtualStreams.delete(streamId)
+            mappingChanged = true
+          }
         }
-        return
+        return mappingChanged
       }
 
       const mediaStreams: any[] = []
@@ -118,6 +122,10 @@ export function teamsBrowserInterceptionLogic() {
 
       for (const mediaStream of mediaStreams) {
         if (mediaStream?.sourceId == null) continue
+        const prevMapping = virtualStreams.get(mediaStream.sourceId.toString())
+        if (!prevMapping || prevMapping.participantId !== participantId) {
+          mappingChanged = true
+        }
         const isActive =
           mediaStream.direction === "sendrecv" || mediaStream.direction === "sendonly"
         virtualStreams.set(mediaStream.sourceId.toString(), {
@@ -129,6 +137,7 @@ export function teamsBrowserInterceptionLogic() {
           isActive
         })
       }
+      return mappingChanged
     }
 
     function handleRosterUpdate(eventDataObject: any): void {
@@ -156,7 +165,10 @@ export function teamsBrowserInterceptionLogic() {
           const previous = participantsByDeviceId.get(deviceId)
           if (!previous || JSON.stringify(previous) !== JSON.stringify(record)) changed = true
           participantsByDeviceId.set(deviceId, record)
-          syncVirtualStreamsFromParticipant(participant)
+          // A stream->participant mapping change must also rebroadcast: a dsh
+          // dominant-speaker event that arrived BEFORE the mapping resolves
+          // stays unattributed until the next dsh otherwise.
+          if (syncVirtualStreamsFromParticipant(participant)) changed = true
         }
 
         debug(`👥 roster: ${participantsByDeviceId.size} participants`)
@@ -433,6 +445,21 @@ export function teamsBrowserInterceptionLogic() {
 
     // Poll loop for CSRC-based per-participant speaking.
     const pollInterval = setInterval(pollReceivers, 100)
+
+    // Replay hook: broadcastSpeakerUpdate silently drops emissions until the
+    // Node side exposes onNetworkSpeakerUpdate (post-admission). Retained state
+    // (roster + dominantSpeakerStreamId) survives, so the Node side calls this
+    // right after binding to receive the current snapshot — otherwise a
+    // dominant-speaker (dsh) transition that fired in the unbound window is
+    // lost until the NEXT transition, which a single-speaker meeting may never
+    // produce (observed live: bot 54084d8c, roster-only events).
+    ;(window as any).__teamsNetworkBroadcastNow = () => {
+      try {
+        broadcastSpeakerUpdate(csrcAvailable ? "audio" : dominantSpeakerStreamId ? "audio" : "roster")
+      } catch (e) {
+        console.error(`${LOG} ❌ Replay broadcast failed:`, e)
+      }
+    }
 
     ;(window as any).__teamsStopNetworkInterception = () => {
       ;(window as any).__teamsNetworkInterceptorStopped = true
