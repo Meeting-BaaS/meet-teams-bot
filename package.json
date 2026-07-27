@@ -21,7 +21,7 @@
         "@playwright/test": "^1.53.0",
         "async": "^3.2.6",
         "axios": "^1.8.2",
-        "cloakbrowser": "^0.3.31",
+        "cloakbrowser": "^0.4.10",
         "express": "4.17.1",
         "https-proxy-agent": "^9.0.0",
         "pako": "^2.1.0",
