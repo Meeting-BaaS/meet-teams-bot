@@ -37,6 +37,21 @@ export function generateBranding(
 
         return {
             wait: new Promise<void>((res) => {
+                // spawn emits 'error' ASYNCHRONOUSLY (e.g. ENOENT when the
+                // script is missing, as in local builds that don't ship
+                // generate_custom_branding.sh). Without a listener that becomes
+                // an uncaught exception at browser launch. Handle it here so
+                // branding just degrades (no camera image) instead of
+                // destabilising the whole bot.
+                command.on('error', (err) => {
+                    command.stdout?.removeListener('data', stdoutListener)
+                    command.stderr?.removeListener('data', stderrListener)
+                    console.warn(
+                        '[Branding] generate_custom_branding.sh could not be spawned — branding skipped:',
+                        err instanceof Error ? err.message : String(err),
+                    )
+                    res()
+                })
                 command.on('close', () => {
                     // Remove event listeners to prevent memory leaks
                     command.stdout.removeListener('data', stdoutListener)
