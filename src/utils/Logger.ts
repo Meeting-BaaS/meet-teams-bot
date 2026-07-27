@@ -356,8 +356,10 @@ export async function uploadLogsToS3(): Promise<void> {
       console.log("No speaker separation log file found at path:", speakerLogPath)
     }
 
-    // Upload screenshots if they are not already uploaded
-    if (GLOBAL.getArtifactKeys().some((artifact) => artifact.type !== "screenshots")) {
+    // Upload screenshots if they are not already uploaded. On failed runs the
+    // artifact-key list is empty, so this must not gate on other artifacts
+    // existing — failures are precisely when the on-disk frames matter most.
+    if (!GLOBAL.getArtifactKeys().some((artifact) => artifact.type === "screenshots")) {
       await uploadScreenshotsToS3()
     }
 
