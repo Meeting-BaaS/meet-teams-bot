@@ -623,11 +623,21 @@ export class RecordingState extends BaseState {
             // active speaker within the silence window, treat the silence as an
             // audio capture failure and do NOT leave. Genuinely empty meetings
             // (no recent DOM speech) still end here.
+            // Only trust the DOM signal when the observer is healthy (delivered
+            // a callback recently), mirroring checkAloneInMeeting — a dead
+            // observer's stale lastSpeakerTime must not suppress the leave
+            // indefinitely.
             const lastSpeakerTime = this.context.lastSpeakerTime
+            const lastCallbackTime =
+                SpeakerManager.getInstance().getLastCallbackTime()
+            const speakerObserverHealthy =
+                lastCallbackTime !== null &&
+                now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
             const domSpeechAgeMs = lastSpeakerTime
                 ? now - lastSpeakerTime
                 : null
             if (
+                speakerObserverHealthy &&
                 domSpeechAgeMs !== null &&
                 domSpeechAgeMs < silenceTimeoutSeconds * 1000
             ) {
