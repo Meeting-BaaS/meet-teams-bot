@@ -144,9 +144,18 @@ async function handleFailedRecording(): Promise<void> {
         )
 
         try {
-            // Build and send retry message to SQS
+            // Build and send retry message to SQS. Claim recovery so a racing
+            // SIGTERM/crash handler doesn't also requeue (double re-record);
+            // release the claim if the send itself fails so another path can
+            // take over instead of standing down on a stuck claim.
             const retryMessage = buildRetryMessage()
-            await requeueToSQS(retryMessage)
+            GLOBAL.claimRecovery()
+            try {
+                await requeueToSQS(retryMessage)
+            } catch (requeueError) {
+                GLOBAL.releaseRecovery()
+                throw requeueError
+            }
 
             // Send webhook with retry indication
             const retryErrorMessage = formatRetryErrorMessage(

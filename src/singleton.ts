@@ -14,6 +14,7 @@ class Global {
     private recordingStartTime: number = 0 // Timestamp when FFmpeg recording started (ms)
     private shouldRetry: boolean = false // Retry flag
     private recordingFinalized: boolean = false // True once the recording is merged and entering upload
+    private recoveryClaimed: boolean = false // True once a termination/crash path owns log-upload + requeue
 
     // Cumulative list of participant names seen during the meeting.
     // Used by alone-in-meeting detection as a proof-of-life gate:
@@ -229,6 +230,34 @@ class Global {
     //   - AFTER finalize (uploading): the merged output exists and the
     //     S3Uploader EFS-fallback + reconciliation salvage any upload failure
     //     - do NOT requeue (that would re-record and duplicate).
+    /**
+     * Take ownership of recovery (log-upload + requeue). The first caller wins
+     * and receives true; every subsequent caller receives false. Claimed ONLY
+     * at the moment of a requeue, never up front — an up-front claim that then
+     * takes a non-requeuing branch starves the other paths. Node's
+     * single-threaded run-to-completion model makes the check-and-set atomic.
+     */
+    public claimRecovery(): boolean {
+        if (this.recoveryClaimed) {
+            return false
+        }
+        this.recoveryClaimed = true
+        return true
+    }
+
+    public isRecoveryClaimed(): boolean {
+        return this.recoveryClaimed
+    }
+
+    /**
+     * Release a claim taken by claimRecovery() when the requeueToSQS() it
+     * guarded FAILED to send — otherwise the stuck claim makes every other
+     * requeue path stand down and the meeting is silently lost.
+     */
+    public releaseRecovery(): void {
+        this.recoveryClaimed = false
+    }
+
     public markRecordingFinalized(): void {
         this.recordingFinalized = true
     }

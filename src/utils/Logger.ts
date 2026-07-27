@@ -380,8 +380,27 @@ export function setupExitHandler() {
         const error =
             detail instanceof Error ? detail : new Error(String(detail))
         logger.error(label + ': ' + String(detail))
-        if (GLOBAL.isServerless()) {
+        // isServerless() throws when meeting params aren't set yet (a very
+        // early startup crash). Guard it so such a crash still terminates the
+        // process — default to the serverless/exit path on any throw.
+        let serverless = true
+        try {
+            serverless = GLOBAL.isServerless()
+        } catch {
+            serverless = true
+        }
+        if (serverless) {
             process.exit(1)
+        }
+        // Do NOT claim recovery up front (starves the primary failure-retry
+        // when a non-requeuing branch wins the claim). Stand down WITHOUT
+        // exiting if a requeue-performing path already owns recovery, and
+        // claim atomically only right before our own requeue.
+        if (GLOBAL.isRecoveryClaimed()) {
+            logger.error(
+                '[Crash] Recovery already owned by a requeuing handler — standing down (owner will exit)',
+            )
+            return
         }
         try {
             await uploadLogsToS3({ error })
@@ -406,10 +425,25 @@ export function setupExitHandler() {
                     await import('./retry-handler')
                 GLOBAL.setShouldRetry(true)
                 if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
-                    await requeueToSQS(buildRetryMessage())
-                    logger.error(
-                        '[Crash] Early crash — requeued to SQS for retry',
-                    )
+                    // Claim immediately before requeuing; if a concurrent path
+                    // grabbed it first it has already requeued — skip to avoid
+                    // a double re-record.
+                    if (GLOBAL.claimRecovery()) {
+                        try {
+                            await requeueToSQS(buildRetryMessage())
+                            logger.error(
+                                '[Crash] Early crash — requeued to SQS for retry',
+                            )
+                        } catch (e) {
+                            // Send failed — release so another path can requeue.
+                            GLOBAL.releaseRecovery()
+                            throw e
+                        }
+                    } else {
+                        logger.error(
+                            '[Crash] Recovery claimed concurrently — skipping duplicate requeue',
+                        )
+                    }
                 } else {
                     logger.error('[Crash] Max retries reached — not requeuing')
                 }
