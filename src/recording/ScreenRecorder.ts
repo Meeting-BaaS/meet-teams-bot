@@ -650,7 +650,7 @@ export class ScreenRecorder extends EventEmitter {
                     console.error(`   🔍 Error details: ${output.trim()}`)
 
                     // Log system resources for diagnostics
-                    this.logSystemResources()
+                    void this.logSystemResources()
 
                     // Emit a critical error event
                     ;(this as EventEmitter).emit('error', {
@@ -694,7 +694,7 @@ export class ScreenRecorder extends EventEmitter {
                     console.warn(`   🔍 Error details: ${output.trim()}`)
 
                     // Log system resource status
-                    this.logSystemResources()
+                    void this.logSystemResources()
 
                     // Only emit warning if enough errors accumulate
                     if (
@@ -1206,27 +1206,31 @@ export class ScreenRecorder extends EventEmitter {
         )
     }
 
-    private logSystemResources(): void {
+    private logSystemResourcesRunning = false
+
+    private async logSystemResources(): Promise<void> {
+        // Re-entrancy guard + async exec: blocking the event loop here
+        // back-pressures FFmpeg's pipes into xruns (same as the audio diags).
+        if (this.logSystemResourcesRunning) return
+        this.logSystemResourcesRunning = true
         try {
-            // Log FFmpeg process count
-            const { execSync } = require('child_process')
-            const ffmpegCount = execSync('pgrep -c ffmpeg || echo 0', {
-                encoding: 'utf8',
-            }).trim()
-            const pulseCount = execSync('pgrep -c pulseaudio || echo 0', {
-                encoding: 'utf8',
-            }).trim()
+            const { stdout: ffmpegOut } = await execAsync(
+                'pgrep -c ffmpeg || echo 0',
+            )
+            const { stdout: pulseOut } = await execAsync(
+                'pgrep -c pulseaudio || echo 0',
+            )
 
             console.warn(
-                `   🔍 System status: FFmpeg processes=${ffmpegCount}, PulseAudio processes=${pulseCount}`,
+                `   🔍 System status: FFmpeg processes=${ffmpegOut.trim()}, PulseAudio processes=${pulseOut.trim()}`,
             )
 
             // Log file descriptor count if available
             try {
-                const fdCount = execSync(`lsof -p ${process.pid} | wc -l`, {
-                    encoding: 'utf8',
-                }).trim()
-                console.warn(`   📁 File descriptors: ${fdCount}`)
+                const { stdout: fdOut } = await execAsync(
+                    `lsof -p ${process.pid} | wc -l`,
+                )
+                console.warn(`   📁 File descriptors: ${fdOut.trim()}`)
             } catch (e) {
                 // Ignore if lsof not available
             }
@@ -1234,6 +1238,8 @@ export class ScreenRecorder extends EventEmitter {
             console.warn(
                 `   ⚠️ Could not gather system resource info: ${error}`,
             )
+        } finally {
+            this.logSystemResourcesRunning = false
         }
     }
 
