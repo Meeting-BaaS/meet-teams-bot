@@ -436,7 +436,15 @@ export class ScreenRecorder extends EventEmitter {
             '-f',
             'pulse',
             '-thread_queue_size',
-            '4096', // Buffer size for audio capture stability
+            // 32768 packets of capture queue: under load (many bots per node,
+            // each also running the x264 encoder) a small queue starves the
+            // audio thread and produces xruns — the "electrified"/crackly
+            // artefact in the recording. Recording isn't latency-critical
+            // (the low-latency sound-level pipe uses its own -flush_packets 1),
+            // so buffer generously.
+            '32768',
+            '-rtbufsize',
+            '128k',
             '-i',
             VIRTUAL_SPEAKER_MONITOR,
 
