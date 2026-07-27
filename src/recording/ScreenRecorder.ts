@@ -434,6 +434,8 @@ export class ScreenRecorder extends EventEmitter {
             'x11grab',
             '-video_size',
             `${res.width}x${res.captureHeight}`,
+            '-thread_queue_size',
+            '1024', // video frames are large; generous without memory bloat
             '-framerate',
             '30',
             '-i',
