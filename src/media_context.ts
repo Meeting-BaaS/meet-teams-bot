@@ -36,9 +36,10 @@ abstract class MediaContext {
             return null
         }
 
-        this.process = spawn('ffmpeg', args, {
+        const child = spawn('ffmpeg', args, {
             stdio: ['pipe', 'pipe', 'pipe'],
         })
+        this.process = child
 
         const stdoutListener = (data: Buffer) => {
             console.log(`[ffmpeg stdout] ${data.toString()}`)
@@ -56,42 +57,53 @@ abstract class MediaContext {
             }
         }
 
-        this.process.stdout.addListener('data', stdoutListener)
-        this.process.stderr.addListener('data', stderrListener)
+        child.stdout.addListener('data', stdoutListener)
+        child.stderr.addListener('data', stderrListener)
         // Generic stdin guard for every MediaContext spawn (one-shot play()
         // paths included): without an "error" listener, a teardown-time EPIPE
         // on the pipe escalates to an uncaughtException that kills
         // finalization.
-        this.process.stdin?.on('error', (err) => {
+        child.stdin?.on('error', (err) => {
             console.warn(
                 `[MediaContext] ffmpeg stdin error (ignored during teardown): ${err}`,
             )
         })
 
         this.promise = new Promise((resolve, reject) => {
-            this.process.on('exit', (code) => {
+            const cleanupListeners = () => {
+                child.stdout.removeListener('data', stdoutListener)
+                child.stderr.removeListener('data', stderrListener)
+            }
+            child.on('exit', (code) => {
                 console.log(`process exited with code ${code}`)
-                // Remove event listeners to prevent memory leaks
-                this.process.stdout.removeListener('data', stdoutListener)
-                this.process.stderr.removeListener('data', stderrListener)
-                if (code == 0) {
+                cleanupListeners()
+                // Bind lifecycle cleanup to this child. A successful callback
+                // may start a replacement before the old child's close event
+                // arrives.
+                if (this.process === child) {
                     this.process = null
+                }
+                if (code == 0) {
                     after()
                 }
                 resolve(code)
             })
-            this.process.on('error', (err) => {
-                // Spawn/process failure (e.g. ENOENT). Log loudly and reset
-                // state so a later play()/switchTo() can start a fresh ffmpeg
-                // instead of hitting the "Already on execution" guard against
-                // a dead process forever.
-                console.error(
-                    `[MediaContext] ffmpeg process error (state reset): ${err}`,
-                )
-                this.process?.stdout?.removeListener('data', stdoutListener)
-                this.process?.stderr?.removeListener('data', stderrListener)
-                this.process = null
+            child.on('error', (err) => {
+                console.error('[MediaContext] ffmpeg process failed:', err)
+                // Spawn failures have no live process and may safely release
+                // the slot immediately. Kill/signaling errors can leave ffmpeg
+                // running, so keep its handle until exit/close instead of
+                // allowing a duplicate spawn.
+                if (child.pid === undefined && this.process === child) {
+                    this.process = null
+                }
                 reject(err)
+            })
+            child.on('close', () => {
+                cleanupListeners()
+                if (this.process === child) {
+                    this.process = null
+                }
             })
         })
         // Nobody awaits this.promise until stop_process(), so a spawn/process
@@ -99,7 +111,7 @@ abstract class MediaContext {
         // the crash handler. Mark it handled here; stop_process() still
         // observes the rejection through its own .catch().
         this.promise.catch(() => {})
-        return this.process
+        return child
     }
 
     protected async stop_process() {
@@ -108,10 +120,12 @@ abstract class MediaContext {
             return
         }
 
-        let res = this.process.kill('SIGTERM')
+        const child = this.process
+        const processPromise = this.promise!
+        const res = child.kill('SIGTERM')
         console.log(`Signal sended to process : ${res}`)
 
-        await this.promise
+        await processPromise
             .then((code) => {
                 console.log(`process exited with code ${code}`)
             })

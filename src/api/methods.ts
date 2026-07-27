@@ -200,7 +200,14 @@ export class Api {
                 'endMeetingTrampoline already owned by another path — awaiting it',
             )
             if (this.endMeetingReportPromise) {
-                await this.endMeetingReportPromise
+                const ownerSucceeded = await this.endMeetingReportPromise
+                if (!ownerSucceeded) {
+                    // The owner exhausted its attempts and released the claim.
+                    // This path was already waiting to recover the report, so
+                    // let it claim a fresh bounded attempt set instead of
+                    // returning and exiting the process.
+                    await this.handleEndMeetingWithRetry()
+                }
             }
             return
         }
@@ -215,9 +222,9 @@ export class Api {
      * In-flight end-meeting report owned by the path that won
      * GLOBAL.claimEndMeetingReport(); losers await it (see above).
      */
-    private endMeetingReportPromise: Promise<void> | null = null
+    private endMeetingReportPromise: Promise<boolean> | null = null
 
-    private async runEndMeetingAttempts(): Promise<void> {
+    private async runEndMeetingAttempts(): Promise<boolean> {
         // A failed trampoline orphans the bot at recording_succeeded (the
         // api-server never learns artifacts/duration and never starts
         // transcription), so retry transient failures before giving up.
@@ -233,7 +240,7 @@ export class Api {
                 console.log(
                     `API call to endMeetingTrampoline succeeded (attempt ${attempt})`,
                 )
-                return
+                return true
             } catch (error) {
                 console.warn(
                     `API call to endMeetingTrampoline failed (attempt ${attempt}/${delaysMs.length}):`,
@@ -248,5 +255,6 @@ export class Api {
         console.warn(
             'endMeetingTrampoline exhausted all attempts (continuing execution)',
         )
+        return false
     }
 }

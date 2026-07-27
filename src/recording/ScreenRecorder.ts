@@ -1001,6 +1001,19 @@ export class ScreenRecorder extends EventEmitter {
         }
     }
 
+    private removeUploadedFile(filePath: string): void {
+        try {
+            fs.unlinkSync(filePath)
+        } catch (error) {
+            // Upload already succeeded. Local cleanup failure must not bubble
+            // into the upload flow as if the upload itself had failed.
+            console.warn(
+                `Failed to remove uploaded local file ${filePath}:`,
+                formatError(error),
+            )
+        }
+    }
+
     private async uploadAudioChunks(
         chunksDir: string,
         botUuid: string,
@@ -1092,7 +1105,7 @@ export class ScreenRecorder extends EventEmitter {
                     GLOBAL.get().remote?.aws_s3_video_bucket!,
                     `${identifier}.flac`,
                 )
-                fs.unlinkSync(this.audioOutputPath)
+                this.removeUploadedFile(this.audioOutputPath)
             }
         } catch (error) {
             console.error('Failed to upload audio file:', formatError(error))
@@ -1119,7 +1132,7 @@ export class ScreenRecorder extends EventEmitter {
                         GLOBAL.get().remote?.aws_s3_video_bucket!,
                         `${identifier}.mp4`,
                     )
-                    fs.unlinkSync(this.outputPath)
+                    this.removeUploadedFile(this.outputPath)
                 }
             } catch (error) {
                 console.error(
@@ -1132,7 +1145,7 @@ export class ScreenRecorder extends EventEmitter {
             // Audio-only mode: skip video upload, just clean up if it exists
             if (fs.existsSync(this.outputPath)) {
                 try {
-                    fs.unlinkSync(this.outputPath)
+                    this.removeUploadedFile(this.outputPath)
                     console.log(
                         '🗑️ Skipped video upload (audio-only mode), cleaned up video file',
                     )
