@@ -79,6 +79,10 @@ export class Api {
         const resp = await axios({
             method: 'POST',
             url: '/bots/end_meeting_trampoline',
+            // retry-axios would stack its 3 transport retries under
+            // handleEndMeetingWithRetry's own 3 attempts — up to 12 sends of
+            // this non-idempotent POST. The manual loop owns retrying.
+            raxConfig: { retry: 0, noResponseRetries: 0 },
             params: {
                 bot_uuid: GLOBAL.get().bot_uuid,
             },
@@ -189,12 +193,31 @@ export class Api {
         // transcription submission), so exactly one path may report it: the
         // happy path or the crash handler's finalized branch.
         if (!GLOBAL.claimEndMeetingReport()) {
+            // A loser of the claim must NOT return immediately — the crash
+            // handler would then exit(1) and kill the owner's in-flight POST —
+            // so it awaits the owner's promise instead.
             console.log(
-                'endMeetingTrampoline already reported (or in flight) — skipping duplicate',
+                'endMeetingTrampoline already owned by another path — awaiting it',
             )
+            if (this.endMeetingReportPromise) {
+                await this.endMeetingReportPromise
+            }
             return
         }
 
+        // No await between the claim above and this assignment, so a losing
+        // path always observes the promise (Node run-to-completion).
+        this.endMeetingReportPromise = this.runEndMeetingAttempts()
+        await this.endMeetingReportPromise
+    }
+
+    /**
+     * In-flight end-meeting report owned by the path that won
+     * GLOBAL.claimEndMeetingReport(); losers await it (see above).
+     */
+    private endMeetingReportPromise: Promise<void> | null = null
+
+    private async runEndMeetingAttempts(): Promise<void> {
         // A failed trampoline orphans the bot at recording_succeeded (the
         // api-server never learns artifacts/duration and never starts
         // transcription), so retry transient failures before giving up.
@@ -218,8 +241,9 @@ export class Api {
                 )
             }
         }
-        // All attempts failed — release the claim so a later path (e.g. the
-        // crash handler) can still try; continue rather than throwing.
+        // All attempts failed — clear the in-flight handle and release the
+        // claim so a later path (e.g. the crash handler) can still try.
+        this.endMeetingReportPromise = null
         GLOBAL.releaseEndMeetingReport()
         console.warn(
             'endMeetingTrampoline exhausted all attempts (continuing execution)',

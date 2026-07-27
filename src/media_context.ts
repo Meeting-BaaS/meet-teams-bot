@@ -81,10 +81,16 @@ abstract class MediaContext {
                 resolve(code)
             })
             this.process.on('error', (err) => {
-                console.error(err)
-                // Remove event listeners to prevent memory leaks
-                this.process.stdout.removeListener('data', stdoutListener)
-                this.process.stderr.removeListener('data', stderrListener)
+                // Spawn/process failure (e.g. ENOENT). Log loudly and reset
+                // state so a later play()/switchTo() can start a fresh ffmpeg
+                // instead of hitting the "Already on execution" guard against
+                // a dead process forever.
+                console.error(
+                    `[MediaContext] ffmpeg process error (state reset): ${err}`,
+                )
+                this.process?.stdout?.removeListener('data', stdoutListener)
+                this.process?.stderr?.removeListener('data', stderrListener)
+                this.process = null
                 reject(err)
             })
         })
