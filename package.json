@@ -12,7 +12,7 @@
         "playwright"
     ],
     "engines": {
-        "node": ">= 18.0.0 <=20"
+        "node": ">= 20.0.0 <=24.0.0"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.873.0",
