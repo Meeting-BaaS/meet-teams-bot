@@ -498,6 +498,12 @@ export class ScreenRecorder extends EventEmitter {
             '-map',
             '1:a:0',
             '-vn',
+            // aresample=async=1000 softens any remaining xrun gaps: async=1
+            // snaps every sample to the ideal clock and audibly glitches on
+            // each correction; 1000 limits correction to 1000 samples/s
+            // (~2% at 48kHz), inaudible while still fixing drift.
+            '-af',
+            'aresample=async=1000:first_pts=0',
             '-sample_fmt',
             's16',
             '-ac',
