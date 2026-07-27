@@ -19,6 +19,12 @@ const SYNC_WINDOW_HALF_WIDTH_SEC = 0.5
 // first samples — measured ~2.1s after spawn in the production image. The
 // beep therefore lands ~2s EARLIER in media time than the wall-clock anchor.
 const AUDIO_SYNC_WINDOW_BACK_SEC = 4.0
+// The beep can also land LATE: when it is emitted via in-page WebAudio it
+// rides the same page.evaluate queue as the flash — measured delaying the
+// flash paint by 1.7s under multi-bot node load, and the WebAudio beep is
+// subject to the same delay. (When beep and flash are both delayed by the
+// queue, the offset math cancels it — the window just has to catch them.)
+const AUDIO_SYNC_WINDOW_FWD_SEC = 2.0
 const VIDEO_SYNC_WINDOW_BACK_SEC = 2.0
 // The flash can also land LATE: under load (several bots on one node) the
 // renderer/compositor delays the paint — measured 1.7s after the wall-clock
@@ -70,7 +76,7 @@ export async function calculateVideoOffset(
         0,
         expectedAudioSyncSec - AUDIO_SYNC_WINDOW_BACK_SEC,
     )
-    const searchMax = expectedAudioSyncSec + SYNC_WINDOW_HALF_WIDTH_SEC
+    const searchMax = expectedAudioSyncSec + AUDIO_SYNC_WINDOW_FWD_SEC
     const videoSearchMin = Math.max(
         0,
         expectedVideoSyncSec - VIDEO_SYNC_WINDOW_BACK_SEC,
