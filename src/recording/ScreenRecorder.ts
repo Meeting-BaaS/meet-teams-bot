@@ -30,6 +30,7 @@ const GRACE_PERIOD_SECONDS = 3
 // filter only corrects drift. NOTE: this is the RECORDING rate only; the WebSocket
 // stream has its own independent rate (streaming.ts DEFAULT_SAMPLE_RATE / user
 // config) and does NOT use this constant, so consumers are unaffected.
+const DEFAULT_STREAMING_SAMPLE_RATE = 24_000
 const AUDIO_SAMPLE_RATE = 48_000
 const AUDIO_BITRATE = "192k" // Improved audio bitrate
 const FLASH_SCREEN_SLEEP_TIME = 4500 // Increased from 4200 for better stability in prod
