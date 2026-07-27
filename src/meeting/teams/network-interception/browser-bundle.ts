@@ -45,7 +45,32 @@ export function teamsBrowserInterceptionLogic() {
     // Teams session has no main-channel) — tell the Node side to fall back.
     let lastAudioPathSignalAt = 0
     let audioPathDeadReported = false
-    const interceptorInstalledAt = Date.now()
+    // Watchdog baseline: set when the Node callback binds (post-admission), NOT
+    // at install — the bot can sit 60s+ in the waiting room, which would burn
+    // the whole grace window before the in-call audio path ever runs.
+    let callbackBoundAt = 0
+    // Instrumentation to root-cause a blind audio path: how many of each hook
+    // actually fired. Reported via diag() when the watchdog trips.
+    const instr = {
+      pcConstructed: 0,
+      dataChannels: 0,
+      mainChannelAttached: 0,
+      audioReceivers: 0,
+      dshEvents: 0,
+      wsRosterFrames: 0
+    }
+
+    // Route a diagnostic line to the Node logger through the proven
+    // onNetworkSpeakerUpdate bridge (CloakBrowser's stealth page does NOT
+    // surface page.on('console'), so console.warn is invisible post-mortem).
+    function diag(message: string): void {
+      try {
+        const fn = (window as any).onNetworkInterceptorDiag
+        if (typeof fn === "function") fn(message)
+      } catch {
+        /* bridge not bound yet */
+      }
+    }
     // CSRC becomes authoritative only after a source maps to a participant.
     let hasObservedCsrcMapping = false
 
@@ -226,6 +251,7 @@ export function teamsBrowserInterceptionLogic() {
         if (!parsed || !Array.isArray(parsed)) return
         for (const item of parsed) {
           if (item?.type === "dsh") {
+            instr.dshEvents++
             const newDominantStreamId = item.history?.[0]
             if (newDominantStreamId != null) {
               lastAudioPathSignalAt = Date.now()
@@ -279,6 +305,7 @@ export function teamsBrowserInterceptionLogic() {
     function addReceiver(receiver: RTCRtpReceiver | undefined): void {
       if (!receiver || receiverMap.has(receiver)) return
       receiverMap.set(receiver, false)
+      instr.audioReceivers++
       debug("➕ audio receiver added")
     }
 
@@ -424,12 +451,15 @@ export function teamsBrowserInterceptionLogic() {
     {
       const OriginalRTCPeerConnection = (window as any).RTCPeerConnection
       const attachMainChannel = (channel: any) => {
+        instr.dataChannels++
         if (channel?.label !== "main-channel") return
+        instr.mainChannelAttached++
         channel.addEventListener("message", (event: any) => handleMainChannelEvent(event))
-        debug("🔌 main-channel attached")
+        diag(`🔌 main-channel data channel attached`)
       }
       const ProxiedRTCPeerConnection = function (this: any, ...args: any[]) {
         const pc = Reflect.construct(OriginalRTCPeerConnection, args) as RTCPeerConnection
+        instr.pcConstructed++
 
         pc.addEventListener("datachannel", (event) => attachMainChannel(event.channel))
         pc.addEventListener("track", (event) => {
@@ -469,18 +499,19 @@ export function teamsBrowserInterceptionLogic() {
         if ((window as any).__teamsNetworkInterceptorStopped) return
         if (audioPathDeadReported) return
         if (typeof (window as any).onNetworkSpeakerUpdate !== "function") return
+        // Not yet in-call (callback not bound) — don't run the grace clock.
+        if (callbackBoundAt === 0) return
         const others = Array.from(participantsByDeviceId.values()).filter(
           (p) => !p.isCurrentUser && p.status === 1
         )
         if (others.length < 1) return
-        const sinceSignal =
-          lastAudioPathSignalAt > 0
-            ? Date.now() - lastAudioPathSignalAt
-            : Date.now() - interceptorInstalledAt
+        // Measure from the later of: last real audio signal, or callback bind.
+        const baseline = Math.max(lastAudioPathSignalAt, callbackBoundAt)
+        const sinceSignal = Date.now() - baseline
         if (sinceSignal < AUDIO_PATH_DEAD_AFTER_MS) return
         audioPathDeadReported = true
-        console.warn(
-          `${LOG} 🚨 audio path dead: no dsh/CSRC signal for ${Math.round(sinceSignal / 1000)}s with ${others.length} other participant(s) — requesting UI fallback`
+        diag(
+          `🚨 audio path dead: no dsh/CSRC signal for ${Math.round(sinceSignal / 1000)}s in-call with ${others.length} other participant(s) — requesting UI fallback | hooks: pc=${instr.pcConstructed} dataCh=${instr.dataChannels} mainCh=${instr.mainChannelAttached} audioRx=${instr.audioReceivers} dsh=${instr.dshEvents}`
         )
         ;(window as any).onNetworkSpeakerUpdate({
           users: [],
@@ -502,6 +533,8 @@ export function teamsBrowserInterceptionLogic() {
     // produce (observed live: bot 54084d8c, roster-only events).
     ;(window as any).__teamsNetworkBroadcastNow = () => {
       try {
+        callbackBoundAt = Date.now()
+        diag(`callback bound — audio-path watchdog armed (${participantsByDeviceId.size} participants in roster)`)
         broadcastSpeakerUpdate(csrcAvailable ? "audio" : dominantSpeakerStreamId ? "audio" : "roster")
       } catch (e) {
         console.error(`${LOG} ❌ Replay broadcast failed:`, e)

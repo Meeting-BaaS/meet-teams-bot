@@ -13,6 +13,7 @@ declare global {
     __teamsNetworkInterceptorInitialized?: boolean
     __teamsStopNetworkInterception?: () => void
     __teamsNetworkBroadcastNow?: () => void
+    onNetworkInterceptorDiag?: (message: string) => void
     onNetworkSpeakerUpdate?: (payload: NetworkPayload) => void
     pako?: unknown
   }
@@ -110,6 +111,15 @@ export async function setupTeamsNetworkInterceptionCallback(
       if (interceptionPaused) return
       onSpeakersChange(payload)
     })
+    // Diagnostics bridge — the bundle routes its own root-cause lines through
+    // here (CloakBrowser's stealth page does not surface page.on('console')).
+    try {
+      await page.exposeFunction("onNetworkInterceptorDiag", (message: string) => {
+        console.log(`[TeamsInterceptorDiag] ${message}`)
+      })
+    } catch (e) {
+      // already exposed on this page (re-entry) — ignore
+    }
     forwardInterceptorConsole(page)
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
     // Replay the interceptor's retained state to the freshly-bound callback.
