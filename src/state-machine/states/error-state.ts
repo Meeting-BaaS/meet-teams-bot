@@ -9,6 +9,7 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
+import { shouldAttemptRetry } from '../../utils/retry-handler'
 
 export class ErrorState extends BaseState {
     async execute(): StateExecuteResult {
@@ -102,6 +103,22 @@ export class ErrorState extends BaseState {
                         await Events.apiRequestStop()
                         break
                     default:
+                        // If a retry is pending, the requeue path
+                        // (handleFailedRecording) emits its retry-flavoured
+                        // failure event. Suppress the terminal meeting_error
+                        // here so the customer doesn't receive a scary
+                        // terminal webhook between attempts. Mirrors
+                        // handleFailedRecording's decision (same shouldRetry
+                        // flag + retry-count cap) so both paths agree.
+                        if (
+                            GLOBAL.getShouldRetry() &&
+                            shouldAttemptRetry(GLOBAL.getRetryCount())
+                        ) {
+                            console.log(
+                                `[ErrorState] Retry pending (reason: ${endReason}, attempt ${GLOBAL.getRetryCount()}) — suppressing terminal error webhook`,
+                            )
+                            break
+                        }
                         console.log(`Unhandled error reason: ${endReason}`)
                         await Events.meetingError(
                             new Error(errorMessage || 'Unknown error'),
