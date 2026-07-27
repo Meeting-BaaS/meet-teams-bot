@@ -1,4 +1,7 @@
-import { ChildProcess, execSync, spawn } from 'child_process'
+import { ChildProcess, exec, execSync, spawn } from 'child_process'
+import { promisify } from 'util'
+
+const execAsync = promisify(exec)
 import { EventEmitter } from 'events'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -857,7 +860,7 @@ export class ScreenRecorder extends EventEmitter {
                         // the PulseAudio routing state so the failure mode is
                         // confirmable from prod logs (which sink the browser is
                         // on vs the server default) rather than guessing.
-                        this.logAudioPipelineDiagnostics(
+                        void this.logAudioPipelineDiagnostics(
                             recordingDurationSeconds,
                         )
                     } else {
@@ -891,9 +894,9 @@ export class ScreenRecorder extends EventEmitter {
      * every sink, and which sink each browser stream is on (plus
      * corked/mute). Diagnostic-only, throttled, best-effort — never throws.
      */
-    private logAudioPipelineDiagnostics(
+    private async logAudioPipelineDiagnostics(
         recordingDurationSeconds: number,
-    ): void {
+    ): Promise<void> {
         const now = Date.now()
         // Throttle: at most one dump per file-size check window (30s).
         if (now - this.lastAudioDiagAt < 30_000) {
@@ -903,23 +906,31 @@ export class ScreenRecorder extends EventEmitter {
         this.audioDiagCount++
 
         try {
+            // Use async exec (not execSync) so the three pactl spawns don't
+            // block the Node event loop. While blocked, FFmpeg's stdout pipe
+            // fills, which back-pressures FFmpeg's audio thread and produces
+            // xruns/clicks.
+            const { stdout: defaultSinkOut } = await execAsync('pactl info', {
+                timeout: 5000,
+            })
             const defaultSink =
-                execSync('pactl info', { timeout: 5000 })
-                    .toString()
+                defaultSinkOut
                     .split('\n')
                     .find((l) => l.startsWith('Default Sink:'))
                     ?.trim() ?? 'Default Sink: <unknown>'
 
-            const sinks = execSync('pactl list sinks short', { timeout: 5000 })
-                .toString()
-                .trim()
-                .replace(/\n/g, ' ; ')
+            const { stdout: sinksOut } = await execAsync(
+                'pactl list sinks short',
+                { timeout: 5000 },
+            )
+            const sinks = sinksOut.trim().replace(/\n/g, ' ; ')
 
             // Keep only routing-relevant fields from the sink-input dump.
-            const routing = execSync('pactl list sink-inputs', {
-                timeout: 5000,
-            })
-                .toString()
+            const { stdout: routingOut } = await execAsync(
+                'pactl list sink-inputs',
+                { timeout: 5000 },
+            )
+            const routing = routingOut
                 .split('\n')
                 .map((l) => l.trim())
                 .filter((l) =>
