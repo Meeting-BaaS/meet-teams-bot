@@ -66,7 +66,10 @@ function buildChromeArgs(
         '--disable-background-timer-throttling',
         '--enable-features=SharedArrayBuffer',
         '--memory-pressure-off', // Disable memory pressure handling for consistent performance
-        '--max_old_space_size=4096', // Increase V8 heap size to 4GB for large meetings
+        // V8 heap cap for large meetings. Must be passed via --js-flags: a bare
+        // --max_old_space_size argument is not a Chromium switch and is
+        // silently ignored.
+        '--js-flags=--max-old-space-size=4096',
         '--disable-background-networking', // Reduce background network activity
         '--disable-component-extensions-with-background-pages', // Reduce background extension overhead
         '--disable-default-apps', // Disable default Chrome apps
