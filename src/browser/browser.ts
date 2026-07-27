@@ -44,7 +44,7 @@ function buildChromeArgs(
         // ========================================
         '--use-pulseaudio', // Force Chromium to use PulseAudio
         '--enable-audio-service-sandbox=false', // Disable audio service sandbox for virtual devices
-        '--audio-buffer-size=2048', // Set buffer size for better audio handling
+        '--audio-buffer-size=8192', // Larger buffer absorbs CPA bursts under x264 load (reduces xruns)
         '--autoplay-policy=no-user-gesture-required', // Allow autoplay for meeting platforms
 
         // WebRTC optimizations (required for meeting audio/video capture)
