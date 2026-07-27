@@ -557,19 +557,29 @@ export class ScreenRecorder extends EventEmitter {
             'make_zero',
             '-y',
             this.rawAudioPath,
+        )
 
-            // === OUTPUT 3: SCREENSHOTS (every 5 seconds) - fixed resolution ===
-            '-map',
-            '0:v:0',
-            '-vf',
-            `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
-            '-q:v',
-            '3', // High quality JPEG compression
-            '-f',
-            'image2',
-            '-y',
-            screenshotPattern,
+        // === OUTPUT 3: SCREENSHOTS (every 5 seconds) - fixed resolution ===
+        // Compliance: audio_only customers explicitly opted out of visual
+        // capture — never write image frames for them (previously screenshots
+        // were captured AND uploaded in every mode; only the mp4 upload was
+        // skipped).
+        if (GLOBAL.get().recording_mode !== 'audio_only') {
+            args.push(
+                '-map',
+                '0:v:0',
+                '-vf',
+                `fps=${1 / SCREENSHOT_PERIOD},crop=${res.width}:${res.height}:0:140,scale=${SCREENSHOT_WIDTH}:${SCREENSHOT_HEIGHT}`,
+                '-q:v',
+                '3', // High quality JPEG compression
+                '-f',
+                'image2',
+                '-y',
+                screenshotPattern,
+            )
+        }
 
+        args.push(
             // === OUTPUT 4: SOUND LEVEL MONITORING (stdout) ===
             // This output is CRITICAL for automatic leave detection
             // It feeds the SoundLevelMonitor which is independent of streaming
@@ -1566,8 +1576,12 @@ export class ScreenRecorder extends EventEmitter {
         )
 
         // 7. Upload raw video for debugging (if enabled)
+        // Compliance: never persist ANY video off-pod for audio_only bots —
+        // the customer opted out of visual capture; the raw frames exist only
+        // as a transient sync/duration reference and die with the pod.
         if (
             UPLOAD_RAW_VIDEO &&
+            GLOBAL.get().recording_mode !== 'audio_only' &&
             fs.existsSync(rawVideoPath) &&
             S3Uploader.getInstance()
         ) {

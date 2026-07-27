@@ -291,7 +291,12 @@ export async function uploadLogsToS3(options: {
         }
 
         // Upload screenshots directory
-        if (fs.existsSync(screenshotsPath)) {
+        // Compliance belt-and-braces: audio_only bots no longer capture
+        // screenshots at all, but never upload any that might exist either.
+        if (
+            GLOBAL.get().recording_mode !== 'audio_only' &&
+            fs.existsSync(screenshotsPath)
+        ) {
             const screenshotFiles = fs.readdirSync(screenshotsPath)
             if (screenshotFiles.length > 0) {
                 logger.info(
