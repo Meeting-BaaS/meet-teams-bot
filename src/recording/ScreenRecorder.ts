@@ -1,4 +1,4 @@
-import { ChildProcess, spawn } from 'child_process'
+import { ChildProcess, execSync, spawn } from 'child_process'
 import { EventEmitter } from 'events'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -31,6 +31,7 @@ const SCREENSHOT_HEIGHT = 270 // reduced for smaller file size (fixed, not affec
 const DISPLAY = process.env.DISPLAY || ':99'
 const VIRTUAL_SPEAKER_MONITOR =
     process.env.VIRTUAL_SPEAKER_MONITOR || 'virtual_speaker.monitor'
+const VIRTUAL_SPEAKER = process.env.VIRTUAL_SPEAKER || 'virtual_speaker'
 
 const UPLOAD_AUDIO_CHUNKS = process.env.UPLOAD_AUDIO_CHUNKS === 'true'
 const UPLOAD_RAW_VIDEO = process.env.UPLOAD_RAW_VIDEO === 'true'
@@ -134,6 +135,8 @@ export class ScreenRecorder extends EventEmitter {
     private rawAudioPath: string = ''
     private streamingSampleRate: number = DEFAULT_STREAMING_SAMPLE_RATE
     private soundMonitorRemainder: Buffer = Buffer.alloc(0)
+    private lastAudioRecoveryAt: number = 0
+    private audioRecoveryAttempts: number = 0
 
     constructor(config: Partial<ScreenRecordingConfig> = {}) {
         super()
@@ -799,6 +802,12 @@ export class ScreenRecorder extends EventEmitter {
                         console.warn(
                             `⚠️ WARNING: Raw audio file has not grown for ${consecutiveNoGrowthCount * (FILE_SIZE_CHECK_INTERVAL / 1000)}s! Current: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s. This may indicate a silent write failure.`,
                         )
+                        // Dead audio is usually Chrome's stream sitting on the
+                        // wrong PulseAudio sink (startup race, or a mid-call
+                        // detach) so FFmpeg reads silence from
+                        // virtual_speaker.monitor. Re-home the browser audio
+                        // onto the monitored sink instead of just logging.
+                        this.attemptAudioRecovery(recordingDurationSeconds)
                     } else {
                         console.log(
                             `📊 Raw audio file size: ${sizeMB} MB (${currentSize} bytes) | Recording: ${recordingDurationSeconds.toFixed(1)}s | No growth detected (${consecutiveNoGrowthCount}/${MAX_CONSECUTIVE_NO_GROWTH})`,
@@ -817,6 +826,76 @@ export class ScreenRecorder extends EventEmitter {
                 }
             }
         }, FILE_SIZE_CHECK_INTERVAL)
+    }
+
+    /**
+     * Re-route the browser's audio onto the monitored PulseAudio sink.
+     *
+     * FFmpeg records from `virtual_speaker.monitor`. Chrome is meant to output
+     * to `virtual_speaker` (the default sink), but its audio stream can bind to
+     * the wrong sink — a race between `pulseaudio --start` /
+     * `set-default-sink` and Chrome creating its stream at startup, or a
+     * mid-call renegotiation (common on the Teams web client) that detaches
+     * and re-attaches the audio element. When that happens the monitor sees no
+     * samples, the raw file never grows, and the recording is silent.
+     * Re-assert the default sink (so any *new* streams route correctly) and
+     * move every live sink-input onto `virtual_speaker` (so the *current*
+     * stream flows into the monitor again). Throttled to one attempt per
+     * check interval; best-effort — failures are logged, never thrown.
+     */
+    private attemptAudioRecovery(recordingDurationSeconds: number): void {
+        const now = Date.now()
+        // Throttle: at most one attempt per file-size check window (30s).
+        if (now - this.lastAudioRecoveryAt < 30_000) {
+            return
+        }
+        this.lastAudioRecoveryAt = now
+        this.audioRecoveryAttempts++
+
+        try {
+            // Re-assert the monitored sink as default for new streams.
+            execSync(`pactl set-default-sink ${VIRTUAL_SPEAKER}`, {
+                timeout: 5000,
+                stdio: 'ignore',
+            })
+
+            // Move every existing sink-input onto the monitored sink. Chrome is
+            // the only audio-producing app in the container, so re-homing all
+            // inputs is safe and catches the case where its stream is stuck on
+            // a fallback/auto_null sink.
+            const listing = execSync('pactl list sink-inputs short', {
+                timeout: 5000,
+            })
+                .toString()
+                .trim()
+            const inputIds = listing
+                ? listing
+                      .split('\n')
+                      .map((line) => line.split('\t')[0])
+                      .filter((id) => id.length > 0)
+                : []
+
+            let moved = 0
+            for (const id of inputIds) {
+                try {
+                    execSync(`pactl move-sink-input ${id} ${VIRTUAL_SPEAKER}`, {
+                        timeout: 5000,
+                        stdio: 'ignore',
+                    })
+                    moved++
+                } catch {
+                    // A sink-input can disappear between listing and moving.
+                }
+            }
+
+            console.warn(
+                `🔧 [audio-recovery] Attempt ${this.audioRecoveryAttempts}: re-asserted default sink '${VIRTUAL_SPEAKER}' and moved ${moved}/${inputIds.length} sink-input(s) onto it (raw audio not growing at ${recordingDurationSeconds.toFixed(0)}s)`,
+            )
+        } catch (error) {
+            console.warn(
+                `⚠️ [audio-recovery] Failed to re-route audio: ${formatError(error)}`,
+            )
+        }
     }
 
     private async uploadAudioChunks(

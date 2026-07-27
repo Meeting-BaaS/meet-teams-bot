@@ -614,6 +614,31 @@ export class RecordingState extends BaseState {
 
         const shouldEnd = silenceDurationSeconds >= silenceTimeoutSeconds
         if (shouldEnd) {
+            // The silence timer is driven purely by the audio pipeline (sound
+            // level from FFmpeg). When audio capture dies — e.g. Chrome's audio
+            // never lands on the virtual PulseAudio sink — the sound level reads
+            // 0 forever even while people are actively talking, so this
+            // "silence" is spurious. Cross-check the DOM speaker observer, which
+            // detects speech independently of the audio pipeline: if it saw an
+            // active speaker within the silence window, treat the silence as an
+            // audio capture failure and do NOT leave. Genuinely empty meetings
+            // (no recent DOM speech) still end here.
+            const lastSpeakerTime = this.context.lastSpeakerTime
+            const domSpeechAgeMs = lastSpeakerTime
+                ? now - lastSpeakerTime
+                : null
+            if (
+                domSpeechAgeMs !== null &&
+                domSpeechAgeMs < silenceTimeoutSeconds * 1000
+            ) {
+                if (now - this.lastNoSpeakerLogTime >= 30000) {
+                    console.warn(
+                        `[checkNoSpeaker] Audio silent for ${silenceDurationSeconds}s but DOM speaker observer saw speech ${Math.floor(domSpeechAgeMs / 1000)}s ago — audio capture likely failed; NOT ending on noSpeaker`,
+                    )
+                    this.lastNoSpeakerLogTime = now
+                }
+                return false
+            }
             console.log(
                 `[checkNoSpeaker] No sound activity detected for ${silenceDurationSeconds} seconds, ending meeting`,
             )
