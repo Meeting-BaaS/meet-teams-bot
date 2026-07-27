@@ -15,6 +15,7 @@ class Global {
     private shouldRetry: boolean = false // Retry flag
     private recordingFinalized: boolean = false // True once the recording is merged and entering upload
     private recoveryClaimed: boolean = false // True once a termination/crash path owns log-upload + requeue
+    private endMeetingReportClaimed: boolean = false // True while/after a path owns the end-meeting-trampoline report
 
     // Cumulative list of participant names seen during the meeting.
     // Used by alone-in-meeting detection as a proof-of-life gate:
@@ -256,6 +257,26 @@ class Global {
      */
     public releaseRecovery(): void {
         this.recoveryClaimed = false
+    }
+
+    /**
+     * Atomic ownership claim for the end-meeting-trampoline report, shared by
+     * the happy path (handleEndMeetingWithRetry) and the crash handler's
+     * finalized branch. The first caller wins; a loser can safely conclude
+     * another path is reporting (or already reported) and skip — a double POST
+     * would double-submit transcription server-side. Release ONLY when every
+     * attempt failed, so a later path can take over.
+     */
+    public claimEndMeetingReport(): boolean {
+        if (this.endMeetingReportClaimed) {
+            return false
+        }
+        this.endMeetingReportClaimed = true
+        return true
+    }
+
+    public releaseEndMeetingReport(): void {
+        this.endMeetingReportClaimed = false
     }
 
     public markRecordingFinalized(): void {

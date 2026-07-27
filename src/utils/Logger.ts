@@ -420,6 +420,27 @@ export function setupExitHandler() {
                 logger.error(
                     '[Crash] Recording finalized/uploading — preserving artifacts for salvage (NOT requeuing)',
                 )
+                // A crash in the finalize window used to exit before the happy
+                // path reached the end-meeting trampoline, orphaning the bot at
+                // recording_succeeded (artifacts in S3, api-server never told
+                // to start transcription — no server-side sweeper). Best-effort
+                // report from here; handleEndMeetingWithRetry claims the shared
+                // report token, so this is a no-op when the happy path already
+                // reported (or is in flight).
+                try {
+                    const { Api } = await import('../api/methods')
+                    if (Api.instance) {
+                        await Api.instance.handleEndMeetingWithRetry()
+                    } else {
+                        logger.error(
+                            '[Crash] Api instance not initialized — cannot report end-meeting',
+                        )
+                    }
+                } catch (trampolineError) {
+                    logger.error(
+                        `[Crash] end-meeting report failed (non-fatal): ${trampolineError}`,
+                    )
+                }
             } else {
                 const { buildRetryMessage, requeueToSQS, shouldAttemptRetry } =
                     await import('./retry-handler')

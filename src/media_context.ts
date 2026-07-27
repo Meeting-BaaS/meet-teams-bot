@@ -58,6 +58,15 @@ abstract class MediaContext {
 
         this.process.stdout.addListener('data', stdoutListener)
         this.process.stderr.addListener('data', stderrListener)
+        // Generic stdin guard for every MediaContext spawn (one-shot play()
+        // paths included): without an "error" listener, a teardown-time EPIPE
+        // on the pipe escalates to an uncaughtException that kills
+        // finalization.
+        this.process.stdin?.on('error', (err) => {
+            console.warn(
+                `[MediaContext] ffmpeg stdin error (ignored during teardown): ${err}`,
+            )
+        })
 
         this.promise = new Promise((resolve, reject) => {
             this.process.on('exit', (code) => {
@@ -79,6 +88,11 @@ abstract class MediaContext {
                 reject(err)
             })
         })
+        // Nobody awaits this.promise until stop_process(), so a spawn/process
+        // "error" before then would surface as an unhandledRejection and trip
+        // the crash handler. Mark it handled here; stop_process() still
+        // observes the rejection through its own .catch().
+        this.promise.catch(() => {})
         return this.process
     }
 
