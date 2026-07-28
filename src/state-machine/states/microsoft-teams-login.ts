@@ -198,12 +198,6 @@ async function resolveCredentials(config: TeamsLoginConfig): Promise<ResolvedCre
   if (!body.email || !body.password) {
     throw new TeamsLoginError("TEAMS_LOGIN_FAILED_TIMEOUT", "resolve-session returned no credentials")
   }
-  // DIAG: log the decrypted password LENGTH (never the value). If this does not match
-  // the real password's length, the stored secret was encrypted under a different
-  // TEAMS_LOGIN_ENCRYPTION_SECRET than this api-server decrypts with.
-  console.info(
-    `[teams-login] resolved credentials for ${body.email} (password length=${body.password.length})`
-  )
   return { email: body.email, password: body.password }
 }
 
