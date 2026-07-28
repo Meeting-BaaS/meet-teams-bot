@@ -183,18 +183,28 @@ export class TeamsSpeakersObserver {
                   }
                 }
               } else {
-                // new teams
-                const name = element.getAttribute("data-tid")
-                console.log(`[TEAMS-DEBUG] New teams - found name of length: "${name.length}"`)
+                // new teams (v2): tiles are [data-cid="calling-participant-stream"]
+                // with data-tid=<email> and aria-label="<Display Name>, ...". Prefer the
+                // display name; fall back to the tid.
+                const name =
+                  element.getAttribute("aria-label")?.split(",")[0]?.trim() ||
+                  element.getAttribute("data-tid") ||
+                  ""
                 if (name) {
                   const micPath = element.querySelector("g.ui-icon__outline path")
                   const isMuted = micPath?.getAttribute("d")?.startsWith("M12 5v4.879") || false
                   const voiceLevelIndicator = element.querySelector(
                     '[data-tid="voice-level-stream-outline"]'
                   )
+                  // v2 exposes the active speaker directly via data-is-speaking on the
+                  // voice-level-stream-outline — read it (reliable) and fall back to the
+                  // border/opacity heuristic only for older clients that lack it.
+                  const speakingAttr = voiceLevelIndicator?.getAttribute("data-is-speaking")
                   const isSpeaking =
                     voiceLevelIndicator && !isMuted
-                      ? checkElementAndPseudo(voiceLevelIndicator as HTMLElement)
+                      ? speakingAttr != null
+                        ? speakingAttr === "true"
+                        : checkElementAndPseudo(voiceLevelIndicator as HTMLElement)
                       : false
 
                   return {
