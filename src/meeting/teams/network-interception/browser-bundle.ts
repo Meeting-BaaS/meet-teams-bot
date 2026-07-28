@@ -52,17 +52,6 @@ export function teamsBrowserInterceptionLogic() {
     // at install — the bot can sit 60s+ in the waiting room, which would burn
     // the whole grace window before the in-call audio path ever runs.
     let callbackBoundAt = 0
-    // Instrumentation to root-cause a blind audio path: how many of each hook
-    // actually fired. Reported via diag() when the watchdog trips.
-    const instr = {
-      pcConstructed: 0,
-      dataChannels: 0,
-      mainChannelAttached: 0,
-      audioReceivers: 0,
-      dshEvents: 0,
-      wsRosterFrames: 0
-    }
-
     // Route a diagnostic line to the Node logger. CloakBrowser surfaces
     // neither page.on('console') nor exposeFunction bindings in this context,
     // so lines are queued and drained by the Node-side speaker poll; the
@@ -92,6 +81,24 @@ export function teamsBrowserInterceptionLogic() {
     const speakingStateMachines = new Map<string, any>()
     // last logged speaking set, to log only on change
     let lastSpeakingLogKey = ""
+    // Lean, non-PII pipeline counters. The browser console is filtered in prod, so
+    // Node reads these via page.evaluate to see which stage stops producing.
+    // Also reported in the watchdog's audio-path-dead line.
+    ;(window as any).__teamsNetDiag = (window as any).__teamsNetDiag || {
+      wsCreated: 0,
+      wsRosterFrames: 0,
+      httpRosterHits: 0,
+      rtcCreated: 0,
+      dataChannels: 0,
+      mainChannelAttached: 0,
+      dshSeen: 0,
+      receiversAdded: 0,
+      broadcasts: 0,
+      rosterParticipants: 0,
+      csrcAvailable: false,
+      queueLen: 0
+    }
+    const netDiag = (window as any).__teamsNetDiag
 
     // ===== TEAMS INTERNAL CALLING SDK (best-effort) =====
 
@@ -273,6 +280,7 @@ export function teamsBrowserInterceptionLogic() {
           participantsToArray(body?.participants?.value) ||
           (Array.isArray(body) ? body : null)
         if (raw && raw.length) {
+          netDiag.httpRosterHits++
           applyParticipants(raw)
         }
       } catch {
@@ -322,7 +330,7 @@ export function teamsBrowserInterceptionLogic() {
         if (!parsed || !Array.isArray(parsed)) return
         for (const item of parsed) {
           if (item?.type === "dsh") {
-            instr.dshEvents++
+            netDiag.dshSeen++
             const newDominantStreamId = item.history?.[0]
             if (newDominantStreamId != null) {
               lastAudioPathSignalAt = Date.now()
@@ -376,7 +384,7 @@ export function teamsBrowserInterceptionLogic() {
     function addReceiver(receiver: RTCRtpReceiver | undefined): void {
       if (!receiver || receiverMap.has(receiver)) return
       receiverMap.set(receiver, false)
-      instr.audioReceivers++
+      netDiag.receiversAdded++
       debug("➕ audio receiver added")
     }
 
@@ -437,6 +445,10 @@ export function teamsBrowserInterceptionLogic() {
       }
 
       if (csrcAvailable && changed) broadcastSpeakerUpdate("audio")
+
+      netDiag.rosterParticipants = participantsByDeviceId.size
+      netDiag.csrcAvailable = csrcAvailable
+      netDiag.queueLen = ((window as any).__teamsSpeakerQueue || []).length
     }
 
     // ===== BROADCAST TO NODE =====
@@ -510,6 +522,7 @@ export function teamsBrowserInterceptionLogic() {
         const q = (window as any).__teamsSpeakerQueue as any[]
         if (q.length > 500) q.splice(0, q.length - 500)
         q.push({ users, timestamp: Date.now(), source })
+        netDiag.broadcasts++
       } catch {
         // ignore
       }
@@ -522,6 +535,7 @@ export function teamsBrowserInterceptionLogic() {
       const OriginalWebSocket = (window as any).WebSocket
       const ProxiedWebSocket = function (this: any, url: string, protocols?: any) {
         const ws = new OriginalWebSocket(url, protocols)
+        netDiag.wsCreated++
         ws.addEventListener("message", (event: any) => {
           try {
             const data = event.data
@@ -531,6 +545,7 @@ export function teamsBrowserInterceptionLogic() {
             if (typeof eventUrl !== "string") return
             // Match any roster-bearing signaling URL (initial snapshot + deltas).
             if (eventUrl.toLowerCase().includes("roster")) {
+              netDiag.wsRosterFrames++
               handleRosterUpdate(eventDataObject)
             }
           } catch {
@@ -617,15 +632,15 @@ export function teamsBrowserInterceptionLogic() {
     {
       const OriginalRTCPeerConnection = (window as any).RTCPeerConnection
       const attachMainChannel = (channel: any) => {
-        instr.dataChannels++
+        netDiag.dataChannels++
         if (channel?.label !== "main-channel") return
-        instr.mainChannelAttached++
+        netDiag.mainChannelAttached++
         channel.addEventListener("message", (event: any) => handleMainChannelEvent(event))
         diag(`🔌 main-channel data channel attached`)
       }
       const ProxiedRTCPeerConnection = function (this: any, ...args: any[]) {
         const pc = Reflect.construct(OriginalRTCPeerConnection, args) as RTCPeerConnection
-        instr.pcConstructed++
+        netDiag.rtcCreated++
 
         pc.addEventListener("datachannel", (event) => attachMainChannel(event.channel))
         pc.addEventListener("track", (event) => {
@@ -676,7 +691,7 @@ export function teamsBrowserInterceptionLogic() {
         if (sinceSignal < AUDIO_PATH_DEAD_AFTER_MS) return
         audioPathDeadReported = true
         diag(
-          `🚨 audio path dead: no dsh/CSRC signal for ${Math.round(sinceSignal / 1000)}s in-call with ${others.length} other participant(s) — requesting UI fallback | hooks: pc=${instr.pcConstructed} dataCh=${instr.dataChannels} mainCh=${instr.mainChannelAttached} audioRx=${instr.audioReceivers} dsh=${instr.dshEvents}`
+          `🚨 audio path dead: no dsh/CSRC signal for ${Math.round(sinceSignal / 1000)}s in-call with ${others.length} other participant(s) — requesting UI fallback | hooks: pc=${netDiag.rtcCreated} dataCh=${netDiag.dataChannels} mainCh=${netDiag.mainChannelAttached} audioRx=${netDiag.receiversAdded} dsh=${netDiag.dshSeen}`
         )
         // Deliver through the drained queue — exposeFunction bindings are not
         // visible in this context under CloakBrowser.
