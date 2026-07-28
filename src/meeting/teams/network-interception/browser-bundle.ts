@@ -52,6 +52,22 @@ export function teamsBrowserInterceptionLogic() {
     const speakingStateMachines = new Map<string, any>()
     // last logged speaking set, to log only on change
     let lastSpeakingLogKey = ""
+    // Lean, non-PII pipeline counters. The browser console is filtered in prod, so
+    // Node reads these via page.evaluate to see which stage stops producing.
+    ;(window as any).__teamsNetDiag = (window as any).__teamsNetDiag || {
+      wsCreated: 0,
+      wsRosterFrames: 0,
+      httpRosterHits: 0,
+      rtcCreated: 0,
+      dataChannels: 0,
+      dshSeen: 0,
+      receiversAdded: 0,
+      broadcasts: 0,
+      rosterParticipants: 0,
+      csrcAvailable: false,
+      queueLen: 0
+    }
+    const diag = (window as any).__teamsNetDiag
 
     // ===== TEAMS INTERNAL CALLING SDK (best-effort) =====
 
@@ -221,6 +237,7 @@ export function teamsBrowserInterceptionLogic() {
           participantsToArray(body?.participants?.value) ||
           (Array.isArray(body) ? body : null)
         if (raw && raw.length) {
+          diag.httpRosterHits++
           applyParticipants(raw)
         }
       } catch {
@@ -270,6 +287,7 @@ export function teamsBrowserInterceptionLogic() {
         if (!parsed || !Array.isArray(parsed)) return
         for (const item of parsed) {
           if (item?.type === "dsh") {
+            diag.dshSeen++
             const newDominantStreamId = item.history?.[0]
             if (newDominantStreamId != null) {
               setDominantSpeakerStreamId(newDominantStreamId)
@@ -322,6 +340,7 @@ export function teamsBrowserInterceptionLogic() {
     function addReceiver(receiver: RTCRtpReceiver | undefined): void {
       if (!receiver || receiverMap.has(receiver)) return
       receiverMap.set(receiver, false)
+      diag.receiversAdded++
       debug("➕ audio receiver added")
     }
 
@@ -379,6 +398,10 @@ export function teamsBrowserInterceptionLogic() {
       }
 
       if (csrcAvailable && changed) broadcastSpeakerUpdate("audio")
+
+      diag.rosterParticipants = participantsByDeviceId.size
+      diag.csrcAvailable = csrcAvailable
+      diag.queueLen = ((window as any).__teamsSpeakerQueue || []).length
     }
 
     // ===== BROADCAST TO NODE =====
@@ -452,6 +475,7 @@ export function teamsBrowserInterceptionLogic() {
         const q = (window as any).__teamsSpeakerQueue as any[]
         if (q.length > 500) q.splice(0, q.length - 500)
         q.push({ users, timestamp: Date.now(), source })
+        diag.broadcasts++
       } catch {
         // ignore
       }
@@ -464,6 +488,7 @@ export function teamsBrowserInterceptionLogic() {
       const OriginalWebSocket = (window as any).WebSocket
       const ProxiedWebSocket = function (this: any, url: string, protocols?: any) {
         const ws = new OriginalWebSocket(url, protocols)
+        diag.wsCreated++
         ws.addEventListener("message", (event: any) => {
           try {
             const data = event.data
@@ -473,6 +498,7 @@ export function teamsBrowserInterceptionLogic() {
             if (typeof eventUrl !== "string") return
             // Match any roster-bearing signaling URL (initial snapshot + deltas).
             if (eventUrl.toLowerCase().includes("roster")) {
+              diag.wsRosterFrames++
               handleRosterUpdate(eventDataObject)
             }
           } catch {
@@ -560,10 +586,12 @@ export function teamsBrowserInterceptionLogic() {
       const OriginalRTCPeerConnection = (window as any).RTCPeerConnection
       const attachMainChannel = (channel: any) => {
         if (channel?.label !== "main-channel") return
+        diag.dataChannels++
         channel.addEventListener("message", (event: any) => handleMainChannelEvent(event))
       }
       const ProxiedRTCPeerConnection = function (this: any, ...args: any[]) {
         const pc = Reflect.construct(OriginalRTCPeerConnection, args) as RTCPeerConnection
+        diag.rtcCreated++
 
         pc.addEventListener("datachannel", (event) => attachMainChannel(event.channel))
         pc.addEventListener("track", (event) => {
