@@ -365,6 +365,13 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
         bypassCSP: true
       }
     })
+    // LOCAL DEV (tsx/esbuild): esbuild's keepNames wraps named functions passed to
+    // page.evaluate() with a __name(...) helper that does not exist in the browser, so
+    // every evaluate throws "ReferenceError: __name is not defined" under tsx. Polyfill
+    // it as identity on every document (harmless when compiled — __name is then unused).
+    await (context as unknown as BrowserContext).addInitScript(
+      "globalThis.__name = globalThis.__name || function (f) { return f }"
+    )
     console.log(`✅ CloakBrowser launched (${platform})`)
     return { browser: context as unknown as BrowserContext }
   } catch (error) {
