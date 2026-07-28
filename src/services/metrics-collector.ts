@@ -74,7 +74,8 @@ export class MetricsCollector {
     const totalSec = Math.max(0, exitTime - startTime)
     const recordingSec = Math.max(0, (Date.now() - this.recordingStartTime) / 1000)
     const idleSec = Math.max(0, totalSec - recordingSec)
-        const endReason = GLOBAL.getEndReason()
+    const waitingRoomSec = Math.max(0, (this.recordingStartTime / 1000) - startTime)
+    const endReason = GLOBAL.getEndReason()
     const success = endReason !== null && NORMAL_END_REASONS.includes(endReason)
 
     const platform = GLOBAL.get().meeting_platform
