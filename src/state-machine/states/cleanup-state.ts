@@ -1,5 +1,4 @@
 import * as fs from "node:fs"
-import { Api } from "../../api/methods"
 import { ChatManager } from "../../chat-manager"
 import { envVars } from "../../config/env-vars"
 import { SoundContext, VideoContext } from "../../media_context"
@@ -40,7 +39,6 @@ export class CleanupState extends BaseState {
         await this.mirrorRecordingsToEFS()
         // Continue to Terminated even if cleanup fails
       }
-      this.reportMetrics()
 
       console.info("🧹 Transitioning to Terminated state")
       return this.transition(MeetingStateType.Terminated)
@@ -228,21 +226,6 @@ export class CleanupState extends BaseState {
       this.context.dialogObserver.stopGlobalDialogObserver()
     } else {
       console.warn(`Global dialog observer not available in state ${this.constructor.name}`)
-    }
-  }
-
-  private reportMetrics(): void {
-    try {
-      const collector = GLOBAL.getMetricsCollector()
-      if (!collector.isRunning()) return
-
-      collector.stop()
-      const payload = collector.getPayload()
-      if (Api.instance) {
-        Api.instance.reportMetrics(payload)
-      }
-    } catch (error) {
-      console.warn("Failed to report bot metrics (continuing):", error)
     }
   }
 
