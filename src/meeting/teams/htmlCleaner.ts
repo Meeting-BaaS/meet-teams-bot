@@ -149,7 +149,7 @@ export class TeamsHtmlCleaner {
           stage.style.left = "0"
           stage.style.width = "100vw"
           stage.style.height = "100vh"
-          stage.style.zIndex = "9998"
+          stage.style.zIndex = "2147483000"
           stage.style.backgroundColor = "black"
         }
 
@@ -159,6 +159,74 @@ export class TeamsHtmlCleaner {
             hiddenLight,
             "chrome element(s); stage promoted:",
             stage instanceof HTMLElement,
+          )
+        }
+      }
+
+      // The AUTHENTICATED teams.microsoft.com/v2 client differs from BOTH the classic
+      // client and the teams.live.com "light" client. Its chat / people rail renders at
+      // a very high z-index, so cleanLightClient's stage promotion doesn't cover it and
+      // the chat panel (kept open for compose + network capture) shows in the recording.
+      // Here we (a) hide the right rail / chat / roster panels and (b) promote the
+      // meeting video stage above everything — falling back to the common ancestor of
+      // the <video> tiles when no known stage tid matches. No-op on other clients.
+      function cleanModernClient(documentRoot: Document) {
+        // v2 authenticated client: the meeting stage lives in app-layout-area--main
+        // (stage-layout / modern-stage-wrapper); the chat/people rail, nav, header,
+        // toasts and notifications each live in a sibling app-layout-area--* node.
+        // Hide every chrome area (this is what removes the open chat panel) and promote
+        // the main area to fill the viewport so the recording shows only the video.
+        let hidden = 0
+        const chromeAreas = [
+          "end", // chat / people / roster side rail
+          "nav",
+          "sub-nav",
+          "mid-nav",
+          "start",
+          "title-bar",
+          "header",
+          "toasts",
+          "notifications",
+          "contextual-notifications",
+          "preview",
+        ]
+        for (const area of chromeAreas) {
+          documentRoot
+            .querySelectorAll(`[data-tid="app-layout-area--${area}"]`)
+            .forEach((el) => {
+              if (el instanceof HTMLElement) {
+                el.style.display = "none"
+                hidden++
+              }
+            })
+        }
+
+        // Expand the main area to fill the viewport, above anything chrome-y that peeks.
+        const main = documentRoot.querySelector('[data-tid="app-layout-area--main"]')
+        if (main instanceof HTMLElement) {
+          main.style.position = "fixed"
+          main.style.top = "0"
+          main.style.left = "0"
+          main.style.width = "100vw"
+          main.style.height = "100vh"
+          main.style.zIndex = "2147483000"
+          main.style.backgroundColor = "black"
+        }
+        const stage =
+          documentRoot.querySelector('[data-tid="modern-stage-wrapper"]') ||
+          documentRoot.querySelector('[data-tid="stage-layout"]') ||
+          documentRoot.querySelector('[data-tid="only-videos-wrapper"]')
+        if (stage instanceof HTMLElement) {
+          stage.style.width = "100%"
+          stage.style.height = "100%"
+        }
+
+        if (hidden > 0) {
+          console.log(
+            "[Teams] modern: hid",
+            hidden,
+            "chrome area(s); main promoted:",
+            main instanceof HTMLElement,
           )
         }
       }
@@ -208,6 +276,7 @@ export class TeamsHtmlCleaner {
         }
 
         cleanLightClient(documentRoot)
+        cleanModernClient(documentRoot)
       }
 
       function removeShityHtml() {
@@ -258,6 +327,7 @@ export class TeamsHtmlCleaner {
         }
 
         cleanLightClient(documentRoot)
+        cleanModernClient(documentRoot)
       }
 
       // Execute Teams provider

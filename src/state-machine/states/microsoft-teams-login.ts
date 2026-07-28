@@ -88,6 +88,7 @@ export async function loginToTeamsWithCredentials(
     await emailInput.waitFor({ state: "visible", timeout: 15_000 })
     await emailInput.fill(email)
     await clickPrimary(page, ["Next"])
+    await page.waitForTimeout(1_500)
 
     // 3. Password -> Sign in
     const passwordInput = page.locator('input[type="password"], input[name="passwd"]').first()
@@ -163,8 +164,24 @@ export async function loginToTeamsWithCredentials(
   }
 }
 
-/** One-time fetch of the decrypted credentials for the assigned session. */
 async function resolveCredentials(config: TeamsLoginConfig): Promise<ResolvedCredentials> {
+  // LOCAL TESTING ONLY: if TEAMS_LOGIN_LOCAL_PASSWORD is set, skip the api-server
+  // resolve-session fetch and sign in with login_email + this password directly.
+  // Lets `run_bot.sh` drive an authenticated Teams bot without api-server/SQS.
+  // NEVER set this in a deployed environment.
+  const localPassword = process.env.TEAMS_LOGIN_LOCAL_PASSWORD
+  if (localPassword) {
+    if (process.env.NODE_ENV === "production" || process.env.DEPLOY_ENV) {
+      throw new TeamsLoginError(
+        "TEAMS_LOGIN_FAILED_TIMEOUT",
+        "TEAMS_LOGIN_LOCAL_PASSWORD must never be set in a deployed environment"
+      )
+    }
+    console.warn(
+      `[teams-login] TEAMS_LOGIN_LOCAL_PASSWORD set — LOCAL TEST MODE, using it for ${config.login_email} (skipping resolve-session)`
+    )
+    return { email: config.login_email, password: localPassword }
+  }
   const res = await fetch(config.resolve_url, {
     headers: {
       "x-teams-session-id": config.session_id,
@@ -309,11 +326,6 @@ async function settleTeamsAuth(
     const names = teamsCookies.map((c) => c.name)
     const hasAuthToken = names.includes("authtoken")
     const hasRingFinder = names.includes("ringFinder")
-    console.info(
-      `[teams-login][settle] t=${Math.round((Date.now() - start) / 1000)}s url=${url} ` +
-        `onApp=${onTeamsApp} hasAuthToken=${hasAuthToken} hasRingFinder=${hasRingFinder} ` +
-        `teamsCookies=[${names.join(", ")}]`
-    )
     // Go the INSTANT the Teams identity is established — `ringFinder` carries the
     // signed-in oid/tid, `authtoken` is the full service token — as long as we're on
     // the Teams app (off the auth endpoints). We deliberately DON'T wait for the home
