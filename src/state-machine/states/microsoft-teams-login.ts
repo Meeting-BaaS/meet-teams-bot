@@ -82,7 +82,6 @@ export async function loginToTeamsWithCredentials(
       waitUntil: "domcontentloaded",
       timeout: 20_000
     })
-    await logLoginState(page, "1-login-loaded")
 
     // 2. Email -> Next
     const emailInput = page.locator('input[type="email"], input[name="loginfmt"]').first()
@@ -90,7 +89,6 @@ export async function loginToTeamsWithCredentials(
     await emailInput.fill(email)
     await clickPrimary(page, ["Next"])
     await page.waitForTimeout(1_500)
-    await logLoginState(page, "2-after-email-next")
 
     // 3. Password -> Sign in
     const passwordInput = page.locator('input[type="password"], input[name="passwd"]').first()
@@ -100,7 +98,6 @@ export async function loginToTeamsWithCredentials(
 
     // 4. Give the response a moment, then classify credential / captcha / MFA errors.
     await page.waitForTimeout(2_000)
-    await logLoginState(page, "3-after-signin")
     await detectLoginError(page)
 
     // 5. "Stay signed in?" (KMSI) — click Yes so the session persists.
@@ -164,42 +161,6 @@ export async function loginToTeamsWithCredentials(
     const message = err instanceof Error ? err.message : String(err)
     console.error(`[teams-login] sign-in failed: ${message} (last URL: ${currentUrl})`)
     throw new TeamsLoginError("TEAMS_LOGIN_FAILED_TIMEOUT", `${message} (last URL: ${currentUrl})`)
-  }
-}
-
-/** One-time fetch of the decrypted credentials for the assigned session. */
-async function logLoginState(page: Page, label: string): Promise<void> {
-  try {
-    const info = await page.evaluate(() => {
-      const clip = (s: string | null | undefined): string =>
-        (s || "").replace(/\s+/g, " ").trim().slice(0, 70)
-      const inputs = Array.from(document.querySelectorAll("input")).map(
-        (i) => `${i.type || "?"}${i.name ? `[${i.name}]` : ""}${i.placeholder ? `(${i.placeholder})` : ""}`
-      )
-      const buttons = Array.from(document.querySelectorAll("button, input[type=submit]"))
-        .map((b) =>
-          clip((b as HTMLInputElement).value || b.textContent || b.getAttribute("aria-label"))
-        )
-        .filter((t) => t.length > 0)
-        .slice(0, 8)
-      const heading = clip(
-        document.querySelector("h1, [role=heading], #loginHeader, .row-title")?.textContent
-      )
-      const errorEl = document.querySelector(
-        '[role="alert"], .alert-error, #passwordError, [id*="error" i]'
-      )
-      return { title: document.title, heading, inputs, buttons, error: clip(errorEl?.textContent) }
-    })
-    console.info(`[teams-login][ui] ${label} url=${page.url()}`)
-    console.info(
-      `[teams-login][ui] ${label} title=${JSON.stringify(info.title)} heading=${JSON.stringify(info.heading)}`
-    )
-    console.info(
-      `[teams-login][ui] ${label} inputs=${JSON.stringify(info.inputs)} buttons=${JSON.stringify(info.buttons)}`
-    )
-    if (info.error) console.info(`[teams-login][ui] ${label} error=${JSON.stringify(info.error)}`)
-  } catch (e) {
-    console.warn(`[teams-login][ui] ${label} failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
 
@@ -366,11 +327,6 @@ async function settleTeamsAuth(
     const names = teamsCookies.map((c) => c.name)
     const hasAuthToken = names.includes("authtoken")
     const hasRingFinder = names.includes("ringFinder")
-    console.info(
-      `[teams-login][settle] t=${Math.round((Date.now() - start) / 1000)}s url=${url} ` +
-        `onApp=${onTeamsApp} hasAuthToken=${hasAuthToken} hasRingFinder=${hasRingFinder} ` +
-        `teamsCookies=[${names.join(", ")}]`
-    )
     // Go the INSTANT the Teams identity is established — `ringFinder` carries the
     // signed-in oid/tid, `authtoken` is the full service token — as long as we're on
     // the Teams app (off the auth endpoints). We deliberately DON'T wait for the home
