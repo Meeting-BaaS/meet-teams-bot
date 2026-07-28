@@ -13,6 +13,8 @@ declare global {
     __teamsNetworkInterceptorMain?: boolean
     __teamsNetworkInterceptorInitialized?: boolean
     __teamsStopNetworkInterception?: () => void
+    __teamsNetDiag?: Record<string, number | boolean>
+    __teamsSpeakerQueue?: NetworkPayload[]
   }
 }
 
@@ -73,15 +75,18 @@ export async function setupTeamsNetworkInterceptionCallback(
     // visible inside the interceptor bundle's context under CloakBrowser, but
     // page.evaluate can read globals the bundle writes — so the bundle pushes speaker
     // payloads onto window.__teamsSpeakerQueue and we drain + dispatch them here.
+    let drainedTotal = 0
     const drainSpeakerQueue = async () => {
       try {
-        const payloads = (await page.evaluate(() => {
-          const w = window as any
-          const q = w.__teamsSpeakerQueue || []
-          w.__teamsSpeakerQueue = []
+        const payloads = await page.evaluate(() => {
+          const q = window.__teamsSpeakerQueue || []
+          window.__teamsSpeakerQueue = []
           return q
-        })) as NetworkPayload[]
-        for (const payload of payloads) onSpeakersChange(payload)
+        })
+        for (const payload of payloads) {
+          drainedTotal++
+          onSpeakersChange(payload)
+        }
       } catch {
         // page navigating/closed — ignore
       }
@@ -89,7 +94,32 @@ export async function setupTeamsNetworkInterceptionCallback(
     const speakerPoll = setInterval(() => {
       void drainSpeakerQueue()
     }, 250)
-    page.on("close", () => clearInterval(speakerPoll))
+
+    // Pipeline health: browser console is filtered in prod, so read the browser-side
+    // counters here and log one concise, non-PII line — a stalled stage is obvious
+    // (e.g. rtc=0/dc=0 = RTCPeerConnection never proxied; bcast=0 = nothing detected).
+    const diagPoll = setInterval(() => {
+      void (async () => {
+        try {
+          const d = await page.evaluate(() => window.__teamsNetDiag || null)
+          if (d) {
+            console.log(
+              `[Teams NetworkInterceptor] diag ws=${d.wsCreated} rosterFrames=${d.wsRosterFrames}` +
+                ` httpRoster=${d.httpRosterHits} roster=${d.rosterParticipants} rtc=${d.rtcCreated}` +
+                ` dc=${d.dataChannels} dsh=${d.dshSeen} recv=${d.receiversAdded}` +
+                ` csrc=${d.csrcAvailable} bcast=${d.broadcasts} qLen=${d.queueLen} drained=${drainedTotal}`
+            )
+          }
+        } catch {
+          // page navigating/closed — ignore
+        }
+      })()
+    }, 15000)
+
+    page.on("close", () => {
+      clearInterval(speakerPoll)
+      clearInterval(diagPoll)
+    })
 
     return verifyTeamsNetworkInterception(page)
   } catch (error) {

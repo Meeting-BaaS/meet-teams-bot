@@ -1,6 +1,7 @@
 import { DiarizationTracker } from "../../diarization-tracker"
 import { Events } from "../../events"
 import { stopNetworkInterception } from "../../meeting/meet/network-interception"
+import { stopTeamsNetworkInterception } from "../../meeting/teams/network-interception"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import { type AudioWarningEvent, ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
@@ -443,10 +444,10 @@ export class RecordingState extends BaseState {
           `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? " (no segment ever produced — fast fallback)" : ""}`
         )
 
-        // Check if we should trigger fallback (Meet only, network diarization active)
+        // Check if we should trigger fallback (Meet or Teams, network diarization active)
         if (
           this.consecutiveStaleCount >= threshold &&
-          meetingPlatform === "meet" &&
+          (meetingPlatform === "meet" || meetingPlatform === "teams") &&
           !GLOBAL.hasNetworkInterceptionSetupFailed() &&
           !GLOBAL.hasDiarizationFallbackTriggered() &&
           this.context.playwrightPage
@@ -457,7 +458,11 @@ export class RecordingState extends BaseState {
 
           // Stop network interception to prevent duplicate logs
           try {
-            await stopNetworkInterception(this.context.playwrightPage)
+            if (meetingPlatform === "teams") {
+              await stopTeamsNetworkInterception(this.context.playwrightPage)
+            } else {
+              await stopNetworkInterception(this.context.playwrightPage)
+            }
           } catch (error) {
             console.error(
               "[DiarizationHealth] Failed to stop network interception:",
