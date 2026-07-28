@@ -66,21 +66,31 @@ export async function setupTeamsNetworkInterceptionCallback(
   onSpeakersChange: (payload: NetworkPayload) => void
 ): Promise<boolean> {
   try {
-    // DIAG: count/log speaker updates reaching Node. Empty diarization means either
-    // none arrive (browser-side data-channel issue — see the [NetworkInterceptor]
-    // datachannel logs) or the write path downstream drops them.
-    let speakerUpdateCount = 0
-    const wrapped = (payload: NetworkPayload) => {
-      speakerUpdateCount++
-      if (speakerUpdateCount <= 30 || speakerUpdateCount % 25 === 0) {
-        console.log(
-          `[Teams][speaker-diag] update #${speakerUpdateCount}: ${JSON.stringify(payload).slice(0, 220)}`
-        )
-      }
-      onSpeakersChange(payload)
-    }
-    await page.exposeFunction("onNetworkSpeakerUpdate", wrapped)
+    await page.exposeFunction("onNetworkSpeakerUpdate", onSpeakersChange)
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
+
+    // Speaker delivery via a drained queue: exposeFunction's window binding is not
+    // visible inside the interceptor bundle's context under CloakBrowser, but
+    // page.evaluate can read globals the bundle writes — so the bundle pushes speaker
+    // payloads onto window.__teamsSpeakerQueue and we drain + dispatch them here.
+    const drainSpeakerQueue = async () => {
+      try {
+        const payloads = (await page.evaluate(() => {
+          const w = window as any
+          const q = w.__teamsSpeakerQueue || []
+          w.__teamsSpeakerQueue = []
+          return q
+        })) as NetworkPayload[]
+        for (const payload of payloads) onSpeakersChange(payload)
+      } catch {
+        // page navigating/closed — ignore
+      }
+    }
+    const speakerPoll = setInterval(() => {
+      void drainSpeakerQueue()
+    }, 250)
+    page.on("close", () => clearInterval(speakerPoll))
+
     return verifyTeamsNetworkInterception(page)
   } catch (error) {
     console.error("[Teams NetworkInterceptor] Failed to expose function:", error)
