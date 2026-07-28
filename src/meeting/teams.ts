@@ -100,7 +100,7 @@ export class TeamsProvider implements MeetingProviderInterface {
       ? browserContext
           .pages()
           .find((p) =>
-            /(teams\.microsoft\.com|teams\.cloud\.microsoft|teams\.live\.com)/i.test(p.url())
+            /(teams\.microsoft\.com|cloud\.microsoft|teams\.live\.com)/i.test(p.url())
           )
       : undefined
     const page = reusablePage ?? (await browserContext.newPage())

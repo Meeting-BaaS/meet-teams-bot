@@ -311,7 +311,11 @@ async function settleTeamsAuth(
   // migration bounces it to teams.cloud.microsoft. Match EVERY teams host — hardcoding
   // teams.microsoft.com made this loop wait forever on the new domain (observed: 60s
   // stuck on teams.cloud.microsoft/, authtoken never "seen" because it lived elsewhere).
-  const TEAMS_APP_HOST = /(teams\.microsoft\.com|teams\.cloud\.microsoft|teams\.live\.com)/i
+  // Includes m365.cloud.microsoft: the signed-in session commonly lands on
+  // OfficeHome (m365.cloud.microsoft) rather than a teams.* host, and the identity
+  // cookies live on cloud.microsoft — matching only teams.* made settle time out
+  // there and the join fall back to anonymous. cloud.microsoft covers both.
+  const TEAMS_APP_HOST = /(teams\.microsoft\.com|cloud\.microsoft|teams\.live\.com)/i
   const ON_AUTH = /\/authv2|login\.microsoftonline\.com|login\.live\.com/i
   const isTeamsCookieDomain = (domain: string): boolean =>
     /(teams\.microsoft\.com|teams\.cloud\.microsoft|cloud\.microsoft|teams\.live\.com)/i.test(domain)

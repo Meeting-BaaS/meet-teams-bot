@@ -344,6 +344,17 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
         "--in-process-gpu"
       ]
       : ["--disable-gpu", "--disable-software-rasterizer", "--disable-gpu-compositing"]
+
+  // Local dev (e.g. macOS) has no PulseAudio/v4l2loopback virtual devices, so
+  // Chromium finds no real mic/camera and Teams gets stuck on its pre-join
+  // device-permission page. On ENVIRON=local or macOS, synthesize a fake mic+camera
+  // and auto-accept the getUserMedia prompt so the join proceeds — the Chromium
+  // analog of the Firefox `media.navigator.streams.fake` local behavior. Never
+  // off-local: prod uses the real branding feed via the virtual devices.
+  const localMediaArgs =
+    envVars.ENVIRON === "local" || process.platform === "darwin"
+      ? ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
+      : []
   try {
     console.log(`Launching CloakBrowser persistent context (${platform})...`)
 
@@ -357,7 +368,7 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
       ...(timezoneId ? { timezoneId } : {}),
       humanize: true,
       ...(proxyUrl ? { proxy: proxyUrl } : {}),
-      args: [...sharedArgs, ...gpuArgs],
+      args: [...sharedArgs, ...gpuArgs, ...localMediaArgs],
       contextOptions: {
         permissions: ["microphone", "camera"],
         ignoreHTTPSErrors: true,
