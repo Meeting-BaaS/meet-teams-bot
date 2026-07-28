@@ -722,9 +722,12 @@ export class TeamsProvider implements MeetingProviderInterface {
       await Promise.race([deactivateMicrophone(page), sleep(2000)])
     }
 
-    if (isLightInterface) {
+    // Turn the bot camera on (branding image) for the light interface AND the
+    // authenticated v2 client — previously the camera stayed off on v2 so no picture.
+    const enableCamera = isLightInterface || Boolean(GLOBAL.get().teams_login_config)
+    if (enableCamera) {
       try {
-        await handlePermissionDialog(page)
+        if (isLightInterface) await handlePermissionDialog(page)
 
         // Quick camera/mic setup with timeouts
         await Promise.race([
@@ -807,6 +810,13 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
 
     console.log("Successfully confirmed we are in the meeting")
+
+    // Guarantee the bot is muted after actually entering the call — the pre-join mute
+    // toggle can be reset by the v2 client on join. Recording bots (no streaming_input)
+    // must never be live; the in-meeting "Mute mic" control is stable at this point.
+    if (!GLOBAL.get().streaming_input) {
+      await Promise.race([deactivateMicrophone(page), sleep(2000)])
+    }
 
     // 🎯 CRITICAL: Notify that join was successful (fixes waiting room timeout)
     onJoinSuccess()
@@ -1169,6 +1179,15 @@ async function handlePermissionDialog(page: Page): Promise<void> {
 async function activateCamera(page: Page): Promise<void> {
   console.log("activating camera")
   try {
+    // v2 / authenticated Teams client: the toggle is a button labelled "Turn camera on"
+    // (aria-label, NOT title). Click it directly when present.
+    const v2CameraOn = page.locator('button[aria-label="Turn camera on"]')
+    if ((await v2CameraOn.count()) > 0) {
+      await v2CameraOn.first().click()
+      console.log("Camera turned on (v2 aria-label)")
+      await sleep(500)
+      return
+    }
     // Essayer d'abord l'interface normale de Teams
     const cameraOffText = page.locator('text="Your camera is turned off"')
     if ((await cameraOffText.count()) > 0) {
