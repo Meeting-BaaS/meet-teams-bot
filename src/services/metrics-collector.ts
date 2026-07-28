@@ -1,5 +1,6 @@
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
+import { NORMAL_END_REASONS } from "../state-machine/constants"
 
 export interface BotMetricsPayload {
   bot_id: number
@@ -14,6 +15,7 @@ export interface BotMetricsPayload {
     total_sec: number
     recording_sec: number
     idle_sec: number
+    waiting_room_sec: number
   }
   resources: {
     cpu_total_sec: number
@@ -26,6 +28,8 @@ export interface BotMetricsPayload {
     participant_count: number
     speaker_count: number
   }
+  retry_count: number
+  success: boolean
 }
 
 export class MetricsCollector {
@@ -70,6 +74,8 @@ export class MetricsCollector {
     const totalSec = Math.max(0, exitTime - startTime)
     const recordingSec = Math.max(0, (Date.now() - this.recordingStartTime) / 1000)
     const idleSec = Math.max(0, totalSec - recordingSec)
+        const endReason = GLOBAL.getEndReason()
+    const success = endReason !== null && NORMAL_END_REASONS.includes(endReason)
 
     const platform = GLOBAL.get().meeting_platform
 
@@ -88,7 +94,8 @@ export class MetricsCollector {
       duration: {
         total_sec: totalSec,
         recording_sec: recordingSec,
-        idle_sec: idleSec
+        idle_sec: idleSec,
+        waiting_room_sec: waitingRoomSec
       },
       resources: {
         cpu_total_sec: this.cpuDeltaSec,
@@ -100,7 +107,9 @@ export class MetricsCollector {
       meeting_info: {
         participant_count: GLOBAL.getParticipants().length,
         speaker_count: GLOBAL.getSpeakers().length
-      }
+      },
+      retry_count: GLOBAL.getRetryCount(),
+      success
     }
   }
 }
