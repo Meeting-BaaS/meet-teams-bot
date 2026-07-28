@@ -122,11 +122,38 @@ export async function setupTeamsNetworkInterceptionCallback(
     }
     forwardInterceptorConsole(page)
     console.log("[Teams NetworkInterceptor] ✅ Callback exposed")
-    // Replay the interceptor's retained state to the freshly-bound callback.
-    // Emissions before this point were silently dropped (no listener); a
-    // dominant-speaker transition that fired in that window would otherwise
-    // only surface on the NEXT transition — which a single-speaker meeting may
-    // never produce.
+
+    // Speaker delivery via a drained queue: exposeFunction's window binding is not
+    // visible inside the interceptor bundle's context under CloakBrowser, but
+    // page.evaluate can read globals the bundle writes — so the bundle pushes speaker
+    // payloads onto window.__teamsSpeakerQueue and we drain + dispatch them here.
+    // While paused, drained payloads are discarded (same semantics as the
+    // exposeFunction gate above).
+    const drainSpeakerQueue = async () => {
+      try {
+        const { payloads, diags } = (await page.evaluate(() => {
+          const w = window as any
+          const q = w.__teamsSpeakerQueue || []
+          w.__teamsSpeakerQueue = []
+          const dq = w.__teamsDiagQueue || []
+          w.__teamsDiagQueue = []
+          return { payloads: q, diags: dq }
+        })) as { payloads: NetworkPayload[]; diags: string[] }
+        for (const line of diags) console.log(`[TeamsInterceptorDiag] ${line}`)
+        if (interceptionPaused) return
+        for (const payload of payloads) onSpeakersChange(payload)
+      } catch {
+        // page navigating/closed — ignore
+      }
+    }
+    const speakerPoll = setInterval(() => {
+      void drainSpeakerQueue()
+    }, 250)
+    page.on("close", () => clearInterval(speakerPoll))
+
+    // Mark callback-bind time in the page (watchdog baseline) and replay the
+    // interceptor's retained state so a pre-bind dominant-speaker transition
+    // isn't lost until the next transition.
     try {
       await page.evaluate(() => window.__teamsNetworkBroadcastNow?.())
       console.log("[Teams NetworkInterceptor] 🔁 Replayed current speaker state to new callback")

@@ -28,12 +28,15 @@ export function teamsBrowserInterceptionLogic() {
     if (!(window as any).pako) {
       console.error(`${LOG} ❌ pako not loaded, cannot decode roster frames`)
     }
-    console.warn(`${LOG} ✅ Activated`) // warn → surfaces via page-logger
 
     // ===== STATE =====
 
     // deviceId (roster details.id) → participant record
     const participantsByDeviceId = new Map<string, any>()
+    // Speaker updates reach Node by being pushed onto this queue, which Node drains
+    // via page.evaluate (the interceptor's context cannot see exposeFunction bindings
+    // under CloakBrowser).
+    ;(window as any).__teamsSpeakerQueue = (window as any).__teamsSpeakerQueue || []
     // virtual stream id (string) → { participantId, displayName, type, isAudio, isActive }
     const virtualStreams = new Map<string, any>()
     // current dominant speaker's audio virtual stream id (from "dsh")
@@ -60,10 +63,19 @@ export function teamsBrowserInterceptionLogic() {
       wsRosterFrames: 0
     }
 
-    // Route a diagnostic line to the Node logger through the proven
-    // onNetworkSpeakerUpdate bridge (CloakBrowser's stealth page does NOT
-    // surface page.on('console'), so console.warn is invisible post-mortem).
+    // Route a diagnostic line to the Node logger. CloakBrowser surfaces
+    // neither page.on('console') nor exposeFunction bindings in this context,
+    // so lines are queued and drained by the Node-side speaker poll; the
+    // exposeFunction bridge is kept as a best-effort secondary path.
+    ;(window as any).__teamsDiagQueue = (window as any).__teamsDiagQueue || []
     function diag(message: string): void {
+      try {
+        const dq = (window as any).__teamsDiagQueue as string[]
+        if (dq.length > 200) dq.splice(0, dq.length - 200)
+        dq.push(message)
+      } catch {
+        /* ignore */
+      }
       try {
         const fn = (window as any).onNetworkInterceptorDiag
         if (typeof fn === "function") fn(message)
@@ -171,41 +183,100 @@ export function teamsBrowserInterceptionLogic() {
       return mappingChanged
     }
 
+    // Pull a display name / stable id across BOTH the WebSocket roster shape
+    // (participant.details.{displayName,id}) and the HTTP snapshot shapes, which nest
+    // the identity differently.
+    function rosterName(pp: any): string | undefined {
+      return (
+        pp?.details?.displayName ||
+        pp?.displayName ||
+        pp?.identity?.displayName ||
+        pp?.user?.displayName ||
+        pp?.participant?.displayName
+      )
+    }
+    function rosterId(pp: any): string | undefined {
+      return (
+        pp?.details?.id ||
+        pp?.id ||
+        pp?.mri ||
+        pp?.participantId ||
+        pp?.endpointId ||
+        pp?.identity?.id
+      )
+    }
+
+    // Shared by the WebSocket delta path AND the HTTP snapshot path.
+    function applyParticipants(rawParticipants: any[]): void {
+      const participants = rawParticipants.filter((pp) => rosterName(pp))
+      const currentUserId = getCurrentUserId()
+      let changed = false
+      for (const participant of participants) {
+        const deviceId = rosterId(participant)
+        if (!deviceId) continue
+        const record = {
+          deviceId,
+          displayName: rosterName(participant),
+          status: participant.state === "active" ? 1 : 6,
+          isHost: participant.meetingRole === "organizer",
+          isCurrentUser: !!currentUserId && deviceId === currentUserId
+        }
+        const previous = participantsByDeviceId.get(deviceId)
+        if (!previous || JSON.stringify(previous) !== JSON.stringify(record)) changed = true
+        participantsByDeviceId.set(deviceId, record)
+        // A stream->participant mapping change must also rebroadcast: a dsh
+        // dominant-speaker event that arrived BEFORE the mapping resolves
+        // stays unattributed until the next dsh otherwise.
+        if (syncVirtualStreamsFromParticipant(participant)) changed = true
+      }
+      if (changed) broadcastSpeakerUpdate("roster")
+    }
+
     function handleRosterUpdate(eventDataObject: any): void {
       try {
         const decodedBody = decodeWebSocketBody(eventDataObject.body)
-        // Teams includes a phantom user with no display name; skip it.
-        const participants = Object.values<any>(decodedBody.participants || {}).filter(
-          (p) => p?.details?.displayName
-        )
-        const currentUserId = getCurrentUserId()
-        let changed = false
-
-        for (const participant of participants) {
-          const deviceId = participant.details?.id
-          if (!deviceId) continue
-
-          const record = {
-            deviceId,
-            displayName: participant.details.displayName,
-            status: participant.state === "active" ? 1 : 6,
-            isHost: participant.meetingRole === "organizer",
-            isCurrentUser: !!currentUserId && deviceId === currentUserId
-          }
-
-          const previous = participantsByDeviceId.get(deviceId)
-          if (!previous || JSON.stringify(previous) !== JSON.stringify(record)) changed = true
-          participantsByDeviceId.set(deviceId, record)
-          // A stream->participant mapping change must also rebroadcast: a dsh
-          // dominant-speaker event that arrived BEFORE the mapping resolves
-          // stays unattributed until the next dsh otherwise.
-          if (syncVirtualStreamsFromParticipant(participant)) changed = true
-        }
-
-        debug(`👥 roster: ${participantsByDeviceId.size} participants`)
-        if (changed) broadcastSpeakerUpdate("roster")
+        const rawParticipants = Object.values<any>(decodedBody.participants || {})
+        applyParticipants(rawParticipants)
       } catch (error) {
         console.error(`${LOG} ❌ Error handling roster update:`, error)
+      }
+    }
+
+    // ===== ROSTER (HTTP snapshot) =====
+    // The trouter WebSocket only delivers roster DELTAS to this late-connecting client
+    // (see the "trouter.message_loss" frames). Anyone already in the meeting when the
+    // bot joins is recovered by the client via an HTTP snapshot, NOT the socket — so
+    // intercept those responses and merge them into the same participant map.
+    // Teams roster maps are objects keyed by MRI (e.g. { "8:orgid:...": {...} }),
+    // NOT arrays. Convert to an array and inject the MRI key as an id fallback.
+    function participantsToArray(pm: any): any[] | null {
+      if (!pm) return null
+      if (Array.isArray(pm)) return pm
+      if (typeof pm === "object") {
+        return Object.entries(pm as Record<string, any>).map(([mri, pv]) =>
+          pv && typeof pv === "object" ? { mri, ...pv } : pv
+        )
+      }
+      return null
+    }
+
+    function tryHttpRoster(url: string, text: string): void {
+      try {
+        if (!text || text.indexOf("displayName") === -1) return
+        const body = JSON.parse(text)
+        // The HTTP snapshot nests the roster as { roster: { participants: {mri: {...}} } };
+        // other endpoints use top-level participants / value. Handle all as object-or-array.
+        const raw =
+          participantsToArray(body?.roster?.participants) ||
+          participantsToArray(body?.participants) ||
+          participantsToArray(body?.value) ||
+          participantsToArray(body?.participants?.value) ||
+          (Array.isArray(body) ? body : null)
+        if (raw && raw.length) {
+          applyParticipants(raw)
+        }
+      } catch {
+        // not JSON — ignore
       }
     }
 
@@ -372,7 +443,6 @@ export function teamsBrowserInterceptionLogic() {
 
     function broadcastSpeakerUpdate(source: "roster" | "audio"): void {
       if ((window as any).__teamsNetworkInterceptorStopped) return
-      if (typeof (window as any).onNetworkSpeakerUpdate !== "function") return
 
       // CSRC when available (silence == nobody), else dsh dominant speaker.
       let speaking: Set<string>
@@ -383,7 +453,7 @@ export function teamsBrowserInterceptionLogic() {
         speaking = dominant ? new Set([dominant]) : new Set()
       }
 
-      const users = Array.from(participantsByDeviceId.values()).map((p) => ({
+      const rawUsers = Array.from(participantsByDeviceId.values()).map((p) => ({
         deviceId: p.deviceId,
         name: p.displayName || "Unknown",
         isCurrentUser: p.isCurrentUser === true,
@@ -396,23 +466,53 @@ export function teamsBrowserInterceptionLogic() {
         profilePicture: undefined
       }))
 
-      // Debug: log speakers + signal on change, to confirm detection is from
-      // network interception. warn → surfaces through the page-logger.
-      const method = csrcAvailable ? "csrc" : dominantSpeakerStreamId ? "dsh" : "none"
-      const speakingNames = users.filter((u) => u.isSpeaking).map((u) => u.name)
-      const logKey = `${speakingNames.slice().sort().join("|")}#${method}`
-      if (logKey !== lastSpeakingLogKey) {
-        lastSpeakingLogKey = logKey
-        console.warn(
-          `${LOG} 🗣️ speaking=[${speakingNames.join(", ") || "(none)"}] method=${method} source=${source} participants=${users.length}`
-        )
+      // Dedupe by AAD identity. The same account can appear under more than one roster
+      // entry — the bot showed up under both its directory name and its in-call name
+      // (different endpoint ids), surfacing as a phantom extra speaker. Collapse rows
+      // that share an org identity (8:orgid:<oid>); OR their speaking/host/self flags.
+      // Guests/anonymous participants have no orgid, so they key on their full id and
+      // are NEVER merged — anonymous meetings behave exactly as before.
+      const identityKey = (deviceId: string): string => {
+        const m =
+          typeof deviceId === "string" ? deviceId.match(/8:orgid:([0-9a-fA-F-]{36})/) : null
+        return m ? `orgid:${m[1].toLowerCase()}` : String(deviceId)
       }
+      const byIdentity = new Map<string, (typeof rawUsers)[number]>()
+      for (const u of rawUsers) {
+        const key = identityKey(u.deviceId)
+        const prev = byIdentity.get(key)
+        if (!prev) {
+          byIdentity.set(key, u)
+        } else {
+          prev.isSpeaking = prev.isSpeaking || u.isSpeaking
+          prev.isCurrentUser = prev.isCurrentUser || u.isCurrentUser
+          prev.isHost = prev.isHost || u.isHost
+          if (u.status === 1) prev.status = 1
+          if ((prev.name === "Unknown" || !prev.displayName) && u.displayName) {
+            prev.name = u.displayName
+            prev.displayName = u.displayName
+            prev.fullName = u.displayName
+          }
+        }
+      }
+      const users = Array.from(byIdentity.values())
 
-      ;(window as any).onNetworkSpeakerUpdate({
-        users,
-        timestamp: Date.now(),
-        source
-      })
+      // Only enqueue when the roster or speaking set actually changed — keeps the
+      // pipeline (and logs) quiet during steady state.
+      const key = users
+        .map((u) => `${u.deviceId}:${u.isSpeaking ? 1 : 0}`)
+        .sort()
+        .join("|")
+      if (key === lastSpeakingLogKey) return
+      lastSpeakingLogKey = key
+
+      try {
+        const q = (window as any).__teamsSpeakerQueue as any[]
+        if (q.length > 500) q.splice(0, q.length - 500)
+        q.push({ users, timestamp: Date.now(), source })
+      } catch {
+        // ignore
+      }
     }
 
     // ===== INTERCEPTORS =====
@@ -429,7 +529,8 @@ export function teamsBrowserInterceptionLogic() {
             const eventDataObject = JSON.parse(data.slice(4))
             const eventUrl = eventDataObject?.url
             if (typeof eventUrl !== "string") return
-            if (eventUrl.endsWith("rosterUpdate/") || eventUrl.endsWith("rosterUpdate")) {
+            // Match any roster-bearing signaling URL (initial snapshot + deltas).
+            if (eventUrl.toLowerCase().includes("roster")) {
               handleRosterUpdate(eventDataObject)
             }
           } catch {
@@ -444,6 +545,71 @@ export function teamsBrowserInterceptionLogic() {
       ProxiedWebSocket.CLOSING = OriginalWebSocket.CLOSING
       ProxiedWebSocket.CLOSED = OriginalWebSocket.CLOSED
       ;(window as any).WebSocket = ProxiedWebSocket
+    }
+
+    // HTTP roster interceptor (fetch + XHR). Feeds tryHttpRoster so the full roster
+    // (participants already present before the bot joined) is recovered from the
+    // client's HTTP snapshot, not just the socket deltas. Wrap-and-forward only — the
+    // original response is returned untouched; we read a clone.
+    {
+      const rosterUrlRe = /callagent|conversation|roster|participant|calling|skype|flightproxy|\/csa\/|\/api\//i
+      try {
+        const origFetch = (window.fetch as any).bind(window)
+        ;(window as any).fetch = function (...args: any[]) {
+          const promise = origFetch(...args)
+          try {
+            const req = args[0]
+            const url = typeof req === "string" ? req : req?.url
+            if (url && rosterUrlRe.test(url)) {
+              promise
+                .then((resp: any) => {
+                  try {
+                    resp
+                      .clone()
+                      .text()
+                      .then((t: string) => tryHttpRoster(url, t))
+                      .catch(() => {})
+                  } catch {}
+                  return resp
+                })
+                .catch(() => {})
+            }
+          } catch {}
+          return promise
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        const origOpen = XMLHttpRequest.prototype.open
+        const origSend = XMLHttpRequest.prototype.send
+        XMLHttpRequest.prototype.open = function (
+          this: any,
+          method: string,
+          url: string,
+          ...rest: any[]
+        ) {
+          this.__teamsUrl = url
+          return (origOpen as any).call(this, method, url, ...rest)
+        }
+        XMLHttpRequest.prototype.send = function (this: any, ...sargs: any[]) {
+          try {
+            const url = this.__teamsUrl
+            if (url && rosterUrlRe.test(url)) {
+              this.addEventListener("load", () => {
+                try {
+                  if (typeof this.responseText === "string") {
+                    tryHttpRoster(url, this.responseText)
+                  }
+                } catch {}
+              })
+            }
+          } catch {}
+          return (origSend as any).apply(this, sargs)
+        }
+      } catch {
+        // ignore
+      }
     }
 
     // RTCPeerConnection proxy — capture the "main-channel" data channel (dsh)
@@ -498,7 +664,6 @@ export function teamsBrowserInterceptionLogic() {
       try {
         if ((window as any).__teamsNetworkInterceptorStopped) return
         if (audioPathDeadReported) return
-        if (typeof (window as any).onNetworkSpeakerUpdate !== "function") return
         // Not yet in-call (callback not bound) — don't run the grace clock.
         if (callbackBoundAt === 0) return
         const others = Array.from(participantsByDeviceId.values()).filter(
@@ -513,12 +678,14 @@ export function teamsBrowserInterceptionLogic() {
         diag(
           `🚨 audio path dead: no dsh/CSRC signal for ${Math.round(sinceSignal / 1000)}s in-call with ${others.length} other participant(s) — requesting UI fallback | hooks: pc=${instr.pcConstructed} dataCh=${instr.dataChannels} mainCh=${instr.mainChannelAttached} audioRx=${instr.audioReceivers} dsh=${instr.dshEvents}`
         )
-        ;(window as any).onNetworkSpeakerUpdate({
-          users: [],
-          timestamp: Date.now(),
-          source: "roster",
-          audioPathDead: true
-        })
+        // Deliver through the drained queue — exposeFunction bindings are not
+        // visible in this context under CloakBrowser.
+        try {
+          const q = (window as any).__teamsSpeakerQueue as any[]
+          q.push({ users: [], timestamp: Date.now(), source: "roster", audioPathDead: true })
+        } catch {
+          // ignore
+        }
       } catch (e) {
         console.error(`${LOG} ❌ watchdog error:`, e)
       }
@@ -535,6 +702,9 @@ export function teamsBrowserInterceptionLogic() {
       try {
         callbackBoundAt = Date.now()
         diag(`callback bound — audio-path watchdog armed (${participantsByDeviceId.size} participants in roster)`)
+        // Force the current snapshot into the queue even if the speaking key
+        // hasn't changed since the last (possibly pre-bind) enqueue.
+        lastSpeakingLogKey = ""
         broadcastSpeakerUpdate(csrcAvailable ? "audio" : dominantSpeakerStreamId ? "audio" : "roster")
       } catch (e) {
         console.error(`${LOG} ❌ Replay broadcast failed:`, e)
@@ -549,10 +719,7 @@ export function teamsBrowserInterceptionLogic() {
       } catch {
         // ignore
       }
-      console.log(`${LOG} ✅ Stopped`)
     }
-
-    console.warn(`${LOG} ✅ Interceptors installed (WebSocket roster, main-channel dsh, CSRC poll)`)
   } catch (error) {
     console.error("[NetworkInterceptor][Teams] ❌ Initialization error:", error)
   }
