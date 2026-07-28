@@ -45,6 +45,12 @@ export function teamsBrowserInterceptionLogic() {
     let csrcAvailable = false
     // CSRC becomes authoritative only after a source maps to a participant.
     let hasObservedCsrcMapping = false
+    // CSRC per-speaker detection is DISABLED in CloakBrowser: getContributingSources()
+    // never populates audioLevel (diag lvl was 0 all meeting), so a "recent contributing
+    // source" is indistinguishable from silence and the first speaker latches for the whole
+    // call. Force the dsh dominant-speaker path (which changes correctly) — the behaviour
+    // that worked on feat/teams-network-speaker-separation+efs-fix. Flip true if audioLevel lands.
+    const CSRC_ENABLED = false
 
     // receiver → isActive
     const receiverMap = new Map<RTCRtpReceiver, boolean>()
@@ -376,7 +382,7 @@ export function teamsBrowserInterceptionLogic() {
       if (mappedCsrcThisPoll) hasObservedCsrcMapping = true
       const hasActiveReceiver = Array.from(receiverMap.values()).some(Boolean)
       if (!hasActiveReceiver) hasObservedCsrcMapping = false
-      csrcAvailable = hasObservedCsrcMapping
+      csrcAvailable = CSRC_ENABLED && hasObservedCsrcMapping
 
       // Ensure a state machine exists for every participant we've seen speaking.
       for (const participantId of speakingParticipantIds) {
