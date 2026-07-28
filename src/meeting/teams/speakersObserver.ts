@@ -186,10 +186,9 @@ export class TeamsSpeakersObserver {
                 // new teams (v2): tiles are [data-cid="calling-participant-stream"]
                 // with data-tid=<email> and aria-label="<Display Name>, ...". Prefer the
                 // display name; fall back to the tid.
-                const name =
-                  element.getAttribute("aria-label")?.split(",")[0]?.trim() ||
-                  element.getAttribute("data-tid") ||
-                  ""
+                // data-tid on v2 tiles holds the participant's raw email — never use it
+                // as a display name (PII). If aria-label parsing fails, skip the tile.
+                const name = element.getAttribute("aria-label")?.split(",")[0]?.trim() || ""
                 if (name) {
                   const micPath = element.querySelector("g.ui-icon__outline path")
                   const isMuted = micPath?.getAttribute("d")?.startsWith("M12 5v4.879") || false
