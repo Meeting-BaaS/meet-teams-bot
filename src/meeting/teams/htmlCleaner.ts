@@ -163,68 +163,6 @@ export class TeamsHtmlCleaner {
         }
       }
 
-      // DIAGNOSTIC: dump the live meeting DOM so we can target the exact v2 selectors
-      // for the chat rail, the video stage, and the camera/mic controls. Logged once
-      // at cleaner start; remove once the modern selectors are pinned down.
-      function logCleanerDiag(documentRoot: Document) {
-        try {
-          const win = documentRoot.defaultView || window
-          const lines: string[] = [`[Teams][cleaner-diag] url=${location.href}`]
-          const videos = Array.from(documentRoot.querySelectorAll("video"))
-          lines.push(`videos=${videos.length}`)
-          videos.slice(0, 4).forEach((v, i) => {
-            const chain: string[] = []
-            let n: Element | null = v
-            for (let d = 0; d < 10 && n; d++) {
-              const tid = n.getAttribute("data-tid")
-              chain.push(`${n.tagName}${n.id ? `#${n.id}` : ""}${tid ? `[${tid}]` : ""}`)
-              n = n.parentElement
-            }
-            const r = v.getBoundingClientRect()
-            lines.push(
-              `  video#${i} ${Math.round(r.width)}x${Math.round(r.height)} @${Math.round(r.left)},${Math.round(r.top)} chain=${chain.join(" < ")}`,
-            )
-          })
-          const big: Array<{ tid: string; w: number; h: number; x: number; z: string }> = []
-          documentRoot.querySelectorAll("[data-tid]").forEach((el) => {
-            if (!(el instanceof HTMLElement)) return
-            const r = el.getBoundingClientRect()
-            if (r.width < 150 || r.height < 150) return
-            big.push({
-              tid: el.getAttribute("data-tid") || "",
-              w: Math.round(r.width),
-              h: Math.round(r.height),
-              x: Math.round(r.left),
-              z: win.getComputedStyle(el).zIndex,
-            })
-          })
-          big.sort((a, b) => b.w * b.h - a.w * a.h)
-          lines.push("large-containers (rails/stage):")
-          big.slice(0, 18).forEach((b) => lines.push(`  tid=${b.tid} ${b.w}x${b.h} @x${b.x} z=${b.z}`))
-          const btns: string[] = []
-          documentRoot.querySelectorAll('button, [role="button"]').forEach((el) => {
-            if (!(el instanceof HTMLElement)) return
-            const r = el.getBoundingClientRect()
-            if (r.width === 0 || r.height === 0) return
-            const label = (
-              el.getAttribute("aria-label") ||
-              el.getAttribute("title") ||
-              el.textContent ||
-              ""
-            )
-              .replace(/\s+/g, " ")
-              .trim()
-              .slice(0, 40)
-            const tid = el.getAttribute("data-tid")
-            if (label || tid) btns.push(`${tid ? `[${tid}]` : ""} ${label}`.trim())
-          })
-          lines.push(`buttons(${btns.length}): ${JSON.stringify(btns.slice(0, 40))}`)
-          console.log(lines.join("\n"))
-        } catch (e) {
-          console.warn("[Teams][cleaner-diag] failed", e)
-        }
-      }
-
       // The AUTHENTICATED teams.microsoft.com/v2 client differs from BOTH the classic
       // client and the teams.live.com "light" client. Its chat / people rail renders at
       // a very high z-index, so cleanLightClient's stage promotion doesn't cover it and
@@ -233,69 +171,62 @@ export class TeamsHtmlCleaner {
       // meeting video stage above everything — falling back to the common ancestor of
       // the <video> tiles when no known stage tid matches. No-op on other clients.
       function cleanModernClient(documentRoot: Document) {
+        // v2 authenticated client: the meeting stage lives in app-layout-area--main
+        // (stage-layout / modern-stage-wrapper); the chat/people rail, nav, header,
+        // toasts and notifications each live in a sibling app-layout-area--* node.
+        // Hide every chrome area (this is what removes the open chat panel) and promote
+        // the main area to fill the viewport so the recording shows only the video.
         let hidden = 0
-        const railSelectors = [
-          '[data-tid="chat-pane-list"]',
-          '[data-tid="chat-pane-compose-message-footer"]',
-          '[data-tid="right-rail"]',
-          '[data-tid="calling-right-side-panel"]',
-          '[data-tid="roster-panel"]',
-          '[data-tid="people-panel"]',
-          '[role="complementary"]',
+        const chromeAreas = [
+          "end", // chat / people / roster side rail
+          "nav",
+          "sub-nav",
+          "mid-nav",
+          "start",
+          "title-bar",
+          "header",
+          "toasts",
+          "notifications",
+          "contextual-notifications",
+          "preview",
         ]
-        for (const sel of railSelectors) {
-          documentRoot.querySelectorAll(sel).forEach((el) => {
-            if (!(el instanceof HTMLElement)) return
-            el.style.display = "none"
-            hidden++
-            // Collapse the immediate rail wrapper too, but never a layout root.
-            const parent = el.parentElement
-            if (
-              parent instanceof HTMLElement &&
-              parent.id !== "call-screen-wrapper" &&
-              parent.id !== "root" &&
-              parent.tagName !== "BODY"
-            ) {
-              parent.style.display = "none"
-            }
-          })
+        for (const area of chromeAreas) {
+          documentRoot
+            .querySelectorAll(`[data-tid="app-layout-area--${area}"]`)
+            .forEach((el) => {
+              if (el instanceof HTMLElement) {
+                el.style.display = "none"
+                hidden++
+              }
+            })
         }
 
-        // Promote the meeting stage to fullscreen, above the chat rail. Prefer known
-        // modern stage tids; fall back to the smallest common ancestor of the video
-        // tiles so this keeps working even if Teams renames the stage container.
-        let stage: Element | null =
-          documentRoot.querySelector('[data-tid="calling-stage"]') ||
-          documentRoot.querySelector('[data-tid="modern-stage"]') ||
-          documentRoot.querySelector('[data-tid="stage-layout"]') ||
-          documentRoot.querySelector('[data-tid="modern-stage-wrapper"]') ||
-          documentRoot.querySelector('[data-tid="only-videos-wrapper"]')
-        if (!(stage instanceof HTMLElement)) {
-          const videos = Array.from(documentRoot.querySelectorAll("video"))
-          if (videos.length > 0) {
-            let common: HTMLElement | null = videos[0].parentElement
-            while (common && !videos.every((v) => (common as HTMLElement).contains(v))) {
-              common = common.parentElement
-            }
-            stage = common
-          }
+        // Expand the main area to fill the viewport, above anything chrome-y that peeks.
+        const main = documentRoot.querySelector('[data-tid="app-layout-area--main"]')
+        if (main instanceof HTMLElement) {
+          main.style.position = "fixed"
+          main.style.top = "0"
+          main.style.left = "0"
+          main.style.width = "100vw"
+          main.style.height = "100vh"
+          main.style.zIndex = "2147483000"
+          main.style.backgroundColor = "black"
         }
+        const stage =
+          documentRoot.querySelector('[data-tid="modern-stage-wrapper"]') ||
+          documentRoot.querySelector('[data-tid="stage-layout"]') ||
+          documentRoot.querySelector('[data-tid="only-videos-wrapper"]')
         if (stage instanceof HTMLElement) {
-          stage.style.position = "fixed"
-          stage.style.top = "0"
-          stage.style.left = "0"
-          stage.style.width = "100vw"
-          stage.style.height = "100vh"
-          stage.style.zIndex = "2147483000"
-          stage.style.backgroundColor = "black"
+          stage.style.width = "100%"
+          stage.style.height = "100%"
         }
 
         if (hidden > 0) {
           console.log(
             "[Teams] modern: hid",
             hidden,
-            "rail element(s); stage promoted:",
-            stage instanceof HTMLElement,
+            "chrome area(s); main promoted:",
+            main instanceof HTMLElement,
           )
         }
       }
