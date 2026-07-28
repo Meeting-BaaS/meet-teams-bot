@@ -227,8 +227,17 @@ export class TeamsSpeakersObserver {
                                     }
                                 }
                             } else {
-                                // new teams
-                                const name = element.getAttribute('data-tid')
+                                // new teams (v2): tiles are
+                                // [data-cid="calling-participant-stream"] with
+                                // data-tid=<email> and aria-label="<Display Name>, ...".
+                                // Prefer the display name; fall back to the tid.
+                                const name =
+                                    element
+                                        .getAttribute('aria-label')
+                                        ?.split(',')[0]
+                                        ?.trim() ||
+                                    element.getAttribute('data-tid') ||
+                                    ''
                                 console.log(
                                     `[TEAMS-DEBUG] New teams - found name of length: "${name.length}"`,
                                 )
@@ -244,11 +253,21 @@ export class TeamsSpeakersObserver {
                                         element.querySelector(
                                             '[data-tid="voice-level-stream-outline"]',
                                         )
+                                    // v2 exposes the active speaker directly via
+                                    // data-is-speaking on the voice-level-stream-outline —
+                                    // read it (reliable) and fall back to the
+                                    // border/opacity heuristic only for older clients.
+                                    const speakingAttr =
+                                        voiceLevelIndicator?.getAttribute(
+                                            'data-is-speaking',
+                                        )
                                     const isSpeaking =
                                         voiceLevelIndicator && !isMuted
-                                            ? checkElementAndPseudo(
-                                                  voiceLevelIndicator as HTMLElement,
-                                              )
+                                            ? speakingAttr != null
+                                                ? speakingAttr === 'true'
+                                                : checkElementAndPseudo(
+                                                      voiceLevelIndicator as HTMLElement,
+                                                  )
                                             : false
 
                                     return {
@@ -281,7 +300,6 @@ export class TeamsSpeakersObserver {
 
                     return speakers
                 }
-
                 // EXACT SAME helper functions as extension
                 function checkIfSpeaking(element: HTMLElement): boolean {
                     let isSpeaking: boolean = checkElementAndPseudo(element)
