@@ -2,7 +2,6 @@ import type { BrowserContext, Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { captureFingerprint } from "../browser/fingerprint-probe"
 import { listenPage } from "../browser/page-logger"
-import { injectZoomWsSpike } from "./zoom/ws-spike"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
@@ -123,14 +122,19 @@ export class ZoomProvider implements MeetingProviderInterface {
     // stale-diarization dump went missing on the first live run.
     listenPage(page)
 
-    // DIAGNOSTIC (ZOOM_WS_SPIKE): inject the WebSocket/Worker logger before goto
-    // so it wraps sockets Zoom opens on load. Off by default; no-op in prod.
-    if (envVars.ZOOM_WS_SPIKE) {
-      try {
-        await injectZoomWsSpike(page)
-      } catch (e) {
-        console.warn("[WS-SPIKE] inject failed (continuing):", formatError(e))
+    // Must be injected before goto: addInitScript only applies to later navigations
+    // and Zoom opens its signaling socket during load. in-call-state verifies the
+    // hook afterwards and falls back to the DOM observer if it didn't install.
+    try {
+      const { setupZoomNetworkInterceptionScripts } = await import("./zoom/network-interception")
+      const success = await setupZoomNetworkInterceptionScripts(page)
+      if (!success) {
+        console.warn("[Zoom] ⚠️ Failed to setup network interception scripts")
+        GLOBAL.setNetworkInterceptionSetupFailed()
       }
+    } catch (e) {
+      console.error("[Zoom] ⚠️ Error setting up network interception scripts:", formatError(e))
+      GLOBAL.setNetworkInterceptionSetupFailed()
     }
 
     // grantPermissions(["microphone","camera"]) is a Chromium-only API — Firefox

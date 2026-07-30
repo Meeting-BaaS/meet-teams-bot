@@ -2,6 +2,7 @@ import { DiarizationTracker } from "../../diarization-tracker"
 import { Events } from "../../events"
 import { stopNetworkInterception } from "../../meeting/meet/network-interception"
 import { stopTeamsNetworkInterception } from "../../meeting/teams/network-interception"
+import { stopZoomNetworkInterception } from "../../meeting/zoom/network-interception"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import { type AudioWarningEvent, ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
@@ -58,8 +59,14 @@ const STALE_EVENT_THRESHOLD = 10
 // (e.g. ticket 19961784714714: 60s solo test calls, transcript speakers all
 // "Unknown") could mathematically never reach the 10-event threshold.
 const NEVER_PRODUCED_STALE_THRESHOLD = 2
+// Zoom only: grace before the stale detector may retire the network path. Zoom's
+// roster doesn't arrive with the first signaling frames, and the fast threshold was
+// retiring it ~8s after admission, before it could produce anything. The interceptor
+// runs its own self-check at 45s, so the DOM observer stays the backstop.
+const ZOOM_NETWORK_MIN_DWELL_MS = 45_000
 
 export class RecordingState extends BaseState {
+  private readonly enteredAt: number = Date.now()
   private isProcessing = true
   private readonly CHECK_INTERVAL = 250
   private lastSoundActivity: number = Date.now()
@@ -444,10 +451,27 @@ export class RecordingState extends BaseState {
           `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? " (no segment ever produced — fast fallback)" : ""}`
         )
 
-        // Check if we should trigger fallback (Meet or Teams, network diarization active)
+        // Check if we should trigger fallback (Meet, Teams or Zoom, network
+        // diarization active).
+        const zoomDwellElapsed = Date.now() - this.enteredAt
+        if (
+          meetingPlatform === "zoom" &&
+          this.consecutiveStaleCount >= threshold &&
+          zoomDwellElapsed < ZOOM_NETWORK_MIN_DWELL_MS &&
+          !GLOBAL.hasNetworkInterceptionSetupFailed() &&
+          !GLOBAL.hasDiarizationFallbackTriggered()
+        ) {
+          console.log(
+            `[DiarizationHealth] [zoom] ⏳ Holding network path (${Math.round(zoomDwellElapsed / 1000)}s < ${ZOOM_NETWORK_MIN_DWELL_MS / 1000}s) — roster may still be arriving`
+          )
+          return
+        }
+
         if (
           this.consecutiveStaleCount >= threshold &&
-          (meetingPlatform === "meet" || meetingPlatform === "teams") &&
+          (meetingPlatform === "meet" ||
+            meetingPlatform === "teams" ||
+            meetingPlatform === "zoom") &&
           !GLOBAL.hasNetworkInterceptionSetupFailed() &&
           !GLOBAL.hasDiarizationFallbackTriggered() &&
           this.context.playwrightPage
@@ -460,6 +484,8 @@ export class RecordingState extends BaseState {
           try {
             if (meetingPlatform === "teams") {
               await stopTeamsNetworkInterception(this.context.playwrightPage)
+            } else if (meetingPlatform === "zoom") {
+              await stopZoomNetworkInterception(this.context.playwrightPage)
             } else {
               await stopNetworkInterception(this.context.playwrightPage)
             }

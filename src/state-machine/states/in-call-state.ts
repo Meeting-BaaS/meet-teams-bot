@@ -18,6 +18,9 @@ import { BaseState } from "./base-state"
 
 export class InCallState extends BaseState {
   private isStartingUIObserver = false // Lock to prevent race conditions in fallback
+  // deviceId -> stable index, so logs can say which participant changed without
+  // printing a name or id.
+  private readonly maskedSpeakerIndices = new Map<string, number>()
   private lastNetworkSpeakingKey?: string // Dedup for network-speaker debug logging
 
   async execute(): StateExecuteResult {
@@ -224,14 +227,13 @@ export class InCallState extends BaseState {
       return
     }
 
-    // Meet and Teams: try network interception first (PRIMARY), else UI-based.
-    // Done early so the callback is ready when audio tracks start; skip if
-    // scripts failed to load in openMeetingPage.
+    // Meet, Teams and Zoom: try network interception first (PRIMARY), else UI-based.
+    // Done early so the callback is ready when audio tracks start; skip if scripts
+    // failed to load in openMeetingPage.
     const platform = GLOBAL.get().meeting_platform
-    if (
-      (platform === "meet" || platform === "teams") &&
-      !GLOBAL.hasNetworkInterceptionSetupFailed()
-    ) {
+    const networkCapablePlatform =
+      platform === "meet" || platform === "teams" || platform === "zoom"
+    if (networkCapablePlatform && !GLOBAL.hasNetworkInterceptionSetupFailed()) {
       try {
         const networkSetupSuccess = await this.tryNetworkInterception()
         if (networkSetupSuccess) {
@@ -279,6 +281,11 @@ export class InCallState extends BaseState {
         setupNetworkInterceptionCallback =
           teamsNetworkInterception.setupTeamsNetworkInterceptionCallback
         verifyNetworkInterception = teamsNetworkInterception.verifyTeamsNetworkInterception
+      } else if (platform === "zoom") {
+        const zoomNetworkInterception = await import("../../meeting/zoom/network-interception")
+        setupNetworkInterceptionCallback =
+          zoomNetworkInterception.setupZoomNetworkInterceptionCallback
+        verifyNetworkInterception = zoomNetworkInterception.verifyZoomNetworkInterception
       } else {
         const meetNetworkInterception = await import("../../meeting/meet/network-interception")
         setupNetworkInterceptionCallback = meetNetworkInterception.setupNetworkInterceptionCallback
@@ -353,15 +360,15 @@ export class InCallState extends BaseState {
           // Existing speaker update handling
           const networkUsers = payload.users as NetworkUser[]
 
-          // Debug: this handler only runs under network interception, so logging
-          // here (on change) confirms diarization comes from the network path.
-          const speakingNames = networkUsers.filter((u) => u.isSpeaking).map((u) => u.name)
-          const speakingKey = speakingNames.slice().sort().join("|")
+          // Confirms diarization is coming from the network path. Never log names or
+          // ids here — this goes to the bot log and on to S3. Participants are
+          // referred to by a stable per-meeting index instead.
+          const speakingLabels = networkUsers
+            .filter((u) => u.isSpeaking)
+            .map((u) => `#${this.maskedSpeakerIndex(u.deviceId)}`)
+          const speakingKey = speakingLabels.slice().sort().join("|")
           if (speakingKey !== this.lastNetworkSpeakingKey) {
             this.lastNetworkSpeakingKey = speakingKey
-            console.log(
-              `[NetworkSpeaker][${GLOBAL.get().meeting_platform}] 🗣️ speaking=[${speakingNames.join(", ") || "(none)"}] source=${payload.source} participants=${networkUsers.length}`
-            )
           }
 
           await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
@@ -404,6 +411,15 @@ export class InCallState extends BaseState {
   /**
    * Start UI-based speaker observation (fallback method).
    */
+  /** Non-PII label for a participant, in first-seen order. */
+  private maskedSpeakerIndex(deviceId: string): number {
+    const existing = this.maskedSpeakerIndices.get(deviceId)
+    if (existing !== undefined) return existing
+    const next = this.maskedSpeakerIndices.size + 1
+    this.maskedSpeakerIndices.set(deviceId, next)
+    return next
+  }
+
   private async startUIBasedObservation(): Promise<void> {
     if (!this.context.playwrightPage) {
       console.error("Playwright page not available for speakers observation")

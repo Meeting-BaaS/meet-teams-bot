@@ -74,10 +74,6 @@ export const envVars = cleanEnv(process.env, {
   // Normally leave false and let STEALTHFOX_PLATFORMS scope it per platform.
   // Either way needs STEALTHFOX_BINARY_PATH. Takes precedence over USE_FIREFOX.
   USE_STEALTHFOX: bool({ default: false }),
-  // DIAGNOSTIC: inject a WebSocket/Worker logger into the Zoom page to capture
-  // its signaling frames (see meeting/zoom/ws-spike.ts). Off in prod; flip on for
-  // a single test bot to judge network-based active-speaker feasibility.
-  ZOOM_WS_SPIKE: bool({ default: false }),
   // Which platforms launch stealthfox by default — comma-separated
   // (e.g. "zoom", "zoom,meet", or "all"). Zoom-only by default; expanding to
   // meet/teams later is a one-value change. Only takes effect when
