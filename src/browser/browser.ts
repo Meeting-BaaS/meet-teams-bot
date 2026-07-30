@@ -332,7 +332,7 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
 
   const platform = GLOBAL.get().meeting_platform
   // Zoom Web renders via SwiftShader software-WebGL + a software video decoder;
-  // vexa measured the standalone gpu-process at ~357% CPU. --in-process-gpu
+  // the standalone gpu-process measured ~357% CPU. --in-process-gpu
   // folds that into the renderer and drops per-bot demand from ~4.4 cores to
   // ~115%. Meet/Teams don't need it, so scope it to Zoom.
   const gpuArgs =
