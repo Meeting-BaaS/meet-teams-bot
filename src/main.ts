@@ -343,8 +343,7 @@ async function handleFailedRecording(): Promise<void> {
       try {
         const collector = GLOBAL.getMetricsCollector()
         if (collector.isRunning() && Api.instance) {
-          collector.stop()
-          const payload = collector.getPayload()
+          const payload = await collector.getPayload()
           await Promise.race([
             Api.instance.reportMetrics(payload),
             new Promise((_, reject) =>
