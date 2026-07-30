@@ -90,7 +90,9 @@ export const envVars = cleanEnv(process.env, {
   // disables in-process retry entirely (pure requeue behavior). Envalid-validated
   // here; consumed/re-exported via config/retry-config.ts, the single retry-count
   // source (total-budget math lives there).
-  IN_PROCESS_RETRY_MAX: num({ default: 2 })
+  IN_PROCESS_RETRY_MAX: num({ default: 2 }),
+  POD_NAME: str({ default: "" }),
+  NODE_NAME: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars
