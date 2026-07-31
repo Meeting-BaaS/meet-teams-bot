@@ -157,7 +157,9 @@ export class TeamsHtmlCleaner {
                     stage.style.left = '0'
                     stage.style.width = '100vw'
                     stage.style.height = '100vh'
-                    stage.style.zIndex = '9998'
+                    // Match upstream: Teams chrome (toasts, rails) can render
+                    // far above 9998; pin the stage near the z-index ceiling.
+                    stage.style.zIndex = '2147483000'
                     stage.style.backgroundColor = 'black'
                 }
 
