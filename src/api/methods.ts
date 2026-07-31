@@ -7,22 +7,76 @@ import type { BotMetricsPayload } from "../services/metrics-collector"
 import axios from "./axios-instance"
 
 /**
- * Fetch the set of Google-Meet-"burned" exit ASNs (high flagged rate) from the
- * api-server. Used by the pre-join proxy rotation to avoid landing on a burned
- * network. Fail-soft: any error returns [] (avoid nothing) rather than blocking
- * the join.
+ * Networks currently "burned" on Google Meet (high flagged rate).
+ * `pairs` is the precise unit — "ASN:COUNTRY" (e.g. "10753:SG") — because a
+ * multi-country carrier can be burned in one country and clean in another.
+ * `asns` is the coarse global list, used only when the exit's country is
+ * unknown (geo probe failed) or the api-server predates the pair field.
  */
-export async function fetchBurnedAsns(): Promise<number[]> {
+export interface BurnedNetworks {
+  asns: number[]
+  pairs: Set<string>
+  /** ASNs that have at least one (ASN, country) pair entry. */
+  pairAsns: Set<number>
+}
+
+export function isBurnedExit(
+  burned: BurnedNetworks,
+  asn: number | null,
+  country: string | null
+): boolean {
+  if (asn === null) return false
+  const cc = country?.trim().toUpperCase()
+  if (cc && /^[A-Z]{2}$/.test(cc) && burned.pairs.size > 0) {
+    if (burned.pairs.has(`${asn}:${cc}`)) return true
+    // An ASN in the global list WITHOUT any pair entry is blended-burned
+    // (its flags are spread too thin per country to form a pair) — treat it
+    // as burned everywhere. An ASN WITH pair entries is pair-scoped: its
+    // non-burned countries are usable, which is the point of pair keying.
+    return !burned.pairAsns.has(asn) && burned.asns.includes(asn)
+  }
+  return burned.asns.includes(asn)
+}
+
+/**
+ * Fetch the set of Google-Meet-"burned" exit networks (high flagged rate)
+ * from the api-server. Used by the pre-join proxy rotation to avoid landing
+ * on a burned network. Fail-soft: any error returns empty lists (avoid
+ * nothing) rather than blocking the join.
+ */
+export async function fetchBurnedAsns(): Promise<BurnedNetworks> {
   try {
     const resp = await axios.get("/bot-process/meet-burned-asns", { timeout: 5000 })
-    const asns = (resp.data as { data?: { asns?: unknown } })?.data?.asns
-    return Array.isArray(asns) ? asns.filter((n): n is number => typeof n === "number") : []
+    const data = (
+      resp.data as {
+        data?: { asns?: unknown; asn_countries?: unknown }
+      }
+    )?.data
+    const asns = Array.isArray(data?.asns)
+      ? data.asns.filter((n): n is number => typeof n === "number")
+      : []
+    // Only well-formed entries (numeric ASN + alpha-2 country) may form pair
+    // keys: a malformed entry (e.g. empty country) would make `pairs`
+    // nonempty and wrongly disable the legacy global-ASN fallback in
+    // isBurnedExit for every geolocated exit.
+    const validPairs = (
+      Array.isArray(data?.asn_countries) ? data.asn_countries : []
+    ).flatMap((p) => {
+      const asn = (p as { asn?: unknown })?.asn
+      const rawCountry = (p as { country?: unknown })?.country
+      if (typeof asn !== "number" || typeof rawCountry !== "string") return []
+      const cc = rawCountry.trim().toUpperCase()
+      return /^[A-Z]{2}$/.test(cc) ? [{ asn, cc }] : []
+    })
+    const pairs = new Set<string>(validPairs.map((p) => `${p.asn}:${p.cc}`))
+    const pairAsns = new Set<number>(validPairs.map((p) => p.asn))
+    return { asns, pairs, pairAsns }
   } catch (error) {
     console.warn(
       "[BurnedAsns] fetch failed (avoiding nothing):",
       error instanceof Error ? error.message : error
     )
-    return []
+    return { asns: [], pairs: new Set(), pairAsns: new Set() }
   }
 }
 

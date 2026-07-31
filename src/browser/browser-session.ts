@@ -1,8 +1,9 @@
 import { execFile } from "child_process"
 import type { BrowserContext } from "@playwright/test"
-import { fetchBurnedAsns } from "../api/methods"
+import { fetchBurnedAsns, isBurnedExit } from "../api/methods"
 import {
   getExitAsn,
+  getExitGeo,
   resolveProxyCountries,
   startToggleProxy,
   stopToggleProxy
@@ -90,7 +91,12 @@ export async function establishBrowserSession(
       // (an empty burned list or exhausted rotations just proceeds).
       if (session.proxyUrl && platform === "meet") {
         const burned = await fetchBurnedAsns()
-        if (burned.length > 0) {
+        if (burned.asns.length > 0 || burned.pairs.size > 0) {
+          // Burned is keyed on (ASN, country) when the exit's country is
+          // known — a carrier can be burned in SG and clean in BR, so the
+          // pair check avoids over-rotating off usable routes. Falls back
+          // to the global ASN list when the geo probe didn't resolve.
+          const exitIsBurned = () => isBurnedExit(burned, getExitAsn(), getExitGeo()?.country ?? null)
           const ROTATIONS_PER_REGION = 3
           // The team's selected regions, in order ([] = no pin / env default).
           // Try each region in turn; within a region, rotate the Decodo session
@@ -110,7 +116,7 @@ export async function establishBrowserSession(
             let lastAsn: number | null = null
             for (let rot = 1; rot <= ROTATIONS_PER_REGION; rot++) {
               const asn = getExitAsn()
-              if (asn === null || !burned.includes(asn)) {
+              if (!exitIsBurned()) {
                 cleared = true
                 break
               }
@@ -151,23 +157,39 @@ export async function establishBrowserSession(
           }
 
           // Every selected region was ASN-burned. Rather than launch on a
-          // known-burned pinned exit, drop the geo pin entirely for one random
+          // known-burned pinned exit, drop the geo pin entirely for a random
           // residential exit (a different ASN pool) — the same final degradation
           // the regional-outage path takes (skipGeoPin). Only when we still hold
           // a live proxy (a null rotation above already fell back to direct).
-          if (!cleared && session.proxyUrl) {
-            const asn = getExitAsn()
-            if (asn !== null && burned.includes(asn)) {
+          // The unpinned exit is VERIFIED too: a random rotation can land right
+          // back on a burned network (observed in prod: AS5511 serving at ~78%
+          // flagged despite being burned), so retry a bounded number of times
+          // rather than launching on the first unchecked exit.
+          if (!cleared && session.proxyUrl && exitIsBurned()) {
+            const NO_PIN_ROTATIONS = 3
+            for (let rot = 1; rot <= NO_PIN_ROTATIONS; rot++) {
               console.warn(
-                "[BrowserSession] all selected regions ASN-burned on Meet — dropping geo pin for a random exit"
+                `[BrowserSession] all selected regions ASN-burned on Meet — rotating without geo pin (${rot}/${NO_PIN_ROTATIONS})`
               )
               const rotated = await startToggleProxy(
                 GLOBAL.get().bot_uuid,
                 retryCount,
-                `${opts.sessionSuffix ?? ""}rNoPin`,
+                `${opts.sessionSuffix ?? ""}rNoPin${rot}`,
                 { skipGeoPin: true }
               )
-              session.proxyUrl = rotated ?? undefined
+              if (!rotated) {
+                // Rotation tore the proxy down without a replacement — same
+                // direct-join degradation as the in-region path above.
+                session.proxyUrl = undefined
+                break
+              }
+              session.proxyUrl = rotated
+              if (!exitIsBurned()) break
+              if (rot === NO_PIN_ROTATIONS) {
+                console.warn(
+                  `[BrowserSession] unpinned exit still burned after ${NO_PIN_ROTATIONS} rotations — launching anyway (fail-soft)`
+                )
+              }
             }
           }
         }
