@@ -6,7 +6,7 @@ import type { BrowserContext, Page } from "@playwright/test"
  * message).
  *
  * Unlike Meet (SAML SSO with MeetingBaaS as IdP), Teams has no IdP path without
- * federation, so — like Recall/Attendee — the bot signs in with real credentials:
+ * federation, so the bot signs in with real credentials:
  *   1. Fetch the assigned account { email, password } once from api-server's
  *      /v2/teams-sso/resolve-session (keyed by the short-lived session id).
  *   2. Type them into login.microsoftonline.com (email -> Next, password -> Sign in).

@@ -122,6 +122,21 @@ export class ZoomProvider implements MeetingProviderInterface {
     // stale-diarization dump went missing on the first live run.
     listenPage(page)
 
+    // Must be injected before goto: addInitScript only applies to later navigations
+    // and Zoom opens its signaling socket during load. in-call-state verifies the
+    // hook afterwards and falls back to the DOM observer if it didn't install.
+    try {
+      const { setupZoomNetworkInterceptionScripts } = await import("./zoom/network-interception")
+      const success = await setupZoomNetworkInterceptionScripts(page)
+      if (!success) {
+        console.warn("[Zoom] ⚠️ Failed to setup network interception scripts")
+        GLOBAL.setNetworkInterceptionSetupFailed()
+      }
+    } catch (e) {
+      console.error("[Zoom] ⚠️ Error setting up network interception scripts:", formatError(e))
+      GLOBAL.setNetworkInterceptionSetupFailed()
+    }
+
     // grantPermissions(["microphone","camera"]) is a Chromium-only API — Firefox
     // rejects those permission names ("Unknown permission: microphone"). Firefox/
     // stealthfox grants media via its launch prefs instead, so skip the call there
