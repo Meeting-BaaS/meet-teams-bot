@@ -16,6 +16,8 @@ import axios from "./axios-instance"
 export interface BurnedNetworks {
   asns: number[]
   pairs: Set<string>
+  /** ASNs that have at least one (ASN, country) pair entry. */
+  pairAsns: Set<number>
 }
 
 export function isBurnedExit(
@@ -24,8 +26,14 @@ export function isBurnedExit(
   country: string | null
 ): boolean {
   if (asn === null) return false
-  if (country && burned.pairs.size > 0) {
-    return burned.pairs.has(`${asn}:${country.toUpperCase()}`)
+  const cc = country?.trim().toUpperCase()
+  if (cc && /^[A-Z]{2}$/.test(cc) && burned.pairs.size > 0) {
+    if (burned.pairs.has(`${asn}:${cc}`)) return true
+    // An ASN in the global list WITHOUT any pair entry is blended-burned
+    // (its flags are spread too thin per country to form a pair) — treat it
+    // as burned everywhere. An ASN WITH pair entries is pair-scoped: its
+    // non-burned countries are usable, which is the point of pair keying.
+    return !burned.pairAsns.has(asn) && burned.asns.includes(asn)
   }
   return burned.asns.includes(asn)
 }
@@ -47,24 +55,28 @@ export async function fetchBurnedAsns(): Promise<BurnedNetworks> {
     const asns = Array.isArray(data?.asns)
       ? data.asns.filter((n): n is number => typeof n === "number")
       : []
-    const pairs = new Set<string>(
-      Array.isArray(data?.asn_countries)
-        ? data.asn_countries
-            .filter(
-              (p): p is { asn: number; country: string } =>
-                typeof (p as { asn?: unknown })?.asn === "number" &&
-                typeof (p as { country?: unknown })?.country === "string"
-            )
-            .map((p) => `${p.asn}:${p.country.toUpperCase()}`)
-        : []
-    )
-    return { asns, pairs }
+    // Only well-formed entries (numeric ASN + alpha-2 country) may form pair
+    // keys: a malformed entry (e.g. empty country) would make `pairs`
+    // nonempty and wrongly disable the legacy global-ASN fallback in
+    // isBurnedExit for every geolocated exit.
+    const validPairs = (
+      Array.isArray(data?.asn_countries) ? data.asn_countries : []
+    ).flatMap((p) => {
+      const asn = (p as { asn?: unknown })?.asn
+      const rawCountry = (p as { country?: unknown })?.country
+      if (typeof asn !== "number" || typeof rawCountry !== "string") return []
+      const cc = rawCountry.trim().toUpperCase()
+      return /^[A-Z]{2}$/.test(cc) ? [{ asn, cc }] : []
+    })
+    const pairs = new Set<string>(validPairs.map((p) => `${p.asn}:${p.cc}`))
+    const pairAsns = new Set<number>(validPairs.map((p) => p.asn))
+    return { asns, pairs, pairAsns }
   } catch (error) {
     console.warn(
       "[BurnedAsns] fetch failed (avoiding nothing):",
       error instanceof Error ? error.message : error
     )
-    return { asns: [], pairs: new Set() }
+    return { asns: [], pairs: new Set(), pairAsns: new Set() }
   }
 }
 
