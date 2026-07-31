@@ -7,22 +7,64 @@ import type { BotMetricsPayload } from "../services/metrics-collector"
 import axios from "./axios-instance"
 
 /**
- * Fetch the set of Google-Meet-"burned" exit ASNs (high flagged rate) from the
- * api-server. Used by the pre-join proxy rotation to avoid landing on a burned
- * network. Fail-soft: any error returns [] (avoid nothing) rather than blocking
- * the join.
+ * Networks currently "burned" on Google Meet (high flagged rate).
+ * `pairs` is the precise unit — "ASN:COUNTRY" (e.g. "10753:SG") — because a
+ * multi-country carrier can be burned in one country and clean in another.
+ * `asns` is the coarse global list, used only when the exit's country is
+ * unknown (geo probe failed) or the api-server predates the pair field.
  */
-export async function fetchBurnedAsns(): Promise<number[]> {
+export interface BurnedNetworks {
+  asns: number[]
+  pairs: Set<string>
+}
+
+export function isBurnedExit(
+  burned: BurnedNetworks,
+  asn: number | null,
+  country: string | null
+): boolean {
+  if (asn === null) return false
+  if (country && burned.pairs.size > 0) {
+    return burned.pairs.has(`${asn}:${country.toUpperCase()}`)
+  }
+  return burned.asns.includes(asn)
+}
+
+/**
+ * Fetch the set of Google-Meet-"burned" exit networks (high flagged rate)
+ * from the api-server. Used by the pre-join proxy rotation to avoid landing
+ * on a burned network. Fail-soft: any error returns empty lists (avoid
+ * nothing) rather than blocking the join.
+ */
+export async function fetchBurnedAsns(): Promise<BurnedNetworks> {
   try {
     const resp = await axios.get("/bot-process/meet-burned-asns", { timeout: 5000 })
-    const asns = (resp.data as { data?: { asns?: unknown } })?.data?.asns
-    return Array.isArray(asns) ? asns.filter((n): n is number => typeof n === "number") : []
+    const data = (
+      resp.data as {
+        data?: { asns?: unknown; asn_countries?: unknown }
+      }
+    )?.data
+    const asns = Array.isArray(data?.asns)
+      ? data.asns.filter((n): n is number => typeof n === "number")
+      : []
+    const pairs = new Set<string>(
+      Array.isArray(data?.asn_countries)
+        ? data.asn_countries
+            .filter(
+              (p): p is { asn: number; country: string } =>
+                typeof (p as { asn?: unknown })?.asn === "number" &&
+                typeof (p as { country?: unknown })?.country === "string"
+            )
+            .map((p) => `${p.asn}:${p.country.toUpperCase()}`)
+        : []
+    )
+    return { asns, pairs }
   } catch (error) {
     console.warn(
       "[BurnedAsns] fetch failed (avoiding nothing):",
       error instanceof Error ? error.message : error
     )
-    return []
+    return { asns: [], pairs: new Set() }
   }
 }
 
