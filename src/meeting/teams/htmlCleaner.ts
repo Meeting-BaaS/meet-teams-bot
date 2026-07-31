@@ -171,6 +171,77 @@ export class TeamsHtmlCleaner {
                 }
             }
 
+            // The teams.microsoft.com/v2 ("modern") client differs from BOTH
+            // the classic client and the teams.live.com "light" client: its
+            // chat / people rail renders at a very high z-index, so
+            // cleanLightClient's stage promotion doesn't cover it. Hide every
+            // app-layout-area--* chrome sibling and promote the main area to
+            // fill the viewport. No-op on other clients (selectors just miss).
+            function cleanModernClient(documentRoot: Document) {
+                let hiddenModern = 0
+                const chromeAreas = [
+                    'end', // chat / people / roster side rail
+                    'nav',
+                    'sub-nav',
+                    'mid-nav',
+                    'start',
+                    'title-bar',
+                    'header',
+                    'toasts',
+                    'notifications',
+                    'contextual-notifications',
+                    'preview',
+                ]
+                for (const area of chromeAreas) {
+                    documentRoot
+                        .querySelectorAll(
+                            `[data-tid="app-layout-area--${area}"]`,
+                        )
+                        .forEach((el) => {
+                            if (el instanceof HTMLElement) {
+                                el.style.display = 'none'
+                                hiddenModern++
+                            }
+                        })
+                }
+
+                // Expand the main area to fill the viewport, above anything
+                // chrome-y that peeks.
+                const main = documentRoot.querySelector(
+                    '[data-tid="app-layout-area--main"]',
+                )
+                if (main instanceof HTMLElement) {
+                    main.style.position = 'fixed'
+                    main.style.top = '0'
+                    main.style.left = '0'
+                    main.style.width = '100vw'
+                    main.style.height = '100vh'
+                    main.style.zIndex = '2147483000'
+                    main.style.backgroundColor = 'black'
+                }
+                const modernStage =
+                    documentRoot.querySelector(
+                        '[data-tid="modern-stage-wrapper"]',
+                    ) ||
+                    documentRoot.querySelector('[data-tid="stage-layout"]') ||
+                    documentRoot.querySelector(
+                        '[data-tid="only-videos-wrapper"]',
+                    )
+                if (modernStage instanceof HTMLElement) {
+                    modernStage.style.width = '100%'
+                    modernStage.style.height = '100%'
+                }
+
+                if (hiddenModern > 0) {
+                    console.log(
+                        '[Teams] modern: hid',
+                        hiddenModern,
+                        'chrome area(s); main promoted:',
+                        main instanceof HTMLElement,
+                    )
+                }
+            }
+
             async function removeInitialShityHtml() {
                 console.log('[Teams] Starting removeInitialShityHtml')
                 await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -220,6 +291,7 @@ export class TeamsHtmlCleaner {
                 }
 
                 cleanLightClient(documentRoot)
+                cleanModernClient(documentRoot)
             }
 
             function removeShityHtml() {
@@ -279,6 +351,7 @@ export class TeamsHtmlCleaner {
                 }
 
                 cleanLightClient(documentRoot)
+                cleanModernClient(documentRoot)
             }
 
             // Execute Teams provider
