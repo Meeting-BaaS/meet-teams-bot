@@ -25,7 +25,7 @@
         "express": "4.17.1",
         "https-proxy-agent": "^9.0.0",
         "pako": "^2.1.0",
-        "protobufjs": "^7.6.1",
+        "protobufjs": "^7.6.5",
         "proxy-chain": "^2.7.1",
         "retry-axios": "^2.5.0",
         "tslib": "^2.8.1",
@@ -74,5 +74,8 @@
     "homepage": "https://github.com/yourusername/meet-teams-bot#readme",
     "volta": {
         "node": "20.18.0"
+    },
+    "overrides": {
+        "tar": ">=7.5.19 <8"
     }
 }
