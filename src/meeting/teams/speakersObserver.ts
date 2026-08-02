@@ -230,14 +230,14 @@ export class TeamsSpeakersObserver {
                                 // new teams (v2): tiles are
                                 // [data-cid="calling-participant-stream"] with
                                 // data-tid=<email> and aria-label="<Display Name>, ...".
-                                // Prefer the display name; fall back to the tid.
+                                // data-tid holds the participant's raw email — never
+                                // use it as a display name (PII). If aria-label
+                                // parsing fails, skip the tile.
                                 const name =
                                     element
                                         .getAttribute('aria-label')
                                         ?.split(',')[0]
-                                        ?.trim() ||
-                                    element.getAttribute('data-tid') ||
-                                    ''
+                                        ?.trim() || ''
                                 console.log(
                                     `[TEAMS-DEBUG] New teams - found name of length: "${name.length}"`,
                                 )
