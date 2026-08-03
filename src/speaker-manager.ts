@@ -32,7 +32,9 @@ export class SpeakerManager {
   // a later payload can omit a name that an earlier one carried; without this,
   // a participant flips back to "Unknown" mid-meeting.
   private deviceNames = new Map<string, string>()
-  private firstNetworkUpdateAt = Number.POSITIVE_INFINITY
+  // When each device was first seen, so the roster-race grace window below is
+  // scoped to that participant rather than to the start of the meeting.
+  private deviceFirstSeen = new Map<string, number>()
 
   private constructor() {}
 
@@ -58,6 +60,21 @@ export class SpeakerManager {
 
     const remembered = deviceId ? this.deviceNames.get(deviceId) : undefined
     return remembered ?? UNKNOWN_SPEAKER
+  }
+
+  /**
+   * Timestamp this device was first observed, recording it on first sight.
+   * Devices without an id share a single bucket — they cannot be told apart, so
+   * the best available behaviour is to grant the grace window once.
+   */
+  private firstSeenAt(deviceId: string | undefined, timestamp: number): number {
+    const key = deviceId || ""
+    const existing = this.deviceFirstSeen.get(key)
+    if (existing !== undefined) {
+      return existing
+    }
+    this.deviceFirstSeen.set(key, timestamp)
+    return timestamp
   }
 
   /**
@@ -134,10 +151,6 @@ export class SpeakerManager {
     timestamp: number
   ): Promise<void> {
     try {
-      if (this.firstNetworkUpdateAt === Number.POSITIVE_INFINITY) {
-        this.firstNetworkUpdateAt = timestamp
-      }
-
       // Convert network users to SpeakerData format
       const speakers: SpeakerData[] = networkUsers.map((user) => {
         // Use fullName as stable identifier, fallback to name (displayName)
@@ -168,12 +181,17 @@ export class SpeakerManager {
         // Audio can beat the roster: the first CSRC often resolves to a device
         // whose name has not been decoded yet, and attributing that speech to
         // the literal string "Unknown" burns it into the artifact permanently.
-        // Withhold the speaking flag while the name is still unresolved and
-        // early in the meeting — the roster lands within a second or two, and
+        // Withhold the speaking flag while the name is still unresolved and the
+        // device is newly seen — the roster lands within a second or two, and
         // the segment then opens under the correct name. After the grace window
         // an unresolved name is real (not a race), so stop suppressing.
+        //
+        // The window is per-device, not per-meeting: someone joining at minute
+        // 20 races their own roster entry exactly like the participants present
+        // at the start, and a meeting-wide anchor would have expired long ago.
         const nameResolved = stableName !== UNKNOWN_SPEAKER
-        const withinRosterGrace = timestamp - this.firstNetworkUpdateAt < ROSTER_GRACE_MS
+        const withinRosterGrace =
+          timestamp - this.firstSeenAt(user.deviceId, timestamp) < ROSTER_GRACE_MS
         return {
           name: stableName,
           id: sequentialId,

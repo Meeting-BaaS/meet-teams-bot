@@ -591,14 +591,32 @@ export function browserInterceptionLogic(schema: any[]) {
         // network path on any meeting that opened with a quiet minute. Wait for
         // as long as the track is alive; only give up once it actually dies.
         const LIVENESS_POLL_MS = 15000
+
+        // Nothing to wait for if the track is already gone — don't open a read
+        // that will hang until the first poll tick.
+        if (abortSignal.aborted || track.readyState !== "live") {
+          console.error(
+            `[NetworkInterceptor] ❌ Track ${track.id} was not live before the first read: readyState=${track.readyState}, aborted=${abortSignal.aborted}`
+          )
+          trackAbortControllers.delete(track.id)
+          sendFailureSignal(track, "timeout")
+          return false
+        }
+
         const firstReadPromise = reader.read()
 
         let livenessTimer: ReturnType<typeof setInterval> | undefined
+        let onAbort: (() => void) | undefined
         let waitedMs = 0
         const trackDeath = new Promise<never>((_, reject) => {
+          const fail = () => reject(new Error("Track ended before producing audio"))
+          // Abort is edge-triggered: waiting for the next poll would leave the
+          // read pending for up to LIVENESS_POLL_MS after teardown started.
+          onAbort = fail
+          abortSignal.addEventListener("abort", fail, { once: true })
           livenessTimer = setInterval(() => {
-            if (abortSignal.aborted || track.readyState !== "live") {
-              reject(new Error("Track ended before producing audio"))
+            if (track.readyState !== "live") {
+              fail()
               return
             }
             waitedMs += LIVENESS_POLL_MS
@@ -615,6 +633,27 @@ export function browserInterceptionLogic(schema: any[]) {
           console.error(
             `[NetworkInterceptor] ❌ Track ${track.id} died before producing audio: readyState=${track.readyState}, muted=${track.muted}`
           )
+          // The first read is still pending and holds the stream lock. Cancel it
+          // (which settles the read) and release the lock, so a replacement
+          // track for this participant can be monitored instead of failing to
+          // acquire a reader. Release even if cancellation itself throws.
+          try {
+            await reader.cancel()
+          } catch (cancelError) {
+            console.error(
+              `[NetworkInterceptor] Error cancelling reader for track ${track.id}:`,
+              cancelError
+            )
+          } finally {
+            try {
+              reader.releaseLock()
+            } catch (releaseError) {
+              console.error(
+                `[NetworkInterceptor] Error releasing reader lock for track ${track.id}:`,
+                releaseError
+              )
+            }
+          }
           // Clean up AbortController since processing failed
           trackAbortControllers.delete(track.id)
           sendFailureSignal(track, "timeout")
@@ -622,6 +661,9 @@ export function browserInterceptionLogic(schema: any[]) {
         } finally {
           if (livenessTimer) {
             clearInterval(livenessTimer)
+          }
+          if (onAbort) {
+            abortSignal.removeEventListener("abort", onAbort)
           }
         }
 
