@@ -51,8 +51,10 @@ export async function parseZoomMeetingUrl(meeting_url: string): Promise<ZoomUrlC
     // aaa78332, 6 pods each on "https://us02web.zoom.us/j/").
     if (isCanonicalZoomHost && /^\/(?:j|s|wc)(?:\/|$)/.test(url.pathname) && !meetingId) {
       GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
+      // origin+pathname only: the query can carry the ?pwd= passcode and this
+      // message ends up in logs/telemetry.
       throw new Error(
-        `Zoom meeting URL has no meeting ID (truncated link?): ${meeting_url}`
+        `Zoom meeting URL has no meeting ID (truncated link?): ${url.origin}${url.pathname}`
       )
     }
 
@@ -92,7 +94,9 @@ export function buildZoomWebClientUrl(meetingUrl: string, password?: string): st
 
     const meetingId = url.pathname.match(/\/(?:j|s)\/(\d+)/)?.[1]
     if (!meetingId) {
-      throw new Error(`Cannot extract meeting ID from Zoom URL: ${meetingUrl}`)
+      throw new Error(
+        `Cannot extract meeting ID from Zoom URL: ${url.origin}${url.pathname}`
+      )
     }
     const pwd = url.searchParams.get("pwd") || password || ""
     const wcUrl = new URL(`https://app.zoom.us/wc/${meetingId}/join`)
@@ -104,8 +108,13 @@ export function buildZoomWebClientUrl(meetingUrl: string, password?: string): st
     // the reason so waiting-room treats it as ZOOM_TERMINAL (no SQS requeue)
     // and error-state emits invalid_meeting_url instead of a generic failure.
     GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
-    throw new Error(
-      `Invalid Zoom meeting URL: ${meetingUrl} — ${err instanceof Error ? err.message : String(err)}`
+    // Strip query/hash from the URL and from any URL echoed by the inner
+    // error — either can carry the ?pwd= passcode into logs/telemetry.
+    const redactedUrl = meetingUrl.split(/[?#]/)[0]
+    const innerMsg = (err instanceof Error ? err.message : String(err)).replace(
+      /[?#]\S*/g,
+      ""
     )
+    throw new Error(`Invalid Zoom meeting URL: ${redactedUrl} — ${innerMsg}`)
   }
 }
