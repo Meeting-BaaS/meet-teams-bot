@@ -45,6 +45,34 @@ describe("Zoom URL Parser", () => {
     })
   })
 
+  describe("parseZoomMeetingUrl — truncated canonical join URLs (terminal)", () => {
+    // Seen in prod (bots 4204cdd8 / aaa78332): a line-wrapped invite loses the
+    // id after "/j/" and the bot burned all 6 SQS attempts on it. Must throw.
+    test("/j/ with no id throws", async () => {
+      await expect(parseZoomMeetingUrl("https://us02web.zoom.us/j/")).rejects.toThrow(
+        /no meeting ID/
+      )
+    })
+
+    test("/j/ with a too-short digit run throws", async () => {
+      await expect(parseZoomMeetingUrl("https://zoom.us/j/1234")).rejects.toThrow(
+        /no meeting ID/
+      )
+    })
+
+    test("/wc/join/ with no id throws", async () => {
+      await expect(parseZoomMeetingUrl("https://us05web.zoom.us/wc/join/")).rejects.toThrow(
+        /no meeting ID/
+      )
+    })
+
+    test("personal /my/ links are NOT rejected", async () => {
+      const raw = "https://zoom.us/my/lazare.rossi"
+      const r = await parseZoomMeetingUrl(raw)
+      expect(r.meetingId).toBe(raw)
+    })
+  })
+
   describe("parseZoomMeetingUrl — white-label portals", () => {
     test("non-canonical host with numeric id falls back to id", async () => {
       const r = await parseZoomMeetingUrl(

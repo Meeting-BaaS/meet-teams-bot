@@ -44,6 +44,18 @@ export async function parseZoomMeetingUrl(meeting_url: string): Promise<ZoomUrlC
       return { meetingId, password: pwd }
     }
 
+    // Canonical zoom.us join path (/j/, /s/, /wc/) with NO numeric id: the URL
+    // was truncated upstream (typically a line-wrapped invite cut at "/j/").
+    // No retry, pod or IP change can ever make it joinable — fail terminal NOW
+    // instead of burning the SQS retry budget (seen live: bots 4204cdd8 /
+    // aaa78332, 6 pods each on "https://us02web.zoom.us/j/").
+    if (isCanonicalZoomHost && /^\/(?:j|s|wc)(?:\/|$)/.test(url.pathname) && !meetingId) {
+      GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
+      throw new Error(
+        `Zoom meeting URL has no meeting ID (truncated link?): ${meeting_url}`
+      )
+    }
+
     // Non-canonical (white-label) host, or canonical host we couldn't parse:
     // keep an id if we found one, otherwise carry the original URL so the bot
     // can still navigate it. Do NOT throw — a human may complete the portal.
@@ -88,6 +100,10 @@ export function buildZoomWebClientUrl(meetingUrl: string, password?: string): st
     return wcUrl.toString()
   } catch (err) {
     if (meetingUrl.includes("/wc/")) return meetingUrl
+    // A URL we cannot rewrite is unjoinable on every future attempt too — mark
+    // the reason so waiting-room treats it as ZOOM_TERMINAL (no SQS requeue)
+    // and error-state emits invalid_meeting_url instead of a generic failure.
+    GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
     throw new Error(
       `Invalid Zoom meeting URL: ${meetingUrl} — ${err instanceof Error ? err.message : String(err)}`
     )
