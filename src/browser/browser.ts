@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { type BrowserContext, chromium, firefox } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
@@ -12,6 +13,12 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   // Both need the baked binary — without it we fall through to CloakBrowser, so
   // meet/teams and any binary-less env keep working unchanged.
   if (shouldUseStealthfox(platform)) {
+    // Deliberately no fallback. Zoom's anti-bot wall is the reason stealthfox
+    // exists; quietly launching CloakBrowser instead would trade a loud startup
+    // failure for a silent detection/blocked join that looks like a Zoom-side
+    // problem. If a platform is configured for stealthfox, it uses stealthfox
+    // or it stops here.
+    assertStealthfoxUsable(platform)
     console.log(`[Browser] stealthfox enabled (platform=${platform}) - patched Firefox binary`)
     return openStealthfoxBrowser(proxyUrl)
   }
@@ -25,17 +32,54 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
   return openCloakBrowser(proxyUrl)
 }
 
-// Whether this platform should launch stealthfox. Requires the baked binary
-// (STEALTHFOX_BINARY_PATH). USE_STEALTHFOX=true forces it for all platforms;
-// otherwise it's the STEALTHFOX_PLATFORMS allowlist (default "zoom", "all" = every
-// platform), so widening to meet/teams is a single config change.
+// Whether this platform is CONFIGURED for stealthfox. Policy only — whether the
+// binary is actually usable is asserted separately, because a configured
+// platform must not silently run on a different browser.
+// USE_STEALTHFOX=true forces it for all platforms; otherwise it's the
+// STEALTHFOX_PLATFORMS allowlist (default "zoom", "all" = every platform), so
+// widening to meet/teams is a single config change.
 function shouldUseStealthfox(platform: string): boolean {
-  if (!envVars.STEALTHFOX_BINARY_PATH) return false
   if (envVars.USE_STEALTHFOX) return true
   const allow = envVars.STEALTHFOX_PLATFORMS.split(",")
     .map((p) => p.trim().toLowerCase())
     .filter(Boolean)
   return allow.includes("all") || allow.includes(platform.toLowerCase())
+}
+
+/**
+ * Fail fast when a platform is configured for stealthfox but cannot run it.
+ *
+ * Throwing beats falling back. Zoom's anti-bot wall is the whole reason
+ * stealthfox exists — quietly launching CloakBrowser instead would swap a loud
+ * startup failure for a silent detected/blocked join that reads as a Zoom-side
+ * problem days later.
+ */
+function assertStealthfoxUsable(platform: string): void {
+  const binary = envVars.STEALTHFOX_BINARY_PATH
+  if (!binary) {
+    throw new Error(
+      `stealthfox is required for ${platform} but STEALTHFOX_BINARY_PATH is empty. ` +
+        "It is baked into the image at /opt/stealthfox/firefox-16/firefox — rebuild the " +
+        "image, or drop this platform from STEALTHFOX_PLATFORMS if that is intended."
+    )
+  }
+  if (!existsSync(binary)) {
+    throw new Error(
+      `stealthfox is required for ${platform} but no binary exists at ${binary}. Rebuild the image.`
+    )
+  }
+  // The patched Firefox is an x86-64 ELF and no other build was ever published.
+  // In an arm64 image it exists but cannot exec — Playwright surfaces
+  // "rosetta error: failed to open elf at /lib64/ld-linux-x86-64.so.2".
+  // Emulating the WHOLE container works; a lone amd64 binary inside an arm64
+  // container does not.
+  if (process.arch !== "x64") {
+    throw new Error(
+      `stealthfox is required for ${platform} but this image is ${process.arch}; the binary is x86-64 only. ` +
+        "Build and run the container as amd64 — run_bot.sh does this by default, " +
+        "or pass --platform linux/amd64 to docker build/run."
+    )
+  }
 }
 
 // Shared Firefox launch geometry/args/prefs, reused by both the stock-Firefox
