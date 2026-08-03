@@ -92,6 +92,22 @@ export class DiarizationTracker {
   }
 
   /**
+   * Relabel the still-open segment if it is attributed to `from`.
+   *
+   * Segments are only written to the file when they close, so a segment opened
+   * before the roster resolved can be repaired in memory and reach the artifact
+   * already correct. Returns true if a rename happened.
+   */
+  public renameOpenSegment(from: string, to: string, userId: number): boolean {
+    if (this.isEnded || !this.currentSegment || this.currentSegment.speaker !== from) {
+      return false
+    }
+    this.currentSegment.speaker = to
+    this.currentSegment.userId = userId
+    return true
+  }
+
+  /**
    * True once at least one speaker segment was ever opened this meeting.
    * Distinguishes "network diarization NEVER produced data" (source is dead —
    * fall back fast) from "was producing, currently quiet" (normal silence —
