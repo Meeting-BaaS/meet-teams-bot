@@ -1,3 +1,5 @@
+import { GLOBAL } from "../singleton"
+import { MeetingEndReason } from "../state-machine/types"
 import { buildZoomWebClientUrl, parseZoomMeetingUrl } from "./zoomUrlParser"
 
 // GLOBAL.setError is called on the throw path; stub the singleton so the parser
@@ -6,7 +8,12 @@ jest.mock("../singleton", () => ({
   GLOBAL: { setError: jest.fn() }
 }))
 
+const setErrorMock = GLOBAL.setError as jest.Mock
+
 describe("Zoom URL Parser", () => {
+  beforeEach(() => {
+    setErrorMock.mockClear()
+  })
   describe("parseZoomMeetingUrl — canonical /j/ URLs", () => {
     test("regional host with pwd", async () => {
       const r = await parseZoomMeetingUrl("https://us05web.zoom.us/j/84335626851?pwd=aBcD1234")
@@ -42,6 +49,57 @@ describe("Zoom URL Parser", () => {
     test("classic /wc/join/<id>", async () => {
       const r = await parseZoomMeetingUrl("https://us05web.zoom.us/wc/join/84335626851")
       expect(r.meetingId).toBe("84335626851")
+    })
+  })
+
+  describe("parseZoomMeetingUrl — truncated canonical join URLs (terminal)", () => {
+    // Seen in prod (bots 4204cdd8 / aaa78332): a line-wrapped invite loses the
+    // id after "/j/" and the bot burned all 6 SQS attempts on it. Must throw.
+    test("/j/ with no id throws terminal", async () => {
+      await expect(parseZoomMeetingUrl("https://us02web.zoom.us/j/")).rejects.toThrow(
+        /no meeting ID/
+      )
+      expect(setErrorMock).toHaveBeenCalledWith(MeetingEndReason.InvalidMeetingUrl)
+    })
+
+    test("/j/ with a too-short digit run throws terminal", async () => {
+      await expect(parseZoomMeetingUrl("https://zoom.us/j/1234")).rejects.toThrow(
+        /no meeting ID/
+      )
+      expect(setErrorMock).toHaveBeenCalledWith(MeetingEndReason.InvalidMeetingUrl)
+    })
+
+    test("/wc/join/ with no id throws terminal", async () => {
+      await expect(parseZoomMeetingUrl("https://us05web.zoom.us/wc/join/")).rejects.toThrow(
+        /no meeting ID/
+      )
+      expect(setErrorMock).toHaveBeenCalledWith(MeetingEndReason.InvalidMeetingUrl)
+    })
+
+    test("/s/ with no id throws terminal", async () => {
+      await expect(parseZoomMeetingUrl("https://zoom.us/s/")).rejects.toThrow(
+        /no meeting ID/
+      )
+      expect(setErrorMock).toHaveBeenCalledWith(MeetingEndReason.InvalidMeetingUrl)
+    })
+
+    test("bare /wc with no id throws terminal", async () => {
+      await expect(parseZoomMeetingUrl("https://us02web.zoom.us/wc")).rejects.toThrow(
+        /no meeting ID/
+      )
+      expect(setErrorMock).toHaveBeenCalledWith(MeetingEndReason.InvalidMeetingUrl)
+    })
+
+    test("thrown error does not leak the ?pwd= passcode", async () => {
+      await expect(
+        parseZoomMeetingUrl("https://us02web.zoom.us/j/?pwd=SuperSecret123")
+      ).rejects.toThrow(/^(?!.*SuperSecret123)/)
+    })
+
+    test("personal /my/ links are NOT rejected", async () => {
+      const raw = "https://zoom.us/my/lazare.rossi"
+      const r = await parseZoomMeetingUrl(raw)
+      expect(r.meetingId).toBe(raw)
     })
   })
 
@@ -87,6 +145,19 @@ describe("Zoom URL Parser", () => {
     test("leaves zoom Events URLs untouched", () => {
       const ev = "https://events.zoom.us/ejl/AbCd"
       expect(buildZoomWebClientUrl(ev)).toBe(ev)
+    })
+
+    test("canonical /j/ with no id throws terminal without leaking the passcode", () => {
+      let thrown: Error | undefined
+      try {
+        buildZoomWebClientUrl("https://us05web.zoom.us/j/?pwd=SuperSecret123")
+      } catch (e) {
+        thrown = e as Error
+      }
+      expect(thrown).toBeDefined()
+      expect(thrown!.message).toMatch(/Invalid Zoom meeting URL/)
+      expect(thrown!.message).not.toContain("SuperSecret123")
+      expect(setErrorMock).toHaveBeenCalledWith(MeetingEndReason.InvalidMeetingUrl)
     })
   })
 })
