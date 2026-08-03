@@ -84,6 +84,14 @@ export class MeetSpeakersObserver {
                 let lastValidSpeakerCheck = Date.now()
                 const FREEZE_TIMEOUT_MS = 30000 // 30 seconds
 
+                // Which speaking-detection signals were observed. Meet has
+                // changed this markup before and silently zeroed out detection
+                // with no error anywhere; reporting it makes the next
+                // regression diagnosable from the bot log instead of requiring
+                // a DOM snapshot.
+                const signalsSeen = new Set<string>()
+                let signalsReported = ''
+
                 // EXACT SAME getSpeakerRootToObserve as extension
                 async function getSpeakerRootToObserve(
                     recordingMode: string,
@@ -389,7 +397,10 @@ export class MeetSpeakersObserver {
                                     participant.isPresenting = true
                                 }
 
-                                // Check speaking indicators + NEW COLOR FIX
+                                // SIGNAL A (legacy Meet): a mic-bar sprite
+                                // tinted with one of Meet's accent blues,
+                                // animated by shifting backgroundPositionX off
+                                // its rest position.
                                 const speakingIndicators = Array.from(
                                     item.querySelectorAll('*'),
                                 ).filter((elem) => {
@@ -413,9 +424,38 @@ export class MeetSpeakersObserver {
                                             ).backgroundPositionX
                                         if (backgroundPosition !== '0px') {
                                             participant.isSpeaking = true
+                                            signalsSeen.add('sprite')
                                         }
                                     }
                                 })
+
+                                // SIGNAL B (current Meet): the mic-level bars
+                                // sit in a wrapper whose opacity Meet drives
+                                // 0 -> 1 while that person talks. The bar
+                                // container is addressed by jsname, which
+                                // survives Meet's class-name churn far better
+                                // than the obfuscated class strings Signal A
+                                // depends on.
+                                //
+                                // Both signals are OR'd rather than swapped:
+                                // this can only add detections, never remove
+                                // one that already works.
+                                if (!participant.isSpeaking) {
+                                    const bars =
+                                        item.querySelector('[jsname="QgSmzd"]')
+                                    const wrapper = bars?.parentElement
+                                    if (wrapper) {
+                                        signalsSeen.add('bars-present')
+                                        const opacity = Number.parseFloat(
+                                            getComputedStyle(wrapper).opacity ||
+                                                '0',
+                                        )
+                                        if (opacity > 0.1) {
+                                            participant.isSpeaking = true
+                                            signalsSeen.add('opacity')
+                                        }
+                                    }
+                                }
 
                                 // Update the map with the potentially modified data
                                 uniqueParticipants.set(uniqueKey, participant)
@@ -459,6 +499,15 @@ export class MeetSpeakersObserver {
                                     `Speaker ${index + 1} (speaking: ${s.isSpeaking})`,
                             ),
                         )
+
+                        const signalSummary =
+                            Array.from(signalsSeen).sort().join(',') || 'none'
+                        if (signalSummary !== signalsReported) {
+                            signalsReported = signalSummary
+                            console.log(
+                                `[MEET-DEBUG-SIGNALS] speaking signals available: ${signalSummary}`,
+                            )
+                        }
 
                         lastValidSpeakers = speakers
                         lastValidSpeakerCheck = currentTime
