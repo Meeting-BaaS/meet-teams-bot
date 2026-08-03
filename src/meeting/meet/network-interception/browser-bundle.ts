@@ -582,31 +582,89 @@ export function browserInterceptionLogic(schema: any[]) {
           }
         }
 
-        // Read first frame to verify processing works before returning true
-        // Add 60-second timeout to detect hanging tracks
-        const TIMEOUT_MS = 60000 // 60 seconds
+        // Wait for the first frame before declaring the pipeline healthy.
+        //
+        // A live track that yields no frames is a SILENT participant, not a
+        // broken pipeline — Meet sends no RTP for someone who isn't talking.
+        // The previous code gave up after a flat 60s and reported the track as
+        // failed even while logging readyState=live, which retired the entire
+        // network path on any meeting that opened with a quiet minute. Wait for
+        // as long as the track is alive; only give up once it actually dies.
+        const LIVENESS_POLL_MS = 15000
+
+        // Nothing to wait for if the track is already gone — don't open a read
+        // that will hang until the first poll tick.
+        if (abortSignal.aborted || track.readyState !== "live") {
+          console.error(
+            `[NetworkInterceptor] ❌ Track ${track.id} was not live before the first read: readyState=${track.readyState}, aborted=${abortSignal.aborted}`
+          )
+          trackAbortControllers.delete(track.id)
+          sendFailureSignal(track, "timeout")
+          return false
+        }
+
         const firstReadPromise = reader.read()
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout waiting for first frame")), TIMEOUT_MS)
-        )
+
+        let livenessTimer: ReturnType<typeof setInterval> | undefined
+        let onAbort: (() => void) | undefined
+        let waitedMs = 0
+        const trackDeath = new Promise<never>((_, reject) => {
+          const fail = () => reject(new Error("Track ended before producing audio"))
+          // Abort is edge-triggered: waiting for the next poll would leave the
+          // read pending for up to LIVENESS_POLL_MS after teardown started.
+          onAbort = fail
+          abortSignal.addEventListener("abort", fail, { once: true })
+          livenessTimer = setInterval(() => {
+            if (track.readyState !== "live") {
+              fail()
+              return
+            }
+            waitedMs += LIVENESS_POLL_MS
+            console.error(
+              `[NetworkInterceptor] ⏳ No audio yet on track ${track.id} after ${waitedMs / 1000}s — track is live, treating as a silent participant and continuing to wait`
+            )
+          }, LIVENESS_POLL_MS)
+        })
 
         let firstRead: any
         try {
-          firstRead = await Promise.race([firstReadPromise, timeoutPromise])
-        } catch (error: any) {
-          if (error?.message === "Timeout waiting for first frame") {
+          firstRead = await Promise.race([firstReadPromise, trackDeath])
+        } catch (_error) {
+          console.error(
+            `[NetworkInterceptor] ❌ Track ${track.id} died before producing audio: readyState=${track.readyState}, muted=${track.muted}`
+          )
+          // The first read is still pending and holds the stream lock. Cancel it
+          // (which settles the read) and release the lock, so a replacement
+          // track for this participant can be monitored instead of failing to
+          // acquire a reader. Release even if cancellation itself throws.
+          try {
+            await reader.cancel()
+          } catch (cancelError) {
             console.error(
-              `[NetworkInterceptor] ⏱️ Timeout: No frames received for track ${track.id} within ${TIMEOUT_MS}ms`
+              `[NetworkInterceptor] Error cancelling reader for track ${track.id}:`,
+              cancelError
             )
-            console.error(
-              `[NetworkInterceptor] 📊 Track state at timeout: id=${track.id}, readyState=${track.readyState}, muted=${track.muted}`
-            )
-            // Clean up AbortController since processing failed
-            trackAbortControllers.delete(track.id)
-            sendFailureSignal(track, "timeout")
-            return false
+          } finally {
+            try {
+              reader.releaseLock()
+            } catch (releaseError) {
+              console.error(
+                `[NetworkInterceptor] Error releasing reader lock for track ${track.id}:`,
+                releaseError
+              )
+            }
           }
-          throw error
+          // Clean up AbortController since processing failed
+          trackAbortControllers.delete(track.id)
+          sendFailureSignal(track, "timeout")
+          return false
+        } finally {
+          if (livenessTimer) {
+            clearInterval(livenessTimer)
+          }
+          if (onAbort) {
+            abortSignal.removeEventListener("abort", onAbort)
+          }
         }
 
         if (firstRead.done) {

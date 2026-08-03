@@ -22,6 +22,9 @@ export class InCallState extends BaseState {
   // printing a name or id.
   private readonly maskedSpeakerIndices = new Map<string, number>()
   private lastNetworkSpeakingKey?: string // Dedup for network-speaker debug logging
+  // Tracks that stopped delivering audio. Recorded for diagnostics only — the
+  // diarization health monitor decides when the network path is beyond saving.
+  private readonly failedNetworkTracks = new Set<string>()
 
   async execute(): StateExecuteResult {
     const startTime = Date.now()
@@ -298,31 +301,24 @@ export class InCallState extends BaseState {
           // Handle network interception failure - trigger UI Observer fallback
           if (payload.source === "network_interception_failed" && payload.failure) {
             const { trackId, reason, trackState } = payload.failure
+            this.failedNetworkTracks.add(trackId)
             console.warn(
-              `[NetworkInterceptor] ❌ Network interception failed for track ${trackId}: ${reason} (state: ${trackState})`
+              `[NetworkInterceptor] ❌ Network interception failed for track ${trackId}: ${reason} (state: ${trackState}) — ${this.failedNetworkTracks.size} track(s) failed so far`
             )
 
-            // Mark network interception as failed to prevent further attempts
-            GLOBAL.setNetworkInterceptionSetupFailed()
-
-            // Trigger UI Observer fallback (only if not already started or starting)
-            if (!this.context.speakersObserver && !this.isStartingUIObserver) {
-              this.isStartingUIObserver = true
-              console.warn("[NetworkInterceptor] 🔄 Falling back to UI-based speaker detection")
-              try {
-                await this.startUIBasedObservation()
-              } finally {
-                this.isStartingUIObserver = false
-              }
-            } else {
-              if (this.context.speakersObserver) {
-                console.log("[NetworkInterceptor] ℹ️ UI Observer already running, skipping fallback")
-              } else {
-                console.log(
-                  "[NetworkInterceptor] ℹ️ UI Observer fallback already in progress, skipping duplicate"
-                )
-              }
-            }
+            // One dead track is not a dead pipeline. A participant who leaves,
+            // reconnects or replaces their audio track takes their track down
+            // with them; retiring the whole network path on the first such
+            // event handed the rest of the meeting to the UI observer even
+            // though the remaining tracks were still delivering audio.
+            //
+            // The stale-diarization monitor in RecordingState owns the fallback
+            // decision: it falls back within ~10s of sound activity when the
+            // network path has never produced a segment, which is both faster
+            // and better evidenced than reacting to a single track.
+            console.log(
+              "[NetworkInterceptor] ℹ️ Keeping network path active — diarization health monitor owns the fallback decision"
+            )
             return // Don't process as speaker update
           }
 
