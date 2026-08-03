@@ -92,33 +92,39 @@ describe("Meet URL Parser", () => {
   })
 
   describe("Invalid URLs", () => {
+    // The parser distinguishes two rejection reasons, and the message matters
+    // because they mean different things operationally: nothing that looks like
+    // a Meet link at all, versus a Meet link whose code is malformed.
     const invalidUrls = [
       {
         name: "empty URL",
-        url: ""
+        url: "",
+        error: "No Google Meet URL found"
       },
       {
         name: "wrong domain",
-        url: "https://google.com/abc-defg-hij"
+        url: "https://google.com/abc-defg-hij",
+        error: "No Google Meet URL found"
       },
       {
         name: "invalid code format",
-        url: "https://meet.google.com/abcd-efgh-ijkl"
+        url: "https://meet.google.com/abcd-efgh-ijkl",
+        error: "Invalid Google Meet URL format"
       },
       {
         name: "missing code parts",
-        url: "https://meet.google.com/abc-defg"
+        url: "https://meet.google.com/abc-defg",
+        error: "Invalid Google Meet URL format"
       },
       {
         name: "invalid characters in code",
-        url: "https://meet.google.com/123-4567-890"
+        url: "https://meet.google.com/123-4567-890",
+        error: "Invalid Google Meet URL format"
       }
     ]
 
-    test.each(invalidUrls)("should reject $name", async ({ url }) => {
-      await expect(parseMeetingUrlFromJoinInfos(url)).rejects.toThrow(
-        "Invalid Google Meet URL format"
-      )
+    test.each(invalidUrls)("should reject $name", async ({ url, error }) => {
+      await expect(parseMeetingUrlFromJoinInfos(url)).rejects.toThrow(error)
     })
   })
 })
