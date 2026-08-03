@@ -11,14 +11,57 @@ import { SpeakerData } from './types'
 import { uploadTranscriptTask } from './uploadTranscripts'
 import { PathManager } from './utils/PathManager'
 
+/** The placeholder every platform's interceptor falls back to before a roster lands. */
+const UNKNOWN_SPEAKER = "Unknown"
+
+/**
+ * How long after the first network update an unresolved name is still assumed
+ * to be a roster race rather than a genuinely nameless participant.
+ */
+const ROSTER_GRACE_MS = 15000
+
 export class SpeakerManager {
     private static instance: SpeakerManager | null = null
     private currentSpeaker: SpeakerData | null = null
     private readonly PAUSE_BETWEEN_SENTENCES = 1000 // 1 second
     private lastSpeakerTime: number | null = null
     private lastCallbackTime: number | null = null // Track when we last received ANY callback
+    // Best name seen so far per network device. Rosters arrive incrementally
+    // and a later payload can omit a name that an earlier one carried; without
+    // this, a participant flips back to "Unknown" mid-meeting.
+    private deviceNames = new Map<string, string>()
+    private firstNetworkUpdateAt = Number.POSITIVE_INFINITY
 
     private constructor() {}
+
+    /**
+     * Best available name for a network participant, never downgrading.
+     *
+     * Teams already repairs this inside its own interceptor (it upgrades an
+     * "Unknown" record once a displayName shows up), but a roster delta can
+     * still omit a previously-known name — remember the best one per device.
+     */
+    private resolveNetworkName(user: NetworkUser): string {
+        const deviceId = user.deviceId
+        const incoming = (
+            user.fullName ||
+            user.displayName ||
+            user.name ||
+            ''
+        ).trim()
+
+        if (incoming && incoming !== UNKNOWN_SPEAKER) {
+            if (deviceId) {
+                this.deviceNames.set(deviceId, incoming)
+            }
+            return incoming
+        }
+
+        const remembered = deviceId
+            ? this.deviceNames.get(deviceId)
+            : undefined
+        return remembered ?? UNKNOWN_SPEAKER
+    }
 
     /**
      * Get the last time we received a speaker callback (regardless of speaking state)
@@ -83,18 +126,34 @@ export class SpeakerManager {
         networkUsers: NetworkUser[],
         timestamp: number,
     ): Promise<void> {
+        if (this.firstNetworkUpdateAt === Number.POSITIVE_INFINITY) {
+            this.firstNetworkUpdateAt = timestamp
+        }
+
         const speakers: SpeakerData[] = networkUsers
             .filter((user) => !user.isCurrentUser)
-            .map((user, index) => ({
-                name:
-                    user.fullName ||
-                    user.displayName ||
-                    user.name ||
-                    'Unknown',
-                id: index + 1,
-                timestamp,
-                isSpeaking: user.isSpeaking === true,
-            }))
+            .map((user, index) => {
+                const stableName = this.resolveNetworkName(user)
+                // Audio can beat the roster: the first audio event may resolve
+                // to a device whose name has not been decoded yet, and
+                // attributing that speech to the literal "Unknown" burns it
+                // into the artifact permanently. Withhold the speaking flag
+                // while the name is unresolved and early in the meeting — the
+                // roster lands within a second or two, and the segment then
+                // opens under the correct name. After the grace window an
+                // unresolved name is real (not a race), so stop suppressing.
+                const nameResolved = stableName !== UNKNOWN_SPEAKER
+                const withinRosterGrace =
+                    timestamp - this.firstNetworkUpdateAt < ROSTER_GRACE_MS
+                return {
+                    name: stableName,
+                    id: index + 1,
+                    timestamp,
+                    isSpeaking:
+                        user.isSpeaking === true &&
+                        (nameResolved || !withinRosterGrace),
+                }
+            })
 
         await this.handleSpeakerUpdate(speakers)
     }
