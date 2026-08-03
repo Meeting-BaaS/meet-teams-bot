@@ -312,8 +312,12 @@ export class ScreenRecorder extends EventEmitter {
         const checkProcess = spawn("pactl", ["list", "sources", "short"])
 
         let output = ""
+        let stderr = ""
         checkProcess.stdout?.on("data", (data) => {
           output += data.toString()
+        })
+        checkProcess.stderr?.on("data", (data) => {
+          stderr += data.toString()
         })
 
         const exitCode = await new Promise<number>((resolve) => {
@@ -328,8 +332,24 @@ export class ScreenRecorder extends EventEmitter {
           return
         }
 
+        // Say WHY. These three failures look identical from the outside but
+        // need opposite fixes: a dead/unreachable daemon (pactl errors), a
+        // daemon that is up but lost the null-sink (sources listed, monitor
+        // absent), or pactl missing entirely (exit -1). Without this the loop
+        // just counted to 15 and reported "not ready", which is how an audio
+        // failure stays unexplained across a whole debugging session.
+        const reason =
+          exitCode === -1
+            ? "pactl could not be spawned"
+            : exitCode !== 0
+              ? `pactl exited ${exitCode}: ${stderr.trim() || "no stderr"}`
+              : `daemon up but ${VIRTUAL_SPEAKER_MONITOR} absent; sources=[${output
+                  .split("\n")
+                  .map((l) => l.split("\t")[1])
+                  .filter(Boolean)
+                  .join(", ")}]`
         console.log(
-          `⏳ Attempt ${attempt}/${maxAttempts}: audio device not ready, waiting ${delayMs}ms...`
+          `⏳ Attempt ${attempt}/${maxAttempts}: audio device not ready (${reason}), waiting ${delayMs}ms...`
         )
         await sleep(delayMs)
       } catch (error) {

@@ -1,4 +1,21 @@
 # Meeting Bot - Docker Image for Screen Recording
+
+# Where the baked stealthfox Firefox comes from. Defaults to the prod registry,
+# whose namespace is public — an unauthenticated `docker build` resolves it via
+# the registry's anonymous token flow, so this needs no docker login.
+ARG STEALTHFOX_IMAGE=rg.fr-par.scw.cloud/meeting-baas-prod-bots/stealthfox:firefox-16
+
+# Pinned to linux/amd64: the patched Firefox is an x86-64 ELF and no other build
+# exists, so on an arm64 host (Apple Silicon) the manifest would not resolve.
+#
+# On an arm64 image the binary is therefore present but NOT runnable — launching
+# it fails with "rosetta error: failed to open elf at /lib64/ld-linux-x86-64.so.2".
+# assertStealthfoxUsable() in src/browser/browser.ts turns that into an explicit
+# startup error rather than a fallback: a platform configured for stealthfox
+# (Zoom by default) must never quietly record through CloakBrowser instead.
+# Build AND run the container as amd64 — run_bot.sh does this by default.
+FROM --platform=linux/amd64 ${STEALTHFOX_IMAGE} AS stealthfox
+
 FROM ubuntu:24.04
 
 # Install Node.js 20.x
@@ -59,11 +76,18 @@ RUN npx cloakbrowser install
 RUN npx playwright install-deps firefox
 
 # stealthfox (invisible_playwright patched Firefox) — the USE_STEALTHFOX backend.
-# Bake the SHA256-verified patched binary from its GitHub release so it's ready
-# without a runtime fetch (~250MB). Copy just the fetch script first so this
-# download layer caches across app-code changes. Inert unless USE_STEALTHFOX=true.
-COPY scripts/fetch-stealthfox.sh /tmp/fetch-stealthfox.sh
-RUN bash /tmp/fetch-stealthfox.sh -d /opt/stealthfox
+# Baked in so there's no runtime fetch (~250MB). Inert unless USE_STEALTHFOX=true.
+#
+# Sourced from our own registry, NOT upstream: the author's GitHub account
+# (feder-cr) was deleted, taking firefox_antidetect_patch, invisible_playwright
+# and every release asset with it, and there is no mirror. scripts/fetch-stealthfox.sh
+# can no longer work — it 404s on every arch. (On arm64 it never worked at all:
+# it derives the asset name from `uname -m` and only an x86-64 build was ever
+# published.) The image below was built from /opt/stealthfox in
+# web-based-bots-v2:2026-07-31-v2.4.2, the last build before upstream vanished.
+#
+# firefox binary sha256: 0efaf629fc4ecdf7ccd3f79a62fcd465c4a4c9701039a4cbfcab321e29e90e1a
+COPY --from=stealthfox /opt/stealthfox /opt/stealthfox
 ENV STEALTHFOX_BINARY_PATH=/opt/stealthfox/firefox-16/firefox
 
 # Build application

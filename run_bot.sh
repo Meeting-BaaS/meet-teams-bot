@@ -5,6 +5,15 @@
 
 set -e
 
+# Container architecture. Pinned to amd64 because stealthfox — the anti-detect
+# Firefox Zoom depends on — is an x86-64 ELF and no other build exists. On Apple
+# Silicon this runs the WHOLE container under Rosetta, which works; an amd64
+# binary inside an arm64 container does not (it dies with "rosetta error: failed
+# to open elf at /lib64/ld-linux-x86-64.so.2"). Override only if you know the
+# run does not need stealthfox:
+#   BOT_PLATFORM=linux/arm64 ./run_bot.sh build
+BOT_PLATFORM="${BOT_PLATFORM:-linux/amd64}"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -65,7 +74,8 @@ build_image() {
 
     print_info "Building Meet Teams Bot Docker image..."
     print_info "Tagging as: ${full_tag}"
-    docker build $cache_flag -t "${full_tag}" .
+    print_info "Platform: ${BOT_PLATFORM} (stealthfox is x86-64 only)"
+    docker build --platform "${BOT_PLATFORM}" $cache_flag -t "${full_tag}" .
     print_success "Docker image built successfully: ${full_tag}"
     
     # Also tag as latest for convenience
@@ -399,6 +409,7 @@ run_with_config() {
     
     # Run the bot
     echo "$processed_config" | docker run -i \
+        --platform "${BOT_PLATFORM}" \
         $docker_args \
         $env_file_arg \
         -e RECORDING="$recording_mode" \
@@ -523,6 +534,7 @@ run_with_config_and_overrides() {
     
     # Run the bot
     echo "$processed_config" | docker run -i \
+        --platform "${BOT_PLATFORM}" \
         $docker_args \
         $env_file_arg \
         -e RECORDING="$recording_mode" \
@@ -644,6 +656,7 @@ run_with_json() {
     fi
     
     echo "$processed_config" | docker run -i \
+        --platform "${BOT_PLATFORM}" \
         $docker_args \
         $env_file_arg \
         -e RECORDING="$recording_mode" \
@@ -916,6 +929,7 @@ test_api_request() {
     # Start the bot and capture logs
     local log_file="/tmp/api-test-$(date +%s).log"
     echo "$processed_config" | docker run -i \
+        --platform "${BOT_PLATFORM}" \
         -p $main_port:8080 \
         $env_file_arg \
         -e RECORDING=true \
