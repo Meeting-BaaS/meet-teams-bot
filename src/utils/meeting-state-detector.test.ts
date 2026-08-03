@@ -175,6 +175,108 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
       const result = await detector.isDenied(page)
       expect(result.matched).toBe(false)
     })
+
+    it("does NOT match denial text in a visibility:hidden element (non-zero rect)", async () => {
+      await page.setContent(`
+        ${IN_MEETING_HTML}
+        <div style="visibility:hidden">You have been removed from the meeting</div>`)
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(false)
+    })
+  })
+
+  describe("phrase split across nested elements (Playwright text= parity)", () => {
+    it("matches a phrase spanning nested inline elements — no single leaf contains it", async () => {
+      await page.setContent(`
+        <div class="zm-modal">
+          <div class="zm-modal-body-title">You have <span>been removed</span> from the meeting</div>
+        </div>`)
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(true)
+      expect(result.matchedText).toBe("removed from the meeting")
+      expect(result.pattern?.reason).toBe(MeetingEndReason.BotRemoved)
+    })
+
+    it("still ignores a split phrase when it sits inside the chat panel", async () => {
+      await page.setContent(`
+        ${IN_MEETING_HTML}
+        <div class="chat-container">
+          <div>the bot can be <span>removed from</span> the meeting on request</div>
+        </div>`)
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(false)
+    })
+  })
+
+  describe("open shadow DOM (Playwright text= parity)", () => {
+    it("matches denial text inside an open shadow root", async () => {
+      await page.setContent('<div id="host"></div>')
+      await page.evaluate(() => {
+        const host = document.getElementById("host") as HTMLElement
+        const shadow = host.attachShadow({ mode: "open" })
+        const modal = document.createElement("div")
+        modal.className = "zm-modal"
+        modal.textContent = "You have been removed from the meeting"
+        shadow.appendChild(modal)
+      })
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(true)
+      expect(result.matchedText).toBe("removed from the meeting")
+      expect(result.pattern?.reason).toBe(MeetingEndReason.BotRemoved)
+    })
+
+    it("does NOT match shadow content whose host lives inside an ignored container", async () => {
+      await page.setContent(`
+        ${IN_MEETING_HTML}
+        <div class="chat-container"><div id="chat-host"></div></div>`)
+      await page.evaluate(() => {
+        const host = document.getElementById("chat-host") as HTMLElement
+        const shadow = host.attachShadow({ mode: "open" })
+        const message = document.createElement("div")
+        message.textContent = "the bot can be removed from the meeting upon simple request."
+        shadow.appendChild(message)
+      })
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(false)
+    })
+  })
+
+  describe("invalid ignore-selector tolerance", () => {
+    const brokenSelectorConfig: StateDetectionConfig = {
+      providerName: "Broken selector (test)",
+      denialPatterns: [
+        {
+          texts: ["removed from the meeting"],
+          reason: MeetingEndReason.BotRemoved
+        }
+      ],
+      // one malformed selector mixed into valid ones
+      denialIgnoreWithinSelectors: [":::bad", ".chat-container"],
+      inMeetingPattern: { selectors: [], threshold: 1 }
+    }
+    const brokenSelectorDetector = createStateDetector(brokenSelectorConfig)
+
+    it("still detects genuine denial UI and does not throw", async () => {
+      await page.setContent(`
+        <div class="zm-modal">You have been removed from the meeting</div>`)
+
+      const result = await brokenSelectorDetector.isDenied(page)
+      expect(result.matched).toBe(true)
+      expect(result.pattern?.reason).toBe(MeetingEndReason.BotRemoved)
+    })
+
+    it("valid selectors alongside the malformed one still scope out chat", async () => {
+      await page.setContent(`
+        <div class="chat-container">the bot can be removed from the meeting upon request</div>`)
+
+      const result = await brokenSelectorDetector.isDenied(page)
+      expect(result.matched).toBe(false)
+    })
   })
 
   describe("backward compatibility (no denialIgnoreWithinSelectors)", () => {

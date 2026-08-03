@@ -104,13 +104,24 @@ async function checkIndicators(
  * Runs INSIDE the page via page.evaluate — must stay fully self-contained
  * (no references to module scope, or Playwright's function serialization breaks).
  *
- * Scans every leaf element (childElementCount === 0) for the denial texts with
- * the same semantics as Playwright's `text=` engine (case-insensitive,
- * whitespace-normalized substring), and returns the index into `texts` of the
- * highest-priority match — or -1. A match only counts if the element:
- *  - is NOT inside any `ignoreSelectors` subtree (checked via closest()), and
- *  - is actually rendered (non-zero getBoundingClientRect — same lesson as
- *    commit f429129f: hidden template DOM must not trigger detection).
+ * Mirrors Playwright's `text=` engine semantics (which the old locator-based
+ * isDenied relied on): case-insensitive, whitespace-normalized SUBTREE-text
+ * substring matching — so a phrase split across nested elements
+ * (`You have <span>been removed</span> from the meeting`) still matches — and
+ * pierces OPEN shadow roots. Returns the index into `texts` of the
+ * highest-priority (lowest-index) match, or -1.
+ *
+ * For each needle, the INNERMOST matching elements (matching, with no matching
+ * child element) are the candidates — mirroring Playwright's innermost-match
+ * behavior — and a candidate only counts if it:
+ *  - is NOT inside any `ignoreSelectors` subtree. Ancestry is walked across
+ *    shadow boundaries (ShadowRoot → host), testing matches() at each hop;
+ *  - is actually rendered: non-zero getBoundingClientRect (same lesson as
+ *    commit f429129f: hidden template DOM must not trigger detection) AND
+ *    computed `visibility: visible` (visibility:hidden keeps a non-zero rect).
+ *
+ * Subtree text is computed bottom-up in ONE post-order pass and memoized, so
+ * the per-needle innermost search is just map lookups — not innerText per node.
  *
  * Exported for tests; production callers go through isDenied().
  */
@@ -123,47 +134,88 @@ export const findVisibleDenialTextIndex = (args: {
   const root = document.body || document.documentElement
   if (!root) return -1
 
-  let best = -1
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
-  let el: Element | null = root
-  while (el) {
-    if (el.childElementCount === 0 && el.textContent) {
-      const haystack = normalize(el.textContent)
-      if (haystack) {
-        // Lowest matching index = highest-priority pattern (config order)
-        let matchedIndex = -1
-        const limit = best === -1 ? needles.length : best
-        for (let i = 0; i < limit; i++) {
-          if (needles[i] && haystack.includes(needles[i])) {
-            matchedIndex = i
-            break
-          }
-        }
-        if (matchedIndex !== -1) {
-          let ignored = false
-          for (const selector of args.ignoreSelectors) {
-            try {
-              if (el.closest(selector)) {
-                ignored = true
-                break
-              }
-            } catch (_e) {
-              // Invalid selector must never break end-of-meeting detection
-            }
-          }
-          if (!ignored) {
-            const rect = el.getBoundingClientRect()
-            if (rect.width > 0 && rect.height > 0) {
-              best = matchedIndex
-              if (best === 0) return 0
-            }
-          }
-        }
+  // ── one post-order pass: normalized subtree text per element, entering
+  //    open shadow roots ──────────────────────────────────────────────────
+  const subtreeText = new Map<Element, string>()
+  const collectText = (node: Element | ShadowRoot): string => {
+    let raw = ""
+    if (node instanceof Element && node.shadowRoot) {
+      raw += ` ${collectText(node.shadowRoot)} `
+    }
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        raw += (child as Text).data
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        raw += collectText(child as Element)
       }
     }
-    el = walker.nextNode() as Element | null
+    if (node instanceof Element) subtreeText.set(node, normalize(raw))
+    return raw
   }
-  return best
+  collectText(root)
+
+  // Child elements including those in an open shadow root
+  const childElements = (el: Element): Element[] => {
+    const kids: Element[] = []
+    if (el.shadowRoot) {
+      for (const child of el.shadowRoot.children) kids.push(child)
+    }
+    for (const child of el.children) kids.push(child)
+    return kids
+  }
+
+  // Innermost matching elements: subtree text matches the needle, but no child
+  // element's does. Returns whether `el` matches; pushes innermost into `out`.
+  const findInnermost = (el: Element, needle: string, out: Element[]): boolean => {
+    const text = subtreeText.get(el)
+    if (!text || !text.includes(needle)) return false
+    let childMatched = false
+    for (const child of childElements(el)) {
+      if (findInnermost(child, needle, out)) childMatched = true
+    }
+    if (!childMatched) out.push(el)
+    return true
+  }
+
+  // Ancestry walk that crosses shadow boundaries (ShadowRoot → host)
+  const isIgnored = (el: Element): boolean => {
+    let node: Node | null = el
+    while (node) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        for (const selector of args.ignoreSelectors) {
+          try {
+            if ((node as Element).matches(selector)) return true
+          } catch (_e) {
+            // Invalid selector must never break end-of-meeting detection
+          }
+        }
+        node = node.parentNode
+      } else if (node instanceof ShadowRoot) {
+        node = node.host
+      } else {
+        node = node.parentNode
+      }
+    }
+    return false
+  }
+
+  const isRendered = (el: Element): boolean => {
+    const rect = el.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return false
+    const view = el.ownerDocument.defaultView || window
+    return view.getComputedStyle(el).visibility === "visible"
+  }
+
+  // Needles in config order: the first one with a valid rendered match wins
+  for (let i = 0; i < needles.length; i++) {
+    if (!needles[i]) continue
+    const candidates: Element[] = []
+    findInnermost(root, needles[i], candidates)
+    for (const candidate of candidates) {
+      if (!isIgnored(candidate) && isRendered(candidate)) return i
+    }
+  }
+  return -1
 }
 
 /**
