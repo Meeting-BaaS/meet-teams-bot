@@ -582,31 +582,47 @@ export function browserInterceptionLogic(schema: any[]) {
           }
         }
 
-        // Read first frame to verify processing works before returning true
-        // Add 60-second timeout to detect hanging tracks
-        const TIMEOUT_MS = 60000 // 60 seconds
+        // Wait for the first frame before declaring the pipeline healthy.
+        //
+        // A live track that yields no frames is a SILENT participant, not a
+        // broken pipeline — Meet sends no RTP for someone who isn't talking.
+        // The previous code gave up after a flat 60s and reported the track as
+        // failed even while logging readyState=live, which retired the entire
+        // network path on any meeting that opened with a quiet minute. Wait for
+        // as long as the track is alive; only give up once it actually dies.
+        const LIVENESS_POLL_MS = 15000
         const firstReadPromise = reader.read()
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout waiting for first frame")), TIMEOUT_MS)
-        )
+
+        let livenessTimer: ReturnType<typeof setInterval> | undefined
+        let waitedMs = 0
+        const trackDeath = new Promise<never>((_, reject) => {
+          livenessTimer = setInterval(() => {
+            if (abortSignal.aborted || track.readyState !== "live") {
+              reject(new Error("Track ended before producing audio"))
+              return
+            }
+            waitedMs += LIVENESS_POLL_MS
+            console.error(
+              `[NetworkInterceptor] ⏳ No audio yet on track ${track.id} after ${waitedMs / 1000}s — track is live, treating as a silent participant and continuing to wait`
+            )
+          }, LIVENESS_POLL_MS)
+        })
 
         let firstRead: any
         try {
-          firstRead = await Promise.race([firstReadPromise, timeoutPromise])
-        } catch (error: any) {
-          if (error?.message === "Timeout waiting for first frame") {
-            console.error(
-              `[NetworkInterceptor] ⏱️ Timeout: No frames received for track ${track.id} within ${TIMEOUT_MS}ms`
-            )
-            console.error(
-              `[NetworkInterceptor] 📊 Track state at timeout: id=${track.id}, readyState=${track.readyState}, muted=${track.muted}`
-            )
-            // Clean up AbortController since processing failed
-            trackAbortControllers.delete(track.id)
-            sendFailureSignal(track, "timeout")
-            return false
+          firstRead = await Promise.race([firstReadPromise, trackDeath])
+        } catch (_error) {
+          console.error(
+            `[NetworkInterceptor] ❌ Track ${track.id} died before producing audio: readyState=${track.readyState}, muted=${track.muted}`
+          )
+          // Clean up AbortController since processing failed
+          trackAbortControllers.delete(track.id)
+          sendFailureSignal(track, "timeout")
+          return false
+        } finally {
+          if (livenessTimer) {
+            clearInterval(livenessTimer)
           }
-          throw error
         }
 
         if (firstRead.done) {
