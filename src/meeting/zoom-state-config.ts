@@ -53,6 +53,21 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
       errorMessage: "Bot removed or Zoom meeting ended"
     }
   ],
+  // Never treat chat content as a meeting-end signal. The bot's own entry chat
+  // message contains "…the bot can be removed from the meeting upon simple
+  // request.", which tripped the BotRemoved denial pattern ~200ms after the
+  // message was sent — the bot killed itself 1-2s after joining. Any participant
+  // typing "removed from the meeting"/"meeting has ended" into chat (message or
+  // the compose box) would do the same. Genuine removal/meeting-ended UI is a
+  // Zoom modal / full-page overlay (.zm-modal, leave page), never inside the
+  // chat panel (#chat > .chat-container, items .new-chat-item__*/
+  // .new-chat-message__*, compose .chat-rtf-box__*).
+  denialIgnoreWithinSelectors: [
+    "#chat",
+    ".chat-container",
+    ".chat-rtf-box__editor-outer",
+    '[class*="new-chat"]'
+  ],
   waitingRoomPattern: {
     // The waiting room has no unique class — only text. Substring match survives
     // minor copy changes.
