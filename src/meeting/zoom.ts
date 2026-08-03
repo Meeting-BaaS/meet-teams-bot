@@ -299,6 +299,17 @@ export class ZoomProvider implements MeetingProviderInterface {
     try {
       await page.waitForSelector(NAME_INPUT, { timeout: 30_000 })
     } catch {
+      // Registration-required webinar: Zoom server-side-redirects /wc/<id>/join
+      // to its registration page, so no name input can ever render — from any
+      // pod or IP. Deterministic (bots ca8d3a00 / a32de694 burned 6 pods each
+      // on this); fail terminal with a reason the customer can act on.
+      const finalUrl = page.url()
+      if (/\bzoom\.us\/webinar\/register\//.test(finalUrl)) {
+        GLOBAL.setError(MeetingEndReason.ZoomWebinarRegistrationRequired)
+        throw new Error(
+          `[Zoom] zoom_webinar_registration_required: join URL redirected to ${finalUrl.split("?")[0]}`
+        )
+      }
       // The wall can render here instead of a name field — check before failing.
       const wall = await this.detectBotWall(page)
       if (wall) {

@@ -174,7 +174,10 @@ export class WaitingRoomState extends BaseState {
           // genuine no-captcha timeout ends here as ExitingMeetingBeforeRecord /
           // TimeoutWaitingToStart and stops.
           MeetingEndReason.ExitingMeetingBeforeRecord,
-          MeetingEndReason.BotNotAccepted
+          MeetingEndReason.BotNotAccepted,
+          // Registration-required webinar: the join URL server-side-redirects to
+          // zoom.us/webinar/register/ for every pod/IP — retrying can never help.
+          MeetingEndReason.ZoomWebinarRegistrationRequired
         ]
         if (!endReason || !ZOOM_TERMINAL.includes(endReason)) {
           console.log(
