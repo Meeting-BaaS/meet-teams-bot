@@ -184,6 +184,12 @@ export class WaitingRoomState extends BaseState {
             `[Zoom] Pre-join failure (${endReason ?? "unknown"}) — marking retryable (fresh pod/IP)`
           )
           GLOBAL.setShouldRetry(true)
+        } else {
+          // A terminal reason is authoritative. Clear any stale retryable flag
+          // set earlier in this attempt (e.g. a transient goto failure inside
+          // openMeetingPage), or error-state suppresses the terminal webhook
+          // and main.ts requeues a failure that can never succeed.
+          GLOBAL.setShouldRetry(false)
         }
       }
 
