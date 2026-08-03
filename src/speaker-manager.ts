@@ -13,12 +13,6 @@ import { createSequentialIdManager, generateStableUserId } from "./utils/speaker
 /** The placeholder every platform's interceptor falls back to before a roster lands. */
 const UNKNOWN_SPEAKER = "Unknown"
 
-/**
- * How long after the first network update an unresolved name is still assumed
- * to be a roster race rather than a genuinely nameless participant.
- */
-const ROSTER_GRACE_MS = 15000
-
 export class SpeakerManager {
   private static instance: SpeakerManager | null = null
   private currentSpeaker: SpeakerData | null = null
@@ -32,9 +26,6 @@ export class SpeakerManager {
   // a later payload can omit a name that an earlier one carried; without this,
   // a participant flips back to "Unknown" mid-meeting.
   private deviceNames = new Map<string, string>()
-  // When each device was first seen, so the roster-race grace window below is
-  // scoped to that participant rather than to the start of the meeting.
-  private deviceFirstSeen = new Map<string, number>()
 
   private constructor() {}
 
@@ -53,28 +44,31 @@ export class SpeakerManager {
 
     if (incoming && incoming !== UNKNOWN_SPEAKER) {
       if (deviceId) {
+        const previous = this.deviceNames.get(deviceId)
         this.deviceNames.set(deviceId, incoming)
+        // First time this device got a real name. If speech already opened a
+        // segment under the placeholder, repair it in place rather than leaving
+        // the opening of the meeting mislabelled.
+        if (previous === undefined) {
+          const renamed = this.diarizationTracker?.renameOpenSegment(
+            UNKNOWN_SPEAKER,
+            incoming,
+            this.sequentialIdManager.getSequentialId(
+              generateStableUserId(incoming, user.profilePicture)
+            )
+          )
+          if (renamed) {
+            console.log(
+              `[SpeakerManager] Roster resolved late — backfilled the open segment to the correct speaker`
+            )
+          }
+        }
       }
       return incoming
     }
 
     const remembered = deviceId ? this.deviceNames.get(deviceId) : undefined
     return remembered ?? UNKNOWN_SPEAKER
-  }
-
-  /**
-   * Timestamp this device was first observed, recording it on first sight.
-   * Devices without an id share a single bucket — they cannot be told apart, so
-   * the best available behaviour is to grant the grace window once.
-   */
-  private firstSeenAt(deviceId: string | undefined, timestamp: number): number {
-    const key = deviceId || ""
-    const existing = this.deviceFirstSeen.get(key)
-    if (existing !== undefined) {
-      return existing
-    }
-    this.deviceFirstSeen.set(key, timestamp)
-    return timestamp
   }
 
   /**
@@ -179,24 +173,21 @@ export class SpeakerManager {
         // Return SpeakerData for diarization.
         //
         // Audio can beat the roster: the first CSRC often resolves to a device
-        // whose name has not been decoded yet, and attributing that speech to
-        // the literal string "Unknown" burns it into the artifact permanently.
-        // Withhold the speaking flag while the name is still unresolved and the
-        // device is newly seen — the roster lands within a second or two, and
-        // the segment then opens under the correct name. After the grace window
-        // an unresolved name is real (not a race), so stop suppressing.
+        // whose name has not been decoded yet. NEVER drop that speech — an
+        // earlier version withheld the speaking flag until the name resolved,
+        // which silently deleted the opening seconds of the meeting from the
+        // artifact (preprod bot 99517dc3: first segment at 10.0s, so everything
+        // before it had no segment and rendered as "Unknown" downstream).
         //
-        // The window is per-device, not per-meeting: someone joining at minute
-        // 20 races their own roster entry exactly like the participants present
-        // at the start, and a meeting-wide anchor would have expired long ago.
-        const nameResolved = stableName !== UNKNOWN_SPEAKER
-        const withinRosterGrace =
-          timestamp - this.firstSeenAt(user.deviceId, timestamp) < ROSTER_GRACE_MS
+        // Emit the segment immediately under whatever name we have, and let
+        // resolveNetworkName() backfill the real name into the still-open
+        // segment once the roster lands. Speech is never lost; at worst a
+        // segment is briefly labelled "Unknown" in memory before being renamed.
         return {
           name: stableName,
           id: sequentialId,
           timestamp,
-          isSpeaking: user.isSpeaking === true && (nameResolved || !withinRosterGrace)
+          isSpeaking: user.isSpeaking === true
         }
       })
 
