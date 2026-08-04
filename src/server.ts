@@ -8,6 +8,7 @@ import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason, MeetingStateType } from "./state-machine/types"
 import type { SendChatMessageParams, StopRecordParams } from "./types"
 import { formatError } from "./utils/Logger"
+import { PiiRedactor } from "./utils/PiiRedactor"
 
 const HOST = envVars.HOST
 const PORT = envVars.PORT
@@ -259,7 +260,12 @@ export async function server() {
         context.chatObserver,
       )
 
-      console.log("[Server] Chat message result:", JSON.stringify(result))
+      // This payload is only {success} or {success, error, status} — no chat
+      // text and no sender name — so nothing here needs <CHAT_TEXT> today. It
+      // still goes through the chat choke point: `error` carries free-form
+      // failure text (selectors, page content, URLs) worth redacting, and the
+      // call keeps the guarantee in place if the result shape ever grows.
+      console.log("[Server] Chat message result:", PiiRedactor.redactChatLine(JSON.stringify(result)))
 
       if (result.success === false) {
         return res.status(result.status).json({ error: result.error })

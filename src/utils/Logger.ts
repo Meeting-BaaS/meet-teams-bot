@@ -1,9 +1,12 @@
 import fs from "node:fs"
 import path from "node:path"
+import { Transform } from "node:stream"
+import { pipeline } from "node:stream/promises"
 import winston from "winston"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 import { PathManager } from "./PathManager"
+import { PiiRedactor } from "./PiiRedactor"
 import { S3Uploader, s3cp } from "./S3Uploader"
 
 /**
@@ -44,13 +47,16 @@ const currentBotLogFile: string | null = null
 // Store current caller info globally
 let currentCaller = "unknown:0"
 
-// Base format shared between console and file logging
+// Base format shared between console and file logging.
+// Every formatted line passes through the PII redactor before hitting any
+// transport: the file transport writes bot.log directly, and in prod the
+// console transport's stdout is captured to logs.log and uploaded to S3.
 const baseFormat = winston.format.combine(
   winston.format.timestamp({
     format: () => new Date().toISOString()
   }),
   winston.format.printf(({ timestamp, level, message }) => {
-    return `${timestamp}  ${level} ${currentCaller}: ${message}`
+    return PiiRedactor.redact(`${timestamp}  ${level} ${currentCaller}: ${message}`)
   })
 )
 
@@ -315,6 +321,61 @@ export async function uploadScreenshotsToS3(): Promise<void> {
   }
 }
 
+/**
+ * Safety net before S3 upload: re-run the PII redactor over a whole log
+ * file. sound.log and speaker_separation.log are already redacted at write
+ * time, but this catches any line written before the redactor learned a
+ * name (redaction is idempotent, placeholders pass through unchanged).
+ *
+ * Exported for tests: this runs on the crash path over PII-bearing files, so
+ * its byte-fidelity and failure behaviour are worth pinning directly.
+ */
+export async function redactLogFileForUpload(filePath: string): Promise<boolean> {
+  // Streamed, not read-modify-write: speaker_separation.log takes a full
+  // serialized speaker array per callback, so a long meeting with many
+  // participants leaves a file far too large to hold in memory three times
+  // over (content + split array + rejoined copy) — and this runs during
+  // shutdown and crash handling, when the pod is already under memory
+  // pressure. An OOM here would lose the upload entirely.
+  const tempPath = `${filePath}.redacting`
+  try {
+    let carry = ""
+    const redactLines = new Transform({
+      // Chunks arrive as strings from the utf-8 read stream; keep them that way.
+      decodeStrings: false,
+      transform(chunk: string, _encoding, done) {
+        const parts = (carry + chunk).split("\n")
+        // The last element is an incomplete line unless the chunk ended on a
+        // newline (in which case it is ""); either way it belongs to the next
+        // chunk, so hold it back.
+        carry = parts.pop() ?? ""
+        // Redact per line so an internal redaction error degrades only that
+        // line to <REDACTION_FAILED> instead of discarding the whole file.
+        done(null, parts.map((line) => `${PiiRedactor.redact(line)}\n`).join(""))
+      },
+      flush(done) {
+        // Only non-empty when the file did not end with a newline; emitting it
+        // without one keeps the output byte-faithful to the input.
+        done(null, carry.length > 0 ? PiiRedactor.redact(carry) : "")
+      }
+    })
+
+    await pipeline(
+      fs.createReadStream(filePath, { encoding: "utf-8" }),
+      redactLines,
+      fs.createWriteStream(tempPath)
+    )
+    // Atomic swap: a crash mid-write leaves the original log intact rather
+    // than a truncated file that would then be uploaded as if complete.
+    await fs.promises.rename(tempPath, filePath)
+    return true
+  } catch (error) {
+    await fs.promises.unlink(tempPath).catch(() => {})
+    console.error(`Failed to redact log file before upload: ${filePath}`, formatError(error))
+    return false
+  }
+}
+
 export async function uploadLogsToS3(): Promise<void> {
   try {
     const pathManager = PathManager.getInstance()
@@ -341,8 +402,13 @@ export async function uploadLogsToS3(): Promise<void> {
     // Upload sound log file (internal log file)
     if (fs.existsSync(soundLogPath)) {
       logger.info("Uploading sound logs to S3...")
-      await s3cp(soundLogPath, s3SoundLogPath)
-      logger.info("Sound logs uploaded to S3")
+      // Never upload a file the redactor could not process.
+      if (await redactLogFileForUpload(soundLogPath)) {
+        await s3cp(soundLogPath, s3SoundLogPath)
+        logger.info("Sound logs uploaded to S3")
+      } else {
+        logger.error("Skipping sound log upload: redaction failed")
+      }
     } else {
       console.log("No sound log file found at path:", soundLogPath)
     }
@@ -350,8 +416,12 @@ export async function uploadLogsToS3(): Promise<void> {
     // Upload speaker separation log file
     if (fs.existsSync(speakerLogPath)) {
       logger.info("Uploading speaker separation logs to S3...")
-      await s3cp(speakerLogPath, s3SpeakerLogPath)
-      logger.info("Speaker separation logs uploaded to S3")
+      if (await redactLogFileForUpload(speakerLogPath)) {
+        await s3cp(speakerLogPath, s3SpeakerLogPath)
+        logger.info("Speaker separation logs uploaded to S3")
+      } else {
+        logger.error("Skipping speaker separation log upload: redaction failed")
+      }
     } else {
       console.log("No speaker separation log file found at path:", speakerLogPath)
     }

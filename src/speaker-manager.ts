@@ -8,6 +8,7 @@ import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
 import type { Participant, SpeakerData } from "./types"
 import { PathManager } from "./utils/PathManager"
+import { PiiRedactor } from "./utils/PiiRedactor"
 import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
 
 /** The placeholder every platform's interceptor falls back to before a roster lands. */
@@ -223,7 +224,15 @@ export class SpeakerManager {
   }
 
   private async logSpeakers(speakers: SpeakerData[]): Promise<void> {
-    const input = JSON.stringify(speakers)
+    // Register every observed speaker name so the PII redactor can map it
+    // to a stable placeholder in all log files, then redact the raw JSON
+    // before it hits speaker_separation.log (uploaded to S3).
+    for (const speaker of speakers) {
+      if (speaker.name) {
+        PiiRedactor.registerSpeaker(speaker.name)
+      }
+    }
+    const input = PiiRedactor.redact(JSON.stringify(speakers))
     const botName = GLOBAL.get().bot_name
     const maskedSpeakers = speakers.map((speaker, index) => {
       // Check if this speaker's name matches the bot name

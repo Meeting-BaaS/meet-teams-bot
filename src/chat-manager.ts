@@ -9,6 +9,7 @@ import { GLOBAL } from "./singleton"
 import type { ChatMessageData, MeetingProvider } from "./types"
 import { formatError } from "./utils/Logger"
 import { PathManager } from "./utils/PathManager"
+import { PiiRedactor } from "./utils/PiiRedactor"
 
 export type SendBotMessageResult =
   | { success: true }
@@ -108,6 +109,13 @@ export class ChatManager {
   }
 
   async handleChatMessage(message: ChatMessageData): Promise<void> {
+    // Register the sender so any log line mentioning them uses a stable
+    // <SPEAKER_n> placeholder. chat_messages.json (product artifact)
+    // itself stays untouched.
+    if (message.sender_name) {
+      PiiRedactor.registerSpeaker(message.sender_name)
+    }
+
     // Deduplicate by message_id
     if (this.seenMessageIds.has(message.message_id)) {
       console.log(`[ChatManager] Dedup by message_id: ${message.message_id}`)
