@@ -6,7 +6,11 @@ import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
-import { buildZoomWebClientUrl, parseZoomMeetingUrl } from "../urlParser/zoomUrlParser"
+import {
+  buildZoomWebClientUrl,
+  parseZoomMeetingUrl,
+  parseZoomRegistrationUrl
+} from "../urlParser/zoomUrlParser"
 import { humanClick, humanType } from "../utils/humanize"
 import { formatError } from "../utils/Logger"
 import { createStateDetector } from "../utils/meeting-state-detector"
@@ -299,6 +303,19 @@ export class ZoomProvider implements MeetingProviderInterface {
     try {
       await page.waitForSelector(NAME_INPUT, { timeout: 30_000 })
     } catch {
+      // Registration-required webinar: Zoom server-side-redirects /wc/<id>/join
+      // to its registration page, so no name input can ever render — from any
+      // pod or IP. Deterministic (bots ca8d3a00 / a32de694 burned 6 pods each
+      // on this); fail terminal with a reason the customer can act on.
+      const registrationUrl = parseZoomRegistrationUrl(page.url())
+      if (registrationUrl) {
+        GLOBAL.setError(MeetingEndReason.ZoomWebinarRegistrationRequired)
+        // origin+pathname only: the registration URL's query can carry the
+        // registrant token and this message ends up in logs/telemetry.
+        throw new Error(
+          `[Zoom] zoom_webinar_registration_required: join URL redirected to ${registrationUrl.origin}${registrationUrl.pathname}`
+        )
+      }
       // The wall can render here instead of a name field — check before failing.
       const wall = await this.detectBotWall(page)
       if (wall) {

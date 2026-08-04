@@ -46,6 +46,10 @@ export enum MeetingEndReason {
   // SDK. Maps to the api-server's ZOOM_ANONYMOUS_JOIN_NOT_ALLOWED error code.
   ZoomAnonymousJoinNotAllowed = "zoomAnonymousJoinNotAllowed",
   ZoomPasscodeRequired = "zoomPasscodeRequired",
+  // The /wc/<id>/join URL server-side-redirected to zoom.us/webinar/register/… :
+  // the webinar requires per-registrant registration (name+email → personal tk=
+  // link), so an anonymous join can never succeed from any pod/IP. Terminal.
+  ZoomWebinarRegistrationRequired = "zoomWebinarRegistrationRequired",
   // Authenticated Teams bot (username/password) — failure modes the api-server distinguishes.
   // Invalid/Captcha/Mfa flip the teams_login to invalid (per-account); Timeout is transient.
   TeamsLoginFailedInvalidCredentials = "teamsLoginFailedInvalidCredentials",
@@ -94,6 +98,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "This Zoom meeting rejected the recording bot because it joined anonymously — the host's account blocks anonymous/automated browser joins. We recommend recording it via Zoom RTMS (or the native SDK with a user-authorized credential)."
     case MeetingEndReason.ZoomPasscodeRequired:
       return "Zoom meeting requires a passcode that was not supplied in the meeting URL (?pwd=)."
+    case MeetingEndReason.ZoomWebinarRegistrationRequired:
+      return "This Zoom webinar requires registration: Zoom redirected the join URL to its registration page, so the bot cannot join anonymously. Register the bot first and use the personalized join link (tk=) from the confirmation, or disable required registration for the webinar."
     case MeetingEndReason.TeamsLoginFailedInvalidCredentials:
       return "Microsoft rejected the account email/password. Update the teams_login credentials."
     case MeetingEndReason.TeamsLoginFailedCaptcha:

@@ -174,13 +174,22 @@ export class WaitingRoomState extends BaseState {
           // genuine no-captcha timeout ends here as ExitingMeetingBeforeRecord /
           // TimeoutWaitingToStart and stops.
           MeetingEndReason.ExitingMeetingBeforeRecord,
-          MeetingEndReason.BotNotAccepted
+          MeetingEndReason.BotNotAccepted,
+          // Registration-required webinar: the join URL server-side-redirects to
+          // zoom.us/webinar/register/ for every pod/IP — retrying can never help.
+          MeetingEndReason.ZoomWebinarRegistrationRequired
         ]
         if (!endReason || !ZOOM_TERMINAL.includes(endReason)) {
           console.log(
             `[Zoom] Pre-join failure (${endReason ?? "unknown"}) — marking retryable (fresh pod/IP)`
           )
           GLOBAL.setShouldRetry(true)
+        } else {
+          // A terminal reason is authoritative. Clear any stale retryable flag
+          // set earlier in this attempt (e.g. a transient goto failure inside
+          // openMeetingPage), or error-state suppresses the terminal webhook
+          // and main.ts requeues a failure that can never succeed.
+          GLOBAL.setShouldRetry(false)
         }
       }
 
