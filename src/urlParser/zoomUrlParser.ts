@@ -46,10 +46,12 @@ export async function parseZoomMeetingUrl(meeting_url: string): Promise<ZoomUrlC
     // the meeting (prod 2026-08-03: 136 of 148 join failures were valid tk
     // links destroyed this way; PR #273 added the ZoomWebinarRegistrationRequired
     // terminal error for the anonymous case — with a token we must never hit
-    // it). Carry the raw URL as the id, same as the white-label branch, so
-    // getMeetingLink/buildZoomWebClientUrl navigate it untouched.
+    // it). Carry the URL as the id, same as the white-label branch, so
+    // getMeetingLink/buildZoomWebClientUrl navigate it untouched. Carry
+    // cleanUrl, not meeting_url: a quoted or scheme-less invite would fail
+    // buildZoomWebClientUrl's `new URL()` and get flagged InvalidMeetingUrl.
     if (url.searchParams.get("tk")) {
-      return { meetingId: meeting_url, password: pwd }
+      return { meetingId: cleanUrl, password: pwd }
     }
 
     if (isCanonicalZoomHost && meetingId) {
@@ -91,6 +93,8 @@ export async function parseZoomMeetingUrl(meeting_url: string): Promise<ZoomUrlC
 export function buildZoomWebClientUrl(meetingUrl: string, password?: string): string {
   try {
     const url = new URL(meetingUrl)
+    const isCanonicalZoomHost =
+      url.hostname === "zoom.us" || url.hostname.endsWith(".zoom.us")
 
     // Zoom Events URLs self-redirect to the web client — leave untouched.
     if (url.hostname === "events.zoom.us") return meetingUrl
@@ -98,12 +102,21 @@ export function buildZoomWebClientUrl(meetingUrl: string, password?: string): st
     // it as-is — Zoom's own redirect applies the token and lands in the web
     // client. Rewriting to the anonymous /wc/ URL would drop the token and
     // hit the registration wall.
-    if (url.searchParams.get("tk")) return meetingUrl
+    if (url.searchParams.get("tk")) {
+      // tk is a credential and this URL goes straight to page.goto, so it must
+      // not travel in cleartext. Canonical zoom.us is HTTPS-only (HSTS
+      // preloaded) — upgrade an http:// invite rather than reject it, since
+      // rejecting would fail a link that is otherwise perfectly joinable.
+      // Non-canonical hosts are left alone: we can't assume they serve HTTPS.
+      if (url.protocol === "http:" && isCanonicalZoomHost) {
+        url.protocol = "https:"
+        return url.toString()
+      }
+      return meetingUrl
+    }
     // Already a web-client URL — leave untouched (but ensure pwd is present).
     if (meetingUrl.includes("/wc/")) return meetingUrl
 
-    const isCanonicalZoomHost =
-      url.hostname === "zoom.us" || url.hostname.endsWith(".zoom.us")
     if (!isCanonicalZoomHost) {
       // White-label portal — navigate the original; human assists via VNC.
       return meetingUrl
