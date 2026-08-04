@@ -171,8 +171,24 @@ class PiiRedactorService {
   /** compiled dictionary, rebuilt lazily after registrations */
   private dictionary: DictionaryEntry[] | null = null
 
+  private enforcedWarned = false
+
   private isDisabled(): boolean {
-    return process.env.DISABLE_LOG_PII_REDACTION === "true"
+    if (process.env.DISABLE_LOG_PII_REDACTION !== "true") return false
+    // Hard guard: when logs are shipped outside the cluster (promtail ->
+    // external Loki, self-host installs federating to our Grafana), the
+    // escape hatch must not win — one env flip would leak raw PII off-site.
+    // PII_REDACTION_ENFORCED is set by the deployment charts, never locally.
+    if (process.env.PII_REDACTION_ENFORCED === "true") {
+      if (!this.enforcedWarned) {
+        this.enforcedWarned = true
+        console.warn(
+          "DISABLE_LOG_PII_REDACTION ignored: PII_REDACTION_ENFORCED is set (logs leave the cluster)"
+        )
+      }
+      return false
+    }
+    return true
   }
 
   /**

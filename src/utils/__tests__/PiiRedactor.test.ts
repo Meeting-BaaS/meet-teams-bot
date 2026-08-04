@@ -243,6 +243,25 @@ describe("PiiRedactor behavior", () => {
   })
 })
 
+describe("PII_REDACTION_ENFORCED guard", () => {
+  afterEach(() => {
+    delete process.env.DISABLE_LOG_PII_REDACTION
+    delete process.env.PII_REDACTION_ENFORCED
+  })
+
+  it("escape hatch works when not enforced", () => {
+    process.env.DISABLE_LOG_PII_REDACTION = "true"
+    const raw = "mail john@acme.com"
+    expect(PiiRedactor.redact(raw)).toBe(raw)
+  })
+
+  it("enforced mode overrides the escape hatch", () => {
+    process.env.DISABLE_LOG_PII_REDACTION = "true"
+    process.env.PII_REDACTION_ENFORCED = "true"
+    expect(PiiRedactor.redact("mail john@acme.com")).toBe("mail <EMAIL>")
+  })
+})
+
 describe("URL correlation tags", () => {
   beforeAll(() => {
     delete process.env.DISABLE_LOG_PII_REDACTION
