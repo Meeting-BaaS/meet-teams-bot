@@ -91,10 +91,37 @@ const CHAT_TEXT_FIELD_RE = /("(?:text|content|message)"\s*:\s*)"(?:[^"\\]|\\.)*"
 // Trailing sentence punctuation should not be swallowed into URL placeholders.
 const TRAILING_PUNCT_RE = /[.,;:!?]+$/
 
+// Per-process random salt for URL placeholder tags. Salted so a tag cannot
+// be dictionary-confirmed against a candidate URL from outside the log
+// bundle; per-process (= per bot run, all log files of a run share it) so
+// the same URL always maps to the same tag within a run and distinct URLs
+// stay distinguishable — redirect chains and parser transforms remain
+// debuggable without disclosing any URL.
+const URL_TAG_SALT = Array.from({ length: 4 }, () =>
+  Math.floor(Math.random() * 0x10000).toString(16)
+).join("")
+
+/** FNV-1a 32-bit over salt+url, folded to 4 hex chars. */
+function urlTag(url: string): string {
+  const s = URL_TAG_SALT + url
+  let h = 0x811c9dc5
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 0x01000193)
+  }
+  h = h >>> 0
+  return (((h >>> 16) ^ h) & 0xffff).toString(16).padStart(4, "0")
+}
+
 function urlReplacer(placeholder: string): (match: string) => string {
+  const base = placeholder.slice(0, -1) // "<URL>" -> "<URL"
   return (match: string) => {
     const trailing = match.match(TRAILING_PUNCT_RE)
-    return trailing ? placeholder + trailing[0] : placeholder
+    // Tag the URL without its trailing punctuation so "…url" and "…url."
+    // resolve to the same tag.
+    const core = trailing ? match.slice(0, match.length - trailing[0].length) : match
+    const tagged = `${base}#${urlTag(core)}>`
+    return trailing ? tagged + trailing[0] : tagged
   }
 }
 

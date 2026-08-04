@@ -111,11 +111,20 @@ function registerFixtureDictionary(): void {
   expect(PiiRedactor.registerSpeaker("name")).toBe("<SPEAKER_7>")
 }
 
+/**
+ * URL placeholders carry a per-process random correlation tag
+ * (<MEETING_URL#ab12>). The CSV documents the un-tagged canonical form;
+ * strip tags before comparing.
+ */
+function stripUrlTags(text: string): string {
+  return text.replace(/<(MEETING_URL|STREAM_URL|URL)#[0-9a-f]{4}>/g, "<$1>")
+}
+
 function redactRow(row: CsvRow): string {
   const raw = unescapeNewlines(row.example_raw)
-  return row.category === "chat"
-    ? PiiRedactor.redactChatLine(raw)
-    : PiiRedactor.redact(raw)
+  const out =
+    row.category === "chat" ? PiiRedactor.redactChatLine(raw) : PiiRedactor.redact(raw)
+  return stripUrlTags(out)
 }
 
 describe("PiiRedactor CSV edge cases", () => {
@@ -231,5 +240,40 @@ describe("PiiRedactor behavior", () => {
     expect(PiiRedactor.redact(line)).toBe(
       "Inviting participant <EMAIL> to see <SPEAKER_1>"
     )
+  })
+})
+
+describe("URL correlation tags", () => {
+  beforeAll(() => {
+    delete process.env.DISABLE_LOG_PII_REDACTION
+  })
+
+  const TAGGED = /^<MEETING_URL#[0-9a-f]{4}>$/
+
+  it("emits a 4-hex tag on every URL placeholder", () => {
+    expect(PiiRedactor.redact("https://meet.google.com/abc-defg-hij")).toMatch(TAGGED)
+    expect(PiiRedactor.redact("https://example.com/x")).toMatch(/^<URL#[0-9a-f]{4}>$/)
+    expect(PiiRedactor.redact("wss://stream.example.com/k")).toMatch(
+      /^<STREAM_URL#[0-9a-f]{4}>$/
+    )
+  })
+
+  it("same URL -> same tag; different URL -> different tag", () => {
+    const a1 = PiiRedactor.redact("https://meet.google.com/abc-defg-hij")
+    const a2 = PiiRedactor.redact("https://meet.google.com/abc-defg-hij")
+    const b = PiiRedactor.redact("https://meet.google.com/zzz-zzzz-zzz")
+    expect(a1).toBe(a2)
+    expect(b).not.toBe(a1)
+  })
+
+  it("trailing punctuation does not change the tag", () => {
+    const plain = PiiRedactor.redact("go to https://meet.google.com/abc-defg-hij")
+    const punct = PiiRedactor.redact("go to https://meet.google.com/abc-defg-hij.")
+    expect(punct).toBe(`${plain}.`)
+  })
+
+  it("re-redaction leaves tagged placeholders unchanged (idempotent)", () => {
+    const once = PiiRedactor.redact("url https://meet.google.com/abc-defg-hij done")
+    expect(PiiRedactor.redact(once)).toBe(once)
   })
 })
