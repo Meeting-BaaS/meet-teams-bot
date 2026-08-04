@@ -40,6 +40,18 @@ export async function parseZoomMeetingUrl(meeting_url: string): Promise<ZoomUrlC
     const pathMatch = url.pathname.match(/\/(?:j|s|wc|wc\/join)\/(\d{8,})/)
     const meetingId = pathMatch?.[1] ?? url.pathname.match(/(\d{8,})/)?.[1]
 
+    // ?tk= is a per-registrant webinar token (personalized /w/ links from a
+    // registration-required webinar). Rewriting to the anonymous /wc/<id>/join
+    // URL discards it and lands the bot on the registration wall instead of
+    // the meeting (prod 2026-08-03: 136 of 148 join failures were valid tk
+    // links destroyed this way; PR #273 added the ZoomWebinarRegistrationRequired
+    // terminal error for the anonymous case — with a token we must never hit
+    // it). Carry the raw URL as the id, same as the white-label branch, so
+    // getMeetingLink/buildZoomWebClientUrl navigate it untouched.
+    if (url.searchParams.get("tk")) {
+      return { meetingId: meeting_url, password: pwd }
+    }
+
     if (isCanonicalZoomHost && meetingId) {
       return { meetingId, password: pwd }
     }
@@ -82,6 +94,11 @@ export function buildZoomWebClientUrl(meetingUrl: string, password?: string): st
 
     // Zoom Events URLs self-redirect to the web client — leave untouched.
     if (url.hostname === "events.zoom.us") return meetingUrl
+    // Personalized webinar link carrying a ?tk= registration token: navigate
+    // it as-is — Zoom's own redirect applies the token and lands in the web
+    // client. Rewriting to the anonymous /wc/ URL would drop the token and
+    // hit the registration wall.
+    if (url.searchParams.get("tk")) return meetingUrl
     // Already a web-client URL — leave untouched (but ensure pwd is present).
     if (meetingUrl.includes("/wc/")) return meetingUrl
 
