@@ -86,6 +86,33 @@ export async function parseZoomMeetingUrl(meeting_url: string): Promise<ZoomUrlC
 }
 
 /**
+ * Recognise Zoom's webinar registration page, returning the parsed URL (or
+ * undefined when the URL is not one).
+ *
+ * A registration-required webinar server-side-redirects /wc/<id>/join to
+ * <zoom-host>/webinar/register/<id>, where the only way in is a name+email
+ * form — so no pre-join input can ever render, from any pod or IP.
+ *
+ * Match on the parsed host and path, never on a substring of the serialized
+ * URL: this classification makes the failure TERMINAL, so a false positive
+ * (lookalike host such as foo-zoom.us, or a registration link echoed back in
+ * a ?next= query) would burn the whole retry budget of a meeting that was
+ * merely slow to render.
+ */
+export function parseZoomRegistrationUrl(rawUrl: string): URL | undefined {
+  try {
+    const url = new URL(rawUrl)
+    const isCanonicalZoomHost =
+      url.hostname === "zoom.us" || url.hostname.endsWith(".zoom.us")
+    if (!isCanonicalZoomHost) return undefined
+    return /^\/webinar\/register(?:\/|$)/i.test(url.pathname) ? url : undefined
+  } catch {
+    // Malformed URL — keep the generic (retryable) join failure.
+    return undefined
+  }
+}
+
+/**
  * Build the Zoom Web Client URL the bot actually navigates.
  * Rewrites ONLY canonical zoom.us hosts to app.zoom.us/wc/<id>/join; everything
  * else (white-label portals, or an already-built /wc/ URL) is returned as-is.

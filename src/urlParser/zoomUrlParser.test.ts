@@ -1,6 +1,10 @@
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
-import { buildZoomWebClientUrl, parseZoomMeetingUrl } from "./zoomUrlParser"
+import {
+  buildZoomWebClientUrl,
+  parseZoomMeetingUrl,
+  parseZoomRegistrationUrl
+} from "./zoomUrlParser"
 
 // GLOBAL.setError is called on the throw path; stub the singleton so the parser
 // unit tests don't need the full bot runtime.
@@ -225,6 +229,55 @@ describe("Zoom URL Parser", () => {
       expect(thrown!.message).toMatch(/Invalid Zoom meeting URL/)
       expect(thrown!.message).not.toContain("SuperSecret123")
       expect(setErrorMock).toHaveBeenCalledWith(MeetingEndReason.InvalidMeetingUrl)
+    })
+  })
+
+  // A match here makes the join failure TERMINAL (no SQS requeue), so a false
+  // positive costs a customer the whole retry budget of a joinable meeting.
+  describe("parseZoomRegistrationUrl", () => {
+    test("matches the canonical webinar registration page", () => {
+      const u = parseZoomRegistrationUrl("https://zoom.us/webinar/register/WN_abc123")
+      expect(u?.pathname).toBe("/webinar/register/WN_abc123")
+    })
+
+    test("matches on a regional host", () => {
+      expect(
+        parseZoomRegistrationUrl("https://us02web.zoom.us/webinar/register/WN_abc")
+      ).toBeDefined()
+    })
+
+    test("does NOT match a lookalike host", () => {
+      expect(
+        parseZoomRegistrationUrl("https://foo-zoom.us/webinar/register/WN_abc")
+      ).toBeUndefined()
+      expect(
+        parseZoomRegistrationUrl("https://evilzoom.us.attacker.com/webinar/register/WN_abc")
+      ).toBeUndefined()
+    })
+
+    test("does NOT match a registration URL echoed in a query or fragment", () => {
+      expect(
+        parseZoomRegistrationUrl(
+          "https://app.zoom.us/wc/123/join?next=https://zoom.us/webinar/register/WN_abc"
+        )
+      ).toBeUndefined()
+      expect(
+        parseZoomRegistrationUrl("https://app.zoom.us/wc/123/join#zoom.us/webinar/register/WN_abc")
+      ).toBeUndefined()
+    })
+
+    test("does NOT match an ordinary join URL, or a malformed one", () => {
+      expect(parseZoomRegistrationUrl("https://app.zoom.us/wc/84335626851/join")).toBeUndefined()
+      expect(parseZoomRegistrationUrl("not a url")).toBeUndefined()
+      expect(parseZoomRegistrationUrl("")).toBeUndefined()
+    })
+
+    test("reported origin+pathname drops the query that carries the token", () => {
+      const u = parseZoomRegistrationUrl(
+        "https://zoom.us/webinar/register/WN_abc?tk=SuperSecret123#frag"
+      )
+      expect(`${u?.origin}${u?.pathname}`).toBe("https://zoom.us/webinar/register/WN_abc")
+      expect(`${u?.origin}${u?.pathname}`).not.toContain("SuperSecret123")
     })
   })
 })
