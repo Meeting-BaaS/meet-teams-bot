@@ -260,8 +260,11 @@ export async function server() {
         context.chatObserver,
       )
 
-      // Chat payloads are PII: message content becomes <CHAT_TEXT> and any
-      // sender name is masked via the registered speaker dictionary.
+      // This payload is only {success} or {success, error, status} — no chat
+      // text and no sender name — so nothing here needs <CHAT_TEXT> today. It
+      // still goes through the chat choke point: `error` carries free-form
+      // failure text (selectors, page content, URLs) worth redacting, and the
+      // call keeps the guarantee in place if the result shape ever grows.
       console.log("[Server] Chat message result:", PiiRedactor.redactChatLine(JSON.stringify(result)))
 
       if (result.success === false) {
