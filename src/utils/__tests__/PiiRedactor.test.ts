@@ -296,3 +296,128 @@ describe("URL correlation tags", () => {
     expect(PiiRedactor.redact(once)).toBe(once)
   })
 })
+
+/**
+ * A dictionary entry is an unanchored find/replace over every log line, and
+ * display names are end-user controlled. A name that also occurs as ordinary
+ * log text must therefore never enter the dictionary.
+ */
+describe("dictionary safety for short and numeric names", () => {
+  beforeEach(() => {
+    delete process.env.DISABLE_LOG_PII_REDACTION
+    PiiRedactor.reset()
+  })
+
+  afterAll(() => {
+    PiiRedactor.reset()
+  })
+
+  it("does not let a numeric display name rewrite ISO timestamps", () => {
+    PiiRedactor.registerSpeaker("56")
+    // sound-level-monitor writes exactly this shape into sound.log.
+    expect(PiiRedactor.redact("2026-08-04T12:34:56.789Z,42")).toBe("2026-08-04T12:34:56.789Z,42")
+  })
+
+  it("does not let a numeric display name eat counters, sizes and ports", () => {
+    PiiRedactor.registerSpeaker("100")
+    expect(PiiRedactor.redact("uploaded 100 MB in 100 ms (port 8100)")).toBe(
+      "uploaded 100 MB in 100 ms (port 8100)"
+    )
+  })
+
+  it("does not let a single-character display name rewrite prose", () => {
+    PiiRedactor.registerSpeaker("A")
+    expect(PiiRedactor.redact("A new participant joined")).toBe("A new participant joined")
+  })
+
+  it("still hands unsafe names a stable, distinct placeholder", () => {
+    // Callers use the return value as a display label, so it must stay stable
+    // and must not collide with another speaker's label.
+    expect(PiiRedactor.registerSpeaker("56")).toBe("<SPEAKER_1>")
+    expect(PiiRedactor.registerSpeaker("Real Name")).toBe("<SPEAKER_2>")
+    expect(PiiRedactor.registerSpeaker("56")).toBe("<SPEAKER_1>")
+  })
+
+  it("still redacts a bare dial-in phone number", () => {
+    PiiRedactor.registerSpeaker("5551234567")
+    expect(PiiRedactor.redact("caller 5551234567 joined")).toBe("caller <SPEAKER_1> joined")
+  })
+
+  it("still redacts a two-character CJK surname", () => {
+    PiiRedactor.registerSpeaker("田中")
+    expect(PiiRedactor.redact("speaker 田中 joined")).toBe("speaker <SPEAKER_1> joined")
+  })
+
+  it("keeps an unsafe bot name out of the dictionary too", () => {
+    PiiRedactor.registerBotName("42")
+    expect(PiiRedactor.redact("retry 42 of 42")).toBe("retry 42 of 42")
+  })
+})
+
+describe("unicode case-folding matches resolve to a placeholder", () => {
+  beforeEach(() => {
+    delete process.env.DISABLE_LOG_PII_REDACTION
+    PiiRedactor.reset()
+  })
+
+  afterAll(() => {
+    PiiRedactor.reset()
+  })
+
+  it("folds medial and word-final Greek sigma to the same speaker", () => {
+    // The alternation matches under Unicode case folding, which treats σ and ς
+    // as equal; the placeholder lookup has to agree, or the name leaks through.
+    expect(PiiRedactor.registerSpeaker("Νίκοσ")).toBe("<SPEAKER_1>")
+    const out = PiiRedactor.redact("speaker Νίκος joined")
+    expect(out).toBe("speaker <SPEAKER_1> joined")
+    expect(out).not.toContain("Νίκος")
+  })
+
+  it("never returns the raw matched name when it cannot be resolved", () => {
+    PiiRedactor.registerSpeaker("Νίκοσ")
+    // Whatever the fold, the matched text must not survive into the output.
+    for (const variant of ["Νίκος", "Νίκοσ", "ΝΊΚΟΣ"]) {
+      const out = PiiRedactor.redact(`speaker ${variant} joined`)
+      expect(out).not.toContain(variant)
+      expect(out).toMatch(/<SPEAKER_1>|<REDACTED_NAME>/)
+    }
+  })
+})
+
+describe("speaker registry overflow bounds", () => {
+  beforeEach(() => {
+    delete process.env.DISABLE_LOG_PII_REDACTION
+    PiiRedactor.reset()
+  })
+
+  afterAll(() => {
+    PiiRedactor.reset()
+  })
+
+  const nameAt = (i: number) => `Overflow Person Number ${i}`
+
+  it("assigns distinct placeholders up to MAX_SPEAKERS, then <SPEAKER_OVERFLOW>", () => {
+    for (let i = 0; i < 499; i++) PiiRedactor.registerSpeaker(nameAt(i))
+    // 500th distinct name is the last to get its own number.
+    expect(PiiRedactor.registerSpeaker("Last Numbered Person")).toBe("<SPEAKER_500>")
+    expect(PiiRedactor.registerSpeaker("First Overflow Person")).toBe("<SPEAKER_OVERFLOW>")
+  })
+
+  it("still redacts names registered past MAX_SPEAKERS", () => {
+    for (let i = 0; i < 500; i++) PiiRedactor.registerSpeaker(nameAt(i))
+    PiiRedactor.registerSpeaker("Zaphod Beeblebrox")
+    // The whole point of registering past the cap: the raw name must not leak.
+    expect(PiiRedactor.redact("Zaphod Beeblebrox started speaking")).toBe(
+      "<SPEAKER_OVERFLOW> started speaking"
+    )
+  })
+
+  it("stops registering at MAX_TOTAL_NAMES, leaving later names unredacted", () => {
+    for (let i = 0; i < 5000; i++) PiiRedactor.registerSpeaker(nameAt(i))
+    expect(PiiRedactor.registerSpeaker("Way Past The Backstop")).toBe("<SPEAKER_OVERFLOW>")
+    // Documented gap, pinned deliberately: past the absolute backstop a name is
+    // NOT added to the dictionary, so it survives in log content. The cap keeps
+    // dictionary growth (and redact() cost) bounded on a pathological run.
+    expect(PiiRedactor.redact("Way Past The Backstop spoke")).toBe("Way Past The Backstop spoke")
+  })
+})
