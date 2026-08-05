@@ -249,8 +249,11 @@ export class SpeakerManager {
       // Check if this speaker's name matches the bot name
       const isPotentialBot =
         botName && speaker.name && speaker.name.toLowerCase() === botName.toLowerCase()
+      // deviceId exists to match segments back to participants at finalize; it
+      // is noise in the console table and belongs to no column a reader wants.
+      const { deviceId: _deviceId, ...rest } = speaker
       return {
-        ...speaker,
+        ...rest,
         name: isPotentialBot ? `Speaker ${index + 1} (Bot)` : `Speaker ${index + 1}`
       }
     })
