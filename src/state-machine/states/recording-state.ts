@@ -7,7 +7,11 @@ import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
 import { type AudioWarningEvent, ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
-import { checkDiarizationHealth, logHealthStatus } from "../../utils/diarization-monitor"
+import {
+  checkDiarizationHealth,
+  logHealthStatus,
+  networkMinDwellMs
+} from "../../utils/diarization-monitor"
 import { formatError } from "../../utils/Logger"
 import { sleep } from "../../utils/sleep"
 import { SoundLevelMonitor } from "../../utils/sound-level-monitor"
@@ -59,11 +63,6 @@ const STALE_EVENT_THRESHOLD = 10
 // (e.g. ticket 19961784714714: 60s solo test calls, transcript speakers all
 // "Unknown") could mathematically never reach the 10-event threshold.
 const NEVER_PRODUCED_STALE_THRESHOLD = 2
-// Zoom only: grace before the stale detector may retire the network path. Zoom's
-// roster doesn't arrive with the first signaling frames, and the fast threshold was
-// retiring it ~8s after admission, before it could produce anything. The interceptor
-// runs its own self-check at 45s, so the DOM observer stays the backstop.
-const ZOOM_NETWORK_MIN_DWELL_MS = 45_000
 
 export class RecordingState extends BaseState {
   private readonly enteredAt: number = Date.now()
@@ -453,16 +452,16 @@ export class RecordingState extends BaseState {
 
         // Check if we should trigger fallback (Meet, Teams or Zoom, network
         // diarization active).
-        const zoomDwellElapsed = Date.now() - this.enteredAt
+        const minDwellMs = networkMinDwellMs(meetingPlatform)
+        const dwellElapsed = Date.now() - this.enteredAt
         if (
-          meetingPlatform === "zoom" &&
           this.consecutiveStaleCount >= threshold &&
-          zoomDwellElapsed < ZOOM_NETWORK_MIN_DWELL_MS &&
+          dwellElapsed < minDwellMs &&
           !GLOBAL.hasNetworkInterceptionSetupFailed() &&
           !GLOBAL.hasDiarizationFallbackTriggered()
         ) {
           console.log(
-            `[DiarizationHealth] [zoom] ⏳ Holding network path (${Math.round(zoomDwellElapsed / 1000)}s < ${ZOOM_NETWORK_MIN_DWELL_MS / 1000}s) — roster may still be arriving`
+            `[DiarizationHealth] [${meetingPlatform}] ⏳ Holding network path (${Math.round(dwellElapsed / 1000)}s < ${minDwellMs / 1000}s) — speaker signal may still be arriving`
           )
           return
         }

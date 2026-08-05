@@ -6,13 +6,11 @@ import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
-import type { Participant, SpeakerData } from "./types"
+import { type Participant, type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
 import { PiiRedactor } from "./utils/PiiRedactor"
 import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
 
-/** The placeholder every platform's interceptor falls back to before a roster lands. */
-const UNKNOWN_SPEAKER = "Unknown"
 
 export class SpeakerManager {
   private static instance: SpeakerManager | null = null
@@ -27,6 +25,9 @@ export class SpeakerManager {
   // a later payload can omit a name that an earlier one carried; without this,
   // a participant flips back to "Unknown" mid-meeting.
   private deviceNames = new Map<string, string>()
+  // Profile picture per device, so a backfilled segment gets the same stable id
+  // the live path would have produced for that participant.
+  private deviceProfilePictures = new Map<string, string | undefined>()
 
   private constructor() {}
 
@@ -45,25 +46,8 @@ export class SpeakerManager {
 
     if (incoming && incoming !== UNKNOWN_SPEAKER) {
       if (deviceId) {
-        const previous = this.deviceNames.get(deviceId)
         this.deviceNames.set(deviceId, incoming)
-        // First time this device got a real name. If speech already opened a
-        // segment under the placeholder, repair it in place rather than leaving
-        // the opening of the meeting mislabelled.
-        if (previous === undefined) {
-          const renamed = this.diarizationTracker?.renameOpenSegment(
-            UNKNOWN_SPEAKER,
-            incoming,
-            this.sequentialIdManager.getSequentialId(
-              generateStableUserId(incoming, user.profilePicture)
-            )
-          )
-          if (renamed) {
-            console.log(
-              `[SpeakerManager] Roster resolved late — backfilled the open segment to the correct speaker`
-            )
-          }
-        }
+        this.deviceProfilePictures.set(deviceId, user.profilePicture)
       }
       return incoming
     }
@@ -102,10 +86,36 @@ export class SpeakerManager {
       const lastTimestamp = Date.now()
       const meetingStartTime = MeetingStateMachine.instance.getStartTime()
       if (meetingStartTime) {
-        // Wait for the stream to fully flush before continuing
-        await instance.diarizationTracker.end(lastTimestamp, meetingStartTime)
+        // Hand over the FINAL roster so any segment written while a participant
+        // was still unnamed gets repaired before the artifact is uploaded. The
+        // live path can only ever fix the segment that is still open; by the end
+        // of the meeting we know every name we are ever going to know.
+        await instance.diarizationTracker.end(
+          lastTimestamp,
+          meetingStartTime,
+          (deviceId) => instance.resolveDeviceForBackfill(deviceId)
+        )
       }
     }
+  }
+
+  /** Final name + stable id for a device, or undefined if it never resolved. */
+  private resolveDeviceForBackfill(
+    deviceId: string
+  ): { name: string; userId: number } | undefined {
+    const name = this.deviceNames.get(deviceId)
+    if (!name || name === UNKNOWN_SPEAKER) {
+      return undefined
+    }
+    return {
+      name,
+      userId: this.idForDevice(name, this.deviceProfilePictures.get(deviceId))
+    }
+  }
+
+  /** Sequential id for a resolved participant, matching the live path exactly. */
+  private idForDevice(name: string, profilePicture: string | undefined): number {
+    return this.sequentialIdManager.getSequentialId(generateStableUserId(name, profilePicture))
   }
 
   public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
@@ -177,17 +187,18 @@ export class SpeakerManager {
         // whose name has not been decoded yet. NEVER drop that speech — an
         // earlier version withheld the speaking flag until the name resolved,
         // which silently deleted the opening seconds of the meeting from the
-        // artifact (preprod bot 99517dc3: first segment at 10.0s, so everything
-        // before it had no segment and rendered as "Unknown" downstream).
+        // artifact: the first segment landed ten seconds in, and everything
+        // before it rendered as "Unknown" downstream.
         //
-        // Emit the segment immediately under whatever name we have, and let
-        // resolveNetworkName() backfill the real name into the still-open
-        // segment once the roster lands. Speech is never lost; at worst a
-        // segment is briefly labelled "Unknown" in memory before being renamed.
+        // Emit the segment immediately under whatever name we have. deviceId is
+        // what makes the repair possible: at finalize every segment still marked
+        // "Unknown" is matched back to its participant by device and relabelled,
+        // including the ones already flushed to disk.
         return {
           name: stableName,
           id: sequentialId,
           timestamp,
+          deviceId: user.deviceId,
           isSpeaking: user.isSpeaking === true
         }
       })
