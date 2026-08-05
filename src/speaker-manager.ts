@@ -187,8 +187,8 @@ export class SpeakerManager {
         // whose name has not been decoded yet. NEVER drop that speech — an
         // earlier version withheld the speaking flag until the name resolved,
         // which silently deleted the opening seconds of the meeting from the
-        // artifact (preprod bot 99517dc3: first segment at 10.0s, so everything
-        // before it had no segment and rendered as "Unknown" downstream).
+        // artifact: the first segment landed ten seconds in, and everything
+        // before it rendered as "Unknown" downstream.
         //
         // Emit the segment immediately under whatever name we have. deviceId is
         // what makes the repair possible: at finalize every segment still marked

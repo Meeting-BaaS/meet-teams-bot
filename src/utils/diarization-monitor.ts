@@ -26,6 +26,38 @@ export async function checkDiarizationHealth(
   return tracker.hasActiveOrRecentSegment(meetingStartTime, currentTime)
 }
 
+// Grace before the stale detector may retire the network path, per platform.
+//
+// Zoom: the roster doesn't arrive with the first signaling frames, and the fast
+// threshold was retiring it ~8s after admission, before it could produce
+// anything. The interceptor runs its own self-check at 45s.
+//
+// Teams: slower still. Per-participant audio levels are unavailable there (the
+// interceptor's diag reports csrc levels of 0 throughout), so the only speaking
+// signal is the dominant-speaker history on the data channel, which trickles in
+// — observed still at its first entry fifteen seconds in and only at its third
+// by ~90s. Retiring the path at ~10s hands the meeting to a UI observer that
+// delivers speakers through an exposeFunction binding the page cannot always
+// see under CloakBrowser, which is how Teams bots finished with an empty
+// diarization.jsonl and a transcript full of "Speaker 1"/"Speaker 2".
+//
+// Meet has no dwell: its per-participant audio levels arrive immediately, so
+// silence there really does mean the network path is dead.
+const NETWORK_MIN_DWELL_MS: Record<string, number> = {
+  zoom: 45_000,
+  teams: 90_000
+}
+
+/**
+ * How long the network diarization path is protected from the stale detector
+ * after recording starts. 0 means it may be retired as soon as the stale
+ * threshold is reached.
+ * @param platform - Meeting platform ("meet" | "teams" | "zoom")
+ */
+export function networkMinDwellMs(platform: string): number {
+  return NETWORK_MIN_DWELL_MS[platform] ?? 0
+}
+
 /**
  * Log health status with appropriate message.
  * @param status - Health status from diarization tracker
