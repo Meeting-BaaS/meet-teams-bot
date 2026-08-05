@@ -1,6 +1,7 @@
 import { createWriteStream, type WriteStream } from "node:fs"
+import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import type { SpeakerData } from "./types"
+import { type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
 
 interface DiarizationSegment {
@@ -28,11 +29,25 @@ export interface DiarizationHealthStatus {
   status: DiarizationHealthStatusLevel
 }
 
+/** Resolves a network device to its final name/id, once the roster is complete. */
+export type SpeakerResolver = (deviceId: string) => { name: string; userId: number } | undefined
+
 export class DiarizationTracker {
   private static instance: DiarizationTracker | null = null
   private fileStream: WriteStream | null = null
-  private currentSegment: { speaker: string; startTime: number; userId: number } | null = null
+  private currentSegment: {
+    speaker: string
+    startTime: number
+    userId: number
+    deviceId?: string
+  } | null = null
   private recentSegments: DiarizationSegment[] = [] // Last 5 closed segments
+  // EVERY segment produced this meeting, with the device it belongs to. This is
+  // the authoritative copy: the file is rewritten from it on end() so segments
+  // that were flushed while a name was still unresolved can be repaired.
+  // Without this, only the single open segment could ever be fixed and every
+  // "Unknown" already written to disk stayed wrong forever.
+  private allSegments: Array<{ segment: DiarizationSegment; deviceId?: string }> = []
   private filePath: string
   private isEnded = false
   private hasTrackedAnySegment = false // True once ANY speaker segment was ever opened
@@ -74,6 +89,10 @@ export class DiarizationTracker {
         user_id: this.currentSegment.userId
       }
       this.writeToFile(closedSegment)
+      this.allSegments.push({
+        segment: closedSegment,
+        deviceId: this.currentSegment.deviceId
+      })
 
       // Add to recent segments (keep max 5)
       this.recentSegments.push(closedSegment)
@@ -86,25 +105,35 @@ export class DiarizationTracker {
     this.currentSegment = {
       speaker: speaker.name,
       startTime: relativeTime,
-      userId: speaker.id
+      userId: speaker.id,
+      deviceId: speaker.deviceId
     }
     this.hasTrackedAnySegment = true
   }
 
   /**
-   * Relabel the still-open segment if it is attributed to `from`.
+   * Repair every segment still attributed to the placeholder, using the final
+   * roster. Returns how many were fixed.
    *
-   * Segments are only written to the file when they close, so a segment opened
-   * before the roster resolved can be repaired in memory and reach the artifact
-   * already correct. Returns true if a rename happened.
+   * Matching is by DEVICE, never by name: two participants can both be sitting
+   * under "Unknown" at once, and renaming by name alone would hand one person's
+   * speech to the other.
    */
-  public renameOpenSegment(from: string, to: string, userId: number): boolean {
-    if (this.isEnded || !this.currentSegment || this.currentSegment.speaker !== from) {
-      return false
+  private repairUnknownSpeakers(resolve: SpeakerResolver): number {
+    let repaired = 0
+    for (const entry of this.allSegments) {
+      if (entry.segment.speaker !== UNKNOWN_SPEAKER || !entry.deviceId) {
+        continue
+      }
+      const resolved = resolve(entry.deviceId)
+      if (!resolved || resolved.name === UNKNOWN_SPEAKER) {
+        continue
+      }
+      entry.segment.speaker = resolved.name
+      entry.segment.user_id = resolved.userId
+      repaired++
     }
-    this.currentSegment.speaker = to
-    this.currentSegment.userId = userId
-    return true
+    return repaired
   }
 
   /**
@@ -123,60 +152,76 @@ export class DiarizationTracker {
    * @param meetingStartTime - Meeting start timestamp in milliseconds
    * @returns Promise that resolves when the file stream is fully closed and flushed
    */
-  public end(lastTimestamp: number, meetingStartTime: number): Promise<void> {
+  public async end(
+    lastTimestamp: number,
+    meetingStartTime: number,
+    resolveSpeaker?: SpeakerResolver
+  ): Promise<void> {
     if (this.isEnded) {
-      return Promise.resolve()
+      return
     }
     this.isEnded = true
 
-    // Close the file stream and wait for it to finish flushing
-    if (this.fileStream) {
-      return new Promise<void>((resolve, reject) => {
-        const stream = this.fileStream!
-        this.fileStream = null
-
-        // Write the last segment if it exists
-        if (this.currentSegment) {
-          const relativeTime = (lastTimestamp - meetingStartTime) / 1000
-          const finalSegment: DiarizationSegment = {
-            speaker: this.currentSegment.speaker,
-            start_time: this.currentSegment.startTime,
-            end_time: relativeTime,
-            user_id: this.currentSegment.userId
-          }
-          const line = `${JSON.stringify(finalSegment)}\n`
-
-          // Write the final segment and check if we need to wait for drain
-          const writeSuccess = stream.write(line)
-          if (!writeSuccess) {
-            // If write returned false, wait for drain before ending
-            stream.once("drain", () => {
-              stream.end()
-            })
-          } else {
-            // Write was successful, can end immediately
-            stream.end()
-          }
-        } else {
-          // No final segment to write, just end the stream
-          stream.end()
-        }
-
-        // Wait for the stream to finish flushing all data
-        stream.once("finish", () => {
-          console.log(`Diarization tracking completed: ${this.filePath}`)
-          resolve()
-        })
-
-        stream.once("error", (error) => {
-          console.error(`DiarizationTracker: Error closing stream: ${error}`)
-          reject(error)
-        })
+    // Close the final segment into the buffer so it can be repaired too — it is
+    // frequently the one that opened before the roster landed.
+    if (this.currentSegment) {
+      this.allSegments.push({
+        segment: {
+          speaker: this.currentSegment.speaker,
+          start_time: this.currentSegment.startTime,
+          end_time: (lastTimestamp - meetingStartTime) / 1000,
+          user_id: this.currentSegment.userId
+        },
+        deviceId: this.currentSegment.deviceId
       })
+      this.currentSegment = null
     }
 
+    const repaired = resolveSpeaker ? this.repairUnknownSpeakers(resolveSpeaker) : 0
+    if (repaired > 0) {
+      console.log(
+        `[DiarizationTracker] Backfilled ${repaired} segment(s) that were written before the roster resolved`
+      )
+    }
+
+    await this.closeStream()
+
+    // Rewrite from the in-memory buffer, which is authoritative. Appending as we
+    // go keeps a usable file if the pod dies mid-meeting, but the append log can
+    // contain names that were still unresolved at the time they were flushed.
+    try {
+      const body = this.allSegments.map((e) => `${JSON.stringify(e.segment)}\n`).join("")
+      await writeFile(this.filePath, body)
+    } catch (error) {
+      console.error(`DiarizationTracker: Failed to rewrite ${this.filePath}: ${error}`)
+    }
+
+    const stillUnknown = this.allSegments.filter(
+      (e) => e.segment.speaker === UNKNOWN_SPEAKER
+    ).length
+    if (stillUnknown > 0) {
+      console.warn(
+        `[DiarizationTracker] ${stillUnknown}/${this.allSegments.length} segment(s) remain "${UNKNOWN_SPEAKER}" — the roster never resolved those devices`
+      )
+    }
     console.log(`Diarization tracking completed: ${this.filePath}`)
-    return Promise.resolve()
+  }
+
+  /** Flush and close the append stream, resolving even if it errors. */
+  private closeStream(): Promise<void> {
+    const stream = this.fileStream
+    this.fileStream = null
+    if (!stream) {
+      return Promise.resolve()
+    }
+    return new Promise<void>((resolve) => {
+      stream.end()
+      stream.once("finish", () => resolve())
+      stream.once("error", (error) => {
+        console.error(`DiarizationTracker: Error closing stream: ${error}`)
+        resolve()
+      })
+    })
   }
 
   /**

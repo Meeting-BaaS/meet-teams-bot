@@ -40,11 +40,21 @@ export type StopRecordParams = {
   user_id: number
 }
 
+/** Placeholder every platform's interceptor falls back to before a roster lands. */
+export const UNKNOWN_SPEAKER = "Unknown"
+
 export type SpeakerData = {
   name: string
   id: number // Sequential user ID (0 for UI-based detection, 1+ for network-based)
   timestamp: number
   isSpeaking: boolean
+  /**
+   * Network device this speech belongs to, when known. Carried so a segment
+   * opened before the roster resolved can be repaired against the right
+   * participant later — renaming by name alone would attribute one person's
+   * speech to another.
+   */
+  deviceId?: string
 }
 export type MeetingProvider = output<typeof MeetingPlatformSchema>
 
