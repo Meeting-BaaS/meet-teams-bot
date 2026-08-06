@@ -42,7 +42,7 @@ const TEAMS_CONFIG: AudioCaptureConfig = {
  * Creates __audioTrackLayer and intercepts RTCPeerConnection to detect audio tracks.
  * Track subscribers (e.g. network diarization) are notified via __audioTrackLayer.subscribe().
  */
-function generateAudioCaptureScript(config: AudioCaptureConfig): string {
+export function generateAudioCaptureScript(config: AudioCaptureConfig): string {
   const { logPrefix, stopFunctionName, enablePeriodicScanning } = config
 
   return `
@@ -56,9 +56,27 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                     window.__audioTrackLayer = {
                         subscribers: [],
+                        // Tracks seen before anyone subscribed. This layer is installed
+                        // before navigation, while the diarization interceptor only
+                        // subscribes once the bot is admitted — so every track the call
+                        // set up in between used to be delivered to nobody and was never
+                        // mentioned again. A subscriber that arrives late gets them now.
+                        seenTracks: [],
                         subscribe: (callbacks) => {
                             window.__audioTrackLayer.subscribers.push(callbacks)
                             console.log("${logPrefix} Track subscriber registered")
+                            const backlog = window.__audioTrackLayer.seenTracks || []
+                            if (backlog.length && callbacks && typeof callbacks.onTrack === "function") {
+                                console.log("${logPrefix} Replaying " + backlog.length + " already-detected track(s) to new subscriber")
+                                backlog.forEach(entry => {
+                                    if (entry.track.readyState === "ended") return
+                                    try {
+                                        callbacks.onTrack(entry.track, entry.receiver, entry.pc)
+                                    } catch (e) {
+                                        console.error("${logPrefix} Error replaying track to subscriber:", e)
+                                    }
+                                })
+                            }
                         },
                         audioCtx: audioCtx
                     }
@@ -79,6 +97,11 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     if (stopPeriodicScanningFn) {
                         stopPeriodicScanningFn()
                     }
+                    // Nobody will subscribe again, so drop the backlog rather than
+                    // keep tracks, receivers and peer connections reachable.
+                    if (window.__audioTrackLayer) {
+                        window.__audioTrackLayer.seenTracks = []
+                    }
                     console.log("${logPrefix} Audio capture stopped")
                 }
 
@@ -92,6 +115,32 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                 // Notify all subscribers when a track is detected
                 function notifyTrackSubscribers(track, receiver, pc) {
+                    // Remember it for subscribers that are not here yet. A track
+                    // that already ended, or one being announced a second time,
+                    // is dropped here rather than passed on: replaying it would
+                    // register the same diarization track twice.
+                    const seen = window.__audioTrackLayer.seenTracks || (window.__audioTrackLayer.seenTracks = [])
+                    if (track.readyState === "ended" || seen.some(entry => entry.track.id === track.id)) {
+                        return
+                    }
+                    seen.push({ track: track, receiver: receiver, pc: pc })
+
+                    // The backlog holds live media objects, so an entry lives only
+                    // as long as its track: a call that renegotiates repeatedly
+                    // would otherwise keep every track it ever had reachable and
+                    // make each replay scan longer. Dropping the entry costs no
+                    // deduplication — an ended track is refused above, and ended
+                    // is terminal.
+                    if (typeof track.addEventListener === "function") {
+                        track.addEventListener("ended", () => {
+                            const backlog = window.__audioTrackLayer.seenTracks || []
+                            const index = backlog.findIndex(entry => entry.track === track)
+                            if (index !== -1) {
+                                backlog.splice(index, 1)
+                            }
+                        }, { once: true })
+                    }
+
                     trackSubscribers.forEach(listener => {
                         try {
                             if (listener && typeof listener.onTrack === "function") {

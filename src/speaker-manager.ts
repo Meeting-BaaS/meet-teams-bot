@@ -9,6 +9,7 @@ import { Streaming } from "./streaming"
 import { type Participant, type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
 import { PiiRedactor } from "./utils/PiiRedactor"
+import { isBotName, silenceBotSpeaker } from "./utils/speaker-attribution"
 import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
 
 
@@ -118,8 +119,14 @@ export class SpeakerManager {
     return this.sequentialIdManager.getSequentialId(generateStableUserId(name, profilePicture))
   }
 
-  public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
+  public async handleSpeakerUpdate(observed: SpeakerData[]): Promise<void> {
     try {
+      // A recording bot stays in the roster but can never hold the floor — see
+      // silenceBotSpeaker for what happens to a meeting when it does. A bot that
+      // streams audio in does speak, and keeps its turns.
+      const params = GLOBAL.get()
+      const speakers = silenceBotSpeaker(observed, params.bot_name, Boolean(params.streaming_input))
+
       // Update singleton with participants and speakers
       this.updateSingletonParticipants(speakers)
 
@@ -156,6 +163,10 @@ export class SpeakerManager {
     timestamp: number
   ): Promise<void> {
     try {
+      const params = GLOBAL.get()
+      const botName = params.bot_name
+      const botCanSpeak = Boolean(params.streaming_input)
+
       // Convert network users to SpeakerData format
       const speakers: SpeakerData[] = networkUsers.map((user) => {
         // Use fullName as stable identifier, fallback to name (displayName)
@@ -176,8 +187,16 @@ export class SpeakerManager {
         // Add all participants (whether speaking or not)
         GLOBAL.addParticipantIfNotExists(participant)
 
+        // A recording bot is never a speaker, and that has to be decided here
+        // rather than downstream: the global speaker registry is append-only, so
+        // a bot added once stays in the final payload no matter what the
+        // diarization path does with it afterwards. A bot streaming audio in is
+        // a real speaker and passes through untouched.
+        const isSpeaking =
+          user.isSpeaking === true && (botCanSpeak || !isBotName(stableName, botName))
+
         // Add speakers who are currently speaking
-        if (user.isSpeaking === true) {
+        if (isSpeaking) {
           GLOBAL.addSpeakerIfNotExists(participant)
         }
 
@@ -199,7 +218,7 @@ export class SpeakerManager {
           id: sequentialId,
           timestamp,
           deviceId: user.deviceId,
-          isSpeaking: user.isSpeaking === true
+          isSpeaking
         }
       })
 

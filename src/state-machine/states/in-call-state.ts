@@ -324,8 +324,14 @@ export class InCallState extends BaseState {
 
           // Handle health check reports
           if (payload.source === "health_check" && payload.health) {
-            const { subscribed, activeTrackCount, audioProcessingActive, subscriptionError } =
-              payload.health
+            const {
+              subscribed,
+              activeTrackCount,
+              registeredTrackCount,
+              lastFrameAgeMs,
+              audioProcessingActive,
+              subscriptionError
+            } = payload.health
 
             if (subscriptionError) {
               console.warn(`[NetworkInterceptor] ⚠️ Health Check: ${subscriptionError}`)
@@ -335,19 +341,27 @@ export class InCallState extends BaseState {
               console.warn(
                 "[NetworkInterceptor] ⚠️ Health Check: Not subscribed to audio track layer"
               )
+            } else if (activeTrackCount === 0 && (registeredTrackCount ?? 0) > 0) {
+              // Registered but silent: tracks are registered for monitoring and
+              // not one frame has come out of them. Whether a processor exists
+              // yet is unknown from here — a muted track waits before one is
+              // created. This is the state that used to be reported as healthy.
+              console.warn(
+                `[NetworkInterceptor] ⚠️ Health Check: ${registeredTrackCount} track(s) registered but none delivering audio frames`
+              )
             } else if (activeTrackCount === 0) {
               console.log(
-                `[NetworkInterceptor] ℹ️ Health Check: Subscribed but no audio tracks detected yet (${activeTrackCount} tracks)`
+                "[NetworkInterceptor] ℹ️ Health Check: Subscribed but no audio tracks detected yet (0 tracks)"
               )
             } else {
               console.log(
-                `[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) being monitored)`
+                `[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) delivering frames)`
               )
             }
 
             // Log detailed health status at info level
             console.log(
-              `[NetworkInterceptor] Health Status: subscribed=${subscribed}, tracks=${activeTrackCount}, processing=${audioProcessingActive}`
+              `[NetworkInterceptor] Health Status: subscribed=${subscribed}, delivering=${activeTrackCount}, registered=${registeredTrackCount ?? "n/a"}, lastFrameAgeMs=${lastFrameAgeMs ?? "never"}, processing=${audioProcessingActive}`
             )
 
             return // Don't process as speaker update

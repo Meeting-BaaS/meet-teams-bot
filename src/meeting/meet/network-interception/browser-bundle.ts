@@ -475,6 +475,7 @@ export function browserInterceptionLogic(schema: any[]) {
               if (!frame) continue
 
               frameCount++
+              tracksDeliveringFrames.set(track.id, Date.now())
               // Only log frame count every 1000 frames (much less frequent)
               if (frameCount % 1000 === 0) {
                 console.error(
@@ -566,6 +567,11 @@ export function browserInterceptionLogic(schema: any[]) {
               console.error("[NetworkInterceptor] Reader Error:", readError)
             }
           } finally {
+            // The reader is finished for good here — done, error or abort — so
+            // this track is no longer delivering anything. Reporting it as
+            // healthy afterwards is the same lie the counter was added to stop.
+            releaseTrackHealth(track.id, abortSignal)
+
             // Remove abort listener
             if (abortListener) {
               abortSignal.removeEventListener("abort", abortListener)
@@ -674,7 +680,13 @@ export function browserInterceptionLogic(schema: any[]) {
           sendFailureSignal(track, "immediate_failure")
           return false
         }
-        if (firstRead.value) firstRead.value.close()
+        if (firstRead.value) {
+          // The validation read is a delivered frame like any other — count it,
+          // or a track that produced its first frame here still reports zero
+          // until processFrames() happens to read another one.
+          tracksDeliveringFrames.set(track.id, Date.now())
+          firstRead.value.close()
+        }
 
         console.error(`[NetworkInterceptor] 🎬 Audio Frame Processing Started: ${track.id}`)
         // Start background processing (fire-and-forget but with proper cleanup via AbortController)
@@ -722,7 +734,7 @@ export function browserInterceptionLogic(schema: any[]) {
         track.onended = () => {
           console.error(`[NetworkInterceptor] 🎬 Track ended: ${track.id}`)
           abortController.abort()
-          trackAbortControllers.delete(track.id)
+          releaseTrackHealth(track.id, abortController.signal)
           activeAudioTracks.delete(track.id)
         }
 
@@ -788,6 +800,20 @@ export function browserInterceptionLogic(schema: any[]) {
     // Track AbortControllers for audio processing loops (one per track)
     // Allows cancelling background processing when tracks end or are replaced
     const trackAbortControllers = new Map<string, AbortController>()
+    // trackId → timestamp of the last frame actually read from that track.
+    // This is the only proof the audio pipeline is alive; registration is not.
+    const tracksDeliveringFrames = new Map<string, number>()
+
+    // Stop counting a track once its reader is finished, whichever way it
+    // finished — done, error or abort. Only the controller that still owns the
+    // id may clear it: a replacement track can register a new controller under
+    // the same id while this one is still unwinding, and clearing then would
+    // erase the live track's health.
+    function releaseTrackHealth(trackId: string, signal: AbortSignal) {
+      if (trackAbortControllers.get(trackId)?.signal !== signal) return
+      trackAbortControllers.delete(trackId)
+      tracksDeliveringFrames.delete(trackId)
+    }
 
     setupRTCRtpReceiverInterceptor((receiver, contributingSources) => {
       updateContributingSources(receiverManager, receiver, contributingSources)
@@ -856,6 +882,7 @@ export function browserInterceptionLogic(schema: any[]) {
         }
       }
       trackAbortControllers.clear()
+      tracksDeliveringFrames.clear()
 
       // Set flag to prevent further callbacks
       ;(window as any).__networkInterceptorStopped = true
@@ -898,9 +925,22 @@ export function browserInterceptionLogic(schema: any[]) {
     function reportHealthCheck() {
       const audioTrackLayer = (window as any).__audioTrackLayer
       const subscribed = audioTrackLayer && typeof audioTrackLayer.subscribe === "function"
-      // Use trackAbortControllers to track active processing (tracks are added when processing starts)
-      const activeTrackCount = trackAbortControllers.size
+      // A registered track is NOT a working track. trackAbortControllers is
+      // populated before processAudioFrames() even runs, and that function can
+      // then sit waiting for the track to unmute or for a first frame that
+      // never arrives — so counting registrations reported "Audio processing
+      // active (3 tracks)" for a whole meeting that produced an empty
+      // diarization file. Report what actually happened: how many tracks have
+      // delivered at least one frame, and how long ago the last one arrived.
+      const registeredTrackCount = trackAbortControllers.size
+      const activeTrackCount = tracksDeliveringFrames.size
       const audioProcessingActive = activeTrackCount > 0
+      const now = Date.now()
+      let lastFrameAgeMs: number | null = null
+      for (const at of tracksDeliveringFrames.values()) {
+        const age = now - at
+        if (lastFrameAgeMs === null || age < lastFrameAgeMs) lastFrameAgeMs = age
+      }
 
       // Check if we had subscription errors
       let subscriptionError: string | null = null
@@ -913,6 +953,8 @@ export function browserInterceptionLogic(schema: any[]) {
       const health = {
         subscribed,
         activeTrackCount,
+        registeredTrackCount,
+        lastFrameAgeMs,
         audioProcessingActive,
         subscriptionError,
         timestamp: Date.now()
