@@ -97,6 +97,11 @@ export function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     if (stopPeriodicScanningFn) {
                         stopPeriodicScanningFn()
                     }
+                    // Nobody will subscribe again, so drop the backlog rather than
+                    // keep tracks, receivers and peer connections reachable.
+                    if (window.__audioTrackLayer) {
+                        window.__audioTrackLayer.seenTracks = []
+                    }
                     console.log("${logPrefix} Audio capture stopped")
                 }
 
@@ -119,6 +124,23 @@ export function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         return
                     }
                     seen.push({ track: track, receiver: receiver, pc: pc })
+
+                    // The backlog holds live media objects, so an entry lives only
+                    // as long as its track: a call that renegotiates repeatedly
+                    // would otherwise keep every track it ever had reachable and
+                    // make each replay scan longer. Dropping the entry costs no
+                    // deduplication — an ended track is refused above, and ended
+                    // is terminal.
+                    if (typeof track.addEventListener === "function") {
+                        track.addEventListener("ended", () => {
+                            const backlog = window.__audioTrackLayer.seenTracks || []
+                            const index = backlog.findIndex(entry => entry.track === track)
+                            if (index !== -1) {
+                                backlog.splice(index, 1)
+                            }
+                        }, { once: true })
+                    }
+
                     trackSubscribers.forEach(listener => {
                         try {
                             if (listener && typeof listener.onTrack === "function") {

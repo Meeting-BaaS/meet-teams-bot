@@ -7,9 +7,32 @@ import { generateAudioCaptureScript } from "./audio-capture"
  * the whole reason speaker detection can come up empty on a healthy-looking bot.
  */
 
-type FakeTrack = { id: string; kind: string; readyState: string }
+type FakeTrack = {
+  id: string
+  kind: string
+  readyState: string
+  addEventListener: (type: string, handler: () => void) => void
+  end: () => void
+}
 
 type Listener = (event: { track: FakeTrack }) => void
+
+/** A media track the layer can watch for its own end, as the browser gives it. */
+function makeTrack(id: string, kind = "audio", readyState = "live"): FakeTrack {
+  const endHandlers: Array<() => void> = []
+  return {
+    id,
+    kind,
+    readyState,
+    addEventListener(type: string, handler: () => void) {
+      if (type === "ended") endHandlers.push(handler)
+    },
+    end() {
+      this.readyState = "ended"
+      for (const handler of endHandlers) handler()
+    }
+  }
+}
 
 type TrackSubscriber = { onTrack: (track: FakeTrack) => void }
 
@@ -24,6 +47,7 @@ type LayerWindow = {
   AudioContext: new () => unknown
   addEventListener: () => void
   __audioTrackLayer: AudioTrackLayer
+  __meetAudioStop: () => Promise<void>
 }
 
 interface FakePeerConnection {
@@ -86,7 +110,7 @@ describe("audio track layer", () => {
     const { window: win, emitTrack } = runLayer()
 
     // The call sets up audio while the bot is still being admitted.
-    emitTrack({ id: "track-early", kind: "audio", readyState: "live" })
+    emitTrack(makeTrack("track-early"))
 
     const received: string[] = []
     win.__audioTrackLayer.subscribe({
@@ -104,7 +128,7 @@ describe("audio track layer", () => {
       onTrack: (track: FakeTrack) => received.push(track.id)
     })
 
-    emitTrack({ id: "track-late", kind: "audio", readyState: "live" })
+    emitTrack(makeTrack("track-late"))
 
     expect(received).toEqual(["track-late"])
   })
@@ -112,7 +136,7 @@ describe("audio track layer", () => {
   it("does not replay a track that has already ended", () => {
     const { window: win, emitTrack } = runLayer()
 
-    emitTrack({ id: "track-dead", kind: "audio", readyState: "ended" })
+    emitTrack(makeTrack("track-dead", "audio", "ended"))
 
     const received: string[] = []
     win.__audioTrackLayer.subscribe({
@@ -125,7 +149,7 @@ describe("audio track layer", () => {
   it("replays each track once, however many times it was announced", () => {
     const { window: win, emitTrack } = runLayer()
 
-    const track = { id: "track-repeat", kind: "audio", readyState: "live" }
+    const track = makeTrack("track-repeat")
     emitTrack(track)
     emitTrack(track)
 
@@ -147,7 +171,7 @@ describe("audio track layer", () => {
       onTrack: (track: FakeTrack) => received.push(track.id)
     })
 
-    const track = { id: "track-live", kind: "audio", readyState: "live" }
+    const track = makeTrack("track-live")
     emitTrack(track)
     emitTrack(track)
 
@@ -162,15 +186,63 @@ describe("audio track layer", () => {
       onTrack: (track: FakeTrack) => received.push(track.id)
     })
 
-    emitTrack({ id: "track-dead", kind: "audio", readyState: "ended" })
+    emitTrack(makeTrack("track-dead", "audio", "ended"))
 
     expect(received).toEqual([])
+  })
+
+  it("forgets a track once it ends", () => {
+    // The backlog holds live media objects; a call that renegotiates often
+    // would otherwise accumulate every track it ever had.
+    const { window: win, emitTrack } = runLayer()
+
+    const track = makeTrack("track-gone")
+    emitTrack(track)
+    expect(win.__audioTrackLayer.seenTracks).toHaveLength(1)
+
+    track.end()
+
+    expect(win.__audioTrackLayer.seenTracks).toHaveLength(0)
+
+    const received: string[] = []
+    win.__audioTrackLayer.subscribe({
+      onTrack: (t: FakeTrack) => received.push(t.id)
+    })
+
+    expect(received).toEqual([])
+  })
+
+  it("keeps the tracks that are still live when another one ends", () => {
+    const { window: win, emitTrack } = runLayer()
+
+    const leaving = makeTrack("track-leaving")
+    emitTrack(leaving)
+    emitTrack(makeTrack("track-staying"))
+
+    leaving.end()
+
+    const received: string[] = []
+    win.__audioTrackLayer.subscribe({
+      onTrack: (track: FakeTrack) => received.push(track.id)
+    })
+
+    expect(received).toEqual(["track-staying"])
+  })
+
+  it("drops the backlog when audio capture stops", async () => {
+    const { window: win, emitTrack } = runLayer()
+
+    emitTrack(makeTrack("track-open"))
+
+    await win.__meetAudioStop()
+
+    expect(win.__audioTrackLayer.seenTracks).toEqual([])
   })
 
   it("ignores video tracks", () => {
     const { window: win, emitTrack } = runLayer()
 
-    emitTrack({ id: "track-video", kind: "video", readyState: "live" })
+    emitTrack(makeTrack("track-video", "video"))
 
     const received: string[] = []
     win.__audioTrackLayer.subscribe({
