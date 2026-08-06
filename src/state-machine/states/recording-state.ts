@@ -280,6 +280,19 @@ export class RecordingState extends BaseState {
           )
         }
 
+        // Speaker detection is judged during grace too. The health check below
+        // used to live only past this early return, so with the default 300s
+        // grace period nothing evaluated diarization for the first five minutes
+        // — and a meeting shorter than the grace period was never evaluated at
+        // all. A Meet bot could run its whole call with a dead speaker signal,
+        // never fall back to the UI observer, and finish with an empty
+        // diarization file, which is exactly what the grace period is meant to
+        // protect against: giving up on a meeting before it gets going.
+        const soundLevel = SoundLevelMonitor.peekInstance()?.getCurrentSoundLevel() ?? 0
+        if (soundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+          await this.checkDiarizationHealthThrottled(now)
+        }
+
         this.lastSoundActivity = now
         return { shouldEnd: false }
       }
@@ -342,11 +355,7 @@ export class RecordingState extends BaseState {
         // Reset the silence timer (this is the critical timer for automatic leave)
         this.lastSoundActivity = now
 
-        // Check diarization health (throttled to every 5 seconds)
-        if (now - this.lastDiarizationHealthCheckTime >= 5000) {
-          this.lastDiarizationHealthCheckTime = now
-          await this.checkDiarizationHealth(now)
-        }
+        await this.checkDiarizationHealthThrottled(now)
       }
 
       // Check if we're still in the noone_joined_period
@@ -419,6 +428,13 @@ export class RecordingState extends BaseState {
       // For other errors, don't assume bot was removed - just retry next iteration
       return { shouldEnd: false }
     }
+  }
+
+  /** Diarization health check, at most once every 5s. */
+  private async checkDiarizationHealthThrottled(now: number): Promise<void> {
+    if (now - this.lastDiarizationHealthCheckTime < 5000) return
+    this.lastDiarizationHealthCheckTime = now
+    await this.checkDiarizationHealth(now)
   }
 
   /**

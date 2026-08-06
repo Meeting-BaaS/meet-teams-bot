@@ -30,7 +30,12 @@ export type NetworkPayload = {
   source: "roster" | "audio" | "health_check" | "network_interception_failed"
   health?: {
     subscribed: boolean
+    /** Tracks that have delivered at least one audio frame. */
     activeTrackCount: number
+    /** Tracks a processor was created for, delivering or not. */
+    registeredTrackCount?: number
+    /** Age of the most recent frame across all tracks; null if none ever arrived. */
+    lastFrameAgeMs?: number | null
     audioProcessingActive: boolean
     subscriptionError: string | null
     timestamp: number

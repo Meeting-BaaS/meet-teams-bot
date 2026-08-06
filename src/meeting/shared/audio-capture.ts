@@ -42,7 +42,7 @@ const TEAMS_CONFIG: AudioCaptureConfig = {
  * Creates __audioTrackLayer and intercepts RTCPeerConnection to detect audio tracks.
  * Track subscribers (e.g. network diarization) are notified via __audioTrackLayer.subscribe().
  */
-function generateAudioCaptureScript(config: AudioCaptureConfig): string {
+export function generateAudioCaptureScript(config: AudioCaptureConfig): string {
   const { logPrefix, stopFunctionName, enablePeriodicScanning } = config
 
   return `
@@ -56,9 +56,27 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                     window.__audioTrackLayer = {
                         subscribers: [],
+                        // Tracks seen before anyone subscribed. This layer is installed
+                        // before navigation, while the diarization interceptor only
+                        // subscribes once the bot is admitted — so every track the call
+                        // set up in between used to be delivered to nobody and was never
+                        // mentioned again. A subscriber that arrives late gets them now.
+                        seenTracks: [],
                         subscribe: (callbacks) => {
                             window.__audioTrackLayer.subscribers.push(callbacks)
                             console.log("${logPrefix} Track subscriber registered")
+                            const backlog = window.__audioTrackLayer.seenTracks || []
+                            if (backlog.length && callbacks && typeof callbacks.onTrack === "function") {
+                                console.log("${logPrefix} Replaying " + backlog.length + " already-detected track(s) to new subscriber")
+                                backlog.forEach(entry => {
+                                    if (entry.track.readyState === "ended") return
+                                    try {
+                                        callbacks.onTrack(entry.track, entry.receiver, entry.pc)
+                                    } catch (e) {
+                                        console.error("${logPrefix} Error replaying track to subscriber:", e)
+                                    }
+                                })
+                            }
                         },
                         audioCtx: audioCtx
                     }
@@ -92,6 +110,11 @@ function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                 // Notify all subscribers when a track is detected
                 function notifyTrackSubscribers(track, receiver, pc) {
+                    // Remember it for subscribers that are not here yet.
+                    const seen = window.__audioTrackLayer.seenTracks || (window.__audioTrackLayer.seenTracks = [])
+                    if (!seen.some(entry => entry.track.id === track.id)) {
+                        seen.push({ track: track, receiver: receiver, pc: pc })
+                    }
                     trackSubscribers.forEach(listener => {
                         try {
                             if (listener && typeof listener.onTrack === "function") {
