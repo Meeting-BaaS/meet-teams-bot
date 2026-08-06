@@ -137,6 +137,36 @@ describe("audio track layer", () => {
     expect(received).toEqual(["track-repeat"])
   })
 
+  it("announces a track once to an already-registered subscriber", () => {
+    // Registering the same track twice would have the diarization open two
+    // readers on one participant.
+    const { window: win, emitTrack } = runLayer()
+
+    const received: string[] = []
+    win.__audioTrackLayer.subscribe({
+      onTrack: (track: FakeTrack) => received.push(track.id)
+    })
+
+    const track = { id: "track-live", kind: "audio", readyState: "live" }
+    emitTrack(track)
+    emitTrack(track)
+
+    expect(received).toEqual(["track-live"])
+  })
+
+  it("does not announce an ended track to an already-registered subscriber", () => {
+    const { window: win, emitTrack } = runLayer()
+
+    const received: string[] = []
+    win.__audioTrackLayer.subscribe({
+      onTrack: (track: FakeTrack) => received.push(track.id)
+    })
+
+    emitTrack({ id: "track-dead", kind: "audio", readyState: "ended" })
+
+    expect(received).toEqual([])
+  })
+
   it("ignores video tracks", () => {
     const { window: win, emitTrack } = runLayer()
 

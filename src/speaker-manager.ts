@@ -9,6 +9,7 @@ import { Streaming } from "./streaming"
 import { type Participant, type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
 import { PiiRedactor } from "./utils/PiiRedactor"
+import { silenceBotSpeaker } from "./utils/speaker-attribution"
 import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
 
 
@@ -118,8 +119,12 @@ export class SpeakerManager {
     return this.sequentialIdManager.getSequentialId(generateStableUserId(name, profilePicture))
   }
 
-  public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
+  public async handleSpeakerUpdate(observed: SpeakerData[]): Promise<void> {
     try {
+      // The bot stays in the roster but can never hold the floor — see
+      // silenceBotSpeaker for what happens to a meeting when it does.
+      const speakers = silenceBotSpeaker(observed, GLOBAL.get().bot_name)
+
       // Update singleton with participants and speakers
       this.updateSingletonParticipants(speakers)
 

@@ -110,11 +110,15 @@ export function generateAudioCaptureScript(config: AudioCaptureConfig): string {
 
                 // Notify all subscribers when a track is detected
                 function notifyTrackSubscribers(track, receiver, pc) {
-                    // Remember it for subscribers that are not here yet.
+                    // Remember it for subscribers that are not here yet. A track
+                    // that already ended, or one being announced a second time,
+                    // is dropped here rather than passed on: replaying it would
+                    // register the same diarization track twice.
                     const seen = window.__audioTrackLayer.seenTracks || (window.__audioTrackLayer.seenTracks = [])
-                    if (!seen.some(entry => entry.track.id === track.id)) {
-                        seen.push({ track: track, receiver: receiver, pc: pc })
+                    if (track.readyState === "ended" || seen.some(entry => entry.track.id === track.id)) {
+                        return
                     }
+                    seen.push({ track: track, receiver: receiver, pc: pc })
                     trackSubscribers.forEach(listener => {
                         try {
                             if (listener && typeof listener.onTrack === "function") {

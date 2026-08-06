@@ -567,6 +567,11 @@ export function browserInterceptionLogic(schema: any[]) {
               console.error("[NetworkInterceptor] Reader Error:", readError)
             }
           } finally {
+            // The reader is finished for good here — done, error or abort — so
+            // this track is no longer delivering anything. Reporting it as
+            // healthy afterwards is the same lie the counter was added to stop.
+            releaseTrackHealth(track.id, abortSignal)
+
             // Remove abort listener
             if (abortListener) {
               abortSignal.removeEventListener("abort", abortListener)
@@ -600,7 +605,6 @@ export function browserInterceptionLogic(schema: any[]) {
             `[NetworkInterceptor] ❌ Track ${track.id} was not live before the first read: readyState=${track.readyState}, aborted=${abortSignal.aborted}`
           )
           trackAbortControllers.delete(track.id)
-        tracksDeliveringFrames.delete(track.id)
           sendFailureSignal(track, "timeout")
           return false
         }
@@ -658,7 +662,6 @@ export function browserInterceptionLogic(schema: any[]) {
           }
           // Clean up AbortController since processing failed
           trackAbortControllers.delete(track.id)
-        tracksDeliveringFrames.delete(track.id)
           sendFailureSignal(track, "timeout")
           return false
         } finally {
@@ -674,11 +677,16 @@ export function browserInterceptionLogic(schema: any[]) {
           console.error("[NetworkInterceptor] ⚠️ Audio stream ended immediately")
           // Clean up AbortController since processing failed
           trackAbortControllers.delete(track.id)
-        tracksDeliveringFrames.delete(track.id)
           sendFailureSignal(track, "immediate_failure")
           return false
         }
-        if (firstRead.value) firstRead.value.close()
+        if (firstRead.value) {
+          // The validation read is a delivered frame like any other — count it,
+          // or a track that produced its first frame here still reports zero
+          // until processFrames() happens to read another one.
+          tracksDeliveringFrames.set(track.id, Date.now())
+          firstRead.value.close()
+        }
 
         console.error(`[NetworkInterceptor] 🎬 Audio Frame Processing Started: ${track.id}`)
         // Start background processing (fire-and-forget but with proper cleanup via AbortController)
@@ -690,7 +698,6 @@ export function browserInterceptionLogic(schema: any[]) {
         console.error("[NetworkInterceptor] Audio Frame Processing Setup Error:", e)
         // Clean up AbortController since processing failed
         trackAbortControllers.delete(track.id)
-        tracksDeliveringFrames.delete(track.id)
         sendFailureSignal(track, "immediate_failure")
         return false
       }
@@ -717,7 +724,6 @@ export function browserInterceptionLogic(schema: any[]) {
           )
           existingController.abort()
           trackAbortControllers.delete(track.id)
-        tracksDeliveringFrames.delete(track.id)
         }
 
         // Create new AbortController for this track
@@ -728,8 +734,7 @@ export function browserInterceptionLogic(schema: any[]) {
         track.onended = () => {
           console.error(`[NetworkInterceptor] 🎬 Track ended: ${track.id}`)
           abortController.abort()
-          trackAbortControllers.delete(track.id)
-        tracksDeliveringFrames.delete(track.id)
+          releaseTrackHealth(track.id, abortController.signal)
           activeAudioTracks.delete(track.id)
         }
 
@@ -775,7 +780,6 @@ export function browserInterceptionLogic(schema: any[]) {
             )
             // Clean up AbortController since processing failed
             trackAbortControllers.delete(track.id)
-        tracksDeliveringFrames.delete(track.id)
             sendFailureSignal(track, "immediate_failure")
           })
       } catch (e) {
@@ -799,6 +803,17 @@ export function browserInterceptionLogic(schema: any[]) {
     // trackId → timestamp of the last frame actually read from that track.
     // This is the only proof the audio pipeline is alive; registration is not.
     const tracksDeliveringFrames = new Map<string, number>()
+
+    // Stop counting a track once its reader is finished, whichever way it
+    // finished — done, error or abort. Only the controller that still owns the
+    // id may clear it: a replacement track can register a new controller under
+    // the same id while this one is still unwinding, and clearing then would
+    // erase the live track's health.
+    function releaseTrackHealth(trackId: string, signal: AbortSignal) {
+      if (trackAbortControllers.get(trackId)?.signal !== signal) return
+      trackAbortControllers.delete(trackId)
+      tracksDeliveringFrames.delete(trackId)
+    }
 
     setupRTCRtpReceiverInterceptor((receiver, contributingSources) => {
       updateContributingSources(receiverManager, receiver, contributingSources)

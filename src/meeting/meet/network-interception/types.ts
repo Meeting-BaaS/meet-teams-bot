@@ -32,7 +32,7 @@ export type NetworkPayload = {
     subscribed: boolean
     /** Tracks that have delivered at least one audio frame. */
     activeTrackCount: number
-    /** Tracks a processor was created for, delivering or not. */
+    /** Tracks registered for monitoring, whether or not a processor exists yet. */
     registeredTrackCount?: number
     /** Age of the most recent frame across all tracks; null if none ever arrived. */
     lastFrameAgeMs?: number | null

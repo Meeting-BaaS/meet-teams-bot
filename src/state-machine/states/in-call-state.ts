@@ -342,9 +342,10 @@ export class InCallState extends BaseState {
                 "[NetworkInterceptor] ⚠️ Health Check: Not subscribed to audio track layer"
               )
             } else if (activeTrackCount === 0 && (registeredTrackCount ?? 0) > 0) {
-              // Registered but silent: the processors exist and are reading, but
-              // not one frame has come out of them. This is the state that used
-              // to be reported as healthy.
+              // Registered but silent: tracks are registered for monitoring and
+              // not one frame has come out of them. Whether a processor exists
+              // yet is unknown from here — a muted track waits before one is
+              // created. This is the state that used to be reported as healthy.
               console.warn(
                 `[NetworkInterceptor] ⚠️ Health Check: ${registeredTrackCount} track(s) registered but none delivering audio frames`
               )
