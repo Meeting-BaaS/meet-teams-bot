@@ -97,6 +97,24 @@ export class MeetProvider implements MeetingProviderInterface {
                 console.log('[Meet] ✅ Web Audio capture enabled for streaming')
             }
 
+            // Inject the audio-track layer (window.__audioTrackLayer). Must run
+            // BEFORE page.goto AND before the interception scripts below: the
+            // network bundle subscribes to this layer for audio tracks, and
+            // proxying RTCPeerConnection first guarantees we wrap it before Meet
+            // grabs the original constructor. Injected for EVERY Meet bot
+            // (independent of streaming_output) — diarization needs it always.
+            try {
+                const { enableMeetAudioTrackLayer } = await import(
+                    './meet/audio-track-layer'
+                )
+                await enableMeetAudioTrackLayer(page)
+            } catch (error) {
+                console.warn(
+                    '[Meet] ⚠️ Audio track layer injection error (non-fatal):',
+                    formatError(error),
+                )
+            }
+
             // Inject network-interception scripts (protobuf/pako libs bundle +
             // browser logic). Must run BEFORE page.goto — addInitScript only
             // applies to later navigations. Failure is non-fatal: the in-call
