@@ -21,6 +21,8 @@ export class InCallState extends BaseState {
     private isStartingUIObserver = false
     private teamsNetworkFallbackTriggered: boolean = false
     private meetNetworkFallbackTriggered: boolean = false
+    private meetAudioEventCount = 0
+    private meetAudioWatchdog?: ReturnType<typeof setInterval>
     private lastNetworkSpeakingKey?: string
 
     async execute(): StateExecuteResult {
@@ -369,6 +371,10 @@ export class InCallState extends BaseState {
                     return
                 }
 
+                if (payload.source === 'audio') {
+                    this.meetAudioEventCount++
+                }
+
                 const networkUsers = payload.users as NetworkUser[]
                 const speakingNames = networkUsers
                     .filter((u) => u.isSpeaking)
@@ -412,6 +418,52 @@ export class InCallState extends BaseState {
             )
             return false
         }
+
+        // Audio-path watchdog: setup success only proves the hooks were
+        // installed, not that they see Meet's audio track layer. Observed live
+        // (bot 34266844): roster decoded, sound recorded, but tracks=0 the
+        // whole meeting and NO failure event fired — the exact silent
+        // blindness the Teams path had. If no audio-source event arrives
+        // within the grace window while the call is live, retire the network
+        // path and hand observation to the UI observer, which is proven on
+        // current Meet markup.
+        const MEET_AUDIO_DEAD_AFTER_MS = 45_000
+        const watchdogStart = Date.now()
+        this.meetAudioEventCount = 0
+        this.meetAudioWatchdog = setInterval(() => {
+            void (async () => {
+                try {
+                    if (this.meetNetworkFallbackTriggered) {
+                        clearInterval(this.meetAudioWatchdog)
+                        return
+                    }
+                    if (this.meetAudioEventCount > 0) {
+                        clearInterval(this.meetAudioWatchdog)
+                        console.log(
+                            '[MeetNetworkInterceptor] ✅ Audio path alive — watchdog disarmed',
+                        )
+                        return
+                    }
+                    if (Date.now() - watchdogStart < MEET_AUDIO_DEAD_AFTER_MS) {
+                        return
+                    }
+                    clearInterval(this.meetAudioWatchdog)
+                    this.meetNetworkFallbackTriggered = true
+                    console.warn(
+                        `[MeetNetworkInterceptor] 🚨 No audio-source event after ${MEET_AUDIO_DEAD_AFTER_MS / 1000}s — retiring network path, switching to UI observer`,
+                    )
+                    await meetNetworkInterception.stopNetworkInterception(
+                        this.context.playwrightPage as Page,
+                    )
+                    await this.startUIBasedObservation()
+                } catch (error) {
+                    console.error(
+                        '[MeetNetworkInterceptor] watchdog error:',
+                        formatError(error),
+                    )
+                }
+            })()
+        }, 5_000)
 
         return true
     }
