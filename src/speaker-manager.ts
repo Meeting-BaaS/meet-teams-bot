@@ -30,9 +30,42 @@ export class SpeakerManager {
     // and a later payload can omit a name that an earlier one carried; without
     // this, a participant flips back to "Unknown" mid-meeting.
     private deviceNames = new Map<string, string>()
-    private firstNetworkUpdateAt = Number.POSITIVE_INFINITY
+    // When each device was first seen, so the roster-race grace window is
+    // scoped to that participant rather than to the start of the meeting: a
+    // participant joining at minute 20 races their own roster entry exactly
+    // like the ones present at the start, and a meeting-wide anchor would
+    // have expired long ago.
+    private deviceFirstSeen = new Map<string, number>()
 
     private constructor() {}
+
+    /**
+     * Timestamp this device was first observed, recording it on first sight.
+     * Devices without an id share a single bucket — they cannot be told
+     * apart, so the best available behaviour is to grant the grace window
+     * once.
+     */
+    private firstSeenAt(deviceId: string | undefined, timestamp: number): number {
+        const key = deviceId || ''
+        const existing = this.deviceFirstSeen.get(key)
+        if (existing !== undefined) {
+            return existing
+        }
+        this.deviceFirstSeen.set(key, timestamp)
+        return timestamp
+    }
+
+    /**
+     * A recording bot is never a speaker, and that has to be decided here:
+     * a bot whose row escapes the isCurrentUser filter (Teams can list the
+     * bot under a second endpoint id) would otherwise be attributed real
+     * speech. A bot that streams audio in does speak, and keeps its turns.
+     */
+    private isBotName(name: string): boolean {
+        const botName = (GLOBAL.get().bot_name || '').trim().toLowerCase()
+        if (!botName) return false
+        return name.trim().toLowerCase() === botName
+    }
 
     /**
      * Best available name for a network participant, never downgrading.
@@ -126,9 +159,7 @@ export class SpeakerManager {
         networkUsers: NetworkUser[],
         timestamp: number,
     ): Promise<void> {
-        if (this.firstNetworkUpdateAt === Number.POSITIVE_INFINITY) {
-            this.firstNetworkUpdateAt = timestamp
-        }
+        const botCanSpeak = Boolean(GLOBAL.get().streaming_input)
 
         const speakers: SpeakerData[] = networkUsers
             .filter((user) => !user.isCurrentUser)
@@ -138,20 +169,23 @@ export class SpeakerManager {
                 // to a device whose name has not been decoded yet, and
                 // attributing that speech to the literal "Unknown" burns it
                 // into the artifact permanently. Withhold the speaking flag
-                // while the name is unresolved and early in the meeting — the
-                // roster lands within a second or two, and the segment then
-                // opens under the correct name. After the grace window an
-                // unresolved name is real (not a race), so stop suppressing.
+                // while the name is unresolved and the device is newly seen —
+                // the roster lands within a second or two, and the segment
+                // then opens under the correct name. After the grace window
+                // an unresolved name is real (not a race), so stop
+                // suppressing.
                 const nameResolved = stableName !== UNKNOWN_SPEAKER
                 const withinRosterGrace =
-                    timestamp - this.firstNetworkUpdateAt < ROSTER_GRACE_MS
+                    timestamp - this.firstSeenAt(user.deviceId, timestamp) <
+                    ROSTER_GRACE_MS
                 return {
                     name: stableName,
                     id: index + 1,
                     timestamp,
                     isSpeaking:
                         user.isSpeaking === true &&
-                        (nameResolved || !withinRosterGrace),
+                        (nameResolved || !withinRosterGrace) &&
+                        (botCanSpeak || !this.isBotName(stableName)),
                 }
             })
 
