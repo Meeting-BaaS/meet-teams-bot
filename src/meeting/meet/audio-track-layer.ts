@@ -70,7 +70,11 @@ function generateAudioTrackLayerScript(): string {
 
                 const trackSubscribers = window.__audioTrackLayer.subscribers
 
+                // Set when periodic scanning is armed, so stop can clear it.
+                let stopPeriodicScanningFn = null
+
                 function stopAudioTrackLayer() {
+                    if (stopPeriodicScanningFn) stopPeriodicScanningFn()
                     // Nobody will subscribe again — drop the backlog rather than
                     // keep tracks, receivers and peer connections reachable.
                     if (window.__audioTrackLayer) {
@@ -118,9 +122,11 @@ function generateAudioTrackLayerScript(): string {
                 // (pre-goto) guarantees we see it before Meet grabs the original.
                 if (typeof window.RTCPeerConnection !== "undefined") {
                     const OriginalPC = window.RTCPeerConnection
+                    const allPeerConnections = []
 
                     window.RTCPeerConnection = function (...args) {
                         const pc = new OriginalPC(...args)
+                        allPeerConnections.push(pc)
 
                         pc.addEventListener("track", (event) => {
                             if (event.track.kind === "audio") {
@@ -135,7 +141,50 @@ function generateAudioTrackLayerScript(): string {
                         return pc
                     }
 
-                    console.log("${LOG_PREFIX} RTCPeerConnection intercepted")
+                    // Periodic getReceivers() sweep. The constructor 'track'
+                    // event alone misses Meet's audio track on some sessions
+                    // (observed live: 1 of 3 bots caught it, 2 saw tracks=0 with
+                    // audio flowing). A sweep recovers a receiver.track that
+                    // exists on the PC but whose 'track' event we never got —
+                    // notifyTrackSubscribers dedups by track id, so re-finding an
+                    // already-seen track is a no-op.
+                    const scannedTracks = new Set()
+                    let periodicScanIntervalId = null
+                    const scanTimeoutIds = []
+
+                    function scanForTracks() {
+                        allPeerConnections.forEach((pc, index) => {
+                            try {
+                                pc.getReceivers().forEach(receiver => {
+                                    if (receiver.track && receiver.track.kind === "audio") {
+                                        if (!scannedTracks.has(receiver.track.id)) {
+                                            console.log("${LOG_PREFIX} Found audio track from PC[" + index + "] via sweep:", receiver.track.id)
+                                            scannedTracks.add(receiver.track.id)
+                                            notifyTrackSubscribers(receiver.track, receiver, pc)
+                                        }
+                                    }
+                                })
+                            } catch (e) {
+                                console.error("${LOG_PREFIX} Error scanning PC[" + index + "]:", e)
+                            }
+                        })
+                    }
+
+                    stopPeriodicScanningFn = function () {
+                        if (periodicScanIntervalId !== null) {
+                            clearInterval(periodicScanIntervalId)
+                            periodicScanIntervalId = null
+                        }
+                        scanTimeoutIds.forEach(id => clearTimeout(id))
+                        scanTimeoutIds.length = 0
+                    }
+
+                    scanTimeoutIds.push(setTimeout(scanForTracks, 2000))
+                    scanTimeoutIds.push(setTimeout(scanForTracks, 5000))
+                    scanTimeoutIds.push(setTimeout(scanForTracks, 10000))
+                    periodicScanIntervalId = setInterval(scanForTracks, 15000)
+
+                    console.log("${LOG_PREFIX} RTCPeerConnection intercepted (periodic sweep armed)")
                 }
 
                 console.log("${LOG_PREFIX} Audio track layer initialized")
