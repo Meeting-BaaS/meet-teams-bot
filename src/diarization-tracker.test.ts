@@ -111,3 +111,24 @@ describe("DiarizationTracker backfill", () => {
     expect(segments.map((s) => s.speaker)).toEqual(["Amr El Shimy", "Johnny"])
   })
 })
+
+describe("DiarizationTracker first-segment telemetry", () => {
+  it("logs the first-segment latency exactly once", async () => {
+    const tracker = freshTracker()
+    const logSpy = jest.spyOn(console, "log").mockImplementation(() => {})
+
+    try {
+      tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 12.3), MEETING_START)
+      tracker.updateSpeaker(speech("dev-b", "Johnny", 20), MEETING_START)
+
+      const latencyLogs = logSpy.mock.calls.filter(
+        ([msg]) => typeof msg === "string" && msg.includes("First speaker segment opened")
+      )
+      expect(latencyLogs).toHaveLength(1)
+      expect(latencyLogs[0][0]).toContain("+12.3s")
+    } finally {
+      await tracker.end(MEETING_START + 22_000, MEETING_START, () => undefined)
+      logSpy.mockRestore()
+    }
+  })
+})

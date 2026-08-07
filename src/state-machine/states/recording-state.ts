@@ -288,8 +288,14 @@ export class RecordingState extends BaseState {
         // never fall back to the UI observer, and finish with an empty
         // diarization file, which is exactly what the grace period is meant to
         // protect against: giving up on a meeting before it gets going.
-        const soundLevel = SoundLevelMonitor.peekInstance()?.getCurrentSoundLevel() ?? 0
-        if (soundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+        // A dead sound monitor reads 0 forever, which is indistinguishable from
+        // silence — and health checks gated on sound would then never run, so a
+        // dead speaker signal could ride out the whole meeting unnoticed. When
+        // the monitor itself is down, check health anyway: the worst case is an
+        // unnecessary fallback to the UI observer, which still names speakers.
+        const graceMonitor = SoundLevelMonitor.peekInstance()
+        const soundLevel = graceMonitor?.getCurrentSoundLevel() ?? 0
+        if (soundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD || !graceMonitor?.getIsActive()) {
           await this.checkDiarizationHealthThrottled(now)
         }
 
@@ -355,6 +361,11 @@ export class RecordingState extends BaseState {
         // Reset the silence timer (this is the critical timer for automatic leave)
         this.lastSoundActivity = now
 
+        await this.checkDiarizationHealthThrottled(now)
+      } else if (!monitor?.getIsActive()) {
+        // Same monitor-down escape hatch as the grace-period branch: a dead
+        // monitor reads 0 forever, and health checks gated on sound would
+        // never run again for the rest of the meeting.
         await this.checkDiarizationHealthThrottled(now)
       }
 
@@ -468,10 +479,18 @@ export class RecordingState extends BaseState {
 
         // Check if we should trigger fallback (Meet, Teams or Zoom, network
         // diarization active).
+        //
+        // The dwell hold exists so a slow-but-alive network path is not retired
+        // while its first speaker signal is still arriving. It does not apply
+        // when the path has NEVER produced a segment despite sound activity:
+        // holding a dead source for the full dwell window just converts the
+        // hold into a guaranteed leading-"Unknown" run of the same length
+        // (prod Meet transcripts showed exactly ~30s Unknown heads from this).
         const minDwellMs = networkMinDwellMs(meetingPlatform)
         const dwellElapsed = Date.now() - this.enteredAt
         if (
           this.consecutiveStaleCount >= threshold &&
+          !neverProduced &&
           dwellElapsed < minDwellMs &&
           !GLOBAL.hasNetworkInterceptionSetupFailed() &&
           !GLOBAL.hasDiarizationFallbackTriggered()

@@ -101,9 +101,6 @@ export class InCallState extends BaseState {
       this.context.startTime = startTime
       ScreenRecorderManager.getInstance().setMeetingStartTime(startTime)
       console.log(`Meeting start time set to: ${startTime} (${new Date(startTime).toISOString()})`)
-
-      // Start HTML cleanup first to clean the interface
-      await this.startHtmlCleaning()
     } catch (error) {
       console.error(
         "Error in setupBrowserComponents:",
@@ -117,13 +114,32 @@ export class InCallState extends BaseState {
       throw new Error(`Browser component setup failed: ${error as Error}`)
     }
 
-    // Start speakers observation in all cases
-    // Speakers observation is independent of video recording
+    // Start speakers observation BEFORE HTML cleanup: the recording is trimmed to
+    // startTime, so every second spent cleaning before the speaker signal is live
+    // is speech transcribed with no diarization to name it — it surfaces as a
+    // leading "Unknown" speaker run at the start of the transcript. The cleanup
+    // is cosmetic and can wait; the speaker timeline cannot.
     try {
       await this.startSpeakersObservation()
     } catch (error) {
       console.error("Failed to start speakers observation:", formatError(error))
       // Continue even if speakers observation fails
+    }
+
+    // HTML cleanup after the speaker signal is live
+    try {
+      await this.startHtmlCleaning()
+    } catch (error) {
+      console.error(
+        "Error in setupBrowserComponents:",
+        formatError(error, {
+          hasPlaywrightPage: !!this.context.playwrightPage,
+          recordingMode: GLOBAL.get().recording_mode,
+          meetingPlatform: GLOBAL.get().meeting_platform,
+          botName: GLOBAL.get().bot_name
+        })
+      )
+      throw new Error(`Browser component setup failed: ${error as Error}`)
     }
 
     // Start chat observation + entry message (non-critical, non-blocking)
