@@ -102,6 +102,15 @@ export class DiarizationTracker {
     }
 
     // Start new segment (keep in memory)
+    if (!this.hasTrackedAnySegment) {
+      // Speech recorded before this point has no diarization to name it and
+      // surfaces as a leading "Unknown" run in the transcript, so this latency
+      // is the direct size of that window. Greppable across bot logs to track
+      // the boot gap in production (target: single-digit seconds).
+      console.log(
+        `[DiarizationTracker] First speaker segment opened at +${relativeTime.toFixed(1)}s after meeting start`
+      )
+    }
     this.currentSegment = {
       speaker: speaker.name,
       startTime: relativeTime,
