@@ -50,7 +50,7 @@
     "scripts": {
         "start": "node build/src/main.js",
         "clean": "rimraf coverage build tmp",
-        "build": "echo '{\"buildDate\": \"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'\"}' > src/buildInfo.json && ./node_modules/typescript/bin/tsc --skipLibCheck -p tsconfig.release.json",
+        "build": "echo '{\"buildDate\": \"'$(date -u +'%Y-%m-%dT%H:%M:%SZ')'\"}' > src/buildInfo.json && ./node_modules/typescript/bin/tsc --skipLibCheck -p tsconfig.release.json && npm run build:bundle",
         "watch": "./node_modules/typescript/bin/tsc --skipLibCheck -w -p tsconfig.release.json",
         "watch-dev": "PROFILE=DEV ts-node-dev --respawn --transpile-only src/main.ts -p tsconfig.release.json",
         "format": "prettier --log-level warn --write \"src/**/*.{jsx,js,ts}\"",
@@ -60,7 +60,8 @@
         "check:unused-exports": "ts-unused-exports tsconfig.json",
         "check:unused-imports": "unimported",
         "check:unused-deps": "depcheck",
-        "check:dead-code": "npm run check:unused-exports && npm run check:unused-imports && npm run check:unused-deps"
+        "check:dead-code": "npm run check:unused-exports && npm run check:unused-imports && npm run check:unused-deps",
+        "build:bundle": "OUTPUT_PATH=build/src/meeting/meet/network-interception/bundle/network-interceptor-libs.bundle.js node build/src/meeting/meet/network-interception/build-bundle.js"
     },
     "author": "Meet Teams Bot Contributors",
     "license": "Apache-2.0",

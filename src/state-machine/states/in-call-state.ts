@@ -6,6 +6,7 @@ import type {
     NetworkPayload,
     NetworkUser,
 } from '../../meeting/teams/network-interception/types'
+import type { NetworkPayload as MeetNetworkPayload } from '../../meeting/meet/network-interception/types'
 import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
@@ -19,6 +20,7 @@ import { verifyMeetAudioCapture } from '../../meeting/meet/audio-capture'
 export class InCallState extends BaseState {
     private isStartingUIObserver = false
     private teamsNetworkFallbackTriggered: boolean = false
+    private meetNetworkFallbackTriggered: boolean = false
     private lastNetworkSpeakingKey?: string
 
     async execute(): StateExecuteResult {
@@ -219,6 +221,24 @@ export class InCallState extends BaseState {
             }
         }
 
+        if (GLOBAL.get().meetingProvider === 'Meet') {
+            try {
+                const networkSetupSuccess =
+                    await this.tryMeetNetworkInterception()
+                if (networkSetupSuccess) {
+                    console.log(
+                        '✅ Network-based speaker detection enabled for Meet',
+                    )
+                    return
+                }
+            } catch (error) {
+                console.warn(
+                    '⚠️ Meet network speaker detection failed, falling back to UI-based detection:',
+                    formatError(error),
+                )
+            }
+        }
+
         await this.startUIBasedObservation()
     }
 
@@ -289,6 +309,106 @@ export class InCallState extends BaseState {
         if (!verified) {
             console.warn(
                 '[Teams NetworkInterceptor] Browser interceptor verification failed',
+            )
+            return false
+        }
+
+        return true
+    }
+
+    private async tryMeetNetworkInterception(): Promise<boolean> {
+        if (!this.context.playwrightPage) {
+            return false
+        }
+
+        const meetNetworkInterception = await import(
+            '../../meeting/meet/network-interception'
+        )
+        const onNetworkSpeakersChange = async (
+            payload: MeetNetworkPayload,
+        ) => {
+            try {
+                // A track-level failure retires the whole network path on v1:
+                // there is no stale-diarization monitor here to arbitrate, so
+                // the safe behaviour is the pre-dd63960b one — fall back to
+                // UI-based observation once. With the liveness fix in the
+                // bundle, silence no longer produces these signals, so a
+                // failure is a genuinely dead pipeline component.
+                if (
+                    payload.source === 'network_interception_failed' &&
+                    payload.failure
+                ) {
+                    const { trackId, reason, trackState } = payload.failure
+                    console.warn(
+                        `[MeetNetworkInterceptor] ❌ Track ${trackId} failed: ${reason} (state: ${trackState})`,
+                    )
+                    if (!this.meetNetworkFallbackTriggered) {
+                        this.meetNetworkFallbackTriggered = true
+                        console.warn(
+                            '[MeetNetworkInterceptor] 🔄 Falling back to UI-based speaker detection',
+                        )
+                        await meetNetworkInterception.stopNetworkInterception(
+                            this.context.playwrightPage as Page,
+                        )
+                        await this.startUIBasedObservation()
+                    }
+                    return
+                }
+
+                if (payload.source === 'health_check' && payload.health) {
+                    const { subscribed, activeTrackCount } = payload.health
+                    console.log(
+                        `[MeetNetworkInterceptor] Health: subscribed=${subscribed}, tracks=${activeTrackCount}`,
+                    )
+                    return
+                }
+
+                // Once the UI observer has taken over, drop network payloads
+                // so the two paths cannot double-report speakers.
+                if (this.meetNetworkFallbackTriggered) {
+                    return
+                }
+
+                const networkUsers = payload.users as NetworkUser[]
+                const speakingNames = networkUsers
+                    .filter((u) => u.isSpeaking)
+                    .map((u) => u.name)
+                const speakingKey = speakingNames.slice().sort().join('|')
+                if (speakingKey !== this.lastNetworkSpeakingKey) {
+                    this.lastNetworkSpeakingKey = speakingKey
+                    console.log(
+                        `[NetworkSpeaker][Meet] 🗣️ speaking=[${speakingNames.join(', ') || '(none)'}] source=${payload.source} participants=${networkUsers.length}`,
+                    )
+                }
+
+                await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
+                    networkUsers,
+                    payload.timestamp,
+                )
+            } catch (error) {
+                console.error(
+                    'Error handling Meet network speaker update:',
+                    formatError(error),
+                )
+            }
+        }
+
+        const success =
+            await meetNetworkInterception.setupNetworkInterceptionCallback(
+                this.context.playwrightPage as Page,
+                onNetworkSpeakersChange,
+            )
+        if (!success) {
+            return false
+        }
+
+        const verified =
+            await meetNetworkInterception.verifyNetworkInterception(
+                this.context.playwrightPage as Page,
+            )
+        if (!verified) {
+            console.warn(
+                '[MeetNetworkInterceptor] Browser interceptor verification failed',
             )
             return false
         }

@@ -97,6 +97,27 @@ export class MeetProvider implements MeetingProviderInterface {
                 console.log('[Meet] ✅ Web Audio capture enabled for streaming')
             }
 
+            // Inject network-interception scripts (protobuf/pako libs bundle +
+            // browser logic). Must run BEFORE page.goto — addInitScript only
+            // applies to later navigations. Failure is non-fatal: the in-call
+            // state falls back to UI-based speaker observation.
+            try {
+                const { setupNetworkInterceptionScripts } = await import(
+                    './meet/network-interception'
+                )
+                const injected = await setupNetworkInterceptionScripts(page)
+                if (!injected) {
+                    console.warn(
+                        '[Meet] ⚠️ Network interception scripts failed to load — UI observer will be used',
+                    )
+                }
+            } catch (error) {
+                console.warn(
+                    '[Meet] ⚠️ Network interception injection error (non-fatal):',
+                    formatError(error),
+                )
+            }
+
             // Wire the Meet bot-detection observer (page.on('response') on the
             // CreateMeetingDevice RPC). Must be installed before page.goto so
             // the response listener is in place when the join handshake fires.
