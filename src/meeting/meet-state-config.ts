@@ -42,9 +42,16 @@ export const MEET_STATE_CONFIG: StateDetectionConfig = {
             'text="waiting to be let in"',
             'text="Instead of waiting to be let in"',
             'text="Please wait until a meeting host brings you into the call"',
+            // Google also renders the lobby with "admits you to the call" wording;
+            // unquoted text= does a case-insensitive substring match so it survives
+            // minor copy changes. Without this the lobby is not recognised as a
+            // waiting room and the bot can false-confirm "in meeting".
+            'text=admits you to the call',
+            'text="Please wait until a meeting host admits you to the call"',
             '[aria-label*="waiting"]',
             '[aria-label*="Please wait until"]',
             '[aria-label*="brings you into"]',
+            '[aria-label*="admits you"]',
         ],
         threshold: 1,
         checkVisibility: false,

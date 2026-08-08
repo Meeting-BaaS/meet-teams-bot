@@ -359,7 +359,12 @@ export class MeetProvider implements MeetingProviderInterface {
                     !leftWaitingRoomAt ||
                     Date.now() - leftWaitingRoomAt >= GRACE_PERIOD_MS
 
-                if (gracePeriodExpired) {
+                // Never confirm "in meeting" while this sample still sees the waiting
+                // room. Otherwise, because leftWaitingRoomAt stays null until we actually
+                // leave, gracePeriodExpired is true from the first iteration and the bot
+                // can confirm against lobby DOM and start recording the waiting screen
+                // (0 media tracks captured).
+                if (!nowInWaitingRoom && gracePeriodExpired) {
                     const inMeeting = await isInMeeting(page)
                     if (inMeeting) {
                         console.log(
@@ -573,7 +578,20 @@ async function isInMeeting(page: Page): Promise<boolean> {
             return false
         }
 
-        // Check for meeting presence indicators FIRST
+        // Waiting room takes precedence — check it FIRST and short-circuit before
+        // sampling the in-meeting indicators. The Google Meet lobby renders the same
+        // call-control DOM (mic / camera / hang-up, the "Call controls" region,
+        // reactions) that satisfies the in-meeting threshold, so a threshold match
+        // alone is NOT proof we are in the meeting. If the lobby is detected we are
+        // still waiting to be admitted, regardless of any indicator count. The
+        // waiting-room patterns are specific lobby texts Google removes on
+        // admission, so they do not linger as "stale" DOM after a genuine join.
+        if (await isInWaitingRoom(page)) {
+            console.log('✗ In waiting room - not in meeting yet')
+            return false
+        }
+
+        // Not in the lobby → now evaluate the in-meeting presence indicators.
         const result = await meetStateDetector.isInMeeting(page)
         const selectorCount =
             MEET_STATE_CONFIG.inMeetingPattern.selectors.length
@@ -582,22 +600,12 @@ async function isInMeeting(page: Page): Promise<boolean> {
             `Meeting presence indicators: ${result.count}/${selectorCount} visible (threshold: ${threshold}, matched: ${result.matched})`,
         )
 
-        // If we have strong meeting indicators (threshold met), we're definitely in the meeting
-        // This overrides any stale waiting room DOM elements that might still be present
+        // Strong meeting indicators AND not in the waiting room → in the meeting.
         if (result.matched) {
             console.log(
                 `✓ Threshold reached: ${result.count} >= ${threshold} - Confirming in meeting`,
             )
             return true
-        }
-
-        // Only if meeting indicators are weak/absent, check if we're in waiting room
-        // This prevents false positives from stale waiting room elements after joining
-        if (await isInWaitingRoom(page)) {
-            console.log(
-                `✗ Threshold not met but in waiting room - Not in meeting yet`,
-            )
-            return false
         }
 
         // Not enough meeting indicators and not in waiting room
