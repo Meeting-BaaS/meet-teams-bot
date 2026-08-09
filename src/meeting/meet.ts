@@ -597,6 +597,15 @@ async function performCriticalSetupActions(
     }
   }
 
+  // changeLayout may have detected that the bot is not (or no longer) in the
+  // meeting and set a terminal end reason (BotNotAccepted / BotRemoved).
+  // Returning normally here would let the state machine transition to InCall
+  // on a dead meeting — surface it as a join failure instead.
+  const endReason = GLOBAL.getEndReason()
+  if (endReason) {
+    throw new Error(`Meeting ended during critical setup: ${endReason}`)
+  }
+
   void htmlSnapshot.captureSnapshot(page, "meet_join_meeting_success")
 }
 
