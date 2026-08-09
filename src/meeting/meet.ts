@@ -28,11 +28,20 @@ const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before c
 // isInMeeting() sample during that window is not proof of admission. Prod bots
 // false-confirmed the join, then read the late-rendering lobby as an ejection
 // and died with "bot removed too early". Require two clean samples this far
-// apart before confirming. Measured on the 17 prod failures Jul 31–Aug 7: the
-// lobby text rendered 0.3–5.0s after the false confirm, so 3s was not enough —
-// 7s covers the worst observed case with margin. Joins with flowing remote
-// audio skip this wait entirely (see the fast-path below).
-const JOIN_CONFIRM_DEBOUNCE_MS = 7000
+// apart before confirming.
+//
+// Calibration (prod, Jul 31–Aug 7): on all 17 failures the lobby text was
+// detected 0.3–5.0s after the false confirm; the >3s detections are inflated
+// by dialog-dismissal delaying the first post-confirm sample (sub-second
+// detections prove the text can already be present at 0.3s), so 5.0s is a
+// hard upper bound on the render lag — 6s covers it plus one loop-cadence of
+// margin. Cost: 0 of 120 sampled healthy joins ever showed lobby text after
+// a genuine admission (the debounce cannot reset-loop a good join), and ~85%
+// of healthy joins have remote audio tracks registered (fast path below), so
+// only the hook-blind minority waits the full debounce. A render lag beyond
+// 6s would still be caught by the lobby check in changeLayout and ends as
+// BotNotAccepted rather than a false "removed".
+const JOIN_CONFIRM_DEBOUNCE_MS = 6000
 
 /**
  * Checks that the page is still on meet.google.com.
