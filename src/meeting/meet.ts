@@ -28,8 +28,11 @@ const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before c
 // isInMeeting() sample during that window is not proof of admission. Prod bots
 // false-confirmed the join, then read the late-rendering lobby as an ejection
 // and died with "bot removed too early". Require two clean samples this far
-// apart before confirming; observed lobby-text render lag is ~3s.
-const JOIN_CONFIRM_DEBOUNCE_MS = 3000
+// apart before confirming. Measured on the 17 prod failures Jul 31–Aug 7: the
+// lobby text rendered 0.3–5.0s after the false confirm, so 3s was not enough —
+// 7s covers the worst observed case with margin. Joins with flowing remote
+// audio skip this wait entirely (see the fast-path below).
+const JOIN_CONFIRM_DEBOUNCE_MS = 7000
 
 /**
  * Checks that the page is still on meet.google.com.
@@ -382,6 +385,27 @@ export class MeetProvider implements MeetingProviderInterface {
         if (!nowInWaitingRoom && gracePeriodExpired) {
           const inMeeting = await isInMeeting(page)
           if (inMeeting) {
+            // Fast path: remote audio tracks only flow after real admission —
+            // Meet's lobby never receives conference media. The audio track
+            // layer is injected before navigation, so its backlog is readable
+            // here. Absence proves nothing (the PC hook misses tracks on a
+            // large share of calls), so no-tracks just falls through to the
+            // DOM debounce below.
+            const remoteAudioTracks = await page
+              .evaluate(
+                // biome-ignore lint/suspicious/noExplicitAny: browser-side global
+                () => ((window as any).__audioTrackLayer?.seenTracks || []).length
+              )
+              .catch(() => 0)
+            if (remoteAudioTracks > 0) {
+              botWasInMeeting = true
+              console.log(
+                `✅ Successfully confirmed we are in the meeting (fast path: ${remoteAudioTracks} remote audio track(s) flowing)`
+              )
+              onJoinSuccess()
+              await performCriticalSetupActions(page, dialogObserver)
+              break
+            }
             // Debounce the confirmation: a single clean sample can land in the
             // window where the lobby's call-control DOM is up but its text is
             // not (see JOIN_CONFIRM_DEBOUNCE_MS). Confirm only when a second
