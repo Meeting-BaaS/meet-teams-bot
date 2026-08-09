@@ -554,6 +554,16 @@ async function performCriticalSetupActions(
           console.log(`Layout change successful on attempt ${attempt}`)
           break
         }
+        // changeLayout sets a terminal end reason (BotRemoved / BotNotAccepted)
+        // when the bot is out of the meeting. Retrying the layout then makes no
+        // sense — and a flapping DOM could let a later attempt "succeed" while
+        // the meeting is already marked ended.
+        if (GLOBAL.getEndReason()) {
+          console.log(
+            `Layout change aborted: terminal end reason ${GLOBAL.getEndReason()} already set`
+          )
+          break
+        }
         if (attempt < maxAttempts) {
           await page.waitForTimeout(300)
         }
