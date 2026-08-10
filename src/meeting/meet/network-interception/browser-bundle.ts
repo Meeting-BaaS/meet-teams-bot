@@ -951,7 +951,7 @@ export function browserInterceptionLogic(schema: any[]) {
     // This probe samples the receiver metadata on a timer, independent of
     // frames, and reports whether audioLevel is populated under our browser.
     // Counts only — no ids or names. Answers whether a frame-independent
-    // CSRC/SSRC speaker path (attendee-style) is viable here.
+    // CSRC/SSRC speaker path is viable here.
     const csrcProbeInterval = setInterval(() => {
       try {
         let csrcSources = 0
