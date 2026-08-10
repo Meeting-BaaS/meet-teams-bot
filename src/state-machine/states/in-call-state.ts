@@ -365,6 +365,8 @@ export class InCallState extends BaseState {
                 `webTransport=[${m.webTransport.join(",")}] scriptTransforms=${m.scriptTransforms} ` +
                 `trackGenerators=${m.trackGenerators} audioContexts=${m.audioContexts} ` +
                 `worklets=[${m.workletModules.join(",")}] ` +
+                `workletNodes=[${(m.workletNodes ?? []).join(",")}] ` +
+                `workletEdges=[${(m.workletEdges ?? []).join(",")}] ` +
                 `mediaEls=${m.mediaEls}/${m.elsWithStream} liveAudioTracks=${m.liveAudioTracks}`
             )
             return // Not a speaker update

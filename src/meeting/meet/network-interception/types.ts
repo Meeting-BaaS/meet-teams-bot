@@ -39,6 +39,10 @@ export type NetworkPayload = {
     trackGenerators: number
     audioContexts: number
     workletModules: string[]
+    /** AudioWorkletNode processors created, as "name:count". */
+    workletNodes?: string[]
+    /** Observed worklet-node connect() destinations, as "name->DestCtor". */
+    workletEdges?: string[]
     mediaEls: number
     elsWithStream: number
     liveAudioTracks: number

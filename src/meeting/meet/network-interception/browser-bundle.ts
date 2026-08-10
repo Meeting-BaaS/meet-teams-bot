@@ -44,7 +44,13 @@ export function browserInterceptionLogic(schema: any[]) {
       scriptTransforms: 0,
       trackGenerators: 0,
       audioContexts: 0,
-      workletModules: [] as string[]
+      workletModules: [] as string[],
+      // v3: AudioWorkletNode processors — the dead-session probe showed Meet's
+      // new stack decodes audio through NetEq AudioWorklet nodes in the PAGE
+      // AudioContext. Processor names + fan-out tell us whether it is one node
+      // per remote stream (per-participant tap point) or one mixed node.
+      workletNodes: new Map<string, number>(),
+      workletEdges: [] as string[]
     }
     function probeName(src: any): string {
       try {
@@ -90,6 +96,36 @@ export function browserInterceptionLogic(schema: any[]) {
     hookConstructor("AudioContext", () => {
       mediaProbe.audioContexts++
     })
+    // AudioWorkletNode needs a custom wrap: record the processor name AND wrap
+    // the instance's connect() so we learn what each node feeds into.
+    try {
+      const OriginalAWN = (window as any).AudioWorkletNode
+      if (typeof OriginalAWN === "function") {
+        const WrappedAWN = function (this: any, ...args: any[]) {
+          const pname = typeof args[1] === "string" ? args[1].slice(0, 60) : "unknown"
+          try {
+            mediaProbe.workletNodes.set(pname, (mediaProbe.workletNodes.get(pname) || 0) + 1)
+          } catch {}
+          const node = Reflect.construct(OriginalAWN, args, new.target || WrappedAWN)
+          try {
+            const origConnect = node.connect.bind(node)
+            node.connect = (...cargs: any[]) => {
+              try {
+                const dest = cargs[0]
+                const edge = `${pname}->${dest?.constructor?.name || typeof dest}`
+                if (mediaProbe.workletEdges.length < 12 && !mediaProbe.workletEdges.includes(edge))
+                  mediaProbe.workletEdges.push(edge)
+              } catch {}
+              return origConnect(...cargs)
+            }
+          } catch {}
+          return node
+        }
+        WrappedAWN.prototype = OriginalAWN.prototype
+        Object.setPrototypeOf(WrappedAWN, OriginalAWN)
+        ;(window as any).AudioWorkletNode = WrappedAWN
+      }
+    } catch {}
     try {
       const OriginalAddModule = (window as any).AudioWorklet?.prototype?.addModule
       if (OriginalAddModule) {
@@ -134,6 +170,10 @@ export function browserInterceptionLogic(schema: any[]) {
               trackGenerators: mediaProbe.trackGenerators,
               audioContexts: mediaProbe.audioContexts,
               workletModules: mediaProbe.workletModules,
+              workletNodes: Array.from(mediaProbe.workletNodes.entries()).map(
+                ([n, c]) => `${n}:${c}`
+              ),
+              workletEdges: mediaProbe.workletEdges,
               mediaEls,
               elsWithStream,
               liveAudioTracks,
