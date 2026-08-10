@@ -85,24 +85,6 @@ export async function establishBrowserSession(
       )
       if (proxyUrl) session.proxyUrl = proxyUrl
 
-      // Meet, no proxy, retries remain → requeue instead of joining direct.
-      // A proxyless Meet join comes from the pod's datacenter IP and flags
-      // ~94% (measured in prod during the 2026-08-10 Decodo capacity burst:
-      // 523 upstream_unreachable joins → 491 flagged) — it burns the team's
-      // reputation and the join usually fails anyway. The SQS requeue lands
-      // on a fresh pod later, when the pool has headroom. The LAST retry
-      // (branch above) still falls back to a live exit as the final resort.
-      if (!session.proxyUrl && platform === "meet" && retryCount < MAX_RETRY_COUNT) {
-        console.warn(
-          "[BrowserSession] Meet proxy unavailable — requeueing instead of a direct (datacenter-IP) join"
-        )
-        GLOBAL.setError(MeetingEndReason.ProxyUnavailable)
-        GLOBAL.setShouldRetry(true)
-        throw new Error(
-          "Residential proxy unavailable for Meet join — requeueing to retry when the pool has capacity"
-        )
-      }
-
       // Burned-ASN avoidance (Meet only). startToggleProxy already probed the
       // exit IP + ASN. If we landed on a network Google is currently flagging,
       // rotate the Decodo session to a fresh IP BEFORE spending a browser launch
@@ -214,6 +196,27 @@ export async function establishBrowserSession(
         }
       }
     }
+  }
+
+  // Meet, no proxy, retries remain → requeue instead of joining direct.
+  // A proxyless Meet join comes from the pod's datacenter IP and flags ~94%
+  // (measured in prod during the 2026-08-10 Decodo capacity burst: 523
+  // upstream_unreachable joins → 491 flagged) — it burns the team's
+  // reputation and the join usually fails anyway. The SQS requeue lands on a
+  // fresh pod later, when the pool has headroom. Checked HERE, immediately
+  // before launch, so it also covers the burned-ASN rotation paths above that
+  // clear session.proxyUrl on a failed rotation — not just the initial proxy
+  // start. The LAST retry still falls back to a live/direct exit as the
+  // final resort rather than never joining.
+  if (platform === "meet" && !session.proxyUrl && retryCount < MAX_RETRY_COUNT) {
+    console.warn(
+      "[BrowserSession] Meet proxy unavailable — requeueing instead of a direct (datacenter-IP) join"
+    )
+    GLOBAL.setError(MeetingEndReason.ProxyUnavailable)
+    GLOBAL.setShouldRetry(true)
+    throw new Error(
+      "Residential proxy unavailable for Meet join — requeueing to retry when the pool has capacity"
+    )
   }
 
   let lastError: Error | null = null
