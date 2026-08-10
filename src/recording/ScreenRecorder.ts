@@ -1,10 +1,11 @@
 import { type ChildProcess, exec, execSync, spawn } from "node:child_process"
 import { EventEmitter } from "node:events"
 import * as fs from "node:fs"
-import { promisify } from "node:util"
 import * as path from "node:path"
+import { promisify } from "node:util"
 import type { Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
+import { storageBuckets } from "../config/storage"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingStateMachine } from "../state-machine/machine"
@@ -188,14 +189,22 @@ export class ScreenRecorder extends EventEmitter {
       // xrun/click at recording start (especially on new pods where the
       // sink was just created and no audio has flowed yet).
       try {
-        const primeFfmpeg = spawn("ffmpeg", [
-          "-f", "lavfi",
-          "-i", "anullsrc=r=48000:cl=mono",
-          "-t", "0.3",
-          "-f", "pulse",
-          VIRTUAL_SPEAKER,
-          "-y"
-        ], { stdio: "ignore", timeout: 5000 })
+        const primeFfmpeg = spawn(
+          "ffmpeg",
+          [
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=mono",
+            "-t",
+            "0.3",
+            "-f",
+            "pulse",
+            VIRTUAL_SPEAKER,
+            "-y"
+          ],
+          { stdio: "ignore", timeout: 5000 }
+        )
         await new Promise<void>((resolve, reject) => {
           primeFfmpeg.on("close", (code, signal) => {
             if (code === 0 && !signal) return resolve()
@@ -205,7 +214,10 @@ export class ScreenRecorder extends EventEmitter {
         })
       } catch (_e) {
         // best-effort — recording still works even if priming fails
-        console.warn("[ScreenRecorder] audio buffer priming failed — initial capture may have xrun", _e)
+        console.warn(
+          "[ScreenRecorder] audio buffer priming failed — initial capture may have xrun",
+          _e
+        )
       }
 
       const ffmpegArgs = this.buildNativeFFmpegArgs()
@@ -420,7 +432,7 @@ export class ScreenRecorder extends EventEmitter {
       "-video_size",
       `${res.width}x${res.captureHeight}`,
       "-thread_queue_size",
-      "1024",   // 1024 packets — ~34 s at 30 fps, generous without memory bloat
+      "1024", // 1024 packets — ~34 s at 30 fps, generous without memory bloat
       "-framerate",
       "30",
       "-i",
@@ -644,15 +656,15 @@ export class ScreenRecorder extends EventEmitter {
           // Log system resources for diagnostics
           void this.logSystemResources()
 
-            // Emit a critical error event
-            ; (this as EventEmitter).emit("error", {
-              type: "fileWriteError",
-              message: "FFmpeg file write error detected",
-              error: output.trim(),
-              recordingDuration: recordingDurationSeconds,
-              currentFileSize,
-              timestamp: now
-            })
+          // Emit a critical error event
+          ;(this as EventEmitter).emit("error", {
+            type: "fileWriteError",
+            message: "FFmpeg file write error detected",
+            error: output.trim(),
+            recordingDuration: recordingDurationSeconds,
+            currentFileSize,
+            timestamp: now
+          })
         }
         // Check for specific PulseAudio errors that indicate audio input failure
         else if (
@@ -968,11 +980,7 @@ export class ScreenRecorder extends EventEmitter {
           const s3Key = `${botUuid}/${filename}`
           console.log(`📤 Uploading chunk: ${filename} (${stats.size} bytes)`)
 
-          await S3Uploader.getInstance().uploadFile(
-            chunkPath,
-            envVars.AWS_S3_AUDIO_CHUNKS_BUCKET,
-            s3Key
-          )
+          await S3Uploader.getInstance().uploadFile(chunkPath, storageBuckets().audioChunks, s3Key)
           GLOBAL.addAudioChunk({
             s3Key,
             filePath: chunkPath,
@@ -1029,9 +1037,7 @@ export class ScreenRecorder extends EventEmitter {
         const recordingDurationSeconds =
           this.recordingStartTime > 0 ? (Date.now() - this.recordingStartTime) / 1000 : 0
 
-        console.log(
-          `📤 Uploading FLAC audio to artifacts bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`
-        )
+        console.log(`📤 Uploading FLAC audio to artifacts bucket: ${storageBuckets().artifacts}`)
         console.log(
           `📊 Audio file size before upload: ${sizeMB} MB (${sizeBytes} bytes) | Recording duration: ${recordingDurationSeconds.toFixed(1)}s`
         )
@@ -1039,7 +1045,7 @@ export class ScreenRecorder extends EventEmitter {
         const s3Key = `${identifier}/output.flac`
         await S3Uploader.getInstance().uploadFile(
           this.audioOutputPath,
-          envVars.AWS_S3_ARTIFACTS_BUCKET,
+          storageBuckets().artifacts,
           s3Key
         )
         GLOBAL.addArtifactKey({
@@ -1088,12 +1094,12 @@ export class ScreenRecorder extends EventEmitter {
           const sizeMB = (stats.size / (1024 * 1024)).toFixed(2)
           const sizeBytes = stats.size
 
-          console.log(`📤 Uploading MP4 to artifacts bucket: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
+          console.log(`📤 Uploading MP4 to artifacts bucket: ${storageBuckets().artifacts}`)
           console.log(`📊 Video file size before upload: ${sizeMB} MB (${sizeBytes} bytes)`)
           const s3Key = `${identifier}/output.mp4`
           await S3Uploader.getInstance().uploadFile(
             this.outputPath,
-            envVars.AWS_S3_ARTIFACTS_BUCKET,
+            storageBuckets().artifacts,
             s3Key
           )
           GLOBAL.addArtifactKey({
@@ -1174,11 +1180,11 @@ export class ScreenRecorder extends EventEmitter {
             errorMessage: `Diarization file is empty: ${diarizationPath}. Size: ${stats.size} bytes`
           })
         } else {
-          console.log(`Uploading diarization file to S3: ${envVars.AWS_S3_ARTIFACTS_BUCKET}`)
+          console.log(`Uploading diarization file to S3: ${storageBuckets().artifacts}`)
           const s3Key = `${identifier}/diarization.jsonl`
           await S3Uploader.getInstance().uploadFile(
             diarizationPath,
-            envVars.AWS_S3_ARTIFACTS_BUCKET,
+            storageBuckets().artifacts,
             s3Key
           )
           GLOBAL.addArtifactKey({
@@ -1354,10 +1360,9 @@ export class ScreenRecorder extends EventEmitter {
 
       // Log file descriptor count if available (best-effort).
       try {
-        const { stdout: fdOut } = await execAsync(
-          `lsof -p ${process.pid} | wc -l`,
-          { timeout: 3000 }
-        )
+        const { stdout: fdOut } = await execAsync(`lsof -p ${process.pid} | wc -l`, {
+          timeout: 3000
+        })
         console.warn(`   📁 File descriptors: ${fdOut.trim()}`)
       } catch (_e) {
         // lsof not available
@@ -1463,19 +1468,22 @@ export class ScreenRecorder extends EventEmitter {
     // 1. Calculate A/V stream offset using the exact timestamp of the sync signal.
     //    syncSignalTimestamp is set in startRecording() just before generateSyncSignal fires,
     //    so this is exact — no guesswork about when it happened.
-    const expectedSyncSec = this.syncSignalTimestamp > 0
-      ? (this.syncSignalTimestamp - this.recordingStartTime) / 1000
-      : FLASH_SCREEN_SLEEP_TIME / 1000 // fallback: should never happen in normal operation
+    const expectedSyncSec =
+      this.syncSignalTimestamp > 0
+        ? (this.syncSignalTimestamp - this.recordingStartTime) / 1000
+        : FLASH_SCREEN_SLEEP_TIME / 1000 // fallback: should never happen in normal operation
     // Per-signal anchors: both signals ride the page.evaluate queue and can
     // fire seconds after syncSignalTimestamp under load. Anchoring each
     // detection window on its own real emission time — and subtracting the
     // emission gap in the offset math — isolates pure capture-start skew.
-    const expectedAudioSyncSec = this.audioBeepWallMs > 0
-      ? (this.audioBeepWallMs - this.recordingStartTime) / 1000
-      : expectedSyncSec
-    const expectedVideoSyncSec = this.videoFlashWallMs > 0
-      ? (this.videoFlashWallMs - this.recordingStartTime) / 1000
-      : expectedSyncSec
+    const expectedAudioSyncSec =
+      this.audioBeepWallMs > 0
+        ? (this.audioBeepWallMs - this.recordingStartTime) / 1000
+        : expectedSyncSec
+    const expectedVideoSyncSec =
+      this.videoFlashWallMs > 0
+        ? (this.videoFlashWallMs - this.recordingStartTime) / 1000
+        : expectedSyncSec
     console.log(
       `🎯 Sync signal fired at ${expectedSyncSec.toFixed(3)}s into recording (beep started ${expectedAudioSyncSec.toFixed(3)}s, flash painted ${expectedVideoSyncSec.toFixed(3)}s)`
     )
@@ -1493,8 +1501,8 @@ export class ScreenRecorder extends EventEmitter {
       // SYNC_CONFIDENCE_LOW in bot logs.
       console.warn(
         `⚠️ SYNC_CONFIDENCE_LOW confidence=${syncResult.confidence.toFixed(2)} ` +
-        `audioTs=${syncResult.audioTimestamp.toFixed(3)} videoTs=${syncResult.videoTimestamp.toFixed(3)} ` +
-        `expected=${expectedSyncSec.toFixed(3)} — proceeding without measured correction`
+          `audioTs=${syncResult.audioTimestamp.toFixed(3)} videoTs=${syncResult.videoTimestamp.toFixed(3)} ` +
+          `expected=${expectedSyncSec.toFixed(3)} — proceeding without measured correction`
       )
     }
     const hasMeetingStartTime = this.meetingStartTime > 0
@@ -1558,7 +1566,9 @@ export class ScreenRecorder extends EventEmitter {
     console.log(`   meetingStartTime: ${this.meetingStartTime}`)
     console.log(`   recordingStartTime: ${this.recordingStartTime}`)
     console.log(`   capture startup delay: ${startupDelaySec.toFixed(3)}s`)
-    console.log(`   calcOffsetVideo (raw): ${rawCalcOffsetVideo.toFixed(3)}s → clamped: ${calcOffsetVideo.toFixed(3)}s`)
+    console.log(
+      `   calcOffsetVideo (raw): ${rawCalcOffsetVideo.toFixed(3)}s → clamped: ${calcOffsetVideo.toFixed(3)}s`
+    )
     if (rawCalcOffsetVideo < 0) {
       console.warn(
         `⚠️ Meeting start precedes media t=0 by ${(-rawCalcOffsetVideo).toFixed(3)}s (authenticated bot fast-join and/or capture startup delay). Trimming from t=0.`
@@ -1632,12 +1642,9 @@ export class ScreenRecorder extends EventEmitter {
         console.log(`📊 Raw video file size: ${sizeMB} MB (${sizeBytes} bytes)`)
 
         const s3Key = `${identifier}/raw_video.mp4`
-        await S3Uploader.getInstance()!.uploadFile(
-          rawVideoPath,
-          envVars.AWS_S3_LOGS_BUCKET,
-          s3Key,
-          { raw_upload: "true" }
-        )
+        await S3Uploader.getInstance()!.uploadFile(rawVideoPath, storageBuckets().logs, s3Key, {
+          raw_upload: "true"
+        })
 
         console.log(`✅ Raw video uploaded to logs bucket: ${s3Key} (tagged with raw_upload=true)`)
       } catch (error) {
@@ -1920,7 +1927,7 @@ file '${absoluteInputPath}'`
       // the whole recording during finalization.
       console.warn(
         `⚠️ getKeyframePositions failed for ${videoPath}; continuing without keyframe snapping (non-fatal):`,
-        formatError(error),
+        formatError(error)
       )
       return []
     }
@@ -1972,8 +1979,10 @@ file '${absoluteInputPath}'`
       }
 
       console.log(
-        `🎯 Pause window snapped: [${((w.start - meetingStartTime) / 1000).toFixed(3)}s, ${w.end !== null ? `${((w.end - meetingStartTime) / 1000).toFixed(3)}s` : "end"
-        }] → [${((snappedStart - meetingStartTime) / 1000).toFixed(3)}s, ${snappedEnd !== null ? `${((snappedEnd - meetingStartTime) / 1000).toFixed(3)}s` : "end"
+        `🎯 Pause window snapped: [${((w.start - meetingStartTime) / 1000).toFixed(3)}s, ${
+          w.end !== null ? `${((w.end - meetingStartTime) / 1000).toFixed(3)}s` : "end"
+        }] → [${((snappedStart - meetingStartTime) / 1000).toFixed(3)}s, ${
+          snappedEnd !== null ? `${((snappedEnd - meetingStartTime) / 1000).toFixed(3)}s` : "end"
         }]`
       )
 
@@ -1984,7 +1993,8 @@ file '${absoluteInputPath}'`
         console.warn(
           `⚠️ Dropping post-snap zero-length pause window at ${(
             (snappedStart - meetingStartTime) / 1000
-          ).toFixed(3)}s (pre-snap duration: ${w.end !== null ? ((w.end - w.start) / 1000).toFixed(3) : "∞"
+          ).toFixed(3)}s (pre-snap duration: ${
+            w.end !== null ? ((w.end - w.start) / 1000).toFixed(3) : "∞"
           }s)`
         )
         continue
@@ -2139,7 +2149,7 @@ file '${absoluteInputPath}'`
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
-      let segment: { start_time: number; end_time: number;[key: string]: unknown }
+      let segment: { start_time: number; end_time: number; [key: string]: unknown }
       try {
         segment = JSON.parse(line)
       } catch (err) {
@@ -2148,7 +2158,8 @@ file '${absoluteInputPath}'`
         // with pre-trim wall-clock timestamps. Skip and keep going.
         parseFailures++
         console.warn(
-          `⚠️ Diarization line ${i} in ${diarizationPath} is malformed, skipping: ${err instanceof Error ? err.message : String(err)
+          `⚠️ Diarization line ${i} in ${diarizationPath} is malformed, skipping: ${
+            err instanceof Error ? err.message : String(err)
           }`
         )
         continue
@@ -2173,7 +2184,8 @@ file '${absoluteInputPath}'`
       "utf8"
     )
     console.log(
-      `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${lines.length - adjusted.length
+      `✂️ Diarization adjusted: ${lines.length} segments → ${adjusted.length} segments (${
+        lines.length - adjusted.length
       } removed${parseFailures > 0 ? `, of which ${parseFailures} malformed` : ""})`
     )
   }
@@ -2333,7 +2345,7 @@ file '${absoluteInputPath}'`
       fileSizeMB = Math.round((stats.size / (1024 * 1024)) * 10) / 10
     } catch {
       console.warn(
-        `⚠️ Could not stat file for getDuration timeout calculation: ${filePath}, using base timeout`,
+        `⚠️ Could not stat file for getDuration timeout calculation: ${filePath}, using base timeout`
       )
     }
 
@@ -2421,14 +2433,11 @@ file '${absoluteInputPath}'`
     })
   }
 
-  private async runFFprobe(
-    args: string[],
-    fileSizeMB?: number,
-  ): Promise<string> {
+  private async runFFprobe(args: string[], fileSizeMB?: number): Promise<string> {
     const timeout = calculateFFmpegTimeout("getDuration", fileSizeMB)
 
     console.log(
-      `⏱️ FFprobe getDuration: timeout set to ${timeout / 1000}s${fileSizeMB ? ` (estimated file size: ${fileSizeMB}MB)` : ""}`,
+      `⏱️ FFprobe getDuration: timeout set to ${timeout / 1000}s${fileSizeMB ? ` (estimated file size: ${fileSizeMB}MB)` : ""}`
     )
 
     return new Promise((resolve, reject) => {
@@ -2453,7 +2462,7 @@ file '${absoluteInputPath}'`
 
       const timeoutId = setTimeout(() => {
         console.error(
-          `❌ FFprobe timeout after ${timeout / 1000}s for getDuration, killing process`,
+          `❌ FFprobe timeout after ${timeout / 1000}s for getDuration, killing process`
         )
         process.kill("SIGKILL")
         reject(new Error("FFprobe timeout"))

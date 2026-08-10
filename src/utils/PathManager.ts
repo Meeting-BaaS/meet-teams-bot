@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { envVars } from "../config/env-vars"
+import { storageBuckets } from "../config/storage"
 import { GLOBAL } from "../singleton"
 
 const EFS_MOUNT_POINT = envVars.EFS_MOUNT_POINT
@@ -119,7 +120,7 @@ export class PathManager {
   public getS3Paths(): { bucketName: string; s3Path: string } {
     const identifier = this.getIdentifier()
     return {
-      bucketName: envVars.AWS_S3_ARTIFACTS_BUCKET,
+      bucketName: storageBuckets().artifacts,
       s3Path: `${identifier}`
     }
   }

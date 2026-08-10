@@ -4,6 +4,7 @@ import { Transform } from "node:stream"
 import { pipeline } from "node:stream/promises"
 import winston from "winston"
 import { envVars } from "../config/env-vars"
+import { storageBuckets } from "../config/storage"
 import { GLOBAL } from "../singleton"
 import { PathManager } from "./PathManager"
 import { PiiRedactor } from "./PiiRedactor"
@@ -13,11 +14,11 @@ import { S3Uploader, s3cp } from "./S3Uploader"
  * Error information extracted safely with type checking
  */
 export interface ErrorInfo {
-    error: unknown
-    message: string
-    stack?: string
-    name?: string
-    errorType?: string
+  error: unknown
+  message: string
+  stack?: string
+  name?: string
+  errorType?: string
 }
 
 /**
@@ -27,18 +28,18 @@ export interface ErrorInfo {
  * @returns Structured error information with stack trace
  */
 export function formatError(
-    error: unknown,
-    additionalContext?: Record<string, unknown>,
+  error: unknown,
+  additionalContext?: Record<string, unknown>
 ): ErrorInfo & Record<string, unknown> {
-    const errorInfo: ErrorInfo = {
-        error,
-        message: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-        name: error instanceof Error ? error.name : undefined,
-        errorType: error?.constructor?.name,
-    }
+  const errorInfo: ErrorInfo = {
+    error,
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined,
+    name: error instanceof Error ? error.name : undefined,
+    errorType: error?.constructor?.name
+  }
 
-    return { ...errorInfo, ...additionalContext }
+  return { ...errorInfo, ...additionalContext }
 }
 
 // Reference to current bot log file
@@ -167,14 +168,14 @@ let fileLoggingSetup = false
 export function setupFileLogging(): void {
   // Only setup once
   if (fileLoggingSetup) return
-  
+
   try {
     // Only enable file logging in local/serverless mode
     // In preprod/prod mode, the SQS process orchestrator will handle logging
     if (envVars.SERVERLESS || envVars.ENVIRON === "local") {
       const pathManager = PathManager.getInstance()
       const logFilePath = path.join(pathManager.getBasePath(), "bot.log")
-      
+
       // Ensure the directory exists
       const logDir = path.dirname(logFilePath)
       if (!fs.existsSync(logDir)) {
@@ -259,7 +260,7 @@ export async function uploadScreenshotsToS3(): Promise<void> {
         try {
           await S3Uploader.getInstance()?.uploadDirectory(
             screenshotsPath,
-            envVars.AWS_S3_ARTIFACTS_BUCKET, // Screenshots are considered artifacts, storing them in the artifacts bucket
+            storageBuckets().artifacts, // Screenshots are considered artifacts, storing them in the artifacts bucket
             s3ScreenshotsPath,
             // Screenshots are debug-grade artifacts. Skip EFS fallback to avoid
             // burning EFS storage and per-file fallback log noise on transient
@@ -442,7 +443,7 @@ export async function uploadLogsToS3(): Promise<void> {
         try {
           await S3Uploader.getInstance()?.uploadDirectory(
             htmlSnapshotsPath,
-            envVars.AWS_S3_LOGS_BUCKET,
+            storageBuckets().logs,
             s3HtmlSnapshotsPath,
             // HTML snapshots are debug-grade artifacts. Skip EFS fallback to
             // avoid burning EFS storage and per-file fallback log noise on

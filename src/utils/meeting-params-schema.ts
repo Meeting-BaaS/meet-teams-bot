@@ -1,5 +1,6 @@
 import {
   array,
+  boolean,
   nullable,
   number,
   object,
@@ -37,7 +38,9 @@ export const BotMessageSchema = object({
   bot_image_config: object({
     loop_mode: zodEnum(["auto", "bot_status"]),
     image_duration: number().int().min(10).max(120)
-  }).nullable().default(null),
+  })
+    .nullable()
+    .default(null),
   meeting_url: url(),
   transformed_meeting_url: url().nullable(),
   meeting_platform: MeetingPlatformSchema,
@@ -71,6 +74,35 @@ export const BotMessageSchema = object({
         login_email: string().email(),
         set_cookie_url: url(),
         fallback: zodEnum(["fail", "anonymous"]).default("anonymous")
+      })
+    )
+  ).default(null),
+
+  // The team's own object storage ("bring your own bucket"), when it has configured
+  // one. Absent/null — the default — means the bot uploads to the platform buckets
+  // from AWS_S3_*_BUCKET using the pod's ambient credentials, exactly as before.
+  //
+  // MUST stay in sync with StorageConfigMessage in api-server and the schema in
+  // sqs-consumer: zod .parse() strips unknown keys, so a field missing from any of
+  // the three is silently dropped between SQS and the bot's stdin — and the bot
+  // would then write a customer's recording into OUR bucket while the api-server
+  // looks for it in theirs.
+  storage_config: optional(
+    nullable(
+      object({
+        endpoint: url(),
+        region: string(),
+        force_path_style: boolean().default(false),
+        access_key_id: string(),
+        secret_access_key: string(),
+        artifacts_bucket: string(),
+        audio_chunks_bucket: string(),
+        logs_bucket: string(),
+        // When false (the default for a team on its own storage) a failed upload must
+        // NOT be parked on MeetingBaas EFS — the recording is given up on instead.
+        // These teams are usually on their own bucket for data residency, and the EFS
+        // fallback is the one path that puts a full recording on our volume.
+        allow_transient_spill: boolean().default(false)
       })
     )
   ).default(null),
