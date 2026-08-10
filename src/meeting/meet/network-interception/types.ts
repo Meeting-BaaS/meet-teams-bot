@@ -27,7 +27,23 @@ export type ChatMessage = {
 export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
-  source: "roster" | "audio" | "health_check" | "network_interception_failed" | "csrc_probe"
+  source: "roster" | "audio" | "health_check" | "network_interception_failed" | "csrc_probe" | "media_probe"
+  /** Media-architecture probe: where Meet's media stack lives in this frame. */
+  media?: {
+    frame: string
+    pcCreated: number
+    workers: string[]
+    sharedWorkers: number
+    webTransport: string[]
+    scriptTransforms: number
+    trackGenerators: number
+    audioContexts: number
+    workletModules: string[]
+    mediaEls: number
+    elsWithStream: number
+    liveAudioTracks: number
+    timestamp: number
+  }
   /** Read-only CSRC/SSRC audio-level probe summary (counts only, no ids). */
   probe?: {
     receivers: number

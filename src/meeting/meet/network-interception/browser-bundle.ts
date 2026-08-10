@@ -24,6 +24,128 @@ export function browserInterceptionLogic(schema: any[]) {
       `[NetworkInterceptor] Proactive channel creation: ${ENABLE_PROACTIVE_MEET_CHANNEL ? "enabled" : "disabled"}`
     )
 
+    // ===== MEDIA-ARCHITECTURE PROBE (read-only, temporary) =====
+    // Prod probe v1 showed that in ~half of Meet sessions the page context has
+    // NO WebRTC receivers at all (receivers=0, Meet never calls
+    // getContributingSources) while audio still plays — the media stack runs
+    // somewhere this bundle cannot see. These constructor hooks record WHERE:
+    // dedicated/shared workers (and their script URLs), WebTransport
+    // connections, RTCRtpScriptTransform (RTP processing moved into a worker),
+    // MediaStreamTrackGenerator (worker→page bridge tracks we could tap), and
+    // AudioContext/audioWorklet usage. Counts and static script/host names
+    // only — no user data. Installed at document-start so nothing Meet does
+    // beats the hooks.
+    const mediaProbe = {
+      frame: window === window.top ? "top" : `${location.host}${location.pathname}`.slice(0, 60),
+      pcCreated: 0,
+      workers: [] as string[],
+      sharedWorkers: 0,
+      webTransport: [] as string[],
+      scriptTransforms: 0,
+      trackGenerators: 0,
+      audioContexts: 0,
+      workletModules: [] as string[]
+    }
+    function probeName(src: any): string {
+      try {
+        const s = typeof src === "string" ? src : String(src)
+        // Keep only the tail of the URL (static resource name) — enough to
+        // identify Meet's worker scripts without logging query params.
+        return s.split("?")[0].split("/").slice(-2).join("/").slice(0, 80)
+      } catch {
+        return "unknown"
+      }
+    }
+    function hookConstructor(name: string, onConstruct: (args: any[]) => void) {
+      const Original = (window as any)[name]
+      if (typeof Original !== "function") return
+      const Wrapped = function (this: any, ...args: any[]) {
+        try {
+          onConstruct(args)
+        } catch {}
+        return Reflect.construct(Original, args, new.target || Wrapped)
+      }
+      Wrapped.prototype = Original.prototype
+      Object.setPrototypeOf(Wrapped, Original)
+      ;(window as any)[name] = Wrapped
+    }
+    hookConstructor("Worker", (args) => {
+      const n = probeName(args[0])
+      if (!mediaProbe.workers.includes(n) && mediaProbe.workers.length < 10) mediaProbe.workers.push(n)
+    })
+    hookConstructor("SharedWorker", () => {
+      mediaProbe.sharedWorkers++
+    })
+    hookConstructor("WebTransport", (args) => {
+      const n = probeName(args[0])
+      if (!mediaProbe.webTransport.includes(n) && mediaProbe.webTransport.length < 10)
+        mediaProbe.webTransport.push(n)
+    })
+    hookConstructor("RTCRtpScriptTransform", () => {
+      mediaProbe.scriptTransforms++
+    })
+    hookConstructor("MediaStreamTrackGenerator", () => {
+      mediaProbe.trackGenerators++
+    })
+    hookConstructor("AudioContext", () => {
+      mediaProbe.audioContexts++
+    })
+    try {
+      const OriginalAddModule = (window as any).AudioWorklet?.prototype?.addModule
+      if (OriginalAddModule) {
+        ;(window as any).AudioWorklet.prototype.addModule = function (...args: any[]) {
+          const n = probeName(args[0])
+          if (!mediaProbe.workletModules.includes(n) && mediaProbe.workletModules.length < 10)
+            mediaProbe.workletModules.push(n)
+          return OriginalAddModule.apply(this, args)
+        }
+      }
+    } catch {}
+
+    const mediaProbeInterval = setInterval(() => {
+      try {
+        // Live media elements: where does the audio the user hears come from?
+        let mediaEls = 0
+        let elsWithStream = 0
+        let liveAudioTracks = 0
+        for (const el of Array.from(document.querySelectorAll("audio, video"))) {
+          mediaEls++
+          const stream = (el as any).srcObject
+          if (stream?.getAudioTracks) {
+            elsWithStream++
+            for (const t of stream.getAudioTracks()) {
+              if (t.readyState === "live") liveAudioTracks++
+            }
+          }
+        }
+        if ((window as any).__networkInterceptorStopped) return
+        if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
+          ;(window as any).onNetworkSpeakerUpdate({
+            users: [],
+            timestamp: Date.now(),
+            source: "media_probe",
+            media: {
+              frame: mediaProbe.frame,
+              pcCreated: mediaProbe.pcCreated,
+              workers: mediaProbe.workers,
+              sharedWorkers: mediaProbe.sharedWorkers,
+              webTransport: mediaProbe.webTransport,
+              scriptTransforms: mediaProbe.scriptTransforms,
+              trackGenerators: mediaProbe.trackGenerators,
+              audioContexts: mediaProbe.audioContexts,
+              workletModules: mediaProbe.workletModules,
+              mediaEls,
+              elsWithStream,
+              liveAudioTracks,
+              timestamp: Date.now()
+            }
+          })
+        }
+      } catch (e) {
+        console.error("[MediaProbe] error:", e)
+      }
+    }, 30000)
+
     // ===== HELPER FUNCTIONS (inlined from utils.ts) =====
 
     function base64ToUint8Array(base64: string) {
@@ -943,9 +1065,10 @@ export function browserInterceptionLogic(schema: any[]) {
     ;(window as any).__stopNetworkInterception = () => {
       console.error("[NetworkInterceptor] 🛑 Stopping network interception...")
 
-      // Stop the CSRC probe — the stop flag alone would leave it polling
-      // receivers forever and only suppress the report.
+      // Stop the probes — the stop flag alone would leave them polling
+      // forever and only suppress the reports.
       clearInterval(csrcProbeInterval)
+      clearInterval(mediaProbeInterval)
 
       // Abort all active track controllers
       for (const [trackId, controller] of trackAbortControllers.entries()) {
@@ -1093,6 +1216,7 @@ export function browserInterceptionLogic(schema: any[]) {
       const OriginalPC = (window as any).RTCPeerConnection
       // biome-ignore lint/complexity/useArrowFunction: We need to use a function expression to avoid issues with the RTCPeerConnection object being replaced
       ;(window as any).RTCPeerConnection = function (...args: any[]) {
+        mediaProbe.pcCreated++
         const pc = new OriginalPC(...args)
 
         // Track whether we"ve attempted proactive creation for this PC instance

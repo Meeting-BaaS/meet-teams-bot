@@ -355,6 +355,21 @@ export class InCallState extends BaseState {
             return // Don't process as speaker update
           }
 
+          // Media-architecture probe: where does Meet run its media stack in
+          // this session? One line per 30s per frame, static names only.
+          if (payload.source === "media_probe" && payload.media) {
+            const m = payload.media
+            console.log(
+              `[MediaProbe] frame=${m.frame} pc=${m.pcCreated} ` +
+                `workers=[${m.workers.join(",")}] sharedWorkers=${m.sharedWorkers} ` +
+                `webTransport=[${m.webTransport.join(",")}] scriptTransforms=${m.scriptTransforms} ` +
+                `trackGenerators=${m.trackGenerators} audioContexts=${m.audioContexts} ` +
+                `worklets=[${m.workletModules.join(",")}] ` +
+                `mediaEls=${m.mediaEls}/${m.elsWithStream} liveAudioTracks=${m.liveAudioTracks}`
+            )
+            return // Not a speaker update
+          }
+
           // CSRC audio-level probe: forward the browser-side summary into the
           // bot log so it survives the pod. One line per 30s, counts only.
           if (payload.source === "csrc_probe" && payload.probe) {
