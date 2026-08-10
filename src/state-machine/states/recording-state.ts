@@ -111,7 +111,10 @@ export class RecordingState extends BaseState {
       // Main loop
       while (this.isProcessing) {
         // Check global timeout
-        if (Date.now() - startTime > MEETING_CONSTANTS.RECORDING_TIMEOUT) {
+        const recordingTimeoutMs = GLOBAL.get().max_recording_duration
+          ? GLOBAL.get().max_recording_duration! * 1000
+          : MEETING_CONSTANTS.RECORDING_TIMEOUT
+        if (Date.now() - startTime > recordingTimeoutMs) {
           console.warn("Global recording state timeout reached, forcing end")
           GLOBAL.setEndReason(MeetingEndReason.RecordingTimeout)
           await this.handleMeetingEnd(MeetingEndReason.RecordingTimeout)
