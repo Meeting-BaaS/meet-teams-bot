@@ -1,8 +1,9 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { S3Client, type Tag } from "@aws-sdk/client-s3"
+import type { Tag } from "@aws-sdk/client-s3"
 import { Upload } from "@aws-sdk/lib-storage"
 import { envVars } from "../config/env-vars"
+import { storageBuckets, storageS3Client, transientSpillAllowed } from "../config/storage"
 import { GLOBAL } from "../singleton"
 import type { ArtifactType } from "../types"
 import { PathManager } from "./PathManager"
@@ -21,15 +22,12 @@ const MAX_CONCURRENT_UPLOADS = 100 // Limit concurrent uploads
 const UPLOAD_TIMEOUT_MS = 25 * 60 * 1000 // 25 minutes
 
 export class S3Uploader {
-  private s3Client: S3Client
-
-  private constructor() {
-    // AWS SDK v3 automatically detects:
-    // - Credentials from environment variables, IAM roles, AWS config files, etc.
-    // - Endpoints from AWS_ENDPOINT_URL, AWS_ENDPOINT_URL_S3, etc.
-    // - Regions from AWS_REGION, AWS_DEFAULT_REGION, etc.
-    this.s3Client = new S3Client()
-  }
+  // No cached client field on purpose. This singleton can be constructed before the
+  // meeting params are parsed (an early log upload does exactly that), and a client
+  // captured at that point would be the platform one — every later upload for a
+  // customer-storage bot would then land in OUR bucket. storageS3Client() resolves
+  // per call and rebuilds once the customer's config is known. See config/storage.ts.
+  private constructor() {}
 
   public static getInstance(): S3Uploader {
     if (GLOBAL.isServerless()) {
@@ -90,7 +88,7 @@ export class S3Uploader {
       // enforced out-of-band (e.g. GCS-native Object Lifecycle Management on
       // the bucket, configured at deploy time to match the product's policy).
       const upload = new Upload({
-        client: this.s3Client,
+        client: storageS3Client(),
         params: {
           Bucket: bucketName,
           Key: s3Path,
@@ -123,6 +121,14 @@ export class S3Uploader {
         // Caller (e.g. screenshots) opted out of EFS preservation. These
         // artifacts are debug-grade and not worth the EFS storage / log noise.
         console.warn(`❌ S3 upload failed (no EFS fallback): ${s3Path} — ${error}`)
+      } else if (!transientSpillAllowed()) {
+        // The team's own storage with transient spill off: this artifact is not
+        // allowed to rest on our volume, so the failure is final. Say so plainly —
+        // the recording is gone, and a log line that reads like the EFS path ran
+        // would send whoever investigates looking for a file that was never written.
+        console.error(
+          `❌ S3 upload failed and transient spill is disabled for this team — artifact abandoned: ${s3Path} — ${error}`
+        )
       } else {
         console.warn(`❌ S3 upload failed, falling back to EFS: ${error}`)
         // Best-effort EFS mirror so a later reconciliation job can push to S3.
@@ -143,7 +149,7 @@ export class S3Uploader {
       return
     }
 
-    const bucket = envVars.AWS_S3_LOGS_BUCKET
+    const bucket = storageBuckets().logs
     if (!bucket) {
       console.warn("Skipping S3 upload - aws_s3_log_bucket not configured")
       return
@@ -251,6 +257,8 @@ export class S3Uploader {
   private async copyToEFS(filePath: string, bucketName: string, s3Path: string): Promise<void> {
     try {
       if (GLOBAL.isServerless()) return
+      // Second gate, in case a future caller reaches this without the check above.
+      if (!transientSpillAllowed()) return
       const env = envVars.ENVIRON
       if (env === "local") {
         console.warn(`⚠️ EFS not available in ${env} environment - file will remain on local disk`)
@@ -297,6 +305,15 @@ export class S3Uploader {
   public async copyDirToEFS(localDir: string): Promise<void> {
     try {
       if (GLOBAL.isServerless()) return
+      // Same residency gate as copyToEFS. Without it the cleanup-timeout safety net
+      // would quietly undo the guarantee the per-file path just honoured, mirroring
+      // output.mp4 / output.flac / diarization / chunks onto our volume.
+      if (!transientSpillAllowed()) {
+        console.warn(
+          "⚠️ Cleanup timeout with un-uploaded outputs, but transient spill is disabled for this team — not mirroring to EFS"
+        )
+        return
+      }
       const env = envVars.ENVIRON
       if (env === "local") {
         console.warn(`⚠️ EFS not available in ${env} environment - skipping dir copy`)
@@ -309,7 +326,7 @@ export class S3Uploader {
 
       const pm = PathManager.getInstance()
       const outputBase = pm.getOutputPath()
-      const artifactsBucket = envVars.AWS_S3_ARTIFACTS_BUCKET
+      const artifactsBucket = storageBuckets().artifacts
 
       // Named final outputs → artifacts bucket (key <uuid>/<name>, matching the
       // bot's real S3 keys).
@@ -345,7 +362,7 @@ export class S3Uploader {
       if (fs.existsSync(chunksDir)) {
         for (const filename of fs.readdirSync(chunksDir)) {
           const src = path.join(chunksDir, filename)
-          if (await this.mirrorFileToEFS(src, envVars.AWS_S3_AUDIO_CHUNKS_BUCKET, filename)) {
+          if (await this.mirrorFileToEFS(src, storageBuckets().audioChunks, filename)) {
             this.recordPendingChunk(src, filename)
           }
         }

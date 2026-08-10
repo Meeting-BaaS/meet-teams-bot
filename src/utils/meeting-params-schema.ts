@@ -1,5 +1,6 @@
 import {
   array,
+  boolean,
   nullable,
   number,
   object,
@@ -11,6 +12,31 @@ import {
   enum as zodEnum,
   unknown as zodUnknown
 } from "zod"
+import { envVars } from "../config/env-vars"
+
+const storageBucketSchema = string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/)
+
+export const StorageConfigSchema = object({
+  endpoint: url().refine(
+    (endpoint) => {
+      const protocol = new URL(endpoint).protocol
+      return protocol === "https:" || (protocol === "http:" && envVars.ENVIRON !== "prod")
+    },
+    { message: "customer storage endpoint must use HTTPS" }
+  ),
+  region: string().min(1),
+  force_path_style: boolean().default(false),
+  access_key_id: string().min(1),
+  secret_access_key: string().min(1),
+  artifacts_bucket: storageBucketSchema,
+  audio_chunks_bucket: storageBucketSchema,
+  logs_bucket: storageBucketSchema,
+  // When false (the default for a team on its own storage) a failed upload must
+  // NOT be parked on MeetingBaas EFS — the recording is given up on instead.
+  // These teams are usually on their own bucket for data residency, and the EFS
+  // fallback is the one path that puts a full recording on our volume.
+  allow_transient_spill: boolean().default(false)
+})
 
 export const RecordingModeSchema = zodEnum(["speaker_view", "audio_only", "gallery_view"])
 export const SpeechToTextProviderSchema = zodEnum([
@@ -37,7 +63,9 @@ export const BotMessageSchema = object({
   bot_image_config: object({
     loop_mode: zodEnum(["auto", "bot_status"]),
     image_duration: number().int().min(10).max(120)
-  }).nullable().default(null),
+  })
+    .nullable()
+    .default(null),
   meeting_url: url(),
   transformed_meeting_url: url().nullable(),
   meeting_platform: MeetingPlatformSchema,
@@ -73,6 +101,19 @@ export const BotMessageSchema = object({
         fallback: zodEnum(["fail", "anonymous"]).default("anonymous")
       })
     )
+  ).default(null),
+
+  // The team's own object storage ("bring your own bucket"), when it has configured
+  // one. Absent/null — the default — means the bot uploads to the platform buckets
+  // from AWS_S3_*_BUCKET using the pod's ambient credentials, exactly as before.
+  //
+  // MUST stay in sync with StorageConfigMessage in api-server and the schema in
+  // sqs-consumer: zod .parse() strips unknown keys, so a field missing from any of
+  // the three is silently dropped between SQS and the bot's stdin — and the bot
+  // would then write a customer's recording into OUR bucket while the api-server
+  // looks for it in theirs.
+  storage_config: optional(
+    nullable(StorageConfigSchema)
   ).default(null),
 
   // Teams authenticated bot config — present when api-server assigned a teams_login.

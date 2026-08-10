@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import { ChatManager } from "../../chat-manager"
-import { envVars } from "../../config/env-vars"
+import { storageBuckets } from "../../config/storage"
 import { SoundContext, VideoContext } from "../../media_context"
 import { stopToggleProxy } from "../../proxy/toggle-proxy"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
@@ -174,7 +174,7 @@ export class CleanupState extends BaseState {
 
       const botUuid = GLOBAL.get().bot_uuid
       const s3Key = `${botUuid}/chat_messages.json`
-      const bucket = envVars.AWS_S3_ARTIFACTS_BUCKET
+      const bucket = storageBuckets().artifacts
 
       console.log(`Uploading ${chatMessages.length} chat messages to S3: ${s3Key}`)
 

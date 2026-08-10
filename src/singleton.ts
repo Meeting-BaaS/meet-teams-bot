@@ -79,6 +79,17 @@ class Global {
     console.log(`🤖 Bot ${meetingParams.bot_uuid} initialized with validated parameters`)
   }
 
+  /**
+   * Meeting params if they've been parsed, otherwise null.
+   *
+   * Unlike `get()` this never throws, for the modules that run before stdin is
+   * parsed (Logger, PathManager) and must fall back to env-var defaults rather
+   * than crash. See config/storage.ts.
+   */
+  public tryGet(): MeetingParams | null {
+    return this.meetingParams
+  }
+
   public get(): MeetingParams {
     if (this.meetingParams === null) {
       throw new Error("Meeting params are not set")
