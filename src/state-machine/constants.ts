@@ -8,7 +8,7 @@ export const MEETING_CONSTANTS = {
 
   // Timeouts
   SETUP_TIMEOUT: 30_000, // 30 secondes
-  RECORDING_TIMEOUT: 3600 * 4 * 1000, // 4 heures
+  RECORDING_TIMEOUT: 3600 * 6 * 1000, // 6 heures
   INITIAL_WAIT_TIME: 1000 * 60 * 7, // 7 minutes
   EMPTY_MEETING_CONFIRMATION_MS: 45_000, // 45 seconds before confirming no attendees
   // Outer cleanup timeout. Typical cleanup runs in 2–15 minutes; the headroom
