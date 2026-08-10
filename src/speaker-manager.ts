@@ -202,6 +202,14 @@ export class SpeakerManager {
     networkUsers: NetworkUser[],
     timestamp: number
   ): Promise<void> {
+    // Once the fallback has retired the network path, the UI observer is the
+    // primary source. Stopping the page-side interceptor is best-effort, so a
+    // straggler callback can still land here — processing it would have two
+    // sources writing speaker boundaries at once.
+    if (GLOBAL.hasDiarizationFallbackTriggered()) {
+      return
+    }
+
     try {
       const params = GLOBAL.get()
       const botName = params.bot_name

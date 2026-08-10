@@ -167,3 +167,29 @@ describe("SpeakerManager UI bridge arbitration", () => {
     expect(registeredSpeakers).toEqual(["Net Speaker", "Fallback Speaker"])
   })
 })
+
+describe("SpeakerManager network updates after fallback", () => {
+  beforeEach(() => {
+    registeredSpeakers.length = 0
+    registeredParticipants.length = 0
+    params = { bot_name: "SPEAKER SEP Test", streaming_input: undefined }
+    networkInterceptionFailed = false
+    diarizationFallbackTriggered = false
+    ;(SpeakerManager as unknown as { instance: SpeakerManager | null }).instance = null
+    jest.spyOn(console, "table").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it("drops straggler network updates once the fallback has retired the network path", async () => {
+    const manager = SpeakerManager.getInstance()
+
+    diarizationFallbackTriggered = true
+    await manager.handleNetworkSpeakerUpdate([networkUser("Straggler", true, "device-9")], 1785941000000)
+
+    expect(registeredSpeakers).toEqual([])
+    expect(registeredParticipants).toEqual([])
+  })
+})
