@@ -29,6 +29,12 @@ export class SpeakerManager {
   // Profile picture per device, so a backfilled segment gets the same stable id
   // the live path would have produced for that participant.
   private deviceProfilePictures = new Map<string, string | undefined>()
+  // True once the network path has reported an actual SPEAKING participant.
+  // Until then the UI bridge (see handleUiBridgeUpdate) is allowed to feed the
+  // diarization, because a participant's audio track only starts flowing a few
+  // seconds after they first speak — Meet's UI indicator fires much earlier.
+  private networkSpeakerActive = false
+  private uiBridgeMuteLogged = false
 
   private constructor() {}
 
@@ -117,6 +123,40 @@ export class SpeakerManager {
   /** Sequential id for a resolved participant, matching the live path exactly. */
   private idForDevice(name: string, profilePicture: string | undefined): number {
     return this.sequentialIdManager.getSequentialId(generateStableUserId(name, profilePicture))
+  }
+
+  /**
+   * Entry point for the Meet UI speaker bridge: the DOM speaking indicator
+   * observed in parallel with the (primary) network path.
+   *
+   * Why it exists: at first speech after silence, a participant's WebRTC audio
+   * track takes 3-5s to spin up before the network path can see them — Meet's
+   * own UI indicator lights up almost immediately. Measured in prod (2026-08-10,
+   * 27/47 Meet transcripts): every leading-"Unknown" run ended exactly in that
+   * gap, median 5.3s before the first network segment.
+   *
+   * Arbitration: UI events flow only while the network path has never reported
+   * a speaking participant. From the first network speaker on, the bridge is
+   * muted — the network path carries deviceIds (enabling finalize-time repair)
+   * and survives DOM changes, so it stays authoritative. If the stale-diarization
+   * monitor later retires the network path, the fallback flags unmute the bridge
+   * automatically and the same observer becomes the primary source.
+   */
+  public async handleUiBridgeUpdate(observed: SpeakerData[]): Promise<void> {
+    const networkRetired =
+      GLOBAL.hasNetworkInterceptionSetupFailed() || GLOBAL.hasDiarizationFallbackTriggered()
+
+    if (this.networkSpeakerActive && !networkRetired) {
+      if (!this.uiBridgeMuteLogged) {
+        this.uiBridgeMuteLogged = true
+        console.log(
+          "[SpeakerBridge] Network path delivered its first speaker — UI bridge muted"
+        )
+      }
+      return
+    }
+
+    await this.handleSpeakerUpdate(observed)
   }
 
   public async handleSpeakerUpdate(observed: SpeakerData[]): Promise<void> {
@@ -221,6 +261,13 @@ export class SpeakerManager {
           isSpeaking
         }
       })
+
+      // First actual speaker from the network path mutes the UI bridge — from
+      // here the track-based signal is live and authoritative.
+      if (!this.networkSpeakerActive && speakers.some((s) => s.isSpeaking)) {
+        this.networkSpeakerActive = true
+        console.log("[SpeakerBridge] First speaking participant on the network path")
+      }
 
       // Process as regular speaker update
       await this.handleSpeakerUpdate(speakers)

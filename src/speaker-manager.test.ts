@@ -18,13 +18,18 @@ function addOnce(registry: string[], name: string) {
   if (!registry.includes(name)) registry.push(name)
 }
 
+let networkInterceptionFailed = false
+let diarizationFallbackTriggered = false
+
 jest.mock("./singleton", () => ({
   GLOBAL: {
     get: () => params,
     addParticipantIfNotExists: (participant: Participant) =>
       addOnce(registeredParticipants, participant.name),
     addSpeakerIfNotExists: (participant: Participant) =>
-      addOnce(registeredSpeakers, participant.name)
+      addOnce(registeredSpeakers, participant.name),
+    hasNetworkInterceptionSetupFailed: () => networkInterceptionFailed,
+    hasDiarizationFallbackTriggered: () => diarizationFallbackTriggered
   }
 }))
 
@@ -99,5 +104,66 @@ describe("SpeakerManager network speaker registration", () => {
     )
 
     expect(registeredSpeakers).toEqual(["Johnny"])
+  })
+})
+
+/**
+ * The UI bridge feeds the diarization only while the network path has nothing:
+ * a participant's audio track spins up seconds after they first speak, while
+ * Meet's UI indicator fires immediately. Once the network path reports a real
+ * speaker it is authoritative, unless it is later retired by the fallback.
+ */
+describe("SpeakerManager UI bridge arbitration", () => {
+  function uiSpeaker(name: string, isSpeaking: boolean) {
+    return { name, id: 0, timestamp: 1785941000000, isSpeaking }
+  }
+
+  beforeEach(() => {
+    registeredSpeakers.length = 0
+    registeredParticipants.length = 0
+    params = { bot_name: "SPEAKER SEP Test", streaming_input: undefined }
+    networkInterceptionFailed = false
+    diarizationFallbackTriggered = false
+    ;(SpeakerManager as unknown as { instance: SpeakerManager | null }).instance = null
+    jest.spyOn(console, "table").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it("passes UI events through while the network path has no speaker yet", async () => {
+    await SpeakerManager.getInstance().handleUiBridgeUpdate([uiSpeaker("Early Speaker", true)])
+
+    expect(registeredSpeakers).toEqual(["Early Speaker"])
+  })
+
+  it("mutes UI events after the network path reports its first speaker", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate([networkUser("Net Speaker", true, "device-1")], 1785941000000)
+
+    await manager.handleUiBridgeUpdate([uiSpeaker("Late UI Speaker", true)])
+
+    expect(registeredSpeakers).toEqual(["Net Speaker"])
+    expect(registeredParticipants).not.toContain("Late UI Speaker")
+  })
+
+  it("does not mute the bridge on roster-only network updates (nobody speaking)", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate([networkUser("Silent Sam", false, "device-3")], 1785941000000)
+
+    await manager.handleUiBridgeUpdate([uiSpeaker("Early Speaker", true)])
+
+    expect(registeredSpeakers).toEqual(["Early Speaker"])
+  })
+
+  it("unmutes the bridge when the network path is retired by the fallback", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate([networkUser("Net Speaker", true, "device-1")], 1785941000000)
+
+    diarizationFallbackTriggered = true
+    await manager.handleUiBridgeUpdate([uiSpeaker("Fallback Speaker", true)])
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Fallback Speaker"])
   })
 })
