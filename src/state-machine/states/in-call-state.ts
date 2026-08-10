@@ -355,6 +355,19 @@ export class InCallState extends BaseState {
             return // Don't process as speaker update
           }
 
+          // CSRC audio-level probe: forward the browser-side summary into the
+          // bot log so it survives the pod. One line per 30s, counts only.
+          if (payload.source === "csrc_probe" && payload.probe) {
+            const p = payload.probe
+            console.log(
+              `[CsrcProbe] receivers=${p.receivers} meetCalls=${p.meetCalls} ` +
+                `csrc=${p.csrcSources} csrcLvl=${p.csrcWithLevel} csrcMax=${p.csrcMax.toFixed(3)} ` +
+                `ssrc=${p.ssrcSources} ssrcLvl=${p.ssrcWithLevel} ssrcMax=${p.ssrcMax.toFixed(3)} ` +
+                `mapped=${p.mapped}`
+            )
+            return // Not a speaker update
+          }
+
           // Handle health check reports
           if (payload.source === "health_check" && payload.health) {
             const {

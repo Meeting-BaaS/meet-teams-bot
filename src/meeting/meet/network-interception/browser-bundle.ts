@@ -815,9 +815,80 @@ export function browserInterceptionLogic(schema: any[]) {
       tracksDeliveringFrames.delete(trackId)
     }
 
+    let csrcProbeMeetCalls = 0
     setupRTCRtpReceiverInterceptor((receiver, contributingSources) => {
+      csrcProbeMeetCalls++
       updateContributingSources(receiverManager, receiver, contributingSources)
     })
+
+    // ===== CSRC AUDIO-LEVEL PROBE (read-only, temporary) =====
+    // Speaker detection today reads contributing sources only inside the
+    // audio-frame loop, so when Meet delivers no per-participant track frames
+    // (~half of prod meetings) the CSRC data is never even looked at — although
+    // Meet's own client may still be polling it for its speaking indicators.
+    // This probe samples the receiver metadata on a timer, independent of
+    // frames, and reports whether audioLevel is populated under our browser.
+    // Counts only — no ids or names. Answers whether a frame-independent
+    // CSRC/SSRC speaker path (attendee-style) is viable here.
+    setInterval(() => {
+      try {
+        let csrcSources = 0
+        let csrcWithLevel = 0
+        let csrcMax = 0
+        let ssrcSources = 0
+        let ssrcWithLevel = 0
+        let ssrcMax = 0
+        let mapped = 0
+        for (const [receiver, sources] of receiverManager.receiverMap) {
+          for (const s of sources || []) {
+            csrcSources++
+            const lvl = s?.audioLevel || 0
+            if (lvl > 0) {
+              csrcWithLevel++
+              if (lvl > csrcMax) csrcMax = lvl
+            }
+            if (s?.source != null && getUserByStreamId(userManager, s.source.toString())) mapped++
+          }
+          try {
+            const sync = receiver.getSynchronizationSources?.() || []
+            for (const s of sync) {
+              ssrcSources++
+              const lvl = s?.audioLevel || 0
+              if (lvl > 0) {
+                ssrcWithLevel++
+                if (lvl > ssrcMax) ssrcMax = lvl
+              }
+            }
+          } catch {
+            // receiver may be closed; skip
+          }
+        }
+        // Page console is not forwarded to the bot log in prod — report through
+        // the same exposed callback the health check uses.
+        if ((window as any).__networkInterceptorStopped) return
+        if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
+          ;(window as any).onNetworkSpeakerUpdate({
+            users: [],
+            timestamp: Date.now(),
+            source: "csrc_probe",
+            probe: {
+              receivers: receiverManager.receiverMap.size,
+              meetCalls: csrcProbeMeetCalls,
+              csrcSources,
+              csrcWithLevel,
+              csrcMax,
+              ssrcSources,
+              ssrcWithLevel,
+              ssrcMax,
+              mapped,
+              timestamp: Date.now()
+            }
+          })
+        }
+      } catch (e) {
+        console.error("[CsrcProbe] error:", e)
+      }
+    }, 30000)
 
     const broadcastCurrentState = () => {
       try {

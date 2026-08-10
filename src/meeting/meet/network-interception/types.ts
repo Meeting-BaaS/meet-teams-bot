@@ -27,7 +27,20 @@ export type ChatMessage = {
 export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
-  source: "roster" | "audio" | "health_check" | "network_interception_failed"
+  source: "roster" | "audio" | "health_check" | "network_interception_failed" | "csrc_probe"
+  /** Read-only CSRC/SSRC audio-level probe summary (counts only, no ids). */
+  probe?: {
+    receivers: number
+    meetCalls: number
+    csrcSources: number
+    csrcWithLevel: number
+    csrcMax: number
+    ssrcSources: number
+    ssrcWithLevel: number
+    ssrcMax: number
+    mapped: number
+    timestamp: number
+  }
   health?: {
     subscribed: boolean
     /** Tracks that have delivered at least one audio frame. */
