@@ -9,6 +9,7 @@ import {
   stopToggleProxy
 } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
+import { MeetingEndReason } from "../state-machine/types"
 import { MAX_RETRY_COUNT } from "../config/retry-config"
 import { formatError } from "../utils/Logger"
 import { openBrowser } from "./browser"
@@ -83,6 +84,24 @@ export async function establishBrowserSession(
         opts.sessionSuffix
       )
       if (proxyUrl) session.proxyUrl = proxyUrl
+
+      // Meet, no proxy, retries remain → requeue instead of joining direct.
+      // A proxyless Meet join comes from the pod's datacenter IP and flags
+      // ~94% (measured in prod during the 2026-08-10 Decodo capacity burst:
+      // 523 upstream_unreachable joins → 491 flagged) — it burns the team's
+      // reputation and the join usually fails anyway. The SQS requeue lands
+      // on a fresh pod later, when the pool has headroom. The LAST retry
+      // (branch above) still falls back to a live exit as the final resort.
+      if (!session.proxyUrl && platform === "meet" && retryCount < MAX_RETRY_COUNT) {
+        console.warn(
+          "[BrowserSession] Meet proxy unavailable — requeueing instead of a direct (datacenter-IP) join"
+        )
+        GLOBAL.setError(MeetingEndReason.ProxyUnavailable)
+        GLOBAL.setShouldRetry(true)
+        throw new Error(
+          "Residential proxy unavailable for Meet join — requeueing to retry when the pool has capacity"
+        )
+      }
 
       // Burned-ASN avoidance (Meet only). startToggleProxy already probed the
       // exit IP + ASN. If we landed on a network Google is currently flagging,
