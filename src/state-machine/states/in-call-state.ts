@@ -231,6 +231,21 @@ export class InCallState extends BaseState {
                     console.log(
                         '✅ Network-based speaker detection enabled for Meet',
                     )
+                    // Also start the UI observer as an early-window BRIDGE. At
+                    // first speech after silence the speaker's audio track takes
+                    // seconds to spin up before the network path can attribute
+                    // anything, while Meet's UI indicator fires almost
+                    // immediately — that gap produced leading "Unknown" runs.
+                    // The SpeakerManager arbiter mutes this source once the
+                    // network path reports its first speaker. Non-blocking:
+                    // opening the People panel can take seconds and must not
+                    // delay the recording-started event.
+                    this.startUIBasedObservation().catch((error) => {
+                        console.warn(
+                            '[SpeakerBridge] UI bridge failed to start (network path still active):',
+                            formatError(error),
+                        )
+                    })
                     return
                 }
             } catch (error) {
@@ -473,6 +488,12 @@ export class InCallState extends BaseState {
             console.log('UI speakers observer startup already in progress')
             return
         }
+        // Already running (e.g. started as the Meet bridge, now re-requested by
+        // the watchdog fallback) — don't spin up a second observer.
+        if (this.context.speakersObserver) {
+            console.log('UI speakers observer already running')
+            return
+        }
 
         this.isStartingUIObserver = true
 
@@ -482,12 +503,24 @@ export class InCallState extends BaseState {
                 GLOBAL.get().meetingProvider,
             )
 
-            // Callback to handle speakers changes
+            // Callback to handle speakers changes. On Meet the observer may run
+            // as an early-window BRIDGE alongside a live network path, so route
+            // it through the arbiter: it feeds diarization only until the
+            // network path reports its first speaker (or the network path is
+            // retired by the watchdog, in which case this observer is primary).
+            // Teams has its own pause-based fallback and feeds directly.
             const onSpeakersChange = async (speakers: any[]) => {
                 try {
-                    await SpeakerManager.getInstance().handleSpeakerUpdate(
-                        speakers,
-                    )
+                    if (GLOBAL.get().meetingProvider === 'Meet') {
+                        await SpeakerManager.getInstance().handleUiBridgeUpdate(
+                            speakers,
+                            this.meetNetworkFallbackTriggered,
+                        )
+                    } else {
+                        await SpeakerManager.getInstance().handleSpeakerUpdate(
+                            speakers,
+                        )
+                    }
                 } catch (error) {
                     console.error(
                         'Error handling speaker update:',

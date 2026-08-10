@@ -37,7 +37,46 @@ export class SpeakerManager {
     // have expired long ago.
     private deviceFirstSeen = new Map<string, number>()
 
+    // True once the network path has reported an actual SPEAKING participant.
+    // Until then the Meet UI bridge (handleUiBridgeUpdate) is allowed to feed
+    // diarization, because a participant's audio track only starts flowing a
+    // few seconds after they first speak — Meet's UI indicator fires earlier.
+    private networkSpeakerActive = false
+    private uiBridgeMuteLogged = false
+
     private constructor() {}
+
+    /**
+     * Entry point for the Meet UI speaker bridge: the DOM speaking indicator
+     * observed in parallel with the (primary) network path.
+     *
+     * Why it exists: at first speech after silence, a participant's WebRTC
+     * audio track takes 3-5s to spin up before the network path can see them —
+     * Meet's own UI indicator lights up almost immediately. That gap produced
+     * leading-"Unknown" runs at the start of transcripts.
+     *
+     * Arbitration: UI events flow only while the network path has never
+     * reported a speaking participant, OR the network path has been retired
+     * (watchdog fallback — networkRetired=true, this observer is now primary).
+     * From the first network speaker on, with the network path still live, the
+     * bridge is muted: the network path carries deviceIds and survives DOM
+     * changes, so it stays authoritative.
+     */
+    public async handleUiBridgeUpdate(
+        observed: SpeakerData[],
+        networkRetired: boolean,
+    ): Promise<void> {
+        if (this.networkSpeakerActive && !networkRetired) {
+            if (!this.uiBridgeMuteLogged) {
+                this.uiBridgeMuteLogged = true
+                console.log(
+                    '[SpeakerBridge] Network path delivered its first speaker — UI bridge muted',
+                )
+            }
+            return
+        }
+        await this.handleSpeakerUpdate(observed)
+    }
 
     /**
      * Timestamp this device was first observed, recording it on first sight.
@@ -188,6 +227,15 @@ export class SpeakerManager {
                         (botCanSpeak || !this.isBotName(stableName)),
                 }
             })
+
+        // First actual speaker from the network path mutes the Meet UI bridge —
+        // from here the track-based signal is live and authoritative.
+        if (!this.networkSpeakerActive && speakers.some((s) => s.isSpeaking)) {
+            this.networkSpeakerActive = true
+            console.log(
+                '[SpeakerBridge] First speaking participant on the network path',
+            )
+        }
 
         await this.handleSpeakerUpdate(speakers)
     }
