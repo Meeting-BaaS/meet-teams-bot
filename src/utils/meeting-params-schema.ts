@@ -24,10 +24,10 @@ export const StorageConfigSchema = object({
     },
     { message: "customer storage endpoint must use HTTPS" }
   ),
-  region: string(),
+  region: string().min(1),
   force_path_style: boolean().default(false),
-  access_key_id: string(),
-  secret_access_key: string(),
+  access_key_id: string().min(1),
+  secret_access_key: string().min(1),
   artifacts_bucket: storageBucketSchema,
   audio_chunks_bucket: storageBucketSchema,
   logs_bucket: storageBucketSchema,

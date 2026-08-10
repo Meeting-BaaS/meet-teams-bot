@@ -12,7 +12,11 @@ describe("StorageConfigSchema", () => {
   const originalEnviron = process.env.ENVIRON
 
   afterEach(() => {
-    process.env.ENVIRON = originalEnviron
+    if (originalEnviron === undefined) {
+      delete process.env.ENVIRON
+    } else {
+      process.env.ENVIRON = originalEnviron
+    }
     jest.resetModules()
   })
 
@@ -53,6 +57,13 @@ describe("StorageConfigSchema", () => {
       expect(schemaFor("local").safeParse({ ...storageConfig, artifacts_bucket }).success).toBe(
         false
       )
+    }
+  )
+
+  it.each(["region", "access_key_id", "secret_access_key"] as const)(
+    "rejects an empty %s",
+    (field) => {
+      expect(schemaFor("local").safeParse({ ...storageConfig, [field]: "" }).success).toBe(false)
     }
   )
 })
