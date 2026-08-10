@@ -82,7 +82,7 @@ export const BotMessageSchema = object({
   grace_period: number().int().nonnegative().default(0),
   max_recording_duration: number()
     .int()
-    .nonnegative()
+    .positive()
     .max(6 * 60 * 60)
     .nullable()
     .default(null),
