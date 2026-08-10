@@ -23,6 +23,25 @@ import { MEET_STATE_CONFIG } from "./meet-state-config"
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
 const ENTRY_MESSAGE_TIMEOUT = 2000
 const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before checking if in meeting
+// Meet's lobby renders the in-meeting call-control DOM a few seconds BEFORE the
+// lobby text ("Please wait until a meeting host…") appears, so one clean
+// isInMeeting() sample during that window is not proof of admission. Prod bots
+// false-confirmed the join, then read the late-rendering lobby as an ejection
+// and died with "bot removed too early". Require two clean samples this far
+// apart before confirming.
+//
+// Calibration (prod, Jul 31–Aug 7): on all 17 failures the lobby text was
+// detected 0.3–5.0s after the false confirm; the >3s detections are inflated
+// by dialog-dismissal delaying the first post-confirm sample (sub-second
+// detections prove the text can already be present at 0.3s), so 5.0s is a
+// hard upper bound on the render lag — 6s covers it plus one loop-cadence of
+// margin. Cost: 0 of 120 sampled healthy joins ever showed lobby text after
+// a genuine admission (the debounce cannot reset-loop a good join), and ~85%
+// of healthy joins have remote audio tracks registered (fast path below), so
+// only the hook-blind minority waits the full debounce. A render lag beyond
+// 6s would still be caught by the lobby check in changeLayout and ends as
+// BotNotAccepted rather than a false "removed".
+const JOIN_CONFIRM_DEBOUNCE_MS = 6000
 
 /**
  * Checks that the page is still on meet.google.com.
@@ -330,6 +349,7 @@ export class MeetProvider implements MeetingProviderInterface {
       let inWaitingRoom = false
       let leftWaitingRoomAt: number | null = null
       let botWasInMeeting = false
+      let firstCleanConfirmAt: number | null = null
       while (true) {
         if (cancelCheck()) {
           // Only set error if not already set by stopMeeting()
@@ -374,17 +394,55 @@ export class MeetProvider implements MeetingProviderInterface {
         if (!nowInWaitingRoom && gracePeriodExpired) {
           const inMeeting = await isInMeeting(page)
           if (inMeeting) {
-            botWasInMeeting = true
-            console.log(
-              `✅ Successfully confirmed we are in the meeting (grace period: ${!leftWaitingRoomAt ? "not in waiting room" : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`
-            )
-            // Signal join success immediately so the waiting room timeout is cleared.
-            // performCriticalSetupActions can take minutes if dialogs block it.
-            onJoinSuccess()
-            // Critical setup actions BEFORE state transition (People panel, layout, snapshot)
-            await performCriticalSetupActions(page, dialogObserver)
-            break
+            // Fast path: remote audio tracks only flow after real admission —
+            // Meet's lobby never receives conference media. The audio track
+            // layer is injected before navigation, so its backlog is readable
+            // here. Absence proves nothing (the PC hook misses tracks on a
+            // large share of calls), so no-tracks just falls through to the
+            // DOM debounce below.
+            const remoteAudioTracks = await page
+              .evaluate(
+                // biome-ignore lint/suspicious/noExplicitAny: browser-side global
+                () => ((window as any).__audioTrackLayer?.seenTracks || []).length
+              )
+              .catch(() => 0)
+            if (remoteAudioTracks > 0) {
+              botWasInMeeting = true
+              console.log(
+                `✅ Successfully confirmed we are in the meeting (fast path: ${remoteAudioTracks} remote audio track(s) flowing)`
+              )
+              onJoinSuccess()
+              await performCriticalSetupActions(page, dialogObserver)
+              break
+            }
+            // Debounce the confirmation: a single clean sample can land in the
+            // window where the lobby's call-control DOM is up but its text is
+            // not (see JOIN_CONFIRM_DEBOUNCE_MS). Confirm only when a second
+            // clean sample arrives at least that long after the first.
+            if (firstCleanConfirmAt === null) {
+              firstCleanConfirmAt = Date.now()
+              console.log(
+                `⏳ In-meeting sample clean, debouncing join confirm for ${JOIN_CONFIRM_DEBOUNCE_MS}ms...`
+              )
+            } else if (Date.now() - firstCleanConfirmAt >= JOIN_CONFIRM_DEBOUNCE_MS) {
+              botWasInMeeting = true
+              console.log(
+                `✅ Successfully confirmed we are in the meeting (debounced ${Date.now() - firstCleanConfirmAt}ms; grace period: ${!leftWaitingRoomAt ? "not in waiting room" : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`
+              )
+              // Signal join success immediately so the waiting room timeout is cleared.
+              // performCriticalSetupActions can take minutes if dialogs block it.
+              onJoinSuccess()
+              // Critical setup actions BEFORE state transition (People panel, layout, snapshot)
+              await performCriticalSetupActions(page, dialogObserver)
+              break
+            }
+          } else {
+            // Sample not clean — start the debounce over.
+            firstCleanConfirmAt = null
           }
+        } else {
+          // Lobby visible (or still in post-lobby grace) — start the debounce over.
+          firstCleanConfirmAt = null
         }
 
         // Run text-based denial check first so "You've been removed" is
@@ -529,6 +587,16 @@ async function performCriticalSetupActions(
           console.log(`Layout change successful on attempt ${attempt}`)
           break
         }
+        // changeLayout sets a terminal end reason (BotRemoved / BotNotAccepted)
+        // when the bot is out of the meeting. Retrying the layout then makes no
+        // sense — and a flapping DOM could let a later attempt "succeed" while
+        // the meeting is already marked ended.
+        if (GLOBAL.getEndReason()) {
+          console.log(
+            `Layout change aborted: terminal end reason ${GLOBAL.getEndReason()} already set`
+          )
+          break
+        }
         if (attempt < maxAttempts) {
           await page.waitForTimeout(300)
         }
@@ -536,6 +604,15 @@ async function performCriticalSetupActions(
     } finally {
       SimpleDialogObserver.resume()
     }
+  }
+
+  // changeLayout may have detected that the bot is not (or no longer) in the
+  // meeting and set a terminal end reason (BotNotAccepted / BotRemoved).
+  // Returning normally here would let the state machine transition to InCall
+  // on a dead meeting — surface it as a join failure instead.
+  const endReason = GLOBAL.getEndReason()
+  if (endReason) {
+    throw new Error(`Meeting ended during critical setup: ${endReason}`)
   }
 
   void htmlSnapshot.captureSnapshot(page, "meet_join_meeting_success")
@@ -974,11 +1051,31 @@ async function changeLayout(page: Page, attempt: number, maxAttempts: number): P
   console.log(`Starting layout change process (attempt ${attempt}/${maxAttempts})...`)
 
   try {
-    const inMeeting = await isInMeeting(page)
+    let inMeeting = await isInMeeting(page)
     if (!inMeeting) {
-      console.log("Bot is no longer in the meeting, stopping layout change")
-      GLOBAL.setError(MeetingEndReason.BotRemoved, "Bot removed during layout change")
-      return false
+      // Distinguish a real ejection from a false join confirm before declaring
+      // BotRemoved. Meet cannot send an admitted participant back to the lobby,
+      // so lobby indicators here mean the join confirmation itself was wrong
+      // (sampled against transitional DOM) — the bot was never admitted.
+      // Re-sample after a pause so one DOM flicker doesn't end the meeting.
+      await page.waitForTimeout(3000)
+      if (await isInWaitingRoom(page)) {
+        console.log(
+          "Lobby detected after join confirm — bot was never admitted (false join confirm), stopping layout change"
+        )
+        GLOBAL.setError(
+          MeetingEndReason.BotNotAccepted,
+          "Bot was never admitted: waiting room detected after join confirmation"
+        )
+        return false
+      }
+      inMeeting = await isInMeeting(page)
+      if (!inMeeting) {
+        console.log("Bot is no longer in the meeting, stopping layout change")
+        GLOBAL.setError(MeetingEndReason.BotRemoved, "Bot removed during layout change")
+        return false
+      }
+      console.log("In-meeting state recovered after transient check failure, continuing layout change")
     }
 
     console.log("Looking for More options button in call controls...")
