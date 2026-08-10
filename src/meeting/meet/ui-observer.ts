@@ -54,10 +54,14 @@ export async function startUIBasedObserver(
   // Create and start integrated speakers observer
   const speakersObserver = new SpeakersObserver(GLOBAL.get().meeting_platform)
 
-  // Callback to handle speakers changes
+  // Callback to handle speakers changes. Routed through the bridge arbiter:
+  // when this observer runs as the PRIMARY source (network interception failed
+  // or was retired) the arbiter passes everything through; when it runs as the
+  // early-window bridge alongside a live network path, the arbiter mutes it as
+  // soon as the network path reports its first speaker.
   const onSpeakersChange = async (speakers: SpeakerData[]) => {
     try {
-      await SpeakerManager.getInstance().handleSpeakerUpdate(speakers)
+      await SpeakerManager.getInstance().handleUiBridgeUpdate(speakers)
     } catch (error) {
       console.error("Error handling speaker update:", formatError(error))
     }

@@ -257,7 +257,24 @@ export class InCallState extends BaseState {
         const networkSetupSuccess = await this.tryNetworkInterception()
         if (networkSetupSuccess) {
           console.log(`✅ Network-based speaker detection enabled for ${platform}`)
-          return // Successfully set up network interception, no need for UI-based
+
+          // Meet: also start the UI observer as an early-window BRIDGE. At first
+          // speech after silence the speaker's audio track takes seconds to spin
+          // up before the network path can attribute anything, while Meet's UI
+          // indicator fires almost immediately — prod transcripts showed a
+          // median 5.3s attribution hole exactly in that gap (leading "Unknown").
+          // The SpeakerManager arbiter mutes this source once the network path
+          // reports its first speaker. Non-blocking: opening the People panel
+          // can take seconds and must not delay the recording-started event.
+          if (platform === "meet" && this.context.playwrightPage) {
+            this.startUIBasedObservation().catch((error) => {
+              console.warn(
+                "[SpeakerBridge] UI bridge failed to start (network path still active):",
+                formatError(error)
+              )
+            })
+          }
+          return // Network interception is the primary source
         }
       } catch (error) {
         console.warn(
