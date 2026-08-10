@@ -830,7 +830,7 @@ export function browserInterceptionLogic(schema: any[]) {
     // frames, and reports whether audioLevel is populated under our browser.
     // Counts only — no ids or names. Answers whether a frame-independent
     // CSRC/SSRC speaker path (attendee-style) is viable here.
-    setInterval(() => {
+    const csrcProbeInterval = setInterval(() => {
       try {
         let csrcSources = 0
         let csrcWithLevel = 0
@@ -942,6 +942,10 @@ export function browserInterceptionLogic(schema: any[]) {
     // Stop network interception: abort all tracks and prevent further callbacks
     ;(window as any).__stopNetworkInterception = () => {
       console.error("[NetworkInterceptor] 🛑 Stopping network interception...")
+
+      // Stop the CSRC probe — the stop flag alone would leave it polling
+      // receivers forever and only suppress the report.
+      clearInterval(csrcProbeInterval)
 
       // Abort all active track controllers
       for (const [trackId, controller] of trackAbortControllers.entries()) {
