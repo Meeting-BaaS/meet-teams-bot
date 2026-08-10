@@ -12,6 +12,31 @@ import {
   enum as zodEnum,
   unknown as zodUnknown
 } from "zod"
+import { envVars } from "../config/env-vars"
+
+const storageBucketSchema = string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/)
+
+export const StorageConfigSchema = object({
+  endpoint: url().refine(
+    (endpoint) => {
+      const protocol = new URL(endpoint).protocol
+      return protocol === "https:" || (protocol === "http:" && envVars.ENVIRON !== "prod")
+    },
+    { message: "customer storage endpoint must use HTTPS" }
+  ),
+  region: string(),
+  force_path_style: boolean().default(false),
+  access_key_id: string(),
+  secret_access_key: string(),
+  artifacts_bucket: storageBucketSchema,
+  audio_chunks_bucket: storageBucketSchema,
+  logs_bucket: storageBucketSchema,
+  // When false (the default for a team on its own storage) a failed upload must
+  // NOT be parked on MeetingBaas EFS — the recording is given up on instead.
+  // These teams are usually on their own bucket for data residency, and the EFS
+  // fallback is the one path that puts a full recording on our volume.
+  allow_transient_spill: boolean().default(false)
+})
 
 export const RecordingModeSchema = zodEnum(["speaker_view", "audio_only", "gallery_view"])
 export const SpeechToTextProviderSchema = zodEnum([
@@ -88,23 +113,7 @@ export const BotMessageSchema = object({
   // would then write a customer's recording into OUR bucket while the api-server
   // looks for it in theirs.
   storage_config: optional(
-    nullable(
-      object({
-        endpoint: url(),
-        region: string(),
-        force_path_style: boolean().default(false),
-        access_key_id: string(),
-        secret_access_key: string(),
-        artifacts_bucket: string(),
-        audio_chunks_bucket: string(),
-        logs_bucket: string(),
-        // When false (the default for a team on its own storage) a failed upload must
-        // NOT be parked on MeetingBaas EFS — the recording is given up on instead.
-        // These teams are usually on their own bucket for data residency, and the EFS
-        // fallback is the one path that puts a full recording on our volume.
-        allow_transient_spill: boolean().default(false)
-      })
-    )
+    nullable(StorageConfigSchema)
   ).default(null),
 
   // Teams authenticated bot config — present when api-server assigned a teams_login.
