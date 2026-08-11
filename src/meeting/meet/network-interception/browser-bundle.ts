@@ -36,7 +36,9 @@ export function browserInterceptionLogic(schema: any[]) {
     // only — no user data. Installed at document-start so nothing Meet does
     // beats the hooks.
     const mediaProbe = {
-      frame: window === window.top ? "top" : `${location.host}${location.pathname}`.slice(0, 60),
+      // Host only — a frame's pathname can embed the meeting code or other
+      // session identifiers, and this string ends up in the bot log.
+      frame: window === window.top ? "top" : location.host.slice(0, 40),
       pcCreated: 0,
       workers: [] as string[],
       sharedWorkers: 0,
