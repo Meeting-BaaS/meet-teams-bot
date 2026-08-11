@@ -466,9 +466,16 @@ export function browserInterceptionLogic(schema: any[]) {
       return audioData
     }
 
+    // performance.now() of the last frame with audio energy — from ANY track,
+    // including the NetEq tap's mixed stream. This is the only "is anyone
+    // speaking" ground truth on NetEq sessions (no per-stream CSRC there), used
+    // to test whether datachannel field 14 is the active-speaker flag.
+    let lastAudioActivityAt = 0
     // Check if audio data contains meaningful audio
     function hasAudioActivity(audioData: Float32Array): boolean {
-      return audioData.some((v) => Math.abs(v) > 0.001)
+      const active = audioData.some((v) => Math.abs(v) > 0.001)
+      if (active) lastAudioActivityAt = performance.now()
+      return active
     }
 
     // Find users with audio levels from contributing sources
@@ -1246,6 +1253,11 @@ export function browserInterceptionLogic(schema: any[]) {
       // sessions (where CSRC exists and is trusted) to decide what the field
       // means; the same field then carries the meaning onto NetEq sessions.
       corr: { onLoud: 0, onQuiet: 0, offLoud: 0, offQuiet: 0, samples: 0 },
+      // v9: field-14 (NetEq active-speaker candidate) vs tap audio energy. If
+      // field 14 means "active speaker": onSound dominates, cross terms small.
+      // Uses the mixed-stream tap as ground truth, so it works on NetEq — where
+      // CSRC (and the v6 correlation) do not exist.
+      f14: { onSound: 0, onQuiet: 0, offSound: 0, offQuiet: 0, samples: 0, seen: false },
       // v8: the loud audio SSRC never resolves to a device (mapped>0 yet zero
       // speakers detected), so the CSRC SSRC and the deviceOutput streamId live
       // in different id spaces. Dump both spaces (hex, so the PII redactor can't
@@ -1319,6 +1331,24 @@ export function browserInterceptionLogic(schema: any[]) {
         }
       }
       return loud
+    }
+    // v9: correlate field 14 (per audio device) against recent tap audio
+    // energy. "Sound" = a frame with energy in the last 1.5s (mixed stream on
+    // NetEq, or any track on classic).
+    function dcProbeF14(deviceOutputs: any[]) {
+      const sound = lastAudioActivityAt > 0 && performance.now() - lastAudioActivityAt < 1500
+      for (const o of deviceOutputs || []) {
+        if (o?.deviceOutputType !== 1) continue
+        const val = o?.deviceOutputActiveSpeaker?.value
+        if (val === undefined) continue // field 14 absent on this session
+        dcProbe.f14.seen = true
+        const on = val !== 0
+        dcProbe.f14.samples++
+        if (on && sound) dcProbe.f14.onSound++
+        else if (on && !sound) dcProbe.f14.onQuiet++
+        else if (!on && sound) dcProbe.f14.offSound++
+        else dcProbe.f14.offQuiet++
+      }
     }
     // Fold one decoded CollectionEvent's device outputs into the correlation.
     function dcProbeCorrelate(deviceOutputs: any[]) {
@@ -1453,6 +1483,7 @@ export function browserInterceptionLogic(schema: any[]) {
             toggling,
             levels,
             corr: dcProbe.corr,
+            f14: dcProbe.f14,
             ssrc: {
               loudCsrc: Array.from(dcProbe.ssrc.loudCsrc).slice(0, 20),
               audioStreamIds: Array.from(dcProbe.ssrc.audioStreamIds).slice(0, 20),
@@ -1628,6 +1659,7 @@ export function browserInterceptionLogic(schema: any[]) {
                 try {
                   dcProbeCorrelate(deviceOutputs)
                   dcProbeSsrcMap(deviceOutputs)
+                  dcProbeF14(deviceOutputs)
                 } catch {
                   /* probe must never break decoding */
                 }

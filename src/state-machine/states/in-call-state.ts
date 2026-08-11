@@ -364,6 +364,10 @@ export class InCallState extends BaseState {
               ? ` corr(field9vsCsrc): onLoud=${c.onLoud} onQuiet=${c.onQuiet} offLoud=${c.offLoud} offQuiet=${c.offQuiet} samples=${c.samples}`
               : ""
             const levelsStr = d.levels?.length ? ` levels=[${d.levels.join(",")}]` : ""
+            const f = d.f14
+            const f14Str = f?.seen
+              ? ` f14(activeSpeaker vs sound): onSound=${f.onSound} onQuiet=${f.onQuiet} offSound=${f.offSound} offQuiet=${f.offQuiet} samples=${f.samples}`
+              : ""
             const s = d.ssrc
             const ssrcStr = s
               ? ` ssrc(loudInStreamIds=${s.loudInStreamIds}/loudInSync=${s.loudInSync}/loudSamples=${s.loudSamples}` +
@@ -372,7 +376,7 @@ export class InCallState extends BaseState {
               : ""
             console.log(
               `[DcProbe] messages=${d.messages} bytes=${d.bytes} ` +
-                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]${levelsStr}${corrStr}${ssrcStr}`
+                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]${levelsStr}${corrStr}${f14Str}${ssrcStr}`
             )
             return
           }

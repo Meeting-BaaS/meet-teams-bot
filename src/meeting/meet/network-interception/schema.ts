@@ -140,12 +140,26 @@ export const PROTO_SCHEMA = [
         fieldNumber: 10,
         type: "message",
         messageType: "DeviceOutputStatus"
+      },
+      // Field 14: NetEq-only per-device active-speaker candidate (probe v9). It
+      // appears only where audio is server-mixed (no per-stream CSRC) and is
+      // one-device-at-a-time, which is the dominant-speaker shape. Its varint
+      // at position 1 is the flag.
+      {
+        name: "deviceOutputActiveSpeaker",
+        fieldNumber: 14,
+        type: "message",
+        messageType: "DeviceOutputActiveSpeaker"
       }
     ]
   },
   {
     name: "DeviceOutputActivity",
     fields: [{ name: "value", fieldNumber: 2, type: "varint" }]
+  },
+  {
+    name: "DeviceOutputActiveSpeaker",
+    fields: [{ name: "value", fieldNumber: 1, type: "varint" }]
   },
   {
     name: "DeviceOutputStatus",

@@ -51,6 +51,15 @@ export type NetworkPayload = {
       offQuiet: number
       samples: number
     }
+    /** v9: field-14 (NetEq active-speaker candidate) vs tap audio energy. */
+    f14?: {
+      onSound: number
+      onQuiet: number
+      offSound: number
+      offQuiet: number
+      samples: number
+      seen: boolean
+    }
     /** v8: SSRC id spaces (hex) to crack the loud-SSRC ↔ streamId mapping. */
     ssrc?: {
       loudCsrc: string[]
