@@ -36,12 +36,17 @@ const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before c
 // detections prove the text can already be present at 0.3s), so 5.0s is a
 // hard upper bound on the render lag — 6s covers it plus one loop-cadence of
 // margin. Cost: 0 of 120 sampled healthy joins ever showed lobby text after
-// a genuine admission (the debounce cannot reset-loop a good join), and ~85%
-// of healthy joins have remote audio tracks registered (fast path below), so
-// only the hook-blind minority waits the full debounce. A render lag beyond
-// 6s would still be caught by the lobby check in changeLayout and ends as
-// BotNotAccepted rather than a false "removed".
+// a genuine admission (the debounce cannot reset-loop a good join), so every
+// join pays the flat ~6s. A render lag beyond 6s is still caught by the lobby
+// check in changeLayout and ends as BotNotAccepted rather than a false
+// "removed".
 const JOIN_CONFIRM_DEBOUNCE_MS = 6000
+// A bot that never saw the lobby cannot tell an open meeting from a lobby
+// whose text hasn't rendered yet — prod kills showed text arriving up to
+// 6.4s after the first clean sample, past the 6s window. A bot that DID see
+// the lobby and watched it clear is in the trusted case (admitted meetings
+// never re-show the text; 76/76 sampled), so it keeps the shorter window.
+const JOIN_CONFIRM_DEBOUNCE_NO_LOBBY_SEEN_MS = 10000
 
 /**
  * Checks that the page is still on meet.google.com.
@@ -249,7 +254,8 @@ export class MeetProvider implements MeetingProviderInterface {
     page: Page,
     cancelCheck: () => boolean,
     onJoinSuccess: () => void,
-    dialogObserver?: SimpleDialogObserver
+    dialogObserver?: SimpleDialogObserver,
+    onAdmissionDetected?: () => void
   ): Promise<void> {
     try {
       // Capture DOM state before starting join process
@@ -370,6 +376,11 @@ export class MeetProvider implements MeetingProviderInterface {
         if (inWaitingRoom && !nowInWaitingRoom && !leftWaitingRoomAt) {
           leftWaitingRoomAt = Date.now()
           console.log("✅ Left waiting room, giving UI 2 seconds to fully render...")
+          // Admission observed but confirmation (grace + debounce) still
+          // pending — let the caller extend its waiting-room deadline so a
+          // host admitting near the timeout doesn't get TimeoutWaitingToStart
+          // while we are mid-confirmation.
+          onAdmissionDetected?.()
         }
 
         // Only retry clicking join button if NOT in waiting room
@@ -394,37 +405,32 @@ export class MeetProvider implements MeetingProviderInterface {
         if (!nowInWaitingRoom && gracePeriodExpired) {
           const inMeeting = await isInMeeting(page)
           if (inMeeting) {
-            // Fast path: remote audio tracks only flow after real admission —
-            // Meet's lobby never receives conference media. The audio track
-            // layer is injected before navigation, so its backlog is readable
-            // here. Absence proves nothing (the PC hook misses tracks on a
-            // large share of calls), so no-tracks just falls through to the
-            // DOM debounce below.
-            const remoteAudioTracks = await page
-              .evaluate(
-                // biome-ignore lint/suspicious/noExplicitAny: browser-side global
-                () => ((window as any).__audioTrackLayer?.seenTracks || []).length
-              )
-              .catch(() => 0)
-            if (remoteAudioTracks > 0) {
-              botWasInMeeting = true
-              console.log(
-                `✅ Successfully confirmed we are in the meeting (fast path: ${remoteAudioTracks} remote audio track(s) flowing)`
-              )
-              onJoinSuccess()
-              await performCriticalSetupActions(page, dialogObserver)
-              break
-            }
+            // NOTE: do NOT add a "remote audio tracks = admitted" fast path
+            // here. Prod (2026-08-11, 12 killed joins) showed the track
+            // backlog reads exactly 3 in the lobby-adjacent state — Meet
+            // pre-allocates 3 audio transceivers, so track count is NOT
+            // admission evidence. Never-admitted lobby bots also render the
+            // full call-control DOM (Leave call included) and keep the
+            // "Please wait…" text in the DOM, so neither tracks nor
+            // in-meeting selectors can distinguish lobby from admitted.
+            // The only safe gate is this debounce: no confirm while the
+            // lobby text is detectable, sustained across samples.
             // Debounce the confirmation: a single clean sample can land in the
             // window where the lobby's call-control DOM is up but its text is
             // not (see JOIN_CONFIRM_DEBOUNCE_MS). Confirm only when a second
             // clean sample arrives at least that long after the first.
+            // Observed lobby→clear transition = trusted admission signal
+            // (shorter window). Never saw the lobby = could be an open
+            // meeting OR a lobby with late-rendering text (longer window).
+            const debounceMs = leftWaitingRoomAt
+              ? JOIN_CONFIRM_DEBOUNCE_MS
+              : JOIN_CONFIRM_DEBOUNCE_NO_LOBBY_SEEN_MS
             if (firstCleanConfirmAt === null) {
               firstCleanConfirmAt = Date.now()
               console.log(
-                `⏳ In-meeting sample clean, debouncing join confirm for ${JOIN_CONFIRM_DEBOUNCE_MS}ms...`
+                `⏳ In-meeting sample clean, debouncing join confirm for ${debounceMs}ms (lobby transition ${leftWaitingRoomAt ? "observed" : "not observed"})...`
               )
-            } else if (Date.now() - firstCleanConfirmAt >= JOIN_CONFIRM_DEBOUNCE_MS) {
+            } else if (Date.now() - firstCleanConfirmAt >= debounceMs) {
               botWasInMeeting = true
               console.log(
                 `✅ Successfully confirmed we are in the meeting (debounced ${Date.now() - firstCleanConfirmAt}ms; grace period: ${!leftWaitingRoomAt ? "not in waiting room" : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`

@@ -19,7 +19,11 @@ export interface MeetingProviderInterface {
     page: Page,
     cancelCheck: () => boolean,
     onJoinSuccess: () => void,
-    dialogObserver?: import("./services/dialog-observer/simple-dialog-observer").SimpleDialogObserver
+    dialogObserver?: import("./services/dialog-observer/simple-dialog-observer").SimpleDialogObserver,
+    // Fired when admission is DETECTED but not yet confirmed (e.g. Meet's
+    // lobby cleared while the join-confirm debounce is still running) so the
+    // caller can keep its waiting-room deadline from expiring mid-confirmation.
+    onAdmissionDetected?: () => void
   ): Promise<void>
   findEndMeeting(page: Page, opts?: { ignoreAloneSignals?: boolean }): Promise<boolean>
   parseMeetingUrl(meeting_url: string): Promise<{ meetingId: string; password: string }>
