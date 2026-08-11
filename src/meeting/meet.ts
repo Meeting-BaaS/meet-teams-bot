@@ -394,11 +394,14 @@ export class MeetProvider implements MeetingProviderInterface {
           const inMeeting = await isInMeeting(page)
           if (inMeeting) {
             // NOTE: do NOT add a "remote audio tracks = admitted" fast path
-            // here. Meet's lobby/pre-join DOES receive PeerConnection audio
-            // tracks (observed in prod: 3 receiver tracks while still on the
-            // "Please wait…" screen), so a non-empty track backlog is not
-            // proof of admission and bypassing the debounce on it causes
-            // false joins that end as spurious bot_rejected.
+            // here. Tracks start flowing at the moment of admission, but
+            // Meet's lobby UI can stay visibly on screen for several more
+            // seconds (observed in prod: "Please wait…" text still visible
+            // 7s after admission). Confirming on tracks while that UI
+            // lingers makes the post-confirm lobby check read the leftover
+            // UI as "never admitted" and kill a live join as bot_rejected.
+            // Waiting for the lobby UI to clear (this debounce) is the only
+            // ordering that is safe on both sides.
             // Debounce the confirmation: a single clean sample can land in the
             // window where the lobby's call-control DOM is up but its text is
             // not (see JOIN_CONFIRM_DEBOUNCE_MS). Confirm only when a second
