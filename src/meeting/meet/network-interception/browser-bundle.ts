@@ -1223,15 +1223,24 @@ export function browserInterceptionLogic(schema: any[]) {
     const dcProbe = {
       messages: 0,
       bytes: 0,
-      // path "a.b.c" (field numbers) -> {sawZero, sawNonZero, last}
-      varintPaths: new Map<string, { z: boolean; nz: boolean; last: number }>()
+      isTop: window === window.top,
+      // Underscore path "p1_9_2" (field numbers) — never dotted, so the PII
+      // redactor cannot mistake it for an IP address and mangle it.
+      // instMax/nzMax = most instances of this path (repeated fields = one per
+      // device) and most simultaneously non-zero in a single message: nzMax==1
+      // with instMax>1 is a single active-speaker flag; nzMax>1 is per-device.
+      varintPaths: new Map<
+        string,
+        { z: boolean; nz: boolean; last: number; instMax: number; nzMax: number }
+      >()
     }
     function dcRawWalk(
       reader: any,
       end: number,
       path: string,
       depth: number,
-      budget: { fields: number }
+      budget: { fields: number },
+      msg: Map<string, { inst: number; nz: number }>
     ) {
       // Depth and distinct-path caps alone don't bound a payload with many
       // repeated fields on one path — this runs a second full parse inside the
@@ -1248,15 +1257,26 @@ export function browserInterceptionLogic(schema: any[]) {
         }
         const fieldNumber = tag >>> 3
         const wireType = tag & 7
-        const p = path ? `${path}.${fieldNumber}` : `${fieldNumber}`
+        const p = path ? `${path}_${fieldNumber}` : `p${fieldNumber}`
         try {
           if (wireType === 0) {
             const v = reader.uint32()
-            const rec = dcProbe.varintPaths.get(p) || { z: false, nz: false, last: 0 }
+            const rec = dcProbe.varintPaths.get(p) || {
+              z: false,
+              nz: false,
+              last: 0,
+              instMax: 0,
+              nzMax: 0
+            }
             if (v === 0) rec.z = true
             else rec.nz = true
             rec.last = v
             dcProbe.varintPaths.set(p, rec)
+            // Per-message instance counting for device correlation.
+            const m = msg.get(p) || { inst: 0, nz: 0 }
+            m.inst++
+            if (v !== 0) m.nz++
+            msg.set(p, m)
           } else if (wireType === 2) {
             const len = reader.uint32()
             const sub = reader.pos + len
@@ -1264,7 +1284,7 @@ export function browserInterceptionLogic(schema: any[]) {
             // sub-fields, treat as an opaque leaf (string/bytes). Either way the
             // reader resumes exactly at the end of this field.
             try {
-              dcRawWalk(reader, sub, p, depth + 1, budget)
+              dcRawWalk(reader, sub, p, depth + 1, budget, msg)
             } catch {
               /* opaque leaf */
             }
@@ -1281,14 +1301,35 @@ export function browserInterceptionLogic(schema: any[]) {
         }
       }
     }
+    // One raw-walk over an inflated CollectionEvent, folding per-message
+    // instance counts into the running instMax/nzMax.
+    function dcProbeScan(inflated: Uint8Array) {
+      dcProbe.messages++
+      dcProbe.bytes += inflated.length
+      const msg = new Map<string, { inst: number; nz: number }>()
+      const reader = (window as any).protobuf.Reader.create(inflated)
+      dcRawWalk(reader, reader.len, "", 0, { fields: 4000 }, msg)
+      for (const [p, m] of msg) {
+        const rec = dcProbe.varintPaths.get(p)
+        if (!rec) continue
+        if (m.inst > rec.instMax) rec.instMax = m.inst
+        if (m.nz > rec.nzMax) rec.nzMax = m.nz
+      }
+    }
+
     const dcProbeInterval = setInterval(() => {
       if ((window as any).__networkInterceptorStopped) return
-      // Undecoded varint paths that have flipped both ways = speaking-signal
-      // candidates. Known schema paths (device output status etc.) are fine to
-      // include — the point is to see which one tracks speech.
+      // Child frames (recaptcha, feedback) run this bundle too and never see a
+      // datachannel — stay silent there so they don't drown the top frame's
+      // signal. The top frame reports even at zero so "no datachannel" is
+      // visible.
+      if (!dcProbe.isTop && dcProbe.messages === 0) return
+      // Undecoded varint paths that flipped both ways = speaking-signal
+      // candidates. instMax/nzMax reveal per-device (nzMax>1) vs single active
+      // speaker (nzMax==1, instMax>1).
       const toggling = Array.from(dcProbe.varintPaths.entries())
         .filter(([, r]) => r.z && r.nz)
-        .map(([p, r]) => `${p}=${r.last}`)
+        .map(([p, r]) => `${p}=${r.last}(inst${r.instMax}/nz${r.nzMax})`)
         .slice(0, 30)
       if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
         ;(window as any).onNetworkSpeakerUpdate({
@@ -1424,6 +1465,83 @@ export function browserInterceptionLogic(schema: any[]) {
       reportHealthCheck()
     }, 10000)
 
+    // Decode + probe one datachannel message. Shared by every path a channel
+    // can reach us — the passive "datachannel" event (remote-created channels)
+    // AND createDataChannel (channels Meet builds locally, which the event
+    // never fires for; missing those meant no roster/chat/speaker data at all
+    // on those sessions).
+    const handledChannels = new WeakSet<any>()
+    function attachDcHandler(channel: any, label: string) {
+      if (!channel || handledChannels.has(channel)) return
+      handledChannels.add(channel)
+      allDataChannels.set(label, channel)
+      if (label === "meet_messages") {
+        meetMessagesDataChannel = channel
+        console.error("[NetworkInterceptor] 💬 Chat channel ready")
+      }
+      channel.addEventListener("message", (msg: any) => {
+        try {
+          const rawData = new Uint8Array(msg.data)
+          try {
+            if (
+              typeof (window as any).pako === "undefined" ||
+              typeof (window as any).pako.inflate !== "function"
+            ) {
+              throw new Error("pako.inflate is not available")
+            }
+            const inflated = (window as any).pako.inflate(rawData)
+            // Probe: raw-walk the bytes for undecoded speaking-signal candidates.
+            // Read-only, never touches the decoded pipeline below.
+            try {
+              dcProbeScan(inflated)
+            } catch {
+              /* probe must never break decoding */
+            }
+            const eventData = messageDecoders["CollectionEvent"](inflated)
+            const body = eventData.body
+            if (body) {
+              const wrapper = body.userInfoListWrapperAndChatWrapperWrapper
+              if (wrapper?.deviceInfoWrapper?.deviceOutputInfoList) {
+                updateDeviceOutputs(userManager, wrapper.deviceInfoWrapper.deviceOutputInfoList)
+              }
+              if (wrapper?.userInfoListWrapperAndChatWrapper?.userInfoListWrapper?.userInfoList) {
+                const users =
+                  wrapper.userInfoListWrapperAndChatWrapper.userInfoListWrapper.userInfoList
+                updateUsers(userManager, users)
+                console.error(`[NetworkInterceptor] 👥 Updated ${users.length} users`)
+              }
+              const chatMessages = wrapper?.userInfoListWrapperAndChatWrapper?.chatMessageWrapper
+              if (chatMessages && chatMessages.length > 0) {
+                for (const chatMsgWrapper of chatMessages) {
+                  const chatMsg = chatMsgWrapper.chatMessage
+                  if (chatMsg && chatMsg.chatMessageContent?.text) {
+                    const senderUser = userManager.allUsersMap.get(chatMsg.deviceId)
+                    const senderName = senderUser ? decodeUserName(senderUser) : "Unknown"
+                    if (typeof (window as any).onChatMessageReceived === "function") {
+                      ;(window as any).onChatMessageReceived({
+                        messageId: chatMsg.messageId,
+                        deviceId: chatMsg.deviceId,
+                        timestamp: chatMsg.timestamp,
+                        text: chatMsg.chatMessageContent.text,
+                        senderName
+                      })
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.error(
+              `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
+              e
+            )
+          }
+        } catch (e) {
+          console.error("[NetworkInterceptor] Critical Message Error:", e)
+        }
+      })
+    }
+
     // Intercept RTCPeerConnection for datachannel only (track handling now centralized)
     if (typeof (window as any).RTCPeerConnection !== "undefined") {
       const OriginalPC = (window as any).RTCPeerConnection
@@ -1435,95 +1553,26 @@ export function browserInterceptionLogic(schema: any[]) {
         // Track whether we"ve attempted proactive creation for this PC instance
         let hasAttemptedProactiveCreation = false
 
-        // Only handle dataChannel - tracks are handled by centralized layer
+        // Locally-created channels (Meet builds meet_messages itself in many
+        // sessions) never fire the "datachannel" event — catch them at the
+        // source so roster/chat/speaker data flows on every session.
+        const originalCreateDataChannel = pc.createDataChannel.bind(pc)
+        pc.createDataChannel = (dcLabel: string, dcOpts: any) => {
+          const channel = originalCreateDataChannel(dcLabel, dcOpts)
+          try {
+            console.error(`[NetworkInterceptor] 🔌 DataChannel created locally: "${dcLabel}"`)
+            attachDcHandler(channel, dcLabel)
+          } catch (e) {
+            console.error("[NetworkInterceptor] Error attaching to created channel:", e)
+          }
+          return channel
+        }
+
+        // Passive path: remotely-created channels.
         pc.addEventListener("datachannel", (event: any) => {
           const label = event.channel.label
-          allDataChannels.set(label, event.channel)
-
           console.error(`[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`)
-
-          if (label === "meet_messages") {
-            meetMessagesDataChannel = event.channel
-            console.error("[NetworkInterceptor] 💬 Chat channel ready")
-          }
-          event.channel.addEventListener("message", (msg: any) => {
-            try {
-              const rawData = new Uint8Array(msg.data)
-              try {
-                // Defensive check for pako availability
-                if (
-                  typeof (window as any).pako === "undefined" ||
-                  typeof (window as any).pako.inflate !== "function"
-                ) {
-                  console.error(
-                    "[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available"
-                  )
-                  console.warn(
-                    "[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression"
-                  )
-                  throw new Error("pako.inflate is not available")
-                }
-                const inflated = (window as any).pako.inflate(rawData)
-                // Probe: raw-walk the same inflated bytes to enumerate undecoded
-                // varint field paths (speaking-signal candidates). Read-only,
-                // never touches the decoded pipeline below.
-                try {
-                  dcProbe.messages++
-                  dcProbe.bytes += inflated.length
-                  const probeReader = (window as any).protobuf.Reader.create(inflated)
-                  dcRawWalk(probeReader, probeReader.len, "", 0, { fields: 4000 })
-                } catch {
-                  /* probe must never break decoding */
-                }
-                const eventData = messageDecoders["CollectionEvent"](inflated)
-                const body = eventData.body
-                if (body) {
-                  const wrapper = body.userInfoListWrapperAndChatWrapperWrapper
-                  if (wrapper?.deviceInfoWrapper?.deviceOutputInfoList) {
-                    const deviceOutputs = wrapper.deviceInfoWrapper.deviceOutputInfoList
-                    updateDeviceOutputs(userManager, deviceOutputs)
-                  }
-                  if (
-                    wrapper?.userInfoListWrapperAndChatWrapper?.userInfoListWrapper?.userInfoList
-                  ) {
-                    const users =
-                      wrapper.userInfoListWrapperAndChatWrapper.userInfoListWrapper.userInfoList
-                    updateUsers(userManager, users)
-                    console.error(`[NetworkInterceptor] 👥 Updated ${users.length} users`)
-                  }
-
-                  // Extract chat messages
-                  const chatMessages = wrapper?.userInfoListWrapperAndChatWrapper?.chatMessageWrapper
-                  if (chatMessages && chatMessages.length > 0) {
-                    for (const chatMsgWrapper of chatMessages) {
-                      const chatMsg = chatMsgWrapper.chatMessage
-                      if (chatMsg && chatMsg.chatMessageContent?.text) {
-                        const senderUser = userManager.allUsersMap.get(chatMsg.deviceId)
-                        const senderName = senderUser ? decodeUserName(senderUser) : "Unknown"
-
-                        if (typeof (window as any).onChatMessageReceived === "function") {
-                          ;(window as any).onChatMessageReceived({
-                            messageId: chatMsg.messageId,
-                            deviceId: chatMsg.deviceId,
-                            timestamp: chatMsg.timestamp,
-                            text: chatMsg.chatMessageContent.text,
-                            senderName: senderName,
-                          })
-                        }
-                      }
-                    }
-                  }
-                }
-              } catch (e) {
-                console.error(
-                  `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
-                  e
-                )
-              }
-            } catch (e) {
-              console.error("[NetworkInterceptor] Critical Message Error:", e)
-            }
-          })
+          attachDcHandler(event.channel, label)
         })
 
         // Proactive channel creation (disabled by default)
