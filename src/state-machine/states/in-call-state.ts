@@ -355,6 +355,17 @@ export class InCallState extends BaseState {
             return // Don't process as speaker update
           }
 
+          // Datachannel speaking-signal probe: is the channel alive on this
+          // session, and which undecoded varint field toggles with speech?
+          if (payload.source === "dc_probe" && payload.dc) {
+            const d = payload.dc
+            console.log(
+              `[DcProbe] messages=${d.messages} bytes=${d.bytes} ` +
+                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]`
+            )
+            return
+          }
+
           // Media-architecture probe: where does Meet run its media stack in
           // this session? One line per 30s per frame, static names only.
           if (payload.source === "media_probe" && payload.media) {

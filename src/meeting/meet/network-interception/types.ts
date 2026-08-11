@@ -27,7 +27,22 @@ export type ChatMessage = {
 export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
-  source: "roster" | "audio" | "health_check" | "network_interception_failed" | "csrc_probe" | "media_probe"
+  source:
+    | "roster"
+    | "audio"
+    | "health_check"
+    | "network_interception_failed"
+    | "csrc_probe"
+    | "media_probe"
+    | "dc_probe"
+  /** Datachannel speaking-signal probe: undecoded varint field paths that toggle. */
+  dc?: {
+    messages: number
+    bytes: number
+    distinctPaths: number
+    toggling: string[]
+    timestamp: number
+  }
   /** Media-architecture probe: where Meet's media stack lives in this frame. */
   media?: {
     frame: string

@@ -1171,6 +1171,7 @@ export function browserInterceptionLogic(schema: any[]) {
       clearInterval(csrcProbeInterval)
       clearInterval(mediaProbeInterval)
       clearInterval(csrcSampleInterval)
+      clearInterval(dcProbeInterval)
 
       // Abort all active track controllers
       for (const [trackId, controller] of trackAbortControllers.entries()) {
@@ -1194,6 +1195,91 @@ export function browserInterceptionLogic(schema: any[]) {
 
     const messageDecoders = createDecoders(schema)
     console.error("[NetworkInterceptor] ✅ Protobuf decoders ready")
+
+    // ===== DATACHANNEL SPEAKING-SIGNAL PROBE (read-only, temporary) =====
+    // On NetEq sessions audio is server-mixed, so there is no per-stream level
+    // to read — but Meet still animates speaking rings, so a speaking signal
+    // reaches the client somewhere. Our protobuf decoder skips every field not
+    // in the schema, which would throw such a signal away. This probe raw-walks
+    // each CollectionEvent and records which UNDECODED varint field paths toggle
+    // between zero and non-zero over the meeting (a per-device speaking/level
+    // field looks exactly like that), plus whether the datachannel is alive at
+    // all on this session. Field NUMBERS and counts only — never field bytes,
+    // so no names/text can leak.
+    const dcProbe = {
+      messages: 0,
+      bytes: 0,
+      // path "a.b.c" (field numbers) -> {sawZero, sawNonZero, last}
+      varintPaths: new Map<string, { z: boolean; nz: boolean; last: number }>()
+    }
+    function dcRawWalk(reader: any, end: number, path: string, depth: number) {
+      if (depth > 6 || dcProbe.varintPaths.size > 250) return
+      while (reader.pos < end) {
+        let tag: number
+        try {
+          tag = reader.uint32()
+        } catch {
+          return
+        }
+        const fieldNumber = tag >>> 3
+        const wireType = tag & 7
+        const p = path ? `${path}.${fieldNumber}` : `${fieldNumber}`
+        try {
+          if (wireType === 0) {
+            const v = reader.uint32()
+            const rec = dcProbe.varintPaths.get(p) || { z: false, nz: false, last: 0 }
+            if (v === 0) rec.z = true
+            else rec.nz = true
+            rec.last = v
+            dcProbe.varintPaths.set(p, rec)
+          } else if (wireType === 2) {
+            const len = reader.uint32()
+            const sub = reader.pos + len
+            // Try to descend as a nested message; if the bytes are not valid
+            // sub-fields, treat as an opaque leaf (string/bytes). Either way the
+            // reader resumes exactly at the end of this field.
+            try {
+              dcRawWalk(reader, sub, p, depth + 1)
+            } catch {
+              /* opaque leaf */
+            }
+            reader.pos = sub
+          } else if (wireType === 1) {
+            reader.pos += 8
+          } else if (wireType === 5) {
+            reader.pos += 4
+          } else {
+            reader.skipType(wireType)
+          }
+        } catch {
+          return
+        }
+      }
+    }
+    const dcProbeInterval = setInterval(() => {
+      if ((window as any).__networkInterceptorStopped) return
+      // Undecoded varint paths that have flipped both ways = speaking-signal
+      // candidates. Known schema paths (device output status etc.) are fine to
+      // include — the point is to see which one tracks speech.
+      const toggling = Array.from(dcProbe.varintPaths.entries())
+        .filter(([, r]) => r.z && r.nz)
+        .map(([p, r]) => `${p}=${r.last}`)
+        .slice(0, 30)
+      if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
+        ;(window as any).onNetworkSpeakerUpdate({
+          users: [],
+          timestamp: Date.now(),
+          source: "dc_probe",
+          dc: {
+            messages: dcProbe.messages,
+            bytes: dcProbe.bytes,
+            distinctPaths: dcProbe.varintPaths.size,
+            toggling,
+            timestamp: Date.now()
+          }
+        })
+      }
+    }, 30000)
 
     const activeAudioTracks = new Map<
       string,
@@ -1353,6 +1439,17 @@ export function browserInterceptionLogic(schema: any[]) {
                   throw new Error("pako.inflate is not available")
                 }
                 const inflated = (window as any).pako.inflate(rawData)
+                // Probe: raw-walk the same inflated bytes to enumerate undecoded
+                // varint field paths (speaking-signal candidates). Read-only,
+                // never touches the decoded pipeline below.
+                try {
+                  dcProbe.messages++
+                  dcProbe.bytes += inflated.length
+                  const probeReader = (window as any).protobuf.Reader.create(inflated)
+                  dcRawWalk(probeReader, probeReader.len, "", 0)
+                } catch {
+                  /* probe must never break decoding */
+                }
                 const eventData = messageDecoders["CollectionEvent"](inflated)
                 const body = eventData.body
                 if (body) {
