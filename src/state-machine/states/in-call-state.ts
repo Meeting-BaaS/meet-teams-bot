@@ -364,9 +364,15 @@ export class InCallState extends BaseState {
               ? ` corr(field9vsCsrc): onLoud=${c.onLoud} onQuiet=${c.onQuiet} offLoud=${c.offLoud} offQuiet=${c.offQuiet} samples=${c.samples}`
               : ""
             const levelsStr = d.levels?.length ? ` levels=[${d.levels.join(",")}]` : ""
+            const s = d.ssrc
+            const ssrcStr = s
+              ? ` ssrc(loudInStreamIds=${s.loudInStreamIds}/loudInSync=${s.loudInSync}/loudSamples=${s.loudSamples}` +
+                ` loudCsrc=[${s.loudCsrc.join(",")}] audioStreamIds=[${s.audioStreamIds.join(",")}]` +
+                ` syncSsrc=[${s.syncSsrc.join(",")}])`
+              : ""
             console.log(
               `[DcProbe] messages=${d.messages} bytes=${d.bytes} ` +
-                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]${levelsStr}${corrStr}`
+                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]${levelsStr}${corrStr}${ssrcStr}`
             )
             return
           }

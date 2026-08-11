@@ -51,6 +51,16 @@ export type NetworkPayload = {
       offQuiet: number
       samples: number
     }
+    /** v8: SSRC id spaces (hex) to crack the loud-SSRC ↔ streamId mapping. */
+    ssrc?: {
+      loudCsrc: string[]
+      audioStreamIds: string[]
+      syncSsrc: string[]
+      allCsrc: string[]
+      loudInStreamIds: number
+      loudInSync: number
+      loudSamples: number
+    }
     timestamp: number
   }
   /** Media-architecture probe: where Meet's media stack lives in this frame. */

@@ -1245,7 +1245,64 @@ export function browserInterceptionLogic(schema: any[]) {
       // cross terms (on while quiet / off while loud) stay small. Uses classic
       // sessions (where CSRC exists and is trusted) to decide what the field
       // means; the same field then carries the meaning onto NetEq sessions.
-      corr: { onLoud: 0, onQuiet: 0, offLoud: 0, offQuiet: 0, samples: 0 }
+      corr: { onLoud: 0, onQuiet: 0, offLoud: 0, offQuiet: 0, samples: 0 },
+      // v8: the loud audio SSRC never resolves to a device (mapped>0 yet zero
+      // speakers detected), so the CSRC SSRC and the deviceOutput streamId live
+      // in different id spaces. Dump both spaces (hex, so the PII redactor can't
+      // read them as phone/IP numbers) plus how often a loud SSRC lands in the
+      // streamId set or the getSynchronizationSources set — that reveals the
+      // mapping (identity? offset? sync-vs-contributing?).
+      ssrc: {
+        loudCsrc: new Set<string>(),
+        allCsrc: new Set<string>(),
+        syncSsrc: new Set<string>(),
+        audioStreamIds: new Set<string>(),
+        loudInStreamIds: 0,
+        loudInSync: 0,
+        loudSamples: 0
+      }
+    }
+    function hx(n: any): string {
+      const v = Number(n)
+      return Number.isFinite(v) ? `x${(v >>> 0).toString(16)}` : "x?"
+    }
+    function dcProbeSsrcMap(deviceOutputs: any[]) {
+      const s = dcProbe.ssrc
+      const now = performance.now()
+      // Audio deviceOutput streamIds (the map's key space).
+      const audioIds = new Set<string>()
+      for (const o of deviceOutputs || []) {
+        if (o?.deviceOutputType === 1 && o?.streamId != null) {
+          const h = hx(o.streamId)
+          audioIds.add(h)
+          if (s.audioStreamIds.size < 60) s.audioStreamIds.add(h)
+        }
+      }
+      // Loud contributing-source SSRCs + synchronization-source SSRCs, from
+      // receivers we mirrored recently.
+      for (const [receiver, sources] of receiverManager.receiverMap) {
+        const stamp = receiverManager.sourceStamp.get(receiver)
+        const fresh = stamp !== undefined && now - stamp < 2000
+        for (const src of sources || []) {
+          if (src?.source == null) continue
+          const h = hx(src.source)
+          if (s.allCsrc.size < 60) s.allCsrc.add(h)
+          if (fresh && (src.audioLevel || 0) > 0.05) {
+            s.loudSamples++
+            if (s.loudCsrc.size < 60) s.loudCsrc.add(h)
+            if (audioIds.has(h)) s.loudInStreamIds++
+          }
+        }
+        try {
+          for (const sync of receiver.getSynchronizationSources?.() || []) {
+            if (sync?.source != null && s.syncSsrc.size < 60) s.syncSsrc.add(hx(sync.source))
+          }
+        } catch {
+          /* receiver closed */
+        }
+      }
+      // Does a loud SSRC coincide with a synchronization SSRC?
+      for (const h of s.loudCsrc) if (s.syncSsrc.has(h)) s.loudInSync++
     }
     // SSRCs whose most recent CSRC packet is loud, from a receiver we mirrored
     // in the last 2s (freshness on OUR arrival stamp, not the CSRC clock).
@@ -1396,6 +1453,15 @@ export function browserInterceptionLogic(schema: any[]) {
             toggling,
             levels,
             corr: dcProbe.corr,
+            ssrc: {
+              loudCsrc: Array.from(dcProbe.ssrc.loudCsrc).slice(0, 20),
+              audioStreamIds: Array.from(dcProbe.ssrc.audioStreamIds).slice(0, 20),
+              syncSsrc: Array.from(dcProbe.ssrc.syncSsrc).slice(0, 20),
+              allCsrc: Array.from(dcProbe.ssrc.allCsrc).slice(0, 20),
+              loudInStreamIds: dcProbe.ssrc.loudInStreamIds,
+              loudInSync: dcProbe.ssrc.loudInSync,
+              loudSamples: dcProbe.ssrc.loudSamples
+            },
             timestamp: Date.now()
           }
         })
@@ -1561,6 +1627,7 @@ export function browserInterceptionLogic(schema: any[]) {
                 updateDeviceOutputs(userManager, deviceOutputs)
                 try {
                   dcProbeCorrelate(deviceOutputs)
+                  dcProbeSsrcMap(deviceOutputs)
                 } catch {
                   /* probe must never break decoding */
                 }
