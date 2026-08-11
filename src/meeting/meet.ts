@@ -254,7 +254,8 @@ export class MeetProvider implements MeetingProviderInterface {
     page: Page,
     cancelCheck: () => boolean,
     onJoinSuccess: () => void,
-    dialogObserver?: SimpleDialogObserver
+    dialogObserver?: SimpleDialogObserver,
+    onAdmissionDetected?: () => void
   ): Promise<void> {
     try {
       // Capture DOM state before starting join process
@@ -375,6 +376,11 @@ export class MeetProvider implements MeetingProviderInterface {
         if (inWaitingRoom && !nowInWaitingRoom && !leftWaitingRoomAt) {
           leftWaitingRoomAt = Date.now()
           console.log("✅ Left waiting room, giving UI 2 seconds to fully render...")
+          // Admission observed but confirmation (grace + debounce) still
+          // pending — let the caller extend its waiting-room deadline so a
+          // host admitting near the timeout doesn't get TimeoutWaitingToStart
+          // while we are mid-confirmation.
+          onAdmissionDetected?.()
         }
 
         // Only retry clicking join button if NOT in waiting room

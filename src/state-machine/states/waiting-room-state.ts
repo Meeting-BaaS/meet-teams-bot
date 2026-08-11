@@ -381,7 +381,7 @@ export class WaitingRoomState extends BaseState {
     let joinSuccessful = false // Flag indicating we joined the meeting
 
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      const onWaitingRoomTimeout = () => {
         if (!joinSuccessful) {
           // Trigger the timeout only if we are not in the meeting
           GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
@@ -389,7 +389,27 @@ export class WaitingRoomState extends BaseState {
           console.error("Waiting room timeout reached", timeoutError)
           reject(timeoutError)
         }
-      }, timeoutMs)
+      }
+      const deadlineAt = Date.now() + timeoutMs
+      let timeout = setTimeout(onWaitingRoomTimeout, timeoutMs)
+      // Admission can be observed seconds before the join is confirmed (Meet
+      // holds the confirmation through a grace period + debounce). If the
+      // host admits close to the deadline, guarantee the confirmation window
+      // instead of firing TimeoutWaitingToStart mid-confirmation. Extend-only.
+      const ADMISSION_CONFIRM_GRACE_MS = 30_000
+      let admissionGraceApplied = false
+      const onAdmissionDetected = () => {
+        if (admissionGraceApplied || joinSuccessful) return
+        admissionGraceApplied = true
+        const remaining = deadlineAt - Date.now()
+        if (remaining < ADMISSION_CONFIRM_GRACE_MS) {
+          console.info(
+            `Admission detected with ${remaining}ms left on the waiting-room timeout — extending to ${ADMISSION_CONFIRM_GRACE_MS}ms for join confirmation`
+          )
+          clearTimeout(timeout)
+          timeout = setTimeout(onWaitingRoomTimeout, ADMISSION_CONFIRM_GRACE_MS)
+        }
+      }
 
       const checkStopSignal = setInterval(() => {
         if (
@@ -422,7 +442,8 @@ export class WaitingRoomState extends BaseState {
             }
             setDirectMode()
           },
-          this.context.dialogObserver
+          this.context.dialogObserver,
+          onAdmissionDetected
         )
         .then(() => {
           clearInterval(checkStopSignal)

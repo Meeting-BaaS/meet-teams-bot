@@ -364,21 +364,38 @@ describe("MeetProvider.joinMeeting — join-confirm debounce", () => {
     expect(onJoinSuccess).not.toHaveBeenCalled()
   })
 
-  it("confirms after an observed lobby→clear transition plus the debounce window", async () => {
-    // Bot sees the lobby for 3s (host admits), text clears and stays gone —
-    // the trusted transition case. Confirm should land after grace + 6s.
-    const start = Date.now()
+  it("confirms after an observed lobby→clear transition plus the 6s debounce (not the 10s no-lobby window)", async () => {
+    // Script the lobby by SAMPLE COUNT, not wall time: the pre-loop join
+    // steps advance the fake clock by several seconds before the first
+    // isWaitingRoom() poll, so a wall-clock window would already be over
+    // and the test would silently exercise the 10s no-lobby path instead.
+    // First 3 polls: lobby visible (host then admits) — clears from poll 4.
+    let waitingRoomPolls = 0
+    let lobbyClearedAt: number | null = null
     mockDetector.isInMeeting.mockResolvedValue({ count: 4, matched: true })
     mockDetector.isWaitingRoom.mockImplementation(async () => {
-      const inLobby = Date.now() - start < 3000
+      waitingRoomPolls++
+      const inLobby = waitingRoomPolls <= 3
+      if (!inLobby && lobbyClearedAt === null) lobbyClearedAt = Date.now()
       return { matched: inLobby, count: inLobby ? 3 : 0 }
     })
 
-    const onJoinSuccess = jest.fn()
+    let confirmedAt: number | null = null
+    const onJoinSuccess = jest.fn().mockImplementation(() => {
+      confirmedAt = Date.now()
+    })
+    const start = Date.now()
     const cancelCheck = () => Date.now() - start > 60000
 
     await provider.joinMeeting(createJoinLoopPage(), cancelCheck, onJoinSuccess)
 
     expect(onJoinSuccess).toHaveBeenCalledTimes(1)
+    // Confirm must land after the post-lobby grace (1s) + 6s debounce, and
+    // clearly before the 10s no-lobby window — proving the transition-
+    // observed path was taken.
+    expect(lobbyClearedAt).not.toBeNull()
+    const elapsedFromClear = (confirmedAt as unknown as number) - (lobbyClearedAt as unknown as number)
+    expect(elapsedFromClear).toBeGreaterThanOrEqual(7000)
+    expect(elapsedFromClear).toBeLessThan(10000)
   })
 })
