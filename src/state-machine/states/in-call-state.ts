@@ -421,9 +421,13 @@ export class InCallState extends BaseState {
             this.lastNetworkSpeakingKey = speakingKey
           }
 
+          const speakerSource = payload.dcrpc
+            ? "network:dcrpc"
+            : `network:${payload.source ?? "audio"}`
           await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
             networkUsers,
-            payload.timestamp
+            payload.timestamp,
+            speakerSource
           )
         } catch (error) {
           console.error("Error handling network speaker update:", formatError(error))

@@ -156,11 +156,22 @@ export class SpeakerManager {
       return
     }
 
-    await this.handleSpeakerUpdate(observed)
+    await this.handleSpeakerUpdate(observed, "ui-observer")
   }
 
-  public async handleSpeakerUpdate(observed: SpeakerData[]): Promise<void> {
+  public async handleSpeakerUpdate(
+    observed: SpeakerData[],
+    source: string = "ui-observer"
+  ): Promise<void> {
     try {
+      // Which source drives every committed speaker update: network CSRC,
+      // network dcrpc (NetEq), roster, or the UI-observer bridge. This is the
+      // only node-side signal of source — the browser-side interceptor logs do
+      // not reach the bot log. Count only; names/ids are PII and this ships to S3.
+      const speakingNow = observed.filter((s) => s.isSpeaking).length
+      console.log(
+        `[SPEAKER-SRC] source=${source} speaking=${speakingNow}/${observed.length}`
+      )
       // A recording bot stays in the roster but can never hold the floor — see
       // silenceBotSpeaker for what happens to a meeting when it does. A bot that
       // streams audio in does speak, and keeps its turns.
@@ -200,7 +211,8 @@ export class SpeakerManager {
    */
   public async handleNetworkSpeakerUpdate(
     networkUsers: NetworkUser[],
-    timestamp: number
+    timestamp: number,
+    source: string = "network"
   ): Promise<void> {
     // Once the fallback has retired the network path, the UI observer is the
     // primary source. Stopping the page-side interceptor is best-effort, so a
@@ -278,7 +290,7 @@ export class SpeakerManager {
       }
 
       // Process as regular speaker update
-      await this.handleSpeakerUpdate(speakers)
+      await this.handleSpeakerUpdate(speakers, source)
     } catch (error) {
       console.error("[SpeakerManager] ❌ Error handling network speaker update:", error)
       throw error
