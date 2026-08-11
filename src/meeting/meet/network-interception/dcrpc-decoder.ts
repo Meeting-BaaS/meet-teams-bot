@@ -185,7 +185,12 @@ export function decodeDcrpcFrame(
     let inflated = entry.bytes
     if (inflated.length >= 2 && inflated[0] === 0x1f && inflated[1] === 0x8b) {
       try {
-        inflated = inflate(inflated)
+        // pako.inflate can return undefined (not throw) for a truncated payload
+        // with a valid gzip header. Skipping keeps the never-throws contract and
+        // lets the remaining field2 entries decode.
+        const result = inflate(inflated)
+        if (!result || result.length === 0) continue
+        inflated = result
       } catch {
         continue
       }

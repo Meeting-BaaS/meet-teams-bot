@@ -161,7 +161,7 @@ export class SpeakerManager {
 
   public async handleSpeakerUpdate(
     observed: SpeakerData[],
-    source: string = "ui-observer"
+    source: string
   ): Promise<void> {
     try {
       // Which source drives every committed speaker update: network CSRC,

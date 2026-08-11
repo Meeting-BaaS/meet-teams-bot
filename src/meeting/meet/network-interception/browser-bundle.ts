@@ -1197,12 +1197,19 @@ export function browserInterceptionLogic(schema: any[]) {
           }
 
           try {
-            // CollectionEvents are always zlib/gzip framed (magic 0x1f8b or
-            // 0x78). Since createDataChannel now wraps every locally-created
-            // channel, this branch also sees channels that never carry
-            // CollectionEvents — skip those instead of inflating and logging a
-            // decode error per message for the whole session.
-            if (rawData.length < 2 || (rawData[0] !== 0x1f && rawData[0] !== 0x78)) {
+            // CollectionEvents are always zlib/gzip framed. Since
+            // createDataChannel now wraps every locally-created channel, this
+            // branch also sees channels that never carry CollectionEvents — skip
+            // those instead of inflating and logging a decode error per message
+            // for the whole session. Match the full gzip signature (0x1f 0x8b),
+            // not just the first byte, and validate the zlib header checksum.
+            const isGzip =
+              rawData.length >= 2 && rawData[0] === 0x1f && rawData[1] === 0x8b
+            const isZlib =
+              rawData.length >= 2 &&
+              rawData[0] === 0x78 &&
+              (((rawData[0] << 8) | rawData[1]) % 31 === 0)
+            if (!isGzip && !isZlib) {
               return
             }
             // Defensive check for pako availability
