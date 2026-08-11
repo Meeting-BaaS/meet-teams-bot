@@ -983,6 +983,56 @@ export function browserInterceptionLogic(schema: any[]) {
       updateContributingSources(receiverManager, receiver, contributingSources)
     })
 
+    // Frame-independent CSRC speaker sampling. The frame loop only consults
+    // contributing sources while audio frames flow, but prod shows sessions
+    // where frames stall while Meet's own client keeps polling
+    // getContributingSources (mirrored into receiverManager above, with real
+    // audioLevel values — 0.447 measured during speech). Sample the mirror on
+    // a timer and drive the same speaker state the frame loop uses; the shared
+    // lastBroadcastedSpeakerId makes the two paths dedupe against each other.
+    //
+    // Freshness gate: CSRC timestamps are on the performance.now() timeline
+    // ("most recent packet"). Stale mirrored sources mean Meet stopped polling
+    // (or audio stopped) — they must neither name nor clear a speaker.
+    const csrcSampleInterval = setInterval(() => {
+      if ((window as any).__networkInterceptorStopped) return
+      try {
+        const freshSources: any[] = []
+        const now = performance.now()
+        for (const [, sources] of receiverManager.receiverMap) {
+          for (const s of sources || []) {
+            if (s && typeof s.timestamp === "number" && now - s.timestamp < 2000) {
+              freshSources.push(s)
+            }
+          }
+        }
+        if (freshSources.length === 0) return
+
+        const usersWithAudioLevels = getUsersWithAudio(freshSources, userManager)
+        const loudestSpeaker = usersWithAudioLevels[0]
+        if (loudestSpeaker?.user) {
+          const currentSpeakerId = loudestSpeaker.user.deviceId
+          if (currentSpeakerId !== lastBroadcastedSpeakerId) {
+            console.error(
+              `[NetworkInterceptor] 🎤 Speaker changed (csrc sample): ${lastBroadcastedSpeakerId || "none"} → ${currentSpeakerId} (audioLevel: ${loudestSpeaker.audioLevel})`
+            )
+            lastBroadcastedSpeakerId = currentSpeakerId
+            speakingState.clear()
+            speakingState.set(currentSpeakerId, true)
+            broadcastSpeakerUpdate(userManager, currentSpeakerId, loudestSpeaker.audioLevel, "audio")
+          }
+        } else if (lastBroadcastedSpeakerId !== null) {
+          // Fresh packets but nobody above the audio-level threshold — mirrors
+          // the frame loop's clearing rule for active audio with no speaker.
+          lastBroadcastedSpeakerId = null
+          speakingState.clear()
+          broadcastSpeakerUpdate(userManager, null, 0, "audio")
+        }
+      } catch {
+        // Sampling must never break the interceptor.
+      }
+    }, 500)
+
     // ===== CSRC AUDIO-LEVEL PROBE (read-only, temporary) =====
     // Speaker detection today reads contributing sources only inside the
     // audio-frame loop, so when Meet delivers no per-participant track frames
@@ -1105,10 +1155,11 @@ export function browserInterceptionLogic(schema: any[]) {
     ;(window as any).__stopNetworkInterception = () => {
       console.error("[NetworkInterceptor] 🛑 Stopping network interception...")
 
-      // Stop the probes — the stop flag alone would leave them polling
-      // forever and only suppress the reports.
+      // Stop the probes and the CSRC sampler — the stop flag alone would
+      // leave them polling forever and only suppress the reports.
       clearInterval(csrcProbeInterval)
       clearInterval(mediaProbeInterval)
+      clearInterval(csrcSampleInterval)
 
       // Abort all active track controllers
       for (const [trackId, controller] of trackAbortControllers.entries()) {

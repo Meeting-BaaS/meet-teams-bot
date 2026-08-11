@@ -75,9 +75,16 @@ function runLayer(): {
     }
   }
 
+  class FakeAudioWorkletNode {
+    // Mirrors the real (context, processorName) signature the layer's wrapper inspects.
+    constructor(_context: unknown, _processorName: string) {}
+    connect(_destination: unknown) {}
+  }
+
   const win = {
     RTCPeerConnection: FakePeerConnectionImpl,
     AudioContext: class {},
+    AudioWorkletNode: FakeAudioWorkletNode,
     addEventListener: () => {}
   } as unknown as LayerWindow
 
@@ -250,5 +257,38 @@ describe("audio track layer", () => {
     })
 
     expect(received).toEqual([])
+  })
+})
+
+describe("NetEq decoder tap", () => {
+  it("hands the decoder's destination track to subscribers like a WebRTC track", () => {
+    const { window: win } = runLayer()
+
+    const received: FakeTrack[] = []
+    win.__audioTrackLayer.subscribe({ onTrack: (track) => received.push(track) })
+
+    // Meet's new stack: a "neteq-processor" worklet node connected into a
+    // MediaStreamAudioDestinationNode whose stream carries the decoded audio.
+    const AWN = (win as unknown as { AudioWorkletNode: new (ctx: unknown, name: string) => { connect: (dest: unknown) => void } })
+      .AudioWorkletNode
+    const node = new AWN({}, "neteq-processor")
+    const tapped = makeTrack("neteq-out")
+    node.connect({ stream: { getAudioTracks: () => [tapped] } })
+
+    expect(received.map((t) => t.id)).toContain("neteq-out")
+  })
+
+  it("ignores non-NetEq worklet nodes", () => {
+    const { window: win } = runLayer()
+
+    const received: FakeTrack[] = []
+    win.__audioTrackLayer.subscribe({ onTrack: (track) => received.push(track) })
+
+    const AWN = (win as unknown as { AudioWorkletNode: new (ctx: unknown, name: string) => { connect: (dest: unknown) => void } })
+      .AudioWorkletNode
+    const node = new AWN({}, "audio-analyzer-processor")
+    node.connect({ stream: { getAudioTracks: () => [makeTrack("analyzer-out")] } })
+
+    expect(received).toHaveLength(0)
   })
 })
