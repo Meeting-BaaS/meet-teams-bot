@@ -1662,30 +1662,53 @@ export function browserInterceptionLogic(schema: any[]) {
     // walk the protobuf wire format and emit a compact field dump live, so the
     // active-speaker payload can be read against known speech. Field numbers +
     // varint values + string lengths only — no string bytes (avoid PII).
-    function dcRpcDecode(label: string, bytes: Uint8Array) {
-      const parts: string[] = []
-      try {
-        const reader = (window as any).protobuf.Reader.create(bytes)
-        let guard = 0
-        while (reader.pos < reader.len && guard++ < 64) {
-          const tag = reader.uint32()
-          const field = tag >>> 3
-          const wt = tag & 7
-          if (wt === 0) parts.push(`${field}:v${reader.uint32()}`)
+    function dcRpcWalk(bytes: Uint8Array, path: string, depth: number, out: string[]) {
+      if (depth > 4 || out.length > 40) return
+      const reader = (window as any).protobuf.Reader.create(bytes)
+      let guard = 0
+      while (reader.pos < reader.len && guard++ < 64) {
+        let tag: number
+        try {
+          tag = reader.uint32()
+        } catch {
+          return
+        }
+        const field = tag >>> 3
+        const wt = tag & 7
+        const p = path ? `${path}.${field}` : `${field}`
+        try {
+          if (wt === 0) out.push(`${p}:v${reader.uint32()}`)
           else if (wt === 1) {
             reader.pos += 8
-            parts.push(`${field}:f64`)
+            out.push(`${p}:f64`)
           } else if (wt === 5) {
-            const v = reader.fixed32 ? reader.fixed32() : (reader.pos += 4)
-            parts.push(`${field}:x${(v >>> 0).toString(16)}`)
+            reader.pos += 4
+            out.push(`${p}:f32`)
           } else if (wt === 2) {
             const len = reader.uint32()
-            parts.push(`${field}:b${len}`)
+            const sub = new Uint8Array(bytes.buffer, bytes.byteOffset + reader.pos, len)
             reader.pos += len
+            // Small blobs are almost always nested messages here — recurse; big
+            // ones (roster/config) get a length marker only to stay compact.
+            if (len > 0 && len <= 64) {
+              out.push(`${p}{`)
+              dcRpcWalk(sub, p, depth + 1, out)
+              out.push(`}`)
+            } else {
+              out.push(`${p}:b${len}`)
+            }
           } else {
             reader.skipType(wt)
           }
+        } catch {
+          return
         }
+      }
+    }
+    function dcRpcDecode(label: string, bytes: Uint8Array) {
+      const parts: string[] = []
+      try {
+        dcRpcWalk(bytes, "", 0, parts)
       } catch {
         /* partial parse is fine */
       }
