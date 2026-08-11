@@ -106,7 +106,13 @@ export function browserInterceptionLogic(schema: any[]) {
         const WrappedAWN = function (this: any, ...args: any[]) {
           const pname = typeof args[1] === "string" ? args[1].slice(0, 60) : "unknown"
           try {
-            mediaProbe.workletNodes.set(pname, (mediaProbe.workletNodes.get(pname) || 0) + 1)
+            // Bounded like the other probe collections: cap distinct processor
+            // names, count the rest under one overflow bucket.
+            if (mediaProbe.workletNodes.has(pname) || mediaProbe.workletNodes.size < 12) {
+              mediaProbe.workletNodes.set(pname, (mediaProbe.workletNodes.get(pname) || 0) + 1)
+            } else {
+              mediaProbe.workletNodes.set("overflow", (mediaProbe.workletNodes.get("overflow") || 0) + 1)
+            }
           } catch {}
           const node = Reflect.construct(OriginalAWN, args, new.target || WrappedAWN)
           try {
@@ -315,6 +321,9 @@ export function browserInterceptionLogic(schema: any[]) {
     }
 
     function linkReceiverToTrack(receiverManager: any, receiver: any, trackId: any) {
+      // Tapped tracks (NetEq destination) arrive with no receiver — linking
+      // them under a shared null key would just overwrite each other.
+      if (!receiver) return
       receiverManager.receiverToTrackMap.set(receiver, trackId)
     }
 
