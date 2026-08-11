@@ -403,6 +403,13 @@ export class InCallState extends BaseState {
           // Existing speaker update handling
           const networkUsers = payload.users as NetworkUser[]
 
+          // dcrpc is the live speaker signal on NetEq sessions. Note when it
+          // decodes an active speaker so the stale-diarization monitor holds the
+          // network path instead of retiring it to the UI observer.
+          if (payload.dcrpc && networkUsers.some((u) => u.isSpeaking)) {
+            GLOBAL.markDcrpcSpeaker()
+          }
+
           // Confirms diarization is coming from the network path. Never log names or
           // ids here — this goes to the bot log and on to S3. Participants are
           // referred to by a stable per-meeting index instead.
@@ -414,9 +421,13 @@ export class InCallState extends BaseState {
             this.lastNetworkSpeakingKey = speakingKey
           }
 
+          const speakerSource = payload.dcrpc
+            ? "network:dcrpc"
+            : `network:${payload.source ?? "audio"}`
           await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
             networkUsers,
-            payload.timestamp
+            payload.timestamp,
+            speakerSource
           )
         } catch (error) {
           console.error("Error handling network speaker update:", formatError(error))

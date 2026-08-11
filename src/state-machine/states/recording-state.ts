@@ -480,6 +480,23 @@ export class RecordingState extends BaseState {
           `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? " (no segment ever produced — fast fallback)" : ""}`
         )
 
+        // dcrpc (the NetEq network speaker signal) recently decoded an active
+        // speaker: the network path is alive even if the diarization file looks
+        // stale for a moment (e.g. a brief pause between speakers). Hold it
+        // rather than retire to the laggier UI observer. This is the guard that
+        // keeps NetEq sessions on the network path once dcrpc is producing.
+        const DCRPC_SPEAKER_HOLD_MS = 15000
+        if (
+          this.consecutiveStaleCount >= threshold &&
+          GLOBAL.msSinceLastDcrpcSpeaker() < DCRPC_SPEAKER_HOLD_MS &&
+          !GLOBAL.hasDiarizationFallbackTriggered()
+        ) {
+          console.log(
+            `[DiarizationHealth] [${meetingPlatform}] ⏳ Holding network path — dcrpc decoded a speaker ${Math.round(GLOBAL.msSinceLastDcrpcSpeaker() / 1000)}s ago (NetEq)`
+          )
+          return
+        }
+
         // Check if we should trigger fallback (Meet, Teams or Zoom, network
         // diarization active).
         //

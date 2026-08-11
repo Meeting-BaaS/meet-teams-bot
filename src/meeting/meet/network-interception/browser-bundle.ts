@@ -126,7 +126,12 @@ export function browserInterceptionLogic(schema: any[]) {
     function createReceiverManager() {
       return {
         receiverMap: new Map(),
-        receiverToTrackMap: new Map()
+        receiverToTrackMap: new Map(),
+        // performance.now() when we last mirrored each receiver's sources. The
+        // CSRC entries carry their own `timestamp`, but on a different clock
+        // (not performance.now()), so gating freshness on it filtered out every
+        // live source. Stamp arrival ourselves and gate on that instead.
+        sourceStamp: new Map()
       }
     }
 
@@ -144,6 +149,7 @@ export function browserInterceptionLogic(schema: any[]) {
       contributingSources: any
     ) {
       receiverManager.receiverMap.set(receiver, contributingSources)
+      receiverManager.sourceStamp.set(receiver, performance.now())
     }
 
     function getContributingSources(receiverManager: any, receiver: any) {
@@ -151,6 +157,9 @@ export function browserInterceptionLogic(schema: any[]) {
     }
 
     function linkReceiverToTrack(receiverManager: any, receiver: any, trackId: any) {
+      // Tapped tracks (NetEq destination) arrive with no receiver — linking
+      // them under a shared null key would just overwrite each other.
+      if (!receiver) return
       receiverManager.receiverToTrackMap.set(receiver, trackId)
     }
 
@@ -222,8 +231,12 @@ export function browserInterceptionLogic(schema: any[]) {
       const originalGetContributingSources = OriginalRTCRtpReceiver.prototype.getContributingSources
       OriginalRTCRtpReceiver.prototype.getContributingSources = function (...args: any[]) {
         const result = originalGetContributingSources.apply(this, args)
-        if (onGetContributingSources && result && result.length > 0) {
-          onGetContributingSources(this, result)
+        // Mirror EVERY call, including empty results: an empty array is Meet
+        // telling us the previous speaker went quiet, and skipping it would
+        // leave a stale non-empty array in the mirror for the CSRC sampler to
+        // read (its freshness gate catches most of this, clearing is exact).
+        if (onGetContributingSources) {
+          onGetContributingSources(this, result || [])
         }
         return result
       }
@@ -371,6 +384,61 @@ export function browserInterceptionLogic(schema: any[]) {
         users,
         timestamp: Date.now(),
         source
+      })
+    }
+
+    // Emit a speaker update derived from the dcrpc datachannel (NetEq sessions).
+    // Uses the same NetworkUser[] shape and "audio" source as the CSRC path, so
+    // it flows through SpeakerManager.handleNetworkSpeakerUpdate identically.
+    // Speaking device ids with no roster entry yet are still emitted (name
+    // "Unknown", real deviceId) so the opening seconds are not dropped — the
+    // finalize step relabels those segments by device once the roster resolves.
+    // The `dcrpc: true` marker lets the node side note that the network path is
+    // alive on NetEq without changing how the update is processed.
+    function broadcastDcrpcSpeakers(userManager: any, speakingIds: string[]): void {
+      if ((window as any).__networkInterceptorStopped) return
+      if (typeof (window as any).onNetworkSpeakerUpdate !== "function") return
+
+      const speakingSet = new Set(speakingIds)
+      const filteredUsers = filterActiveUsers(getAllUsers(userManager))
+      const seen = new Set<string>()
+      const users = filteredUsers.map((user: any) => {
+        seen.add(user.deviceId)
+        const isSpeaking = speakingSet.has(user.deviceId)
+        return {
+          deviceId: user.deviceId,
+          name: decodeUserName(user),
+          isCurrentUser: user.isCurrentUserString === "true" || user.isCurrentUserString === "1",
+          isSpeaking,
+          status: user.status,
+          isHost: user.isHost === 1,
+          audioLevel: isSpeaking ? 1 : 0,
+          fullName: decodeFullName(user),
+          displayName: user.displayName,
+          profilePicture: user.profilePicture
+        }
+      })
+      for (const deviceId of speakingIds) {
+        if (seen.has(deviceId)) continue
+        users.push({
+          deviceId,
+          name: "Unknown",
+          isCurrentUser: false,
+          isSpeaking: true,
+          status: 1,
+          isHost: false,
+          audioLevel: 1,
+          fullName: undefined,
+          displayName: undefined,
+          profilePicture: undefined
+        })
+      }
+
+      ;(window as any).onNetworkSpeakerUpdate({
+        users,
+        timestamp: Date.now(),
+        source: "audio",
+        dcrpc: true
       })
     }
 
@@ -797,6 +865,9 @@ export function browserInterceptionLogic(schema: any[]) {
     const speakingState = new Map<string, boolean>()
     // Track last broadcasted speaker to avoid duplicate broadcasts
     let lastBroadcastedSpeakerId: string | null = null
+    // Last set of speaking device ids emitted from the dcrpc path (sorted,
+    // joined). dcrpc only drives an update when this set changes.
+    let lastDcrpcSpeakingKey: string | null = null
     // Track AbortControllers for audio processing loops (one per track)
     // Allows cancelling background processing when tracks end or are replaced
     const trackAbortControllers = new Map<string, AbortController>()
@@ -815,9 +886,59 @@ export function browserInterceptionLogic(schema: any[]) {
       tracksDeliveringFrames.delete(trackId)
     }
 
-    setupRTCRtpReceiverInterceptor((receiver, contributingSources) => {
+    setupRTCRtpReceiverInterceptor((receiver: any, contributingSources: any) => {
       updateContributingSources(receiverManager, receiver, contributingSources)
     })
+
+    // Frame-independent CSRC speaker sampling. The frame loop only consults
+    // contributing sources while audio frames flow, but prod shows sessions
+    // where frames stall while Meet's own client keeps polling
+    // getContributingSources (mirrored into receiverManager above, with real
+    // audioLevel values). Sample the mirror on a timer and drive the same
+    // speaker state the frame loop uses; the shared lastBroadcastedSpeakerId
+    // makes the two paths dedupe against each other.
+    //
+    // Freshness gate uses OUR arrival stamp (see sourceStamp): a receiver we
+    // mirrored in the last 2s is live; the CSRC entry's own `timestamp` is on a
+    // different clock and gating on it dropped every source.
+    const csrcSampleInterval = setInterval(() => {
+      if ((window as any).__networkInterceptorStopped) return
+      try {
+        const freshSources: any[] = []
+        const now = performance.now()
+        for (const [receiver, sources] of receiverManager.receiverMap) {
+          const stamp = receiverManager.sourceStamp.get(receiver)
+          if (stamp === undefined || now - stamp >= 2000) continue
+          for (const s of sources || []) {
+            if (s) freshSources.push(s)
+          }
+        }
+        if (freshSources.length === 0) return
+
+        const usersWithAudioLevels = getUsersWithAudio(freshSources, userManager)
+        const loudestSpeaker = usersWithAudioLevels[0]
+        if (loudestSpeaker?.user) {
+          const currentSpeakerId = loudestSpeaker.user.deviceId
+          if (currentSpeakerId !== lastBroadcastedSpeakerId) {
+            console.error(
+              `[NetworkInterceptor] 🎤 Speaker changed (csrc sample): ${lastBroadcastedSpeakerId || "none"} → ${currentSpeakerId} (audioLevel: ${loudestSpeaker.audioLevel})`
+            )
+            lastBroadcastedSpeakerId = currentSpeakerId
+            speakingState.clear()
+            speakingState.set(currentSpeakerId, true)
+            broadcastSpeakerUpdate(userManager, currentSpeakerId, loudestSpeaker.audioLevel, "audio")
+          }
+        } else if (lastBroadcastedSpeakerId !== null) {
+          // Fresh packets but nobody above the audio-level threshold — mirrors
+          // the frame loop's clearing rule for active audio with no speaker.
+          lastBroadcastedSpeakerId = null
+          speakingState.clear()
+          broadcastSpeakerUpdate(userManager, null, 0, "audio")
+        }
+      } catch {
+        // Sampling must never break the interceptor.
+      }
+    }, 500)
 
     const broadcastCurrentState = () => {
       try {
@@ -886,6 +1007,7 @@ export function browserInterceptionLogic(schema: any[]) {
 
       // Set flag to prevent further callbacks
       ;(window as any).__networkInterceptorStopped = true
+      clearInterval(csrcSampleInterval)
 
       console.error("[NetworkInterceptor] ✅ Network interception stopped")
     }
@@ -1013,6 +1135,146 @@ export function browserInterceptionLogic(schema: any[]) {
       reportHealthCheck()
     }, 10000)
 
+    // Decode the active-speaker state carried on the dcrpc datachannel (NetEq
+    // sessions). Returns the sorted set of speaking device ids for dedupe, or
+    // null when the frame is a keepalive / not a state frame.
+    function handleDcrpcFrame(rawData: Uint8Array): void {
+      const decode = (window as any).__decodeDcrpcFrame
+      const pako = (window as any).pako
+      if (typeof decode !== "function" || !pako || typeof pako.inflate !== "function") {
+        return
+      }
+      let participants: Array<{ deviceId: string; speaking: boolean }> | null
+      try {
+        participants = decode(rawData, pako.inflate)
+      } catch {
+        return
+      }
+      if (participants === null) return // keepalive / non-state frame
+
+      const speakingIds: string[] = []
+      for (const p of participants) {
+        if (p.speaking) speakingIds.push(p.deviceId)
+      }
+      speakingIds.sort()
+      const key = speakingIds.join("|")
+      if (key === lastDcrpcSpeakingKey) return
+      lastDcrpcSpeakingKey = key
+      broadcastDcrpcSpeakers(userManager, speakingIds)
+    }
+
+    // Decode one datachannel message. Shared by every path a channel can reach
+    // us — the passive "datachannel" event (remote-created channels) AND
+    // createDataChannel (channels Meet builds locally, which the event never
+    // fires for; missing those meant no roster/chat/speaker data at all on those
+    // sessions). Deduped via a WeakSet so a channel is only wired once.
+    const handledChannels = new WeakSet<any>()
+    function attachDcHandler(channel: any, label: string) {
+      if (!channel || handledChannels.has(channel)) return
+      handledChannels.add(channel)
+      allDataChannels.set(label, channel)
+
+      console.error(`[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`)
+
+      if (label === "meet_messages") {
+        meetMessagesDataChannel = channel
+        console.error("[NetworkInterceptor] 💬 Chat channel ready")
+      }
+      channel.addEventListener("message", (msg: any) => {
+        try {
+          const rawData = new Uint8Array(msg.data)
+
+          // dcrpc carries the live active-speaker signal on NetEq sessions. Its
+          // frames are gzip'd per-participant state, not CollectionEvents, so
+          // they never reach the collections decode below — handle them here.
+          if (label === "dcrpc") {
+            try {
+              handleDcrpcFrame(rawData)
+            } catch (e) {
+              console.error("[NetworkInterceptor] dcrpc decode error:", e)
+            }
+            return
+          }
+
+          try {
+            // CollectionEvents are always zlib/gzip framed. Since
+            // createDataChannel now wraps every locally-created channel, this
+            // branch also sees channels that never carry CollectionEvents — skip
+            // those instead of inflating and logging a decode error per message
+            // for the whole session. Match the full gzip signature (0x1f 0x8b),
+            // not just the first byte, and validate the zlib header checksum.
+            const isGzip =
+              rawData.length >= 2 && rawData[0] === 0x1f && rawData[1] === 0x8b
+            const isZlib =
+              rawData.length >= 2 &&
+              rawData[0] === 0x78 &&
+              (((rawData[0] << 8) | rawData[1]) % 31 === 0)
+            if (!isGzip && !isZlib) {
+              return
+            }
+            // Defensive check for pako availability
+            if (
+              typeof (window as any).pako === "undefined" ||
+              typeof (window as any).pako.inflate !== "function"
+            ) {
+              console.error(
+                "[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available"
+              )
+              console.warn(
+                "[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression"
+              )
+              throw new Error("pako.inflate is not available")
+            }
+            const inflated = (window as any).pako.inflate(rawData)
+            const eventData = messageDecoders["CollectionEvent"](inflated)
+            const body = eventData.body
+            if (body) {
+              const wrapper = body.userInfoListWrapperAndChatWrapperWrapper
+              if (wrapper?.deviceInfoWrapper?.deviceOutputInfoList) {
+                const deviceOutputs = wrapper.deviceInfoWrapper.deviceOutputInfoList
+                updateDeviceOutputs(userManager, deviceOutputs)
+              }
+              if (wrapper?.userInfoListWrapperAndChatWrapper?.userInfoListWrapper?.userInfoList) {
+                const users =
+                  wrapper.userInfoListWrapperAndChatWrapper.userInfoListWrapper.userInfoList
+                updateUsers(userManager, users)
+                console.error(`[NetworkInterceptor] 👥 Updated ${users.length} users`)
+              }
+
+              // Extract chat messages
+              const chatMessages = wrapper?.userInfoListWrapperAndChatWrapper?.chatMessageWrapper
+              if (chatMessages && chatMessages.length > 0) {
+                for (const chatMsgWrapper of chatMessages) {
+                  const chatMsg = chatMsgWrapper.chatMessage
+                  if (chatMsg && chatMsg.chatMessageContent?.text) {
+                    const senderUser = userManager.allUsersMap.get(chatMsg.deviceId)
+                    const senderName = senderUser ? decodeUserName(senderUser) : "Unknown"
+
+                    if (typeof (window as any).onChatMessageReceived === "function") {
+                      ;(window as any).onChatMessageReceived({
+                        messageId: chatMsg.messageId,
+                        deviceId: chatMsg.deviceId,
+                        timestamp: chatMsg.timestamp,
+                        text: chatMsg.chatMessageContent.text,
+                        senderName: senderName
+                      })
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.error(
+              `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
+              e
+            )
+          }
+        } catch (e) {
+          console.error("[NetworkInterceptor] Critical Message Error:", e)
+        }
+      })
+    }
+
     // Intercept RTCPeerConnection for datachannel only (track handling now centralized)
     if (typeof (window as any).RTCPeerConnection !== "undefined") {
       const OriginalPC = (window as any).RTCPeerConnection
@@ -1023,84 +1285,24 @@ export function browserInterceptionLogic(schema: any[]) {
         // Track whether we"ve attempted proactive creation for this PC instance
         let hasAttemptedProactiveCreation = false
 
-        // Only handle dataChannel - tracks are handled by centralized layer
-        pc.addEventListener("datachannel", (event: any) => {
-          const label = event.channel.label
-          allDataChannels.set(label, event.channel)
-
-          console.error(`[NetworkInterceptor] 🔌 DataChannel attached: "${label}"`)
-
-          if (label === "meet_messages") {
-            meetMessagesDataChannel = event.channel
-            console.error("[NetworkInterceptor] 💬 Chat channel ready")
+        // Locally-created channels (Meet builds meet_messages and dcrpc itself
+        // in many sessions) never fire the "datachannel" event — catch them at
+        // the source so roster/chat/speaker data flows on every session.
+        const originalCreateDataChannel = pc.createDataChannel.bind(pc)
+        pc.createDataChannel = (dcLabel: string, dcOpts: any) => {
+          const channel = originalCreateDataChannel(dcLabel, dcOpts)
+          try {
+            console.error(`[NetworkInterceptor] 🔌 DataChannel created locally: "${dcLabel}"`)
+            attachDcHandler(channel, dcLabel)
+          } catch (e) {
+            console.error("[NetworkInterceptor] Error attaching to created channel:", e)
           }
-          event.channel.addEventListener("message", (msg: any) => {
-            try {
-              const rawData = new Uint8Array(msg.data)
-              try {
-                // Defensive check for pako availability
-                if (
-                  typeof (window as any).pako === "undefined" ||
-                  typeof (window as any).pako.inflate !== "function"
-                ) {
-                  console.error(
-                    "[NetworkInterceptor] ⚠️ CRITICAL: pako library or pako.inflate function is not available"
-                  )
-                  console.warn(
-                    "[NetworkInterceptor] ⚠️ Cannot decode message - pako is required for decompression"
-                  )
-                  throw new Error("pako.inflate is not available")
-                }
-                const inflated = (window as any).pako.inflate(rawData)
-                const eventData = messageDecoders["CollectionEvent"](inflated)
-                const body = eventData.body
-                if (body) {
-                  const wrapper = body.userInfoListWrapperAndChatWrapperWrapper
-                  if (wrapper?.deviceInfoWrapper?.deviceOutputInfoList) {
-                    const deviceOutputs = wrapper.deviceInfoWrapper.deviceOutputInfoList
-                    updateDeviceOutputs(userManager, deviceOutputs)
-                  }
-                  if (
-                    wrapper?.userInfoListWrapperAndChatWrapper?.userInfoListWrapper?.userInfoList
-                  ) {
-                    const users =
-                      wrapper.userInfoListWrapperAndChatWrapper.userInfoListWrapper.userInfoList
-                    updateUsers(userManager, users)
-                    console.error(`[NetworkInterceptor] 👥 Updated ${users.length} users`)
-                  }
+          return channel
+        }
 
-                  // Extract chat messages
-                  const chatMessages = wrapper?.userInfoListWrapperAndChatWrapper?.chatMessageWrapper
-                  if (chatMessages && chatMessages.length > 0) {
-                    for (const chatMsgWrapper of chatMessages) {
-                      const chatMsg = chatMsgWrapper.chatMessage
-                      if (chatMsg && chatMsg.chatMessageContent?.text) {
-                        const senderUser = userManager.allUsersMap.get(chatMsg.deviceId)
-                        const senderName = senderUser ? decodeUserName(senderUser) : "Unknown"
-
-                        if (typeof (window as any).onChatMessageReceived === "function") {
-                          ;(window as any).onChatMessageReceived({
-                            messageId: chatMsg.messageId,
-                            deviceId: chatMsg.deviceId,
-                            timestamp: chatMsg.timestamp,
-                            text: chatMsg.chatMessageContent.text,
-                            senderName: senderName,
-                          })
-                        }
-                      }
-                    }
-                  }
-                }
-              } catch (e) {
-                console.error(
-                  `[NetworkInterceptor] ⚠️ Failed to decode collections message on "${label}":`,
-                  e
-                )
-              }
-            } catch (e) {
-              console.error("[NetworkInterceptor] Critical Message Error:", e)
-            }
-          })
+        // Passive path: remotely-created channels.
+        pc.addEventListener("datachannel", (event: any) => {
+          attachDcHandler(event.channel, event.channel.label)
         })
 
         // Proactive channel creation (disabled by default)
@@ -1266,6 +1468,7 @@ export function browserInterceptionLogic(schema: any[]) {
     window.addEventListener("beforeunload", () => {
       clearInterval(broadcastIntervalId)
       clearTimeout(broadcastTimeoutId)
+      clearInterval(csrcSampleInterval)
       if (healthCheckInterval !== null) {
         clearInterval(healthCheckInterval)
       }
