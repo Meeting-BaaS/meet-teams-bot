@@ -1663,7 +1663,7 @@ export function browserInterceptionLogic(schema: any[]) {
     // active-speaker payload can be read against known speech. Field numbers +
     // varint values + string lengths only — no string bytes (avoid PII).
     function dcRpcWalk(bytes: Uint8Array, path: string, depth: number, out: string[]) {
-      if (depth > 4 || out.length > 40) return
+      if (depth > 6 || out.length > 120) return
       const reader = (window as any).protobuf.Reader.create(bytes)
       let guard = 0
       while (reader.pos < reader.len && guard++ < 64) {
@@ -1675,7 +1675,9 @@ export function browserInterceptionLogic(schema: any[]) {
         }
         const field = tag >>> 3
         const wt = tag & 7
-        const p = path ? `${path}.${field}` : `${field}`
+        // Underscore paths: dotted numeric paths (1.3.1.5) get eaten by the PII
+        // redactor as if they were IP addresses.
+        const p = path ? `${path}_${field}` : `f${field}`
         try {
           if (wt === 0) out.push(`${p}:v${reader.uint32()}`)
           else if (wt === 1) {
@@ -1688,9 +1690,10 @@ export function browserInterceptionLogic(schema: any[]) {
             const len = reader.uint32()
             const sub = new Uint8Array(bytes.buffer, bytes.byteOffset + reader.pos, len)
             reader.pos += len
-            // Small blobs are almost always nested messages here — recurse; big
-            // ones (roster/config) get a length marker only to stay compact.
-            if (len > 0 && len <= 64) {
+            // Recurse into nested messages including the large field-2 state
+            // snapshots (up to ~700B) — that is where per-participant speaking
+            // state lives. Only genuinely huge blobs get a length marker.
+            if (len > 0 && len <= 700) {
               out.push(`${p}{`)
               dcRpcWalk(sub, p, depth + 1, out)
               out.push(`}`)
