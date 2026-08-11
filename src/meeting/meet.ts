@@ -36,11 +36,10 @@ const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before c
 // detections prove the text can already be present at 0.3s), so 5.0s is a
 // hard upper bound on the render lag — 6s covers it plus one loop-cadence of
 // margin. Cost: 0 of 120 sampled healthy joins ever showed lobby text after
-// a genuine admission (the debounce cannot reset-loop a good join), and ~85%
-// of healthy joins have remote audio tracks registered (fast path below), so
-// only the hook-blind minority waits the full debounce. A render lag beyond
-// 6s would still be caught by the lobby check in changeLayout and ends as
-// BotNotAccepted rather than a false "removed".
+// a genuine admission (the debounce cannot reset-loop a good join), so every
+// join pays the flat ~6s. A render lag beyond 6s is still caught by the lobby
+// check in changeLayout and ends as BotNotAccepted rather than a false
+// "removed".
 const JOIN_CONFIRM_DEBOUNCE_MS = 6000
 
 /**
@@ -394,27 +393,12 @@ export class MeetProvider implements MeetingProviderInterface {
         if (!nowInWaitingRoom && gracePeriodExpired) {
           const inMeeting = await isInMeeting(page)
           if (inMeeting) {
-            // Fast path: remote audio tracks only flow after real admission —
-            // Meet's lobby never receives conference media. The audio track
-            // layer is injected before navigation, so its backlog is readable
-            // here. Absence proves nothing (the PC hook misses tracks on a
-            // large share of calls), so no-tracks just falls through to the
-            // DOM debounce below.
-            const remoteAudioTracks = await page
-              .evaluate(
-                // biome-ignore lint/suspicious/noExplicitAny: browser-side global
-                () => ((window as any).__audioTrackLayer?.seenTracks || []).length
-              )
-              .catch(() => 0)
-            if (remoteAudioTracks > 0) {
-              botWasInMeeting = true
-              console.log(
-                `✅ Successfully confirmed we are in the meeting (fast path: ${remoteAudioTracks} remote audio track(s) flowing)`
-              )
-              onJoinSuccess()
-              await performCriticalSetupActions(page, dialogObserver)
-              break
-            }
+            // NOTE: do NOT add a "remote audio tracks = admitted" fast path
+            // here. Meet's lobby/pre-join DOES receive PeerConnection audio
+            // tracks (observed in prod: 3 receiver tracks while still on the
+            // "Please wait…" screen), so a non-empty track backlog is not
+            // proof of admission and bypassing the debounce on it causes
+            // false joins that end as spurious bot_rejected.
             // Debounce the confirmation: a single clean sample can land in the
             // window where the lobby's call-control DOM is up but its text is
             // not (see JOIN_CONFIRM_DEBOUNCE_MS). Confirm only when a second
