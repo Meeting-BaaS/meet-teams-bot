@@ -126,6 +126,15 @@ export const PROTO_SCHEMA = [
       { name: "deviceOutputType", fieldNumber: 2, type: "varint" }, // 1=audio, 2=video
       { name: "streamId", fieldNumber: 4, type: "string" }, // This IS the SSRC
       { name: "deviceId", fieldNumber: 6, type: "string" }, // The actual Device ID
+      // Field 9: candidate per-device speaking/activity signal (probe v6). Its
+      // varint at position 2 toggles per device; v6 correlates it against the
+      // CSRC audio level for the same stream to decide if it means "speaking".
+      {
+        name: "deviceOutputActivity",
+        fieldNumber: 9,
+        type: "message",
+        messageType: "DeviceOutputActivity"
+      },
       {
         name: "deviceOutputStatus",
         fieldNumber: 10,
@@ -133,6 +142,10 @@ export const PROTO_SCHEMA = [
         messageType: "DeviceOutputStatus"
       }
     ]
+  },
+  {
+    name: "DeviceOutputActivity",
+    fields: [{ name: "value", fieldNumber: 2, type: "varint" }]
   },
   {
     name: "DeviceOutputStatus",

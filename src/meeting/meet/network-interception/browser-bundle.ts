@@ -1231,8 +1231,48 @@ export function browserInterceptionLogic(schema: any[]) {
       // with instMax>1 is a single active-speaker flag; nzMax>1 is per-device.
       varintPaths: new Map<
         string,
-        { z: boolean; nz: boolean; last: number; instMax: number; nzMax: number }
-      >()
+        { z: boolean; nz: boolean; last: number; instMax: number; nzMax: number; max: number }
+      >(),
+      // v6 correlation of the field-9 candidate against the CSRC audio level for
+      // the same stream. If field 9 means "speaking": onLoud dominates and the
+      // cross terms (on while quiet / off while loud) stay small. Uses classic
+      // sessions (where CSRC exists and is trusted) to decide what the field
+      // means; the same field then carries the meaning onto NetEq sessions.
+      corr: { onLoud: 0, onQuiet: 0, offLoud: 0, offQuiet: 0, samples: 0 }
+    }
+    // SSRCs whose most recent CSRC packet is loud and fresh (<2s).
+    function loudSsrcSet(): Set<string> {
+      const loud = new Set<string>()
+      const now = performance.now()
+      for (const [, sources] of receiverManager.receiverMap) {
+        for (const s of sources || []) {
+          if (
+            s &&
+            (s.audioLevel || 0) > 0.05 &&
+            typeof s.timestamp === "number" &&
+            now - s.timestamp < 2000 &&
+            s.source != null
+          ) {
+            loud.add(String(s.source))
+          }
+        }
+      }
+      return loud
+    }
+    // Fold one decoded CollectionEvent's device outputs into the correlation.
+    function dcProbeCorrelate(deviceOutputs: any[]) {
+      const loud = loudSsrcSet()
+      for (const o of deviceOutputs || []) {
+        // Audio outputs only (deviceOutputType 1); field 9 is per output.
+        if (o?.deviceOutputType !== 1 || o?.streamId == null) continue
+        const on = (o?.deviceOutputActivity?.value ?? 0) !== 0
+        const isLoud = loud.has(String(o.streamId))
+        dcProbe.corr.samples++
+        if (on && isLoud) dcProbe.corr.onLoud++
+        else if (on && !isLoud) dcProbe.corr.onQuiet++
+        else if (!on && isLoud) dcProbe.corr.offLoud++
+        else dcProbe.corr.offQuiet++
+      }
     }
     function dcRawWalk(
       reader: any,
@@ -1266,11 +1306,13 @@ export function browserInterceptionLogic(schema: any[]) {
               nz: false,
               last: 0,
               instMax: 0,
-              nzMax: 0
+              nzMax: 0,
+              max: 0
             }
             if (v === 0) rec.z = true
             else rec.nz = true
             rec.last = v
+            if (v > rec.max) rec.max = v
             dcProbe.varintPaths.set(p, rec)
             // Per-message instance counting for device correlation.
             const m = msg.get(p) || { inst: 0, nz: 0 }
@@ -1329,8 +1371,15 @@ export function browserInterceptionLogic(schema: any[]) {
       // speaker (nzMax==1, instMax>1).
       const toggling = Array.from(dcProbe.varintPaths.entries())
         .filter(([, r]) => r.z && r.nz)
-        .map(([p, r]) => `${p}=${r.last}(inst${r.instMax}/nz${r.nzMax})`)
+        .map(([p, r]) => `${p}=${r.last}(inst${r.instMax}/nz${r.nzMax}/max${r.max})`)
         .slice(0, 30)
+      // Fields that take a RANGE of values (max>1) are candidate audio LEVELS —
+      // richer than a binary speaking flag. Surfaced separately so we notice
+      // them even if they never hit zero.
+      const levels = Array.from(dcProbe.varintPaths.entries())
+        .filter(([, r]) => r.max > 1)
+        .map(([p, r]) => `${p}(max${r.max})`)
+        .slice(0, 20)
       if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
         ;(window as any).onNetworkSpeakerUpdate({
           users: [],
@@ -1341,6 +1390,8 @@ export function browserInterceptionLogic(schema: any[]) {
             bytes: dcProbe.bytes,
             distinctPaths: dcProbe.varintPaths.size,
             toggling,
+            levels,
+            corr: dcProbe.corr,
             timestamp: Date.now()
           }
         })
@@ -1502,7 +1553,13 @@ export function browserInterceptionLogic(schema: any[]) {
             if (body) {
               const wrapper = body.userInfoListWrapperAndChatWrapperWrapper
               if (wrapper?.deviceInfoWrapper?.deviceOutputInfoList) {
-                updateDeviceOutputs(userManager, wrapper.deviceInfoWrapper.deviceOutputInfoList)
+                const deviceOutputs = wrapper.deviceInfoWrapper.deviceOutputInfoList
+                updateDeviceOutputs(userManager, deviceOutputs)
+                try {
+                  dcProbeCorrelate(deviceOutputs)
+                } catch {
+                  /* probe must never break decoding */
+                }
               }
               if (wrapper?.userInfoListWrapperAndChatWrapper?.userInfoListWrapper?.userInfoList) {
                 const users =

@@ -41,6 +41,16 @@ export type NetworkPayload = {
     bytes: number
     distinctPaths: number
     toggling: string[]
+    /** v6: undecoded varint paths whose value exceeds 1 (candidate levels). */
+    levels?: string[]
+    /** v6: field-9 vs CSRC-loud agreement counts (per audio device output). */
+    corr?: {
+      onLoud: number
+      onQuiet: number
+      offLoud: number
+      offQuiet: number
+      samples: number
+    }
     timestamp: number
   }
   /** Media-architecture probe: where Meet's media stack lives in this frame. */

@@ -359,9 +359,14 @@ export class InCallState extends BaseState {
           // session, and which undecoded varint field toggles with speech?
           if (payload.source === "dc_probe" && payload.dc) {
             const d = payload.dc
+            const c = d.corr
+            const corrStr = c
+              ? ` corr(field9vsCsrc): onLoud=${c.onLoud} onQuiet=${c.onQuiet} offLoud=${c.offLoud} offQuiet=${c.offQuiet} samples=${c.samples}`
+              : ""
+            const levelsStr = d.levels?.length ? ` levels=[${d.levels.join(",")}]` : ""
             console.log(
               `[DcProbe] messages=${d.messages} bytes=${d.bytes} ` +
-                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]`
+                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]${levelsStr}${corrStr}`
             )
             return
           }
