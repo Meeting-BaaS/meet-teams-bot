@@ -28,6 +28,12 @@ export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
   source: "roster" | "audio" | "health_check" | "network_interception_failed"
+  /**
+   * True when this "audio" update was produced by the dcrpc datachannel decoder
+   * (NetEq sessions) rather than the CSRC path. Lets the node side note that the
+   * network path is alive on NetEq without changing how the update is processed.
+   */
+  dcrpc?: boolean
   health?: {
     subscribed: boolean
     /** Tracks that have delivered at least one audio frame. */
@@ -53,6 +59,8 @@ export type NetworkPayload = {
 export type ReceiverManager = {
   receiverMap: Map<unknown, unknown>
   receiverToTrackMap: Map<unknown, unknown>
+  /** performance.now() when each receiver's contributing sources were last mirrored. */
+  sourceStamp: Map<unknown, number>
 }
 
 // Raw device output from protobuf (before processing)

@@ -5,6 +5,7 @@ import path from "node:path"
 import type { Page } from "@playwright/test"
 import protobuf from "protobufjs"
 import { browserInterceptionLogic } from "./browser-bundle"
+import { decodeDcrpcFrame } from "./dcrpc-decoder"
 import { PROTO_SCHEMA } from "./schema"
 
 // Node-side reflection for the single field we read off Meet's
@@ -37,6 +38,10 @@ declare global {
     __networkInterceptorMain?: boolean
     protobuf?: unknown
     pako?: unknown
+    __decodeDcrpcFrame?: (
+      frame: Uint8Array,
+      inflate: (bytes: Uint8Array) => Uint8Array
+    ) => Array<{ deviceId: string; speaking: boolean }> | null
     onNetworkSpeakerUpdate?: (payload: {
       users: unknown[]
       timestamp: number
@@ -77,6 +82,12 @@ export async function setupNetworkInterceptionScripts(page: Page): Promise<boole
                     console.error("[NetworkInterceptor] Dependencies not loaded");
                     return;
                 }
+
+                // Expose the dcrpc speaker decoder in the page scope. It is a
+                // self-contained function (no imports/closures), so stringifying
+                // it here keeps a single implementation shared with the Node
+                // unit test.
+                window.__decodeDcrpcFrame = (${decodeDcrpcFrame.toString()});
 
                 // Execute browser interception logic with schema
                 (${browserInterceptionLogic.toString()})(${JSON.stringify(PROTO_SCHEMA)});

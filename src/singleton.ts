@@ -21,6 +21,7 @@ class Global {
   private networkInterceptionSetupFailed = false // Track if network interception scripts failed to load
   private networkDiarizationActive = false // Track if network diarization is actually active and working
   private hasTriggeredDiarizationFallback = false // Track if diarization fallback has been triggered
+  private lastDcrpcSpeakerAt = 0 // Date.now() of the last active speaker decoded from the dcrpc datachannel (NetEq)
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -404,6 +405,24 @@ class Global {
    */
   public isNetworkDiarizationActive(): boolean {
     return this.networkDiarizationActive
+  }
+
+  /**
+   * Record that the dcrpc datachannel just decoded an active speaker (NetEq
+   * sessions). Used to hold the network path against the stale-diarization
+   * fallback while the dcrpc signal is live.
+   */
+  public markDcrpcSpeaker(): void {
+    this.lastDcrpcSpeakerAt = Date.now()
+  }
+
+  /**
+   * Milliseconds since the last dcrpc-decoded active speaker, or Infinity if
+   * dcrpc has never produced one.
+   */
+  public msSinceLastDcrpcSpeaker(): number {
+    if (this.lastDcrpcSpeakerAt === 0) return Number.POSITIVE_INFINITY
+    return Date.now() - this.lastDcrpcSpeakerAt
   }
 
   /**
