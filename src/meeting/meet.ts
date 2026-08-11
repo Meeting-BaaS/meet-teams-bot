@@ -394,14 +394,15 @@ export class MeetProvider implements MeetingProviderInterface {
           const inMeeting = await isInMeeting(page)
           if (inMeeting) {
             // NOTE: do NOT add a "remote audio tracks = admitted" fast path
-            // here. Tracks start flowing at the moment of admission, but
-            // Meet's lobby UI can stay visibly on screen for several more
-            // seconds (observed in prod: "Please wait…" text still visible
-            // 7s after admission). Confirming on tracks while that UI
-            // lingers makes the post-confirm lobby check read the leftover
-            // UI as "never admitted" and kill a live join as bot_rejected.
-            // Waiting for the lobby UI to clear (this debounce) is the only
-            // ordering that is safe on both sides.
+            // here. Prod (2026-08-11, 12 killed joins) showed the track
+            // backlog reads exactly 3 in the lobby-adjacent state — Meet
+            // pre-allocates 3 audio transceivers, so track count is NOT
+            // admission evidence. Never-admitted lobby bots also render the
+            // full call-control DOM (Leave call included) and keep the
+            // "Please wait…" text in the DOM, so neither tracks nor
+            // in-meeting selectors can distinguish lobby from admitted.
+            // The only safe gate is this debounce: no confirm while the
+            // lobby text is detectable, sustained across samples.
             // Debounce the confirmation: a single clean sample can land in the
             // window where the lobby's call-control DOM is up but its text is
             // not (see JOIN_CONFIRM_DEBOUNCE_MS). Confirm only when a second
