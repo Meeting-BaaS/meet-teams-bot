@@ -1,4 +1,5 @@
 import { type Browser, type BrowserContext, type Page, chromium } from "@playwright/test"
+import { TEAMS_STATE_CONFIG } from "../meeting/teams-state-config"
 import { MeetingEndReason } from "../state-machine/types"
 import { type StateDetectionConfig, createStateDetector } from "./meeting-state-detector"
 
@@ -313,28 +314,9 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
 // Regression for the diio investigation (2026-08-11): 266 Teams bots sat in the
 // lobby for the full 600s. Teams had no waitingRoomPattern, so the bot could not
 // tell a genuine lobby wait apart from a broken pre-join page. Real-DOM check
-// that the lobby text is detected and the pre-join / denial screens are not.
-const TEAMS_LOBBY_CONFIG: StateDetectionConfig = {
-  providerName: "Microsoft Teams (test)",
-  denialPatterns: [
-    {
-      texts: ["Sorry, but you were denied access to the meeting."],
-      reason: MeetingEndReason.BotNotAccepted,
-      errorMessage: "Teams has denied entry",
-    },
-  ],
-  waitingRoomPattern: {
-    selectors: [
-      "text=let you in when the meeting starts",
-      "text=Someone will let you in",
-      "text=Waiting for someone to let you in",
-    ],
-    threshold: 1,
-    checkVisibility: true,
-  },
-  inMeetingPattern: { selectors: ['button:has-text("React")'], threshold: 1, checkVisibility: false },
-}
-
+// that every production lobby copy variant is detected and the pre-join / denial
+// screens are not. Uses the real TEAMS_STATE_CONFIG so the test tracks
+// production selector drift.
 describe("Teams lobby (isWaitingRoom)", () => {
   let browser: Browser
   let context: BrowserContext
@@ -352,12 +334,22 @@ describe("Teams lobby (isWaitingRoom)", () => {
   afterEach(async () => {
     await context?.close()
   })
-  const detector = createStateDetector(TEAMS_LOBBY_CONFIG)
+  const detector = createStateDetector(TEAMS_STATE_CONFIG)
 
-  it("detects the Teams lobby (matches the real captured DOM copy)", async () => {
-    await page.setContent(`
-      <div><h1>Hi, diio. Someone will let you in when the meeting starts.</h1>
-      <div>Microsoft Teams meeting</div></div>`)
+  // Every `text=` needle from TEAMS_STATE_CONFIG.waitingRoomPattern, rendered as
+  // visible page copy — so adding/removing a production variant updates the
+  // matrix automatically and a dropped selector fails here.
+  const lobbySelectors = TEAMS_STATE_CONFIG.waitingRoomPattern?.selectors ?? []
+  const lobbyPhrases = lobbySelectors
+    .filter((s) => s.startsWith("text="))
+    .map((s) => s.slice("text=".length))
+
+  it("has lobby selectors to test", () => {
+    expect(lobbyPhrases.length).toBeGreaterThanOrEqual(4)
+  })
+
+  it.each(lobbyPhrases)("detects the Teams lobby copy: %s", async (phrase) => {
+    await page.setContent(`<div><h1>Hi, diio. ${phrase}</h1><div>Microsoft Teams meeting</div></div>`)
     expect((await detector.isWaitingRoom(page)).matched).toBe(true)
   })
 
