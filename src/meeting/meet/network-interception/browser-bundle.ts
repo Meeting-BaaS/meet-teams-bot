@@ -56,10 +56,20 @@ export function browserInterceptionLogic(schema: any[]) {
     }
     function probeName(src: any): string {
       try {
-        const s = typeof src === "string" ? src : String(src)
-        // Keep only the tail of the URL (static resource name) — enough to
-        // identify Meet's worker scripts without logging query params.
-        return s.split("?")[0].split("/").slice(-2).join("/").slice(0, 80)
+        const url = new URL(String(src), location.href)
+        if (url.protocol === "blob:") return "blob"
+        if (url.protocol === "data:") return "data"
+        // Keep only static, non-identifying path segments: the static worklet
+        // loader names (…loadNetEqWrapper…, …loadAudioAnalyzer…) are the whole
+        // point of the probe, but any segment that looks like a UUID/hex/long
+        // token is session-specific and must not reach the log.
+        const uuidish = /^[0-9a-f]{8,}(-[0-9a-f]{4,}){0,4}$|^[0-9a-f]{16,}$/i
+        const kept = url.pathname
+          .split("/")
+          .filter((seg) => seg && !uuidish.test(seg))
+          .slice(-2)
+          .join("/")
+        return (kept || url.protocol.replace(":", "")).slice(0, 80)
       } catch {
         return "unknown"
       }
@@ -395,8 +405,12 @@ export function browserInterceptionLogic(schema: any[]) {
       const originalGetContributingSources = OriginalRTCRtpReceiver.prototype.getContributingSources
       OriginalRTCRtpReceiver.prototype.getContributingSources = function (...args: any[]) {
         const result = originalGetContributingSources.apply(this, args)
-        if (onGetContributingSources && result && result.length > 0) {
-          onGetContributingSources(this, result)
+        // Mirror EVERY call, including empty results: an empty array is Meet
+        // telling us the previous speaker went quiet, and skipping it would
+        // leave a stale non-empty array in the mirror for the CSRC sampler to
+        // read (its freshness gate catches most of this, clearing is exact).
+        if (onGetContributingSources) {
+          onGetContributingSources(this, result || [])
         }
         return result
       }
@@ -1212,9 +1226,20 @@ export function browserInterceptionLogic(schema: any[]) {
       // path "a.b.c" (field numbers) -> {sawZero, sawNonZero, last}
       varintPaths: new Map<string, { z: boolean; nz: boolean; last: number }>()
     }
-    function dcRawWalk(reader: any, end: number, path: string, depth: number) {
-      if (depth > 6 || dcProbe.varintPaths.size > 250) return
+    function dcRawWalk(
+      reader: any,
+      end: number,
+      path: string,
+      depth: number,
+      budget: { fields: number }
+    ) {
+      // Depth and distinct-path caps alone don't bound a payload with many
+      // repeated fields on one path — this runs a second full parse inside the
+      // datachannel message handler, so a hard field budget keeps it off the
+      // renderer's critical path.
+      if (depth > 6 || dcProbe.varintPaths.size > 250 || budget.fields <= 0) return
       while (reader.pos < end) {
+        if (budget.fields-- <= 0) return
         let tag: number
         try {
           tag = reader.uint32()
@@ -1239,7 +1264,7 @@ export function browserInterceptionLogic(schema: any[]) {
             // sub-fields, treat as an opaque leaf (string/bytes). Either way the
             // reader resumes exactly at the end of this field.
             try {
-              dcRawWalk(reader, sub, p, depth + 1)
+              dcRawWalk(reader, sub, p, depth + 1, budget)
             } catch {
               /* opaque leaf */
             }
@@ -1446,7 +1471,7 @@ export function browserInterceptionLogic(schema: any[]) {
                   dcProbe.messages++
                   dcProbe.bytes += inflated.length
                   const probeReader = (window as any).protobuf.Reader.create(inflated)
-                  dcRawWalk(probeReader, probeReader.len, "", 0)
+                  dcRawWalk(probeReader, probeReader.len, "", 0, { fields: 4000 })
                 } catch {
                   /* probe must never break decoding */
                 }
