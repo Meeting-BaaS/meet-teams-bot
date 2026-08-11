@@ -1200,7 +1200,7 @@ export function browserInterceptionLogic(schema: any[]) {
       clearInterval(mediaProbeInterval)
       clearInterval(csrcSampleInterval)
       clearInterval(dcProbeInterval)
-      clearInterval(dcChannelInterval)
+      // dcChannelInterval intentionally kept running past stop — see its comment.
 
       // Abort all active track controllers
       for (const [trackId, controller] of trackAbortControllers.entries()) {
@@ -1658,6 +1658,47 @@ export function browserInterceptionLogic(schema: any[]) {
       string,
       { msgs: number; bytes: number; msgsWhileSound: number; lastLen: number }
     >()
+    // Raw-decode a dcrpc/media-director frame (not gzip, not CollectionEvent):
+    // walk the protobuf wire format and emit a compact field dump live, so the
+    // active-speaker payload can be read against known speech. Field numbers +
+    // varint values + string lengths only — no string bytes (avoid PII).
+    function dcRpcDecode(label: string, bytes: Uint8Array) {
+      const parts: string[] = []
+      try {
+        const reader = (window as any).protobuf.Reader.create(bytes)
+        let guard = 0
+        while (reader.pos < reader.len && guard++ < 64) {
+          const tag = reader.uint32()
+          const field = tag >>> 3
+          const wt = tag & 7
+          if (wt === 0) parts.push(`${field}:v${reader.uint32()}`)
+          else if (wt === 1) {
+            reader.pos += 8
+            parts.push(`${field}:f64`)
+          } else if (wt === 5) {
+            const v = reader.fixed32 ? reader.fixed32() : (reader.pos += 4)
+            parts.push(`${field}:x${(v >>> 0).toString(16)}`)
+          } else if (wt === 2) {
+            const len = reader.uint32()
+            parts.push(`${field}:b${len}`)
+            reader.pos += len
+          } else {
+            reader.skipType(wt)
+          }
+        }
+      } catch {
+        /* partial parse is fine */
+      }
+      const sound = lastAudioActivityAt > 0 && performance.now() - lastAudioActivityAt < 1500
+      if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
+        ;(window as any).onNetworkSpeakerUpdate({
+          users: [],
+          timestamp: Date.now(),
+          source: "dcrpc_decode",
+          rpc: { label, fields: parts.slice(0, 24), sound }
+        })
+      }
+    }
     function dcChannelStat(label: string, len: number) {
       const sound = lastAudioActivityAt > 0 && performance.now() - lastAudioActivityAt < 1500
       const rec = dcChannels.get(label) || { msgs: 0, bytes: 0, msgsWhileSound: 0, lastLen: 0 }
@@ -1667,8 +1708,12 @@ export function browserInterceptionLogic(schema: any[]) {
       if (sound) rec.msgsWhileSound++
       dcChannels.set(label, rec)
     }
+    // NOT gated on __networkInterceptorStopped and NOT cleared on stop: on
+    // NetEq the diarization tracker stays empty, so the stale monitor retires
+    // the "network path" within ~13s — but Meet keeps delivering datachannel
+    // messages to the listeners, which is exactly what this probe measures.
+    // Keep reporting past the fallback so speech can be correlated.
     const dcChannelInterval = setInterval(() => {
-      if ((window as any).__networkInterceptorStopped) return
       if (dcChannels.size === 0) return
       const rows = Array.from(dcChannels.entries())
         .map(([l, r]) => `${l}:${r.msgs}m/${r.bytes}b/snd${r.msgsWhileSound}/len${r.lastLen}`)
@@ -1707,6 +1752,17 @@ export function browserInterceptionLogic(schema: any[]) {
           // frames are not gzip and get dropped at inflate below. Find the
           // channel that is busy during speech.
           dcChannelStat(label, rawData.length)
+          // dcrpc carries the live speaker signal (message arrivals track
+          // speech; confirmed against deterministic ground truth). Its frames
+          // are small and NOT gzip, so they die at the inflate below — raw-walk
+          // them here and emit the field values live to decode the payload.
+          if (label === "dcrpc" || label === "media-director") {
+            try {
+              dcRpcDecode(label, rawData)
+            } catch {
+              /* probe must never break */
+            }
+          }
           try {
             if (
               typeof (window as any).pako === "undefined" ||

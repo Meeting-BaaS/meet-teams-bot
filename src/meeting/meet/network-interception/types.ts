@@ -37,8 +37,11 @@ export type NetworkPayload = {
     | "dc_probe"
     | "f14_live"
     | "dc_channels"
+    | "dcrpc_decode"
   /** v12: per-datachannel-label raw traffic ("label:Nm/Bb/sndK/lenL"). */
   channels?: string[]
+  /** v14: raw-decoded dcrpc/media-director frame fields + sound flag. */
+  rpc?: { label: string; fields: string[]; sound: boolean }
   /** v11: edge-triggered live field-14 — active masked devices + sound. */
   f14live?: { active: string[]; sound: boolean; at: number }
   /** Datachannel speaking-signal probe: undecoded varint field paths that toggle. */

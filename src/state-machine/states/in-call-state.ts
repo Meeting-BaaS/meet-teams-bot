@@ -361,6 +361,13 @@ export class InCallState extends BaseState {
             return
           }
 
+          // Raw-decoded dcrpc frame — the live speaker payload.
+          if (payload.source === "dcrpc_decode" && payload.rpc) {
+            const r = payload.rpc
+            console.log(`[DCRPC] ${r.label} sound=${r.sound ? 1 : 0} { ${r.fields.join(" ")} }`)
+            return
+          }
+
           // Live field-14 snapshot (edge-triggered) — greppable in real time.
           if (payload.source === "f14_live" && payload.f14live) {
             const l = payload.f14live
