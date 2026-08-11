@@ -355,6 +355,15 @@ export class InCallState extends BaseState {
             return // Don't process as speaker update
           }
 
+          // Live field-14 snapshot (edge-triggered) — greppable in real time.
+          if (payload.source === "f14_live" && payload.f14live) {
+            const l = payload.f14live
+            console.log(
+              `[F14LIVE] audioOn=${l.t1On} videoOn=${l.t2On} sound=${l.sound ? 1 : 0}`
+            )
+            return
+          }
+
           // Datachannel speaking-signal probe: is the channel alive on this
           // session, and which undecoded varint field toggles with speech?
           if (payload.source === "dc_probe" && payload.dc) {

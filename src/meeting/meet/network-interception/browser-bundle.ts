@@ -1332,22 +1332,45 @@ export function browserInterceptionLogic(schema: any[]) {
       }
       return loud
     }
-    // v9: correlate field 14 (per audio device) against recent tap audio
-    // energy. "Sound" = a frame with energy in the last 1.5s (mixed stream on
-    // NetEq, or any track on classic).
+    // v10: field 14 on ANY output type (v9 wrongly filtered to audio; the
+    // speaking ring is likely on the VIDEO output). Aggregate count of "on"
+    // outputs per type, plus current tap-sound flag, emitted LIVE (edge
+    // triggered) so it can be watched against narrated speech in real time.
+    let lastF14Key = ""
     function dcProbeF14(deviceOutputs: any[]) {
       const sound = lastAudioActivityAt > 0 && performance.now() - lastAudioActivityAt < 1500
+      let t1On = 0
+      let t2On = 0
+      let anyField14 = false
       for (const o of deviceOutputs || []) {
-        if (o?.deviceOutputType !== 1) continue
         const val = o?.deviceOutputActiveSpeaker?.value
-        if (val === undefined) continue // field 14 absent on this session
-        dcProbe.f14.seen = true
-        const on = val !== 0
-        dcProbe.f14.samples++
-        if (on && sound) dcProbe.f14.onSound++
-        else if (on && !sound) dcProbe.f14.onQuiet++
-        else if (!on && sound) dcProbe.f14.offSound++
-        else dcProbe.f14.offQuiet++
+        if (val === undefined) continue
+        anyField14 = true
+        if (val !== 0) {
+          if (o?.deviceOutputType === 1) t1On++
+          else if (o?.deviceOutputType === 2) t2On++
+        }
+      }
+      if (!anyField14) return
+      dcProbe.f14.seen = true
+      // Keep the v9 audio-only correlation counters for the summary.
+      dcProbe.f14.samples++
+      if (t1On > 0 && sound) dcProbe.f14.onSound++
+      else if (t1On > 0) dcProbe.f14.onQuiet++
+      else if (sound) dcProbe.f14.offSound++
+      else dcProbe.f14.offQuiet++
+      // Live edge-triggered emit: only when the on-set or sound flag changes.
+      const key = `${t1On}|${t2On}|${sound ? 1 : 0}`
+      if (key !== lastF14Key) {
+        lastF14Key = key
+        if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
+          ;(window as any).onNetworkSpeakerUpdate({
+            users: [],
+            timestamp: Date.now(),
+            source: "f14_live",
+            f14live: { t1On, t2On, sound, at: Date.now() }
+          })
+        }
       }
     }
     // Fold one decoded CollectionEvent's device outputs into the correlation.
