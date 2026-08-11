@@ -306,7 +306,12 @@ export function browserInterceptionLogic(schema: any[]) {
     function createReceiverManager() {
       return {
         receiverMap: new Map(),
-        receiverToTrackMap: new Map()
+        receiverToTrackMap: new Map(),
+        // performance.now() when we last mirrored each receiver's sources. The
+        // CSRC entries carry their own `timestamp`, but on a different clock
+        // (not performance.now()), so gating freshness on it filtered out every
+        // live source. Stamp arrival ourselves and gate on that instead.
+        sourceStamp: new Map()
       }
     }
 
@@ -324,6 +329,7 @@ export function browserInterceptionLogic(schema: any[]) {
       contributingSources: any
     ) {
       receiverManager.receiverMap.set(receiver, contributingSources)
+      receiverManager.sourceStamp.set(receiver, performance.now())
     }
 
     function getContributingSources(receiverManager: any, receiver: any) {
@@ -1016,19 +1022,20 @@ export function browserInterceptionLogic(schema: any[]) {
     // a timer and drive the same speaker state the frame loop uses; the shared
     // lastBroadcastedSpeakerId makes the two paths dedupe against each other.
     //
-    // Freshness gate: CSRC timestamps are on the performance.now() timeline
-    // ("most recent packet"). Stale mirrored sources mean Meet stopped polling
-    // (or audio stopped) — they must neither name nor clear a speaker.
+    // Freshness gate uses OUR arrival stamp (see sourceStamp): a receiver we
+    // mirrored in the last 2s is live; the CSRC entry's own `timestamp` is on a
+    // different clock and gating on it dropped every source (v6 correlation and
+    // this sampler both came up empty while speech was clearly loud).
     const csrcSampleInterval = setInterval(() => {
       if ((window as any).__networkInterceptorStopped) return
       try {
         const freshSources: any[] = []
         const now = performance.now()
-        for (const [, sources] of receiverManager.receiverMap) {
+        for (const [receiver, sources] of receiverManager.receiverMap) {
+          const stamp = receiverManager.sourceStamp.get(receiver)
+          if (stamp === undefined || now - stamp >= 2000) continue
           for (const s of sources || []) {
-            if (s && typeof s.timestamp === "number" && now - s.timestamp < 2000) {
-              freshSources.push(s)
-            }
+            if (s) freshSources.push(s)
           }
         }
         if (freshSources.length === 0) return
@@ -1240,19 +1247,16 @@ export function browserInterceptionLogic(schema: any[]) {
       // means; the same field then carries the meaning onto NetEq sessions.
       corr: { onLoud: 0, onQuiet: 0, offLoud: 0, offQuiet: 0, samples: 0 }
     }
-    // SSRCs whose most recent CSRC packet is loud and fresh (<2s).
+    // SSRCs whose most recent CSRC packet is loud, from a receiver we mirrored
+    // in the last 2s (freshness on OUR arrival stamp, not the CSRC clock).
     function loudSsrcSet(): Set<string> {
       const loud = new Set<string>()
       const now = performance.now()
-      for (const [, sources] of receiverManager.receiverMap) {
+      for (const [receiver, sources] of receiverManager.receiverMap) {
+        const stamp = receiverManager.sourceStamp.get(receiver)
+        if (stamp === undefined || now - stamp >= 2000) continue
         for (const s of sources || []) {
-          if (
-            s &&
-            (s.audioLevel || 0) > 0.05 &&
-            typeof s.timestamp === "number" &&
-            now - s.timestamp < 2000 &&
-            s.source != null
-          ) {
+          if (s && (s.audioLevel || 0) > 0.05 && s.source != null) {
             loud.add(String(s.source))
           }
         }
