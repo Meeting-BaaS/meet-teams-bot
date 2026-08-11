@@ -27,7 +27,93 @@ export type ChatMessage = {
 export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
-  source: "roster" | "audio" | "health_check" | "network_interception_failed"
+  source:
+    | "roster"
+    | "audio"
+    | "health_check"
+    | "network_interception_failed"
+    | "csrc_probe"
+    | "media_probe"
+    | "dc_probe"
+    | "f14_live"
+    | "dc_channels"
+    | "dcrpc_decode"
+  /** v12: per-datachannel-label raw traffic ("label:Nm/Bb/sndK/lenL"). */
+  channels?: string[]
+  /** v14: raw-decoded dcrpc/media-director frame fields + sound flag. */
+  rpc?: { label: string; fields: string[]; sound: boolean }
+  /** v11: edge-triggered live field-14 — active masked devices + sound. */
+  f14live?: { active: string[]; sound: boolean; at: number }
+  /** Datachannel speaking-signal probe: undecoded varint field paths that toggle. */
+  dc?: {
+    messages: number
+    bytes: number
+    distinctPaths: number
+    toggling: string[]
+    /** v6: undecoded varint paths whose value exceeds 1 (candidate levels). */
+    levels?: string[]
+    /** v6: field-9 vs CSRC-loud agreement counts (per audio device output). */
+    corr?: {
+      onLoud: number
+      onQuiet: number
+      offLoud: number
+      offQuiet: number
+      samples: number
+    }
+    /** v9: field-14 (NetEq active-speaker candidate) vs tap audio energy. */
+    f14?: {
+      onSound: number
+      onQuiet: number
+      offSound: number
+      offQuiet: number
+      samples: number
+      seen: boolean
+    }
+    /** v8: SSRC id spaces (hex) to crack the loud-SSRC ↔ streamId mapping. */
+    ssrc?: {
+      loudCsrc: string[]
+      audioStreamIds: string[]
+      syncSsrc: string[]
+      allCsrc: string[]
+      loudInStreamIds: number
+      loudInSync: number
+      loudSamples: number
+    }
+    timestamp: number
+  }
+  /** Media-architecture probe: where Meet's media stack lives in this frame. */
+  media?: {
+    frame: string
+    pcCreated: number
+    workers: string[]
+    sharedWorkers: number
+    webTransport: string[]
+    scriptTransforms: number
+    trackGenerators: number
+    audioContexts: number
+    workletModules: string[]
+    /** AudioWorkletNode processors created, as "name:count". */
+    workletNodes?: string[]
+    /** Observed worklet-node connect() destinations, as "name->DestCtor". */
+    workletEdges?: string[]
+    mediaEls: number
+    elsWithStream: number
+    liveAudioTracks: number
+    timestamp: number
+  }
+  /** Read-only CSRC/SSRC audio-level probe summary (counts only, no ids). */
+  probe?: {
+    receivers: number
+    meetCalls: number
+    csrcSources: number
+    csrcWithLevel: number
+    csrcMax: number
+    ssrcSources: number
+    ssrcWithLevel: number
+    ssrcMax: number
+    mapped: number
+    timestamp: number
+  }
   health?: {
     subscribed: boolean
     /** Tracks that have delivered at least one audio frame. */

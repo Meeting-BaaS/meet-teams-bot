@@ -126,12 +126,45 @@ export const PROTO_SCHEMA = [
       { name: "deviceOutputType", fieldNumber: 2, type: "varint" }, // 1=audio, 2=video
       { name: "streamId", fieldNumber: 4, type: "string" }, // This IS the SSRC
       { name: "deviceId", fieldNumber: 6, type: "string" }, // The actual Device ID
+      // Field 9: candidate per-device speaking/activity signal (probe v6). Its
+      // varint at position 2 toggles per device; v6 correlates it against the
+      // CSRC audio level for the same stream to decide if it means "speaking".
+      {
+        name: "deviceOutputActivity",
+        fieldNumber: 9,
+        type: "message",
+        messageType: "DeviceOutputActivity"
+      },
       {
         name: "deviceOutputStatus",
         fieldNumber: 10,
         type: "message",
         messageType: "DeviceOutputStatus"
+      },
+      // Field 14: NetEq-only per-device active-speaker candidate (probe v9). It
+      // appears only where audio is server-mixed (no per-stream CSRC) and is
+      // one-device-at-a-time, which is the dominant-speaker shape. Its varint
+      // at position 1 is the flag.
+      {
+        name: "deviceOutputActiveSpeaker",
+        fieldNumber: 14,
+        type: "message",
+        messageType: "DeviceOutputActiveSpeaker"
       }
+    ]
+  },
+  {
+    name: "DeviceOutputActivity",
+    fields: [{ name: "value", fieldNumber: 2, type: "varint" }]
+  },
+  {
+    name: "DeviceOutputActiveSpeaker",
+    // Capture the first few varint sub-fields — the raw walk saw activity here
+    // but we don't know which position holds the flag/level, so decode 1/2/3.
+    fields: [
+      { name: "v1", fieldNumber: 1, type: "varint" },
+      { name: "v2", fieldNumber: 2, type: "varint" },
+      { name: "v3", fieldNumber: 3, type: "varint" }
     ]
   },
   {

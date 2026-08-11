@@ -355,6 +355,84 @@ export class InCallState extends BaseState {
             return // Don't process as speaker update
           }
 
+          // Per-datachannel raw traffic — find the channel busy during speech.
+          if (payload.source === "dc_channels" && payload.channels) {
+            console.log(`[DCCHAN] ${payload.channels.join("  ")}`)
+            return
+          }
+
+          // Raw-decoded dcrpc frame — the live speaker payload.
+          if (payload.source === "dcrpc_decode" && payload.rpc) {
+            const r = payload.rpc
+            console.log(`[DCRPC] ${r.label} sound=${r.sound ? 1 : 0} { ${r.fields.join(" ")} }`)
+            return
+          }
+
+          // Live field-14 snapshot (edge-triggered) — greppable in real time.
+          if (payload.source === "f14_live" && payload.f14live) {
+            const l = payload.f14live
+            console.log(
+              `[F14LIVE] active=[${l.active.join(",")}] sound=${l.sound ? 1 : 0}`
+            )
+            return
+          }
+
+          // Datachannel speaking-signal probe: is the channel alive on this
+          // session, and which undecoded varint field toggles with speech?
+          if (payload.source === "dc_probe" && payload.dc) {
+            const d = payload.dc
+            const c = d.corr
+            const corrStr = c
+              ? ` corr(field9vsCsrc): onLoud=${c.onLoud} onQuiet=${c.onQuiet} offLoud=${c.offLoud} offQuiet=${c.offQuiet} samples=${c.samples}`
+              : ""
+            const levelsStr = d.levels?.length ? ` levels=[${d.levels.join(",")}]` : ""
+            const f = d.f14
+            const f14Str = f?.seen
+              ? ` f14(activeSpeaker vs sound): onSound=${f.onSound} onQuiet=${f.onQuiet} offSound=${f.offSound} offQuiet=${f.offQuiet} samples=${f.samples}`
+              : ""
+            const s = d.ssrc
+            const ssrcStr = s
+              ? ` ssrc(loudInStreamIds=${s.loudInStreamIds}/loudInSync=${s.loudInSync}/loudSamples=${s.loudSamples}` +
+                ` loudCsrc=[${s.loudCsrc.join(",")}] audioStreamIds=[${s.audioStreamIds.join(",")}]` +
+                ` syncSsrc=[${s.syncSsrc.join(",")}])`
+              : ""
+            console.log(
+              `[DcProbe] messages=${d.messages} bytes=${d.bytes} ` +
+                `distinctPaths=${d.distinctPaths} toggling=[${d.toggling.join(",")}]${levelsStr}${corrStr}${f14Str}${ssrcStr}`
+            )
+            return
+          }
+
+          // Media-architecture probe: where does Meet run its media stack in
+          // this session? One line per 30s per frame, static names only.
+          if (payload.source === "media_probe" && payload.media) {
+            const m = payload.media
+            console.log(
+              `[MediaProbe] frame=${m.frame} pc=${m.pcCreated} ` +
+                `workers=[${m.workers.join(",")}] sharedWorkers=${m.sharedWorkers} ` +
+                `webTransport=[${m.webTransport.join(",")}] scriptTransforms=${m.scriptTransforms} ` +
+                `trackGenerators=${m.trackGenerators} audioContexts=${m.audioContexts} ` +
+                `worklets=[${m.workletModules.join(",")}] ` +
+                `workletNodes=[${(m.workletNodes ?? []).join(",")}] ` +
+                `workletEdges=[${(m.workletEdges ?? []).join(",")}] ` +
+                `mediaEls=${m.mediaEls}/${m.elsWithStream} liveAudioTracks=${m.liveAudioTracks}`
+            )
+            return // Not a speaker update
+          }
+
+          // CSRC audio-level probe: forward the browser-side summary into the
+          // bot log so it survives the pod. One line per 30s, counts only.
+          if (payload.source === "csrc_probe" && payload.probe) {
+            const p = payload.probe
+            console.log(
+              `[CsrcProbe] receivers=${p.receivers} meetCalls=${p.meetCalls} ` +
+                `csrc=${p.csrcSources} csrcLvl=${p.csrcWithLevel} csrcMax=${p.csrcMax.toFixed(3)} ` +
+                `ssrc=${p.ssrcSources} ssrcLvl=${p.ssrcWithLevel} ssrcMax=${p.ssrcMax.toFixed(3)} ` +
+                `mapped=${p.mapped}`
+            )
+            return // Not a speaker update
+          }
+
           // Handle health check reports
           if (payload.source === "health_check" && payload.health) {
             const {
