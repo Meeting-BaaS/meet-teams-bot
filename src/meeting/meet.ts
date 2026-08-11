@@ -41,6 +41,12 @@ const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before c
 // check in changeLayout and ends as BotNotAccepted rather than a false
 // "removed".
 const JOIN_CONFIRM_DEBOUNCE_MS = 6000
+// A bot that never saw the lobby cannot tell an open meeting from a lobby
+// whose text hasn't rendered yet — prod kills showed text arriving up to
+// 6.4s after the first clean sample, past the 6s window. A bot that DID see
+// the lobby and watched it clear is in the trusted case (admitted meetings
+// never re-show the text; 76/76 sampled), so it keeps the shorter window.
+const JOIN_CONFIRM_DEBOUNCE_NO_LOBBY_SEEN_MS = 10000
 
 /**
  * Checks that the page is still on meet.google.com.
@@ -407,12 +413,18 @@ export class MeetProvider implements MeetingProviderInterface {
             // window where the lobby's call-control DOM is up but its text is
             // not (see JOIN_CONFIRM_DEBOUNCE_MS). Confirm only when a second
             // clean sample arrives at least that long after the first.
+            // Observed lobby→clear transition = trusted admission signal
+            // (shorter window). Never saw the lobby = could be an open
+            // meeting OR a lobby with late-rendering text (longer window).
+            const debounceMs = leftWaitingRoomAt
+              ? JOIN_CONFIRM_DEBOUNCE_MS
+              : JOIN_CONFIRM_DEBOUNCE_NO_LOBBY_SEEN_MS
             if (firstCleanConfirmAt === null) {
               firstCleanConfirmAt = Date.now()
               console.log(
-                `⏳ In-meeting sample clean, debouncing join confirm for ${JOIN_CONFIRM_DEBOUNCE_MS}ms...`
+                `⏳ In-meeting sample clean, debouncing join confirm for ${debounceMs}ms (lobby transition ${leftWaitingRoomAt ? "observed" : "not observed"})...`
               )
-            } else if (Date.now() - firstCleanConfirmAt >= JOIN_CONFIRM_DEBOUNCE_MS) {
+            } else if (Date.now() - firstCleanConfirmAt >= debounceMs) {
               botWasInMeeting = true
               console.log(
                 `✅ Successfully confirmed we are in the meeting (debounced ${Date.now() - firstCleanConfirmAt}ms; grace period: ${!leftWaitingRoomAt ? "not in waiting room" : `expired after ${Date.now() - leftWaitingRoomAt}ms`})`

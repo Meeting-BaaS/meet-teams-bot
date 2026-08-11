@@ -16,10 +16,14 @@ jest.mock("../singleton", () => ({
 }))
 
 // ── mock meeting-state-detector (prevents module-level createStateDetector call) ─
+// Shared instance so join-loop tests can script waiting-room / in-meeting state.
+const mockDetector = {
+  isDenied: jest.fn().mockResolvedValue({ matched: false, matchedText: null, pattern: null }),
+  isWaitingRoom: jest.fn().mockResolvedValue({ matched: false, count: 0 }),
+  isInMeeting: jest.fn().mockResolvedValue({ count: 0, matched: false }),
+}
 jest.mock("../utils/meeting-state-detector", () => ({
-  createStateDetector: jest.fn().mockReturnValue({
-    isDenied: jest.fn().mockResolvedValue({ matched: false, matchedText: null, pattern: null }),
-  }),
+  createStateDetector: jest.fn().mockReturnValue(mockDetector),
 }))
 
 // ── mock all other module-level dependencies that run at import time ─
@@ -251,5 +255,130 @@ describe("MeetProvider.findEndMeeting", () => {
       const result = await provider.findEndMeeting(page)
       expect(result).toBe(false)
     })
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════
+// MeetProvider.joinMeeting — lobby / debounce regression tests
+//
+// Regression for the 2026-08-11 prod incident: Meet's lobby can render
+// the in-meeting DOM (indicator threshold passes) while the lobby text
+// appears seconds LATE. A join confirm that fires inside that window is
+// false, and the post-confirm lobby check then kills the bot as
+// botNotAccepted. The debounce must hold the confirm until the lobby
+// text has been absent long enough — including renders later than the
+// old 6s window (observed up to 6.4s).
+// ══════════════════════════════════════════════════════════════════
+
+describe("MeetProvider.joinMeeting — join-confirm debounce", () => {
+  let provider: MeetProvider
+
+  const { sleep } = jest.requireMock("../utils/sleep")
+
+  function createJoinLoopPage() {
+    // Permissive page mock: every UI interaction "exists but never succeeds",
+    // so the pre-loop steps (name typing, mic/camera, join click) fall
+    // through their retry paths without throwing. Timer-advancing waits keep
+    // Date.now() moving under fake timers.
+    const locatorChain: any = {}
+    Object.assign(locatorChain, {
+      first: jest.fn().mockReturnValue(locatorChain),
+      count: jest.fn().mockResolvedValue(0),
+      isVisible: jest.fn().mockResolvedValue(false),
+      isEnabled: jest.fn().mockResolvedValue(false),
+      click: jest.fn().mockRejectedValue(new Error("not clickable")),
+      fill: jest.fn().mockRejectedValue(new Error("not fillable")),
+      type: jest.fn().mockRejectedValue(new Error("not typable")),
+      waitFor: jest.fn().mockRejectedValue(new Error("never visible")),
+      evaluate: jest.fn().mockResolvedValue(undefined),
+      evaluateAll: jest.fn().mockResolvedValue([]),
+      all: jest.fn().mockResolvedValue([]),
+    })
+    return {
+      url: jest.fn().mockReturnValue("https://meet.google.com/abc-defg-hij"),
+      content: jest.fn().mockResolvedValue("<html></html>"),
+      isClosed: jest.fn().mockReturnValue(false),
+      evaluate: jest.fn().mockResolvedValue(undefined),
+      locator: jest.fn().mockReturnValue(locatorChain),
+      keyboard: { press: jest.fn().mockResolvedValue(undefined) },
+      mouse: {
+        move: jest.fn().mockResolvedValue(undefined),
+        click: jest.fn().mockResolvedValue(undefined),
+        down: jest.fn().mockResolvedValue(undefined),
+        up: jest.fn().mockResolvedValue(undefined),
+      },
+      waitForTimeout: jest.fn().mockImplementation(async (ms: number) => {
+        jest.advanceTimersByTime(ms)
+      }),
+    } as any
+  }
+
+  beforeEach(() => {
+    resetMocks()
+    jest.useFakeTimers()
+    provider = new MeetProvider()
+    mockGlobal.get.mockReturnValue({
+      bot_name: "TestBot",
+      streaming_input: undefined,
+      recording_mode: "audio_only", // skips the layout-change machinery in critical setup
+      meet_sso_config: undefined,
+      enter_message: undefined,
+    })
+    sleep.mockImplementation(async (ms: number) => {
+      jest.advanceTimersByTime(ms)
+    })
+    mockDetector.isDenied.mockResolvedValue({ matched: false, matchedText: null, pattern: null })
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+    sleep.mockResolvedValue(undefined)
+    mockDetector.isWaitingRoom.mockResolvedValue({ matched: false, count: 0 })
+    mockDetector.isInMeeting.mockResolvedValue({ count: 0, matched: false })
+  })
+
+  it("does NOT confirm when the lobby text renders late (8s after the first clean sample)", async () => {
+    // In-meeting indicators pass from the start (the lobby renders call
+    // controls); the lobby text only becomes detectable 8s after the first
+    // clean in-meeting sample — later than the old 6s window.
+    let firstCleanSampleAt: number | null = null
+    mockDetector.isInMeeting.mockImplementation(async () => {
+      if (firstCleanSampleAt === null) firstCleanSampleAt = Date.now()
+      return { count: 4, matched: true }
+    })
+    mockDetector.isWaitingRoom.mockImplementation(async () => {
+      const lateTextVisible =
+        firstCleanSampleAt !== null && Date.now() - firstCleanSampleAt >= 8000
+      return { matched: lateTextVisible, count: lateTextVisible ? 3 : 0 }
+    })
+
+    const onJoinSuccess = jest.fn()
+    const start = Date.now()
+    // Let the loop run 40s of virtual time, then stop it via cancelCheck.
+    const cancelCheck = () => Date.now() - start > 40000
+
+    await expect(
+      provider.joinMeeting(createJoinLoopPage(), cancelCheck, onJoinSuccess)
+    ).rejects.toThrow("API request to stop recording")
+
+    expect(onJoinSuccess).not.toHaveBeenCalled()
+  })
+
+  it("confirms after an observed lobby→clear transition plus the debounce window", async () => {
+    // Bot sees the lobby for 3s (host admits), text clears and stays gone —
+    // the trusted transition case. Confirm should land after grace + 6s.
+    const start = Date.now()
+    mockDetector.isInMeeting.mockResolvedValue({ count: 4, matched: true })
+    mockDetector.isWaitingRoom.mockImplementation(async () => {
+      const inLobby = Date.now() - start < 3000
+      return { matched: inLobby, count: inLobby ? 3 : 0 }
+    })
+
+    const onJoinSuccess = jest.fn()
+    const cancelCheck = () => Date.now() - start > 60000
+
+    await provider.joinMeeting(createJoinLoopPage(), cancelCheck, onJoinSuccess)
+
+    expect(onJoinSuccess).toHaveBeenCalledTimes(1)
   })
 })
