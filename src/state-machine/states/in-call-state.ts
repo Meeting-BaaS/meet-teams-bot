@@ -355,6 +355,12 @@ export class InCallState extends BaseState {
             return // Don't process as speaker update
           }
 
+          // Per-datachannel raw traffic — find the channel busy during speech.
+          if (payload.source === "dc_channels" && payload.channels) {
+            console.log(`[DCCHAN] ${payload.channels.join("  ")}`)
+            return
+          }
+
           // Live field-14 snapshot (edge-triggered) — greppable in real time.
           if (payload.source === "f14_live" && payload.f14live) {
             const l = payload.f14live

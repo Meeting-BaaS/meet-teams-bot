@@ -1200,6 +1200,7 @@ export function browserInterceptionLogic(schema: any[]) {
       clearInterval(mediaProbeInterval)
       clearInterval(csrcSampleInterval)
       clearInterval(dcProbeInterval)
+      clearInterval(dcChannelInterval)
 
       // Abort all active track controllers
       for (const [trackId, controller] of trackAbortControllers.entries()) {
@@ -1650,6 +1651,38 @@ export function browserInterceptionLogic(schema: any[]) {
       reportHealthCheck()
     }, 10000)
 
+    // v12: per-datachannel-label raw traffic stats. counts messages/bytes and
+    // how many landed while the tap reports sound — the channel whose traffic
+    // tracks speech is the live speaker signal, even if we can't decode it yet.
+    const dcChannels = new Map<
+      string,
+      { msgs: number; bytes: number; msgsWhileSound: number; lastLen: number }
+    >()
+    function dcChannelStat(label: string, len: number) {
+      const sound = lastAudioActivityAt > 0 && performance.now() - lastAudioActivityAt < 1500
+      const rec = dcChannels.get(label) || { msgs: 0, bytes: 0, msgsWhileSound: 0, lastLen: 0 }
+      rec.msgs++
+      rec.bytes += len
+      rec.lastLen = len
+      if (sound) rec.msgsWhileSound++
+      dcChannels.set(label, rec)
+    }
+    const dcChannelInterval = setInterval(() => {
+      if ((window as any).__networkInterceptorStopped) return
+      if (dcChannels.size === 0) return
+      const rows = Array.from(dcChannels.entries())
+        .map(([l, r]) => `${l}:${r.msgs}m/${r.bytes}b/snd${r.msgsWhileSound}/len${r.lastLen}`)
+        .slice(0, 20)
+      if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
+        ;(window as any).onNetworkSpeakerUpdate({
+          users: [],
+          timestamp: Date.now(),
+          source: "dc_channels",
+          channels: rows
+        })
+      }
+    }, 10000)
+
     // Decode + probe one datachannel message. Shared by every path a channel
     // can reach us — the passive "datachannel" event (remote-created channels)
     // AND createDataChannel (channels Meet builds locally, which the event
@@ -1667,6 +1700,13 @@ export function browserInterceptionLogic(schema: any[]) {
       channel.addEventListener("message", (msg: any) => {
         try {
           const rawData = new Uint8Array(msg.data)
+          // v12: count RAW messages per channel label BEFORE inflate. The
+          // meet_messages CollectionEvent channel is roster/chat and nearly
+          // silent (~2 msgs a meeting), yet Meet animates speaking rings — so
+          // the live speaker signal is on another channel, likely one whose
+          // frames are not gzip and get dropped at inflate below. Find the
+          // channel that is busy during speech.
+          dcChannelStat(label, rawData.length)
           try {
             if (
               typeof (window as any).pako === "undefined" ||
