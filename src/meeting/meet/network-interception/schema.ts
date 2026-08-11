@@ -159,7 +159,13 @@ export const PROTO_SCHEMA = [
   },
   {
     name: "DeviceOutputActiveSpeaker",
-    fields: [{ name: "value", fieldNumber: 1, type: "varint" }]
+    // Capture the first few varint sub-fields — the raw walk saw activity here
+    // but we don't know which position holds the flag/level, so decode 1/2/3.
+    fields: [
+      { name: "v1", fieldNumber: 1, type: "varint" },
+      { name: "v2", fieldNumber: 2, type: "varint" },
+      { name: "v3", fieldNumber: 3, type: "varint" }
+    ]
   },
   {
     name: "DeviceOutputStatus",

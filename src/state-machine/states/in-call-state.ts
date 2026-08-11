@@ -359,7 +359,7 @@ export class InCallState extends BaseState {
           if (payload.source === "f14_live" && payload.f14live) {
             const l = payload.f14live
             console.log(
-              `[F14LIVE] audioOn=${l.t1On} videoOn=${l.t2On} sound=${l.sound ? 1 : 0}`
+              `[F14LIVE] active=[${l.active.join(",")}] sound=${l.sound ? 1 : 0}`
             )
             return
           }

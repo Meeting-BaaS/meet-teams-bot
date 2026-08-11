@@ -36,8 +36,8 @@ export type NetworkPayload = {
     | "media_probe"
     | "dc_probe"
     | "f14_live"
-  /** v10: edge-triggered live field-14 snapshot (on-counts per type + sound). */
-  f14live?: { t1On: number; t2On: number; sound: boolean; at: number }
+  /** v11: edge-triggered live field-14 — active masked devices + sound. */
+  f14live?: { active: string[]; sound: boolean; at: number }
   /** Datachannel speaking-signal probe: undecoded varint field paths that toggle. */
   dc?: {
     messages: number

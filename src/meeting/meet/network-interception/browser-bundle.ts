@@ -1332,35 +1332,45 @@ export function browserInterceptionLogic(schema: any[]) {
       }
       return loud
     }
-    // v10: field 14 on ANY output type (v9 wrongly filtered to audio; the
-    // speaking ring is likely on the VIDEO output). Aggregate count of "on"
-    // outputs per type, plus current tap-sound flag, emitted LIVE (edge
-    // triggered) so it can be watched against narrated speech in real time.
+    // v11: field 14 (deviceOutputActiveSpeaker) on ANY output type — v9/v10
+    // wrongly required type 1/2 and only read sub-field 1. Read sub-fields
+    // 1/2/3, treat an output "active" if ANY is non-zero, and tie it to a
+    // stable masked device index (no PII) so we can see WHICH device lights up
+    // against narrated speech. Also record which sub-field and output type
+    // carry the signal, so we finally learn field 14's real shape.
+    const f14DeviceIndex = new Map<string, number>()
+    function maskDevice(deviceId: any): number {
+      const key = String(deviceId ?? "")
+      const seen = f14DeviceIndex.get(key)
+      if (seen !== undefined) return seen
+      const next = f14DeviceIndex.size
+      f14DeviceIndex.set(key, next)
+      return next
+    }
     let lastF14Key = ""
     function dcProbeF14(deviceOutputs: any[]) {
       const sound = lastAudioActivityAt > 0 && performance.now() - lastAudioActivityAt < 1500
-      let t1On = 0
-      let t2On = 0
+      const active: string[] = [] // "dev<idx>t<type>f<subfield>" for each active output
       let anyField14 = false
       for (const o of deviceOutputs || []) {
-        const val = o?.deviceOutputActiveSpeaker?.value
-        if (val === undefined) continue
+        const as = o?.deviceOutputActiveSpeaker
+        if (as === undefined) continue
         anyField14 = true
-        if (val !== 0) {
-          if (o?.deviceOutputType === 1) t1On++
-          else if (o?.deviceOutputType === 2) t2On++
+        const sub = as.v1 ? 1 : as.v2 ? 2 : as.v3 ? 3 : 0
+        if (sub !== 0) {
+          active.push(`d${maskDevice(o?.deviceId)}t${o?.deviceOutputType ?? "?"}f${sub}`)
         }
       }
       if (!anyField14) return
       dcProbe.f14.seen = true
-      // Keep the v9 audio-only correlation counters for the summary.
       dcProbe.f14.samples++
-      if (t1On > 0 && sound) dcProbe.f14.onSound++
-      else if (t1On > 0) dcProbe.f14.onQuiet++
+      const on = active.length > 0
+      if (on && sound) dcProbe.f14.onSound++
+      else if (on) dcProbe.f14.onQuiet++
       else if (sound) dcProbe.f14.offSound++
       else dcProbe.f14.offQuiet++
-      // Live edge-triggered emit: only when the on-set or sound flag changes.
-      const key = `${t1On}|${t2On}|${sound ? 1 : 0}`
+      // Live edge-triggered emit whenever the active set or sound flag changes.
+      const key = `${active.slice().sort().join(",")}|${sound ? 1 : 0}`
       if (key !== lastF14Key) {
         lastF14Key = key
         if (typeof (window as any).onNetworkSpeakerUpdate === "function") {
@@ -1368,7 +1378,7 @@ export function browserInterceptionLogic(schema: any[]) {
             users: [],
             timestamp: Date.now(),
             source: "f14_live",
-            f14live: { t1On, t2On, sound, at: Date.now() }
+            f14live: { active, sound, at: Date.now() }
           })
         }
       }
