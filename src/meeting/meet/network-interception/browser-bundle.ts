@@ -1695,8 +1695,19 @@ export function browserInterceptionLogic(schema: any[]) {
             // state lives. Only genuinely huge blobs get a length marker.
             if (len > 0 && len <= 700) {
               const before = out.length
+              // dcrpc field-2 is a gzip-compressed protobuf snapshot (magic
+              // 1f 8b) — the per-participant speaker state. Inflate it, then
+              // walk the result.
+              let walkBytes = sub
+              if (len >= 2 && sub[0] === 0x1f && sub[1] === 0x8b) {
+                try {
+                  walkBytes = (window as any).pako.inflate(sub)
+                } catch {
+                  /* keep raw on inflate failure */
+                }
+              }
               out.push(`${p}{`)
-              dcRpcWalk(sub, p, depth + 1, out)
+              dcRpcWalk(walkBytes, p, depth + 1, out)
               // If the blob did not parse as a nested message, it is gzip or
               // opaque binary — replace the empty {} with a hex prefix so its
               // encoding is identifiable (gzip magic 1f8b, etc). Bytes only, no
