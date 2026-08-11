@@ -308,3 +308,68 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
     })
   })
 })
+
+// ── Teams lobby detection (isWaitingRoom) ────────────────────────────────────
+// Regression for the diio investigation (2026-08-11): 266 Teams bots sat in the
+// lobby for the full 600s. Teams had no waitingRoomPattern, so the bot could not
+// tell a genuine lobby wait apart from a broken pre-join page. Real-DOM check
+// that the lobby text is detected and the pre-join / denial screens are not.
+const TEAMS_LOBBY_CONFIG: StateDetectionConfig = {
+  providerName: "Microsoft Teams (test)",
+  denialPatterns: [
+    {
+      texts: ["Sorry, but you were denied access to the meeting."],
+      reason: MeetingEndReason.BotNotAccepted,
+      errorMessage: "Teams has denied entry",
+    },
+  ],
+  waitingRoomPattern: {
+    selectors: [
+      "text=let you in when the meeting starts",
+      "text=Someone will let you in",
+      "text=Waiting for someone to let you in",
+    ],
+    threshold: 1,
+    checkVisibility: true,
+  },
+  inMeetingPattern: { selectors: ['button:has-text("React")'], threshold: 1, checkVisibility: false },
+}
+
+describe("Teams lobby (isWaitingRoom)", () => {
+  let browser: Browser
+  let context: BrowserContext
+  let page: Page
+  beforeAll(async () => {
+    browser = await chromium.launch()
+  })
+  afterAll(async () => {
+    await browser?.close()
+  })
+  beforeEach(async () => {
+    context = await browser.newContext()
+    page = await context.newPage()
+  })
+  afterEach(async () => {
+    await context?.close()
+  })
+  const detector = createStateDetector(TEAMS_LOBBY_CONFIG)
+
+  it("detects the Teams lobby (matches the real captured DOM copy)", async () => {
+    await page.setContent(`
+      <div><h1>Hi, diio. Someone will let you in when the meeting starts.</h1>
+      <div>Microsoft Teams meeting</div></div>`)
+    expect((await detector.isWaitingRoom(page)).matched).toBe(true)
+  })
+
+  it("does NOT flag the pre-join screen (Join now present, no lobby copy) as the lobby", async () => {
+    await page.setContent(`
+      <div><h1>Choose your video and audio options</h1>
+      <button>Join now</button></div>`)
+    expect((await detector.isWaitingRoom(page)).matched).toBe(false)
+  })
+
+  it("does NOT flag the denial screen as the lobby", async () => {
+    await page.setContent(`<div><h1>Sorry, but you were denied access to the meeting.</h1></div>`)
+    expect((await detector.isWaitingRoom(page)).matched).toBe(false)
+  })
+})

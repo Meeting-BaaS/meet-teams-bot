@@ -24,9 +24,23 @@ export const TEAMS_STATE_CONFIG: StateDetectionConfig = {
       errorMessage: "Teams requires participants to be authenticated before joining"
     }
   ],
-  // Teams doesn't have a distinct waiting room pattern detection
-  // It's handled through the denial patterns above
-  waitingRoomPattern: undefined,
+  // Lobby ("Someone will let you in when the meeting starts"): the bot has
+  // clicked Join now and Teams is holding it for host admission. Detecting this
+  // positively — rather than inferring "still waiting" from the absence of the
+  // in-meeting indicators — lets us tell a genuine lobby wait apart from a
+  // broken/stuck pre-join page, and lets the join loop emit an accurate
+  // in_waiting_room signal. `text=` does case-insensitive substring matching,
+  // so the wording variants share one needle.
+  waitingRoomPattern: {
+    selectors: [
+      'text=let you in when the meeting starts',
+      'text=Someone will let you in',
+      'text=Waiting for someone to let you in',
+      'text=When the meeting starts, we’ll let people know you’re waiting'
+    ],
+    threshold: 1,
+    checkVisibility: true
+  },
   inMeetingPattern: {
     selectors: [
       // React button is a good indicator

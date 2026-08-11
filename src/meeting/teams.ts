@@ -783,6 +783,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     // Wait to be in the meeting
     console.log("Waiting to confirm meeting join...")
     let inMeeting = false
+    let reachedLobby = false
 
     while (!inMeeting) {
       // Check if we have been refused (or sign-in is required). isBotNotAccepted
@@ -799,6 +800,17 @@ export class TeamsProvider implements MeetingProviderInterface {
           GLOBAL.setError(MeetingEndReason.ApiRequest)
         }
         throw new Error("API request to stop Teams recording")
+      }
+
+      // Positively detect the lobby ("Someone will let you in…"). Seeing it
+      // confirms the join click landed and the bot is correctly parked waiting
+      // for host admission, rather than stuck on a broken pre-join page — the
+      // two look identical from the absence of the in-meeting indicators alone.
+      // Logged once so a timeout can be attributed correctly (host never
+      // admitted vs never reached the lobby).
+      if (!reachedLobby && (await isInTeamsWaitingRoom(page))) {
+        reachedLobby = true
+        console.log("🕓 [teams] In lobby — waiting for host to admit (join click landed)")
       }
 
       // Check if we are in the meeting (multiple indicators)
@@ -1139,6 +1151,15 @@ async function isRemovedFromTheMeeting(page: Page): Promise<boolean> {
     console.error("Error while checking meeting status:", formatError(error))
     return false
   }
+}
+
+// True while Teams shows the lobby ("Someone will let you in when the meeting
+// starts") — the bot has committed to joining and is waiting for host
+// admission. Distinct from the pre-join screen (where the "Join now" button is
+// still present) and from being in the meeting.
+async function isInTeamsWaitingRoom(page: Page): Promise<boolean> {
+  const result = await teamsStateDetector.isWaitingRoom(page)
+  return result.matched
 }
 
 async function isBotNotAccepted(page: Page): Promise<boolean> {
