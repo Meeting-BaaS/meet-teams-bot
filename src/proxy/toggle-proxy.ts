@@ -130,9 +130,30 @@ export function resolveProxyCountries(): string[] {
   const valid = list
     .filter((c): c is string => typeof c === "string" && /^[a-z]{2}$/i.test(c.trim()))
     .map((c) => c.trim().toLowerCase())
-  if (valid.length > 0) return [...new Set(valid)]
+  if (valid.length > 0) return rotateByBot([...new Set(valid)])
   const envC = envVars.RESIDENTIAL_PROXY_COUNTRY
   return /^[a-z]{2}$/i.test(envC) ? [envC.toLowerCase()] : []
+}
+
+/**
+ * Spread a multi-region pin across the team's selected regions instead of
+ * funneling every bot through the first entry. When a customer batch-launches
+ * hundreds of bots, all starting on regions[0] concentrates them on one
+ * country's dominant carrier and Google burns it live (2026-08-10: ~1100 bots
+ * on one BR ASN in two hours took it from 0% to 43% flagged mid-burst).
+ * Keyed on bot_uuid: stable within a bot (every resolve call agrees, including
+ * SQS retries of the same bot) and uniform across a batch. Cyclic rotation
+ * preserves the user's fallthrough sequence.
+ */
+function rotateByBot(countries: string[]): string[] {
+  if (countries.length <= 1) return countries
+  const uuid = GLOBAL.get().bot_uuid ?? ""
+  let hash = 0
+  for (let i = 0; i < uuid.length; i++) {
+    hash = (hash * 31 + uuid.charCodeAt(i)) >>> 0
+  }
+  const offset = hash % countries.length
+  return [...countries.slice(offset), ...countries.slice(0, offset)]
 }
 
 /** First selected region not yet tried this attempt, or "" if none remain. */

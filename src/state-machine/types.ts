@@ -56,6 +56,10 @@ export enum MeetingEndReason {
   TeamsLoginFailedCaptcha = "teamsLoginFailedCaptcha",
   TeamsLoginFailedMfaRequired = "teamsLoginFailedMfaRequired",
   TeamsLoginFailedTimeout = "teamsLoginFailedTimeout",
+  // Residential proxy could not be established (e.g. Decodo pool at capacity
+  // during a launch burst). Retryable: a requeued attempt lands later when the
+  // pool has headroom, instead of joining direct from a datacenter IP.
+  ProxyUnavailable = "proxyUnavailable",
   Internal = "internalError"
 }
 
@@ -88,6 +92,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "Invalid meeting URL provided."
     case MeetingEndReason.StreamingSetupFailed:
       return "Failed to set up streaming audio."
+    case MeetingEndReason.ProxyUnavailable:
+      return "Residential proxy unavailable (pool at capacity or unreachable)."
     case MeetingEndReason.LoginRequired:
       return "Login required to access the meeting."
     case MeetingEndReason.MeetLoginFailedSamlRejected:
