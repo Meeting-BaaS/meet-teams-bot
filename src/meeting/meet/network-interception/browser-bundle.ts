@@ -1663,7 +1663,7 @@ export function browserInterceptionLogic(schema: any[]) {
     // active-speaker payload can be read against known speech. Field numbers +
     // varint values + string lengths only — no string bytes (avoid PII).
     function dcRpcWalk(bytes: Uint8Array, path: string, depth: number, out: string[]) {
-      if (depth > 6 || out.length > 120) return
+      if (depth > 7 || out.length > 220) return
       const reader = (window as any).protobuf.Reader.create(bytes)
       let guard = 0
       while (reader.pos < reader.len && guard++ < 64) {
@@ -1681,11 +1681,13 @@ export function browserInterceptionLogic(schema: any[]) {
         try {
           if (wt === 0) out.push(`${p}:v${reader.uint32()}`)
           else if (wt === 1) {
+            const dv = new DataView(bytes.buffer, bytes.byteOffset + reader.pos, 8)
             reader.pos += 8
-            out.push(`${p}:f64`)
+            out.push(`${p}:d${dv.getFloat64(0, true).toFixed(3)}`)
           } else if (wt === 5) {
+            const dv = new DataView(bytes.buffer, bytes.byteOffset + reader.pos, 4)
             reader.pos += 4
-            out.push(`${p}:f32`)
+            out.push(`${p}:g${dv.getFloat32(0, true).toFixed(3)}`)
           } else if (wt === 2) {
             const len = reader.uint32()
             const sub = new Uint8Array(bytes.buffer, bytes.byteOffset + reader.pos, len)
