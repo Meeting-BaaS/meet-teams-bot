@@ -1694,9 +1694,23 @@ export function browserInterceptionLogic(schema: any[]) {
             // snapshots (up to ~700B) — that is where per-participant speaking
             // state lives. Only genuinely huge blobs get a length marker.
             if (len > 0 && len <= 700) {
+              const before = out.length
               out.push(`${p}{`)
               dcRpcWalk(sub, p, depth + 1, out)
-              out.push(`}`)
+              // If the blob did not parse as a nested message, it is gzip or
+              // opaque binary — replace the empty {} with a hex prefix so its
+              // encoding is identifiable (gzip magic 1f8b, etc). Bytes only, no
+              // decoded strings.
+              if (out.length === before + 1) {
+                out.pop()
+                let hex = ""
+                for (let i = 0; i < Math.min(len, 12); i++) {
+                  hex += sub[i].toString(16).padStart(2, "0")
+                }
+                out.push(`${p}:b${len}:hex${hex}`)
+              } else {
+                out.push(`}`)
+              }
             } else {
               out.push(`${p}:b${len}`)
             }
