@@ -31,6 +31,13 @@ interface Scenario {
   route: (requested: string) => string
   /** URL after the Next button is clicked. Defaults to a post-SSO Meet URL. */
   afterNext?: string
+  /**
+   * Whether the current URL renders the email field. Defaults to "any Google
+   * sign-in URL does" — override to model an interstitial on an identifier URL.
+   */
+  formOn?: (url: string) => boolean
+  /** Whether Google offers a remembered-account tile for the login email. */
+  tileVisible?: boolean
   /** Body text served once the email has been submitted. */
   pageTextAfterNext?: string
   passwordVisibleAfterNext?: boolean
@@ -75,9 +82,20 @@ function buildHarness(scenario: Scenario): Harness {
     keyboard: { press: jest.fn(async () => {}) },
     close: jest.fn(async () => {}),
     locator: (selector: string) => {
+      const isEmailField = selector.includes("email") || selector.includes("identifierId")
+      const formVisible = () =>
+        scenario.formOn
+          ? scenario.formOn(currentUrl)
+          : currentUrl.includes("accounts.google.com") &&
+            /signin|ServiceLogin|AccountChooser/.test(currentUrl)
+
       const node: any = {
         first: () => node,
-        waitFor: jest.fn(async () => {}),
+        waitFor: jest.fn(async () => {
+          if (isEmailField && !formVisible()) {
+            throw new Error("Timeout waiting for locator to be visible")
+          }
+        }),
         fill: jest.fn(async (value: string) => {
           filled.push(value)
         }),
@@ -86,9 +104,15 @@ function buildHarness(scenario: Scenario): Harness {
           submitted = true
           currentUrl = scenario.afterNext ?? "https://meet.google.com/landing"
         }),
-        isVisible: jest.fn(async () =>
-          selector.includes("password") ? Boolean(submitted && scenario.passwordVisibleAfterNext) : true
-        ),
+        isVisible: jest.fn(async () => {
+          if (selector.includes("password")) {
+            return Boolean(submitted && scenario.passwordVisibleAfterNext)
+          }
+          if (selector.includes("data-identifier")) {
+            return Boolean(scenario.tileVisible)
+          }
+          return true
+        }),
         innerText: jest.fn(async () => (submitted ? (scenario.pageTextAfterNext ?? "") : ""))
       }
       return node
@@ -209,6 +233,55 @@ describe("entry point", () => {
     expect(h.filled).toEqual([])
   })
 
+  it("REGRESSION: an identifier URL that renders no form still gets the guidance", async () => {
+    // A URL check alone passed here, and the failure surfaced as a bare Playwright
+    // timeout from the fill step rather than anything actionable.
+    const h = buildHarness({
+      route: () => "https://accounts.google.com/v3/signin/identifier?hd=bots.acme.com",
+      formOn: () => false,
+      cookies: []
+    })
+
+    await expect(loginToGoogleMeetWithSso(h.context, CONFIG)).rejects.toThrow(
+      /Google served no sign-in page for 'bot1@bots\.acme\.com'/
+    )
+    expect(h.filled).toEqual([])
+  })
+
+  it("REGRESSION: clicks the remembered account tile when the chooser replaces the form", async () => {
+    // After the first successful run the cookie cache is populated, and the injected
+    // device cookies make Google serve a chooser instead of the email field. The flow
+    // only knew how to type an email, so it timed out on input[type="email"].
+    const h = buildHarness({
+      route: () => "https://accounts.google.com/v3/signin/accountchooser",
+      formOn: () => false,
+      tileVisible: true
+    })
+
+    await expect(loginToGoogleMeetWithSso(h.context, CONFIG)).resolves.toBeUndefined()
+
+    expect(h.filled).toEqual([])
+    expect(h.nextClicks).toBe(1)
+    // The tile was clicked, so AddSession was never needed.
+    expect(h.gotos.some((u) => u.includes("AddSession"))).toBe(false)
+  })
+
+  it("falls back to AddSession when there is neither a form nor a matching tile", async () => {
+    const h = buildHarness({
+      route: (requested) =>
+        requested.includes("AddSession")
+          ? "https://accounts.google.com/v3/signin/identifier?flowEntry=AddSession"
+          : "https://accounts.google.com/v3/signin/accountchooser",
+      formOn: (url) => url.includes("AddSession"),
+      tileVisible: false
+    })
+
+    await expect(loginToGoogleMeetWithSso(h.context, CONFIG)).resolves.toBeUndefined()
+
+    expect(h.gotos.some((u) => u.includes("AddSession"))).toBe(true)
+    expect(h.filled).toEqual([LOGIN_EMAIL])
+  })
+
   it("fails fast when set-cookie rejects the session", async () => {
     const h = buildHarness({ route: serviceLoginWorks, setCookieStatus: 404 })
 
@@ -256,6 +329,17 @@ describe("post-submit diagnostics", () => {
     await expect(loginToGoogleMeetWithSso(h.context, CONFIG)).rejects.toThrow(
       /has not completed the "Welcome to Google Workspace" flow/
     )
+  })
+
+  it("does not read an ordinary sign-in page's terms footer as broken onboarding", async () => {
+    const h = buildHarness({
+      route: serviceLoginWorks,
+      afterNext: "https://accounts.google.com/v3/signin/identifier?flowName=GlifWebSignIn",
+      pageTextAfterNext:
+        "Sign in to continue. Accept cookies. Privacy Policy · Terms of Service"
+    })
+
+    await expect(loginToGoogleMeetWithSso(h.context, CONFIG)).resolves.toBeUndefined()
   })
 
   it("still runs the diagnostics on the path that used to skip them", async () => {
