@@ -52,6 +52,36 @@ export function teamsBrowserInterceptionLogic() {
     // that worked on feat/teams-network-speaker-separation+efs-fix. Flip true if audioLevel lands.
     const CSRC_ENABLED = false
 
+    // ===== CAPTION-BASED DIARIZATION FALLBACK =====
+    // When a Teams session is server-mixed audio, it emits neither per-speaker
+    // CSRC nor "dsh" dominant-speaker events — the bot then has no active-speaker
+    // signal and the transcript comes back with generic "Speaker N" labels.
+    // Teams live captions DO carry a per-utterance speaker id + timing regardless
+    // of audio topology, so we start captions via the internal call SDK and derive
+    // an active-speaker timeline from the caption stream. Only enabled as a
+    // fallback (captions are visible to participants) after dsh has stayed silent.
+    const CAPTION_DIARIZATION_ENABLED = true
+    // How long after entering the call, with no dsh and no CSRC, before we start
+    // captions as the fallback signal.
+    const CAPTION_ENABLE_DELAY_MS = 15000
+    // A caption keeps its speaker "active" at least this long (covers the gap
+    // between partial caption updates for one utterance).
+    const CAPTION_SPEAKING_WINDOW_MS = 2500
+    // deviceId identity key → timestamp (ms) until which that participant counts
+    // as speaking, derived from caption results.
+    const captionSpeakingUntil = new Map<string, number>()
+    let captionsEnabled = false
+    let interceptorStartedAt = Date.now()
+
+    // AAD identity key for a roster/caption id: collapse the same account across
+    // endpoints via its org id; guests/anon keep their raw id (never merged).
+    // Shared by the roster dedupe and the caption→participant match.
+    function identityKey(deviceId: string): string {
+      const m =
+        typeof deviceId === "string" ? deviceId.match(/8:orgid:([0-9a-fA-F-]{36})/) : null
+      return m ? `orgid:${m[1].toLowerCase()}` : String(deviceId)
+    }
+
     // receiver → isActive
     const receiverMap = new Map<RTCRtpReceiver, boolean>()
     // participantId → ParticipantSpeakingStateMachine
@@ -71,7 +101,9 @@ export function teamsBrowserInterceptionLogic() {
       broadcasts: 0,
       rosterParticipants: 0,
       csrcAvailable: false,
-      queueLen: 0
+      queueLen: 0,
+      captionResults: 0,
+      captionsEnabled: false
     }
     const diag = (window as any).__teamsNetDiag
 
@@ -196,6 +228,9 @@ export function teamsBrowserInterceptionLogic() {
         }
         const previous = participantsByDeviceId.get(deviceId)
         if (!previous || JSON.stringify(previous) !== JSON.stringify(record)) changed = true
+        // Anchor the caption-fallback grace period to the first real roster (i.e.
+        // actually in the call), not to script injection which runs pre-navigation.
+        if (participantsByDeviceId.size === 0) interceptorStartedAt = Date.now()
         participantsByDeviceId.set(deviceId, record)
         syncVirtualStreamsFromParticipant(participant)
       }
@@ -290,22 +325,121 @@ export function teamsBrowserInterceptionLogic() {
     function handleMainChannelEvent(event: any): void {
       try {
         const parsed = decodeMainChannelData(event.data)
-        if (!parsed || !Array.isArray(parsed)) return
-        for (const item of parsed) {
-          if (item?.type === "dsh") {
-            diag.dshSeen++
-            const newDominantStreamId = item.history?.[0]
-            if (newDominantStreamId != null) {
-              setDominantSpeakerStreamId(newDominantStreamId)
-              debug("🗣️ dsh dominant stream", newDominantStreamId)
-              // only emit here when CSRC isn't the authoritative source
-              if (!csrcAvailable) broadcastSpeakerUpdate("audio")
+        if (!parsed) return
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            if (item?.type === "dsh") {
+              diag.dshSeen++
+              const newDominantStreamId = item.history?.[0]
+              if (newDominantStreamId != null) {
+                setDominantSpeakerStreamId(newDominantStreamId)
+                debug("🗣️ dsh dominant stream", newDominantStreamId)
+                // only emit here when CSRC isn't the authoritative source
+                if (!csrcAvailable) broadcastSpeakerUpdate("audio")
+              }
             }
           }
+        } else if (
+          CAPTION_DIARIZATION_ENABLED &&
+          parsed.recognitionResults &&
+          Array.isArray(parsed.recognitionResults)
+        ) {
+          // Caption stream — each result carries the speaker id + timing.
+          for (const r of parsed.recognitionResults) handleCaptionResult(r)
         }
       } catch (error) {
         console.error(`${LOG} ❌ Error handling main-channel event:`, error)
       }
+    }
+
+    // A caption result marks its speaker active for the utterance window. Teams
+    // `duration` is in 100-ns ticks; if absent, use a fixed window. Speaker id
+    // (`userId`/`speakerId`) is matched to the roster by AAD identity key.
+    function handleCaptionResult(r: any): void {
+      try {
+        const speakerRaw =
+          r?.userId ?? r?.speakerId ?? r?.speaker ?? r?.participantId ?? r?.authorId
+        if (speakerRaw == null) return
+        diag.captionResults++
+        const durTicks = typeof r?.duration === "number" ? r.duration : 0
+        const durMs = durTicks > 0 ? Math.min(durTicks / 1e4, 8000) : 0
+        const window = Math.max(durMs, CAPTION_SPEAKING_WINDOW_MS)
+        captionSpeakingUntil.set(identityKey(String(speakerRaw)), Date.now() + window)
+        // Only drive the speaker signal from captions when nothing better exists.
+        if (!csrcAvailable && !getDominantSpeakerParticipantId()) {
+          broadcastSpeakerUpdate("caption")
+        }
+      } catch {
+        // ignore a malformed caption result
+      }
+    }
+
+    // Roster deviceIds whose identity currently has an unexpired caption window.
+    function getCaptionSpeakingDeviceIds(): Set<string> {
+      const now = Date.now()
+      const out = new Set<string>()
+      const activeKeys = new Set<string>()
+      for (const [key, until] of captionSpeakingUntil) {
+        if (until > now) activeKeys.add(key)
+        else captionSpeakingUntil.delete(key)
+      }
+      if (activeKeys.size === 0) return out
+      for (const p of participantsByDeviceId.values()) {
+        if (activeKeys.has(identityKey(p.deviceId))) out.add(p.deviceId)
+      }
+      return out
+    }
+
+    // Start Teams live captions via the internal call SDK so the caption stream
+    // (and thus the speaker timeline) exists. Best-effort + idempotent; degrades
+    // to no-op when the internals are unavailable.
+    function enableClosedCaptions(): void {
+      if (!CAPTION_DIARIZATION_ENABLED || captionsEnabled) return
+      const call = getActiveCall()
+      if (!call || typeof call.startClosedCaption !== "function") return
+      try {
+        if (typeof call.setClosedCaptionsLanguage === "function") {
+          try {
+            call.setClosedCaptionsLanguage("en-us")
+          } catch {
+            // language set is optional
+          }
+        }
+        const result = call.startClosedCaption()
+        captionsEnabled = true
+        diag.captionsEnabled = true
+        debug("📝 live captions started (diarization fallback)")
+        if (result && typeof result.catch === "function") {
+          result.catch(() => {
+            captionsEnabled = false
+            diag.captionsEnabled = false
+          })
+        }
+      } catch (error) {
+        debug("caption enable failed", error)
+      }
+    }
+
+    // After a grace period, if no dsh has arrived and CSRC isn't authoritative,
+    // this session has no native active-speaker signal — start captions as the
+    // fallback. Captions are visible to participants, so only enable when needed.
+    if (CAPTION_DIARIZATION_ENABLED) {
+      const captionGateTimer = setInterval(() => {
+        if ((window as any).__teamsNetworkInterceptorStopped) {
+          clearInterval(captionGateTimer)
+          return
+        }
+        if (captionsEnabled) {
+          clearInterval(captionGateTimer)
+          return
+        }
+        const inCallLongEnough = Date.now() - interceptorStartedAt >= CAPTION_ENABLE_DELAY_MS
+        const noNativeSignal = diag.dshSeen === 0 && !csrcAvailable
+        const haveRoster = participantsByDeviceId.size > 0
+        if (inCallLongEnough && noNativeSignal && haveRoster) {
+          enableClosedCaptions()
+        }
+      }, 5000)
     }
 
     // ===== PER-PARTICIPANT SPEAKING STATE (CSRC polling) =====
@@ -412,16 +546,23 @@ export function teamsBrowserInterceptionLogic() {
 
     // ===== BROADCAST TO NODE =====
 
-    function broadcastSpeakerUpdate(source: "roster" | "audio"): void {
+    function broadcastSpeakerUpdate(source: "roster" | "audio" | "caption"): void {
       if ((window as any).__teamsNetworkInterceptorStopped) return
 
-      // CSRC when available (silence == nobody), else dsh dominant speaker.
+      // Priority: CSRC (silence == nobody) → dsh dominant speaker → captions.
+      // Captions are the fallback for server-mixed sessions that emit neither.
       let speaking: Set<string>
       if (csrcAvailable) {
         speaking = getCsrcSpeakingIds()
       } else {
         const dominant = getDominantSpeakerParticipantId()
-        speaking = dominant ? new Set([dominant]) : new Set()
+        if (dominant) {
+          speaking = new Set([dominant])
+        } else if (CAPTION_DIARIZATION_ENABLED) {
+          speaking = getCaptionSpeakingDeviceIds()
+        } else {
+          speaking = new Set()
+        }
       }
 
       const rawUsers = Array.from(participantsByDeviceId.values()).map((p) => ({
@@ -443,11 +584,6 @@ export function teamsBrowserInterceptionLogic() {
       // that share an org identity (8:orgid:<oid>); OR their speaking/host/self flags.
       // Guests/anonymous participants have no orgid, so they key on their full id and
       // are NEVER merged — anonymous meetings behave exactly as before.
-      const identityKey = (deviceId: string): string => {
-        const m =
-          typeof deviceId === "string" ? deviceId.match(/8:orgid:([0-9a-fA-F-]{36})/) : null
-        return m ? `orgid:${m[1].toLowerCase()}` : String(deviceId)
-      }
       const byIdentity = new Map<string, (typeof rawUsers)[number]>()
       for (const u of rawUsers) {
         const key = identityKey(u.deviceId)
