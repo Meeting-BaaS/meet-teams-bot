@@ -136,7 +136,7 @@ export async function loginToGoogleMeetWithSso(
 
     // myaccount.google.com means the context already holds a live session — the
     // SAML round-trip is unnecessary and will never fire.
-    const sessionAlreadyActive = landedUrl.includes("myaccount.google.com")
+    let sessionAlreadyActive = landedUrl.includes("myaccount.google.com")
 
     // Fall back to AccountChooser for contexts that do carry cookies, where
     // ServiceLogin can bounce straight through to the continue URL.
@@ -149,6 +149,9 @@ export async function loginToGoogleMeetWithSso(
         })
         .catch(() => null)
       landedUrl = page.url()
+      // AccountChooser can land on a live session too — re-read it, or the check
+      // below would reject a context that is in fact already signed in.
+      sessionAlreadyActive ||= landedUrl.includes("myaccount.google.com")
     }
 
     // Neither entry point produced a sign-in form. Previously this fell through to

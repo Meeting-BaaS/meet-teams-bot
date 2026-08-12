@@ -187,6 +187,20 @@ describe("entry point", () => {
     )
   })
 
+  it("accepts a live session discovered only by the AccountChooser fallback", async () => {
+    // sessionAlreadyActive is read before the fallback navigation; if AccountChooser
+    // is what surfaces the live session, the no-sign-in-form check must not fire.
+    const h = buildHarness({
+      route: (requested) =>
+        requested.includes("AccountChooser") ? "https://myaccount.google.com/" : "https://www.google.com/"
+    })
+
+    await loginToGoogleMeetWithSso(h.context, CONFIG)
+
+    expect(h.gotos.some((u) => u.includes("AccountChooser"))).toBe(true)
+    expect(h.filled).toEqual([])
+  })
+
   it("skips the email step when the context already holds a live session", async () => {
     const h = buildHarness({ route: () => "https://myaccount.google.com/" })
 
