@@ -173,7 +173,18 @@ export class SoundContext extends MediaContext {
 
   // Return stdin and play sound to microphone
   public play_stdin(): internal.Writable {
-    // ffmpeg -f f32le -ar 48000 -ac 1 -i - -f alsa -acodec pcm_s16le "pulse:virtual_mic"
+    // ffmpeg -f f32le -ar <rate> -ac 1 -i - \
+    //   -af aresample=async=1:min_hard_comp=0.100:first_pts=0 \
+    //   -f alsa -acodec pcm_s16le "pulse:virtual_mic"
+    //
+    // We feed this ffmpeg from a live WebSocket (bursty, not clock-locked),
+    // and it writes to a realtime pulse sink. Without async resampling, any
+    // gap between bursts underruns the sink — ffmpeg falls behind realtime
+    // (observed speed 0.76–0.87x) and the injected mic audio comes out
+    // garbled/"overloaded". `aresample=async=1` keeps a continuous output
+    // timeline: it stretches/compresses and pads short gaps with silence
+    // instead of underrunning, so the virtual mic always gets steady,
+    // correctly-clocked samples. first_pts=0 anchors the timeline at start.
     const args: string[] = []
     args.push(
       "-f",
@@ -184,6 +195,8 @@ export class SoundContext extends MediaContext {
       "1",
       "-i",
       "-",
+      "-af",
+      "aresample=async=1:min_hard_comp=0.100:first_pts=0",
       "-f",
       "alsa",
       "-acodec",
