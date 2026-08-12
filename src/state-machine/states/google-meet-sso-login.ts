@@ -107,8 +107,13 @@ export async function loginToGoogleMeetWithSso(
       )
     }
 
-    // 2. Workspace-domain SSO entry: AccountChooser with hd= forces Google to
-    //    treat this as a Workspace-managed login and apply our SSO redirect.
+    // 2. Workspace-domain SSO entry. Go straight to the identifier page rather
+    //    than AccountChooser. With an empty cookie jar — a freshly added meet_login
+    //    whose server-side cookie cache is still empty — AccountChooser has no
+    //    account to choose and redirects to its default continue URL
+    //    (www.google.com) instead of the sign-in form. Established logins carry
+    //    cached device cookies and land on the form, which is why this only ever
+    //    broke for newly added credentials.
     const workspaceDomain = config.login_email.split("@")[1]
     if (!workspaceDomain) {
       // Schema validation upstream prevents this in practice — defensive only.
@@ -118,27 +123,58 @@ export async function loginToGoogleMeetWithSso(
       )
     }
 
-    const accountChooserUrl = `https://accounts.google.com/AccountChooser?hd=${encodeURIComponent(workspaceDomain)}`
-    await page.goto(accountChooserUrl, { waitUntil: "domcontentloaded", timeout: 15_000 })
-    const landedUrl = page.url()
+    const identifierUrl =
+      `https://accounts.google.com/ServiceLogin?hd=${encodeURIComponent(workspaceDomain)}` +
+      `&continue=${encodeURIComponent("https://meet.google.com/")}`
 
-    // 3. Type the bot user's email — but only if Google didn't already skip straight
-    //    to the SSO round-trip. This happens when the browser context has existing
-    //    Google cookies: AccountChooser immediately fires the SSO redirect without
-    //    showing the email identifier page. Detect by checking whether we're still
-    //    on a Google sign-in identifier URL.
-    //    myaccount.google.com means the session is already active (injected cookies
-    //    accepted by Google) — auth cookies are present, no email step needed.
-    const onIdentifierPage = landedUrl.includes("accounts.google.com") &&
-      (landedUrl.includes("/signin") || landedUrl.includes("/AccountChooser") || landedUrl.includes("ServiceLogin"))
+    await page.goto(identifierUrl, { waitUntil: "domcontentloaded", timeout: 15_000 })
+    let landedUrl = page.url()
 
+    const isIdentifierPage = (url: string) =>
+      url.includes("accounts.google.com") &&
+      (url.includes("/signin") || url.includes("/AccountChooser") || url.includes("ServiceLogin"))
+
+    // myaccount.google.com means the context already holds a live session — the
+    // SAML round-trip is unnecessary and will never fire.
     const sessionAlreadyActive = landedUrl.includes("myaccount.google.com")
 
-    if (onIdentifierPage) {
+    // Fall back to AccountChooser for contexts that do carry cookies, where
+    // ServiceLogin can bounce straight through to the continue URL.
+    if (!sessionAlreadyActive && !isIdentifierPage(landedUrl)) {
+      console.warn(`[meet-sso] ServiceLogin landed on ${landedUrl} — retrying via AccountChooser`)
+      await page
+        .goto(`https://accounts.google.com/AccountChooser?hd=${encodeURIComponent(workspaceDomain)}`, {
+          waitUntil: "domcontentloaded",
+          timeout: 15_000
+        })
+        .catch(() => null)
+      landedUrl = page.url()
+    }
+
+    // Neither entry point produced a sign-in form. Previously this fell through to
+    // a silent 45-second wait that reported "auth cookies did not appear" — which
+    // says nothing about the cause. Fail immediately with the landing URL instead.
+    if (!sessionAlreadyActive && !isIdentifierPage(landedUrl)) {
+      throw new MeetSsoLoginError(
+        "MEET_LOGIN_FAILED_TIMEOUT",
+        `Google served no sign-in page for '${config.login_email}' — landed on ${landedUrl}. ` +
+        `Verify '${workspaceDomain}' is the Workspace domain carrying the Legacy SSO profile, and that the ` +
+        "profile is assigned to this user's OU or group (Admin Console → Security → Authentication → " +
+        "SSO with third-party IdP → Manage SSO profile assignments)."
+      )
+    }
+
+    // 3. Type the bot user's email. Skipped only when a live session already exists.
+    const typedEmail = !sessionAlreadyActive
+    let urlBeforeNext = landedUrl
+
+    if (typedEmail) {
       const emailInput = page.locator('input[type="email"], #identifierId').first()
       await emailInput.waitFor({ state: "visible", timeout: 15_000 })
       console.info(`[meet-sso] email input found, page URL: ${page.url()}`)
       await emailInput.fill(config.login_email)
+
+      urlBeforeNext = page.url()
 
       // Click Next — typically a button with "Next" or id="identifierNext".
       const nextButton = page
@@ -146,14 +182,13 @@ export async function loginToGoogleMeetWithSso(
         .first()
       await nextButton.click({ timeout: 10_000 })
     } else {
-      console.info(`[meet-sso] AccountChooser already fired SSO redirect — skipping email input step`)
+      console.info(`[meet-sso] session already active from injected cookies — skipping email input step`)
     }
 
-    // 4. Only run email-submission diagnostics when we went through the email step.
-    //    When AccountChooser fired SSO immediately (onIdentifierPage=false), we skip
-    //    these checks — the browser is already in the middle of the SAML round-trip.
-    if (onIdentifierPage) {
-      const urlBeforeNext = page.url()
+    // 4. Diagnostics after submitting the email. These used to sit behind the same
+    //    landing-page check that misfired above, so on a broken setup every one of
+    //    them was skipped and the run degraded into an unexplained timeout.
+    if (typedEmail) {
       try {
         await page.waitForFunction(
           (beforeUrl: string) =>
@@ -189,6 +224,24 @@ export async function loginToGoogleMeetWithSso(
         throw new MeetSsoLoginError(
           "MEET_LOGIN_FAILED_TIMEOUT",
           `Google could not find the account '${config.login_email}'. Verify the user exists in the Workspace. (URL: ${urlAfterNext})`
+        )
+      }
+
+      // Google parks accounts that never completed the "Welcome to Google Workspace"
+      // flow on a setup/terms interstitial. Auth cookies never land, so without this
+      // check the run burns the full 45-second timeout with no usable signal.
+      if (
+        urlAfterNext.includes("/signin/v2/usernamerecovery") ||
+        urlAfterNext.includes("accountsetup") ||
+        urlAfterNext.includes("/TermsOfService") ||
+        pageText.includes("Welcome to your new account") ||
+        pageText.includes("Accept") && pageText.includes("Terms of Service")
+      ) {
+        throw new MeetSsoLoginError(
+          "MEET_LOGIN_FAILED_TIMEOUT",
+          `'${config.login_email}' has not completed the "Welcome to Google Workspace" flow (URL: ${urlAfterNext}). ` +
+          "Sign in to the account once interactively with its Google password — set that user's OU/group SSO " +
+          "profile assignment to None while you do it — then re-enable the Legacy SSO profile."
         )
       }
 
