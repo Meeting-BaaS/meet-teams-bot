@@ -465,6 +465,9 @@ export class Streaming {
     }
 
     this.isPaused = true
+    // Drop any partial inbound sample: paused messages are discarded, so a
+    // leftover byte would misalign the first message after resume.
+    this.inboundRemainder = Buffer.alloc(0)
     console.log("[Streaming] Paused")
   }
 
@@ -600,6 +603,11 @@ export class Streaming {
   }
 
   private createAudioStreamFromWebSocket = (input_ws: WebSocket) => {
+    // Fresh stream (e.g. a dual-channel WebSocket reconnect attaching a new
+    // handler on the same Streaming instance) must not inherit a stale partial
+    // sample from the previous connection.
+    this.inboundRemainder = Buffer.alloc(0)
+
     const stream = new Readable({
       read() {}
     })
