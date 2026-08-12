@@ -26,6 +26,12 @@ export class SpeakerManager {
   // a later payload can omit a name that an earlier one carried; without this,
   // a participant flips back to "Unknown" mid-meeting.
   private deviceNames = new Map<string, string>()
+  // Stable sequential user id -> resolved name. Populated live whenever a
+  // speaker resolves to a real name. The device-keyed backfill misses speakers
+  // whose deviceId churns (CSRC/SSRC active-speaker switching: each swap is a
+  // new bare-numeric deviceId the roster never maps), but their user id stays
+  // stable — so this lets finalize repair them by user id instead of device.
+  private userIdNames = new Map<number, string>()
   // Profile picture per device, so a backfilled segment gets the same stable id
   // the live path would have produced for that participant.
   private deviceProfilePictures = new Map<string, string | undefined>()
@@ -100,7 +106,8 @@ export class SpeakerManager {
         await instance.diarizationTracker.end(
           lastTimestamp,
           meetingStartTime,
-          (deviceId) => instance.resolveDeviceForBackfill(deviceId)
+          (deviceId) => instance.resolveDeviceForBackfill(deviceId),
+          (userId) => instance.userIdNames.get(userId)
         )
       }
     }
@@ -177,6 +184,15 @@ export class SpeakerManager {
       // streams audio in does speak, and keeps its turns.
       const params = GLOBAL.get()
       const speakers = silenceBotSpeaker(observed, params.bot_name, Boolean(params.streaming_input))
+
+      // Remember every user id we ever resolved to a real name, so finalize can
+      // repair Unknown segments by user id when the device-keyed repair can't
+      // (churning SSRC deviceId). Never store the placeholder.
+      for (const speaker of speakers) {
+        if (speaker.id != null && speaker.name && speaker.name !== UNKNOWN_SPEAKER) {
+          this.userIdNames.set(speaker.id, speaker.name)
+        }
+      }
 
       // Update singleton with participants and speakers
       this.updateSingletonParticipants(speakers)

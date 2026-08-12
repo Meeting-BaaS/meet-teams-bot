@@ -96,6 +96,53 @@ describe("DiarizationTracker backfill", () => {
     expect(segments[1].speaker).toBe("Unknown")
   })
 
+  it("repairs a churning-device speaker by stable user id when the device never resolves", async () => {
+    const tracker = freshTracker()
+
+    // One participant, stable user id 5, but a fresh bare-numeric deviceId every
+    // turn (CSRC/SSRC active-speaker switching). All written as "Unknown" before
+    // a name resolved. The roster never maps these volatile devices, so the
+    // device-keyed pass can't fix them — but the user id did resolve to a name.
+    const churn = (deviceId: string, atSeconds: number): SpeakerData => ({
+      name: "Unknown",
+      id: 5,
+      timestamp: MEETING_START + atSeconds * 1000,
+      isSpeaking: true,
+      deviceId
+    })
+    tracker.updateSpeaker(churn("111", 1), MEETING_START)
+    tracker.updateSpeaker(churn("222", 3), MEETING_START)
+    tracker.updateSpeaker(churn("333", 5), MEETING_START)
+
+    await tracker.end(
+      MEETING_START + 7000,
+      MEETING_START,
+      () => undefined, // device resolver: roster never named these SSRC devices
+      (userId) => (userId === 5 ? "Real Speaker" : undefined)
+    )
+
+    const segments = readSegments()
+    expect(segments).toHaveLength(3)
+    expect(segments.every((s) => s.speaker === "Real Speaker")).toBe(true)
+    expect(segments.every((s) => s.user_id === 5)).toBe(true)
+  })
+
+  it("does not repair by user id when the id is 0 (UI/ambiguous) or the device already resolved", async () => {
+    const tracker = freshTracker()
+
+    // id 0 = UI-based/ambiguous — must never be relabelled by the id pass.
+    tracker.updateSpeaker(speech("ui-dev", "Unknown", 1), MEETING_START)
+
+    await tracker.end(
+      MEETING_START + 3000,
+      MEETING_START,
+      () => undefined,
+      () => "WRONG" // would fire if id 0 were eligible
+    )
+
+    expect(readSegments()[0].speaker).toBe("Unknown")
+  })
+
   it("does not disturb segments that already had a real name", async () => {
     const tracker = freshTracker()
 

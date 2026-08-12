@@ -31,6 +31,10 @@ export interface DiarizationHealthStatus {
 
 /** Resolves a network device to its final name/id, once the roster is complete. */
 export type SpeakerResolver = (deviceId: string) => { name: string; userId: number } | undefined
+// Resolve a stable sequential user id to its final name, for segments whose
+// deviceId never resolved (churning SSRC) but whose user id did resolve while
+// the participant spoke.
+export type UserIdResolver = (userId: number) => string | undefined
 
 export class DiarizationTracker {
   private static instance: DiarizationTracker | null = null
@@ -146,6 +150,31 @@ export class DiarizationTracker {
   }
 
   /**
+   * Second repair pass, keyed on the STABLE user id rather than the device.
+   * A speaker seen only through the CSRC/SSRC path gets a fresh bare-numeric
+   * deviceId on every active-speaker switch, so the roster never maps those
+   * devices and repairUnknownSpeakers leaves the segment "Unknown" — even though
+   * the same participant kept one stable user id that DID resolve to a real name
+   * while they spoke. Match on that id (still a per-participant key, so it can't
+   * hand one person's speech to another) to recover them.
+   */
+  private repairUnknownByUserId(resolve: UserIdResolver): number {
+    let repaired = 0
+    for (const entry of this.allSegments) {
+      if (entry.segment.speaker !== UNKNOWN_SPEAKER || !entry.segment.user_id) {
+        continue
+      }
+      const name = resolve(entry.segment.user_id)
+      if (!name || name === UNKNOWN_SPEAKER) {
+        continue
+      }
+      entry.segment.speaker = name
+      repaired++
+    }
+    return repaired
+  }
+
+  /**
    * True once at least one speaker segment was ever opened this meeting.
    * Distinguishes "network diarization NEVER produced data" (source is dead —
    * fall back fast) from "was producing, currently quiet" (normal silence —
@@ -164,7 +193,8 @@ export class DiarizationTracker {
   public async end(
     lastTimestamp: number,
     meetingStartTime: number,
-    resolveSpeaker?: SpeakerResolver
+    resolveSpeaker?: SpeakerResolver,
+    resolveUserId?: UserIdResolver
   ): Promise<void> {
     if (this.isEnded) {
       return
@@ -190,6 +220,15 @@ export class DiarizationTracker {
     if (repaired > 0) {
       console.log(
         `[DiarizationTracker] Backfilled ${repaired} segment(s) that were written before the roster resolved`
+      )
+    }
+
+    // Second pass: rescue segments the device-keyed repair could not, using the
+    // stable user id (churning-SSRC speakers whose device never mapped).
+    const repairedById = resolveUserId ? this.repairUnknownByUserId(resolveUserId) : 0
+    if (repairedById > 0) {
+      console.log(
+        `[DiarizationTracker] Backfilled ${repairedById} segment(s) by stable user id (device never resolved)`
       )
     }
 
