@@ -57,6 +57,12 @@ export class TeamsHtmlCleaner {
         // Notification / alert / toast families only — never the toolbar (the
         // bot clicks its "Leave" button to end the call, so it must stay in the
         // layout) and never the video stage.
+        // The caption selectors below hide the live-caption overlay the bot turns
+        // on itself for diarization (raised by the Teams network
+        // interceptor). We read caption data off the websocket, never the DOM, so
+        // hiding the renderer costs no signal — it only keeps the caption bar out
+        // of the x11grab recording. These data-tids are best-effort across client
+        // versions; a solo join with captions on confirms which ones actually bite.
         style.textContent = `
           [data-tid^="ufd_"],
           [data-tid^="callingAlert"],
@@ -64,7 +70,14 @@ export class TeamsHtmlCleaner {
           [data-severity],
           [role="alert"],
           .fui-Toast,
-          .fui-Toaster { display: none !important; }
+          .fui-Toaster,
+          [data-tid^="closed-caption"],
+          [data-tid^="closedCaption"],
+          [data-tid*="caption" i],
+          [data-tid*="cc-container" i],
+          [class*="closedCaption"],
+          [class*="captions-container"],
+          .ts-captions-container { display: none !important; }
         `
         const head = documentRoot.head || documentRoot.documentElement
         if (head) {
