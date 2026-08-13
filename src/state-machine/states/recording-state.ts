@@ -63,6 +63,16 @@ const STALE_EVENT_THRESHOLD = 10
 // (e.g. ticket 19961784714714: 60s solo test calls, transcript speakers all
 // "Unknown") could mathematically never reach the 10-event threshold.
 const NEVER_PRODUCED_STALE_THRESHOLD = 2
+// Teams alone has a third rung between the network path and the UI observer:
+// when a session has no dsh/CSRC (server-mixed audio) the interceptor raises
+// live captions and derives the speaker timeline from those instead. Captions
+// take a few seconds to be enabled and to return their first result, so at the
+// 2-event threshold the UI fallback would retire the network path before the
+// caption rung ever reported — collapsing a three-step chain into two. Four
+// events (~20s) leaves room for captions to produce, and costs nothing when
+// they do: the first caption segment clears `neverProduced` and the normal
+// 90s dwell protection takes over from there.
+const TEAMS_NEVER_PRODUCED_STALE_THRESHOLD = 4
 
 export class RecordingState extends BaseState {
   private readonly enteredAt: number = Date.now()
@@ -475,7 +485,11 @@ export class RecordingState extends BaseState {
         // fast threshold so short meetings still get speaker labels via the UI
         // observer instead of ending with an empty diarization ("Unknown").
         const neverProduced = !DiarizationTracker.getInstance().hasEverTrackedSegment()
-        const threshold = neverProduced ? NEVER_PRODUCED_STALE_THRESHOLD : STALE_EVENT_THRESHOLD
+        const neverProducedThreshold =
+          meetingPlatform === "teams"
+            ? TEAMS_NEVER_PRODUCED_STALE_THRESHOLD
+            : NEVER_PRODUCED_STALE_THRESHOLD
+        const threshold = neverProduced ? neverProducedThreshold : STALE_EVENT_THRESHOLD
         console.log(
           `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? " (no segment ever produced — fast fallback)" : ""}`
         )
