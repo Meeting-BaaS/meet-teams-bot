@@ -24,7 +24,12 @@ function speech(deviceId: string, name: string, atSeconds: number): SpeakerData 
   }
 }
 
-function readSegments(): Array<{ speaker: string; user_id: number }> {
+function readSegments(): Array<{
+  speaker: string
+  user_id: number
+  start_time: number
+  end_time: number
+}> {
   return readFileSync(join(TEMP_DIR, "diarization.jsonl"), "utf8")
     .split("\n")
     .filter(Boolean)
@@ -177,5 +182,39 @@ describe("DiarizationTracker first-segment telemetry", () => {
       await tracker.end(MEETING_START + 22_000, MEETING_START, () => undefined)
       logSpy.mockRestore()
     }
+  })
+})
+
+describe("DiarizationTracker recording-clock clamp", () => {
+  it("clamps an event predating the recording instead of emitting a negative start_time", async () => {
+    const tracker = freshTracker()
+
+    // Roster and speaking signals flow while the bot is still pre-call, so the
+    // first event can carry a timestamp from before meetingStartTime. Observed
+    // live as start_time -7.152 on the segment holding the opening utterance.
+    tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", -7.152), MEETING_START)
+    tracker.updateSpeaker(speech("dev-b", "Jonny", 4.734), MEETING_START)
+
+    await tracker.end(MEETING_START + 12_000, MEETING_START, () => undefined)
+
+    const segments = readSegments()
+    expect(segments.length).toBeGreaterThan(0)
+    expect(segments[0].start_time).toBe(0)
+    expect(segments.every((s) => s.start_time >= 0)).toBe(true)
+  })
+
+  it("drops a segment the clamp collapses to zero length", async () => {
+    const tracker = freshTracker()
+
+    // Two consecutive pre-recording events: the first segment would open and
+    // close at 0 once clamped, spanning no audio at all.
+    tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", -9), MEETING_START)
+    tracker.updateSpeaker(speech("dev-b", "Jonny", -3), MEETING_START)
+    tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 5), MEETING_START)
+
+    await tracker.end(MEETING_START + 10_000, MEETING_START, () => undefined)
+
+    const segments = readSegments()
+    expect(segments.every((s) => s.end_time > s.start_time)).toBe(true)
   })
 })

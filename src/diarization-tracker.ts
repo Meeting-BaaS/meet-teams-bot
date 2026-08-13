@@ -82,7 +82,13 @@ export class DiarizationTracker {
       return
     }
 
-    const relativeTime = (speaker.timestamp - meetingStartTime) / 1000
+    // Clamp to the recording clock. A speaker event can carry a timestamp from
+    // before meetingStartTime — the roster and speaking signals start flowing
+    // while the bot is still in the pre-call/waiting phase — and unclamped that
+    // produced a negative start_time on the first segment (observed: -7.152s),
+    // which misaligns exactly the segment the leading-"Unknown" run lives in.
+    // Someone already speaking when recording opens belongs at 0, not before it.
+    const relativeTime = Math.max(0, (speaker.timestamp - meetingStartTime) / 1000)
 
     // If we have a current segment, close it before starting a new one
     if (this.currentSegment) {
@@ -92,16 +98,21 @@ export class DiarizationTracker {
         end_time: relativeTime,
         user_id: this.currentSegment.userId
       }
-      this.writeToFile(closedSegment)
-      this.allSegments.push({
-        segment: closedSegment,
-        deviceId: this.currentSegment.deviceId
-      })
+      // Clamping to the recording clock can collapse a segment to zero length
+      // when two consecutive events both predate meetingStartTime. Such a
+      // segment spans no audio, so emitting it only adds noise to the timeline.
+      if (closedSegment.end_time > closedSegment.start_time) {
+        this.writeToFile(closedSegment)
+        this.allSegments.push({
+          segment: closedSegment,
+          deviceId: this.currentSegment.deviceId
+        })
 
-      // Add to recent segments (keep max 5)
-      this.recentSegments.push(closedSegment)
-      if (this.recentSegments.length > 5) {
-        this.recentSegments.shift() // Remove oldest
+        // Add to recent segments (keep max 5)
+        this.recentSegments.push(closedSegment)
+        if (this.recentSegments.length > 5) {
+          this.recentSegments.shift() // Remove oldest
+        }
       }
     }
 
@@ -208,7 +219,7 @@ export class DiarizationTracker {
         segment: {
           speaker: this.currentSegment.speaker,
           start_time: this.currentSegment.startTime,
-          end_time: (lastTimestamp - meetingStartTime) / 1000,
+          end_time: Math.max(0, (lastTimestamp - meetingStartTime) / 1000),
           user_id: this.currentSegment.userId
         },
         deviceId: this.currentSegment.deviceId
