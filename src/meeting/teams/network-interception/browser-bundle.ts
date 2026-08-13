@@ -52,34 +52,64 @@ export function teamsBrowserInterceptionLogic() {
     // that worked on feat/teams-network-speaker-separation+efs-fix. Flip true if audioLevel lands.
     const CSRC_ENABLED = false
 
-    // ===== CAPTION-BASED DIARIZATION FALLBACK =====
+    // ===== CAPTION-BASED DIARIZATION =====
     // When a Teams session is server-mixed audio, it emits neither per-speaker
     // CSRC nor "dsh" dominant-speaker events — the bot then has no active-speaker
     // signal and the transcript comes back with generic "Speaker N" labels.
     // Teams live captions DO carry a per-utterance speaker id + timing regardless
     // of audio topology, so we start captions via the internal call SDK and derive
-    // an active-speaker timeline from the caption stream. Only enabled as a
-    // fallback (captions are visible to participants) after dsh has stayed silent.
-    const CAPTION_DIARIZATION_ENABLED = true
-    // How long after entering the call, with no dsh and no CSRC, before we start
-    // captions as the fallback signal.
-    const CAPTION_ENABLE_DELAY_MS = 15000
+    // an active-speaker timeline from the caption stream.
+    // Captions are the SECOND rung: dsh/CSRC first, captions only when a session
+    // turns out to have no native active-speaker signal (the server-mixed-audio
+    // case). They are not started on healthy calls — live captions are visible to
+    // participants, so we raise them only for sessions that would otherwise get
+    // no speaker names at all. When they do run, the caption UI is hidden from
+    // the recording by the Teams cleanup stylesheet (htmlCleaner.ts).
+    //
+    // Kept short deliberately: the UI rung below this one is armed by the stale
+    // detector once sound arrives with no segments, so captions have to be up and
+    // producing before that fires or the chain would skip straight to the UI.
+    const CAPTION_ENABLE_DELAY_MS = 5000
     // A caption keeps its speaker "active" at least this long (covers the gap
     // between partial caption updates for one utterance).
     const CAPTION_SPEAKING_WINDOW_MS = 2500
+    // A dsh event older than this is no longer a live active-speaker signal. The
+    // affected sessions emit dsh 0-1 times total, so "dshSeen === 0" is the wrong
+    // test — a single stale event must not lock captions out for the whole call.
+    const DSH_FRESH_MS = 20000
     // deviceId identity key → timestamp (ms) until which that participant counts
     // as speaking, derived from caption results.
     const captionSpeakingUntil = new Map<string, number>()
+    // identity key → the utterance currently being captioned for that speaker.
+    // Teams streams an utterance as repeated partial results and one final, all
+    // describing the SAME speech; without this each partial would be treated as
+    // fresh speech and re-extend the window past the real end of the utterance.
+    const captionUtterance = new Map<string, { startMs: number; endMs: number }>()
+    // Audio-clock start of the most recent caption utterance, used to stamp the
+    // broadcast (see broadcastSpeakerUpdate) so the segment lands where the
+    // speech actually happened rather than where the caption arrived.
+    let lastCaptionAudioStartMs = 0
     let captionsEnabled = false
     let interceptorStartedAt = Date.now()
+    // When the last dsh event arrived (0 = never). Freshness, not the raw count,
+    // decides whether a native active-speaker signal exists.
+    let lastDshAt = 0
 
     // AAD identity key for a roster/caption id: collapse the same account across
     // endpoints via its org id; guests/anon keep their raw id (never merged).
     // Shared by the roster dedupe and the caption→participant match.
+    // Caption speaker ids are not guaranteed to carry the "8:orgid:" prefix that
+    // roster deviceIds do, so fall back to a bare AAD GUID anywhere in the string
+    // — otherwise a caption id and its roster entry never key the same.
     function identityKey(deviceId: string): string {
-      const m =
-        typeof deviceId === "string" ? deviceId.match(/8:orgid:([0-9a-fA-F-]{36})/) : null
-      return m ? `orgid:${m[1].toLowerCase()}` : String(deviceId)
+      if (typeof deviceId !== "string") return String(deviceId)
+      const orgid = deviceId.match(/8:orgid:([0-9a-fA-F-]{36})/)
+      if (orgid) return `orgid:${orgid[1].toLowerCase()}`
+      const guid =
+        deviceId.match(
+          /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+        ) || null
+      return guid ? `orgid:${deviceId.toLowerCase()}` : deviceId
     }
 
     // receiver → isActive
@@ -102,7 +132,12 @@ export function teamsBrowserInterceptionLogic() {
       rosterParticipants: 0,
       csrcAvailable: false,
       queueLen: 0,
+      // Caption rung. matched + unmatched are counted once per caption result, so
+      // they sum to captionResults and read directly as a roster match rate — a
+      // run that stays entirely unmatched means the speaker ids are not resolving.
       captionResults: 0,
+      captionMatched: 0,
+      captionUnmatched: 0,
       captionsEnabled: false
     }
     const diag = (window as any).__teamsNetDiag
@@ -330,6 +365,9 @@ export function teamsBrowserInterceptionLogic() {
           for (const item of parsed) {
             if (item?.type === "dsh") {
               diag.dshSeen++
+              // Counted even when disabled so the diag line still shows whether the
+              // session emits dsh at all — that is the mixed-audio discriminator.
+              lastDshAt = Date.now()
               const newDominantStreamId = item.history?.[0]
               if (newDominantStreamId != null) {
                 setDominantSpeakerStreamId(newDominantStreamId)
@@ -339,39 +377,119 @@ export function teamsBrowserInterceptionLogic() {
               }
             }
           }
-        } else if (
-          CAPTION_DIARIZATION_ENABLED &&
-          parsed.recognitionResults &&
-          Array.isArray(parsed.recognitionResults)
-        ) {
-          // Caption stream — each result carries the speaker id + timing.
-          for (const r of parsed.recognitionResults) handleCaptionResult(r)
+        }
+        // Caption frames may ride the same channel as an object, or nested one
+        // level under an envelope — search rather than assume the top-level shape.
+        {
+          const results = findRecognitionResults(parsed)
+          if (results) {
+            for (const r of results) handleCaptionResult(r)
+          }
         }
       } catch (error) {
         console.error(`${LOG} ❌ Error handling main-channel event:`, error)
       }
     }
 
-    // A caption result marks its speaker active for the utterance window. Teams
-    // `duration` is in 100-ns ticks; if absent, use a fixed window. Speaker id
-    // (`userId`/`speakerId`) is matched to the roster by AAD identity key.
+    // Teams reports caption audio timing as 100-ns ticks since the NTP epoch
+    // (1900-01-01), not the Unix epoch — 2_208_988_800 seconds apart. Returns 0
+    // when the field is absent or implausible so callers fall back to arrival time.
+    function captionAudioStartMs(timestampAudioSent: any): number {
+      if (typeof timestampAudioSent !== "number" || !isFinite(timestampAudioSent)) return 0
+      if (timestampAudioSent <= 0) return 0
+      const secondsSince1900 = timestampAudioSent / 1e7
+      const unixMs = Math.floor((secondsSince1900 - 2208988800) * 1000)
+      // Guard against a different encoding than assumed: anything not within a
+      // day of now is not this meeting's audio clock.
+      if (Math.abs(unixMs - Date.now()) > 86400000) return 0
+      return unixMs
+    }
+
+    // Locate a caption result array in a decoded main-channel payload, whether it
+    // sits at the top level or one level down under an envelope key.
+    function findRecognitionResults(parsed: any): any[] | null {
+      if (!parsed || typeof parsed !== "object") return null
+      const direct = (parsed as any).recognitionResults
+      if (Array.isArray(direct)) return direct
+      for (const value of Array.isArray(parsed) ? parsed : Object.values(parsed)) {
+        if (value && typeof value === "object") {
+          const nested = (value as any).recognitionResults
+          if (Array.isArray(nested)) return nested
+        }
+      }
+      return null
+    }
+
+    // A caption result marks its speaker active for the utterance it belongs to.
+    // Field names are confirmed against a live Teams call — a caption result
+    // carries: userId, displayName, text, duration, isFinal, timestampAudioSent,
+    // confidence, spokenLanguage. `duration` is in 100-ns ticks.
+    //
+    // userId is matched to the roster by AAD identity key; displayName is the
+    // fallback for the case where that id does not resolve (guest/federated
+    // identities whose caption id differs from their roster deviceId).
     function handleCaptionResult(r: any): void {
       try {
-        const speakerRaw =
-          r?.userId ?? r?.speakerId ?? r?.speaker ?? r?.participantId ?? r?.authorId
+        const speakerRaw = r?.userId
         if (speakerRaw == null) return
         diag.captionResults++
         const durTicks = typeof r?.duration === "number" ? r.duration : 0
         const durMs = durTicks > 0 ? Math.min(durTicks / 1e4, 8000) : 0
         const window = Math.max(durMs, CAPTION_SPEAKING_WINDOW_MS)
-        captionSpeakingUntil.set(identityKey(String(speakerRaw)), Date.now() + window)
+        const key = identityKey(String(speakerRaw))
+
+        // Fold this result into the utterance it belongs to and record where the
+        // speech actually sat on the audio clock. Captions arrive 1-3s after the
+        // speech, so stamping the broadcast with arrival time shifts every
+        // segment late; timestampAudioSent is the real start.
+        const audioStartMs = captionAudioStartMs(r?.timestampAudioSent)
+        if (audioStartMs > 0) {
+          const isFinal = r?.isFinal === true
+          const open = captionUtterance.get(key)
+          const utterance = open
+            ? { startMs: open.startMs, endMs: Math.max(open.endMs, audioStartMs + durMs) }
+            : { startMs: audioStartMs, endMs: audioStartMs + durMs }
+          // A final result closes the utterance so the next one starts fresh.
+          if (isFinal) captionUtterance.delete(key)
+          else captionUtterance.set(key, utterance)
+          lastCaptionAudioStartMs = utterance.startMs
+        }
+        // Counted per result so matched + unmatched sum to captionResults and read
+        // as a roster match rate. A caption can legitimately arrive before the
+        // roster lists its speaker, so early unmatched results are expected — a
+        // run that stays entirely unmatched is the real failure signal.
+        let resolved = key
+        if (rosterHasIdentity(key)) {
+          diag.captionMatched++
+        } else {
+          // The id did not resolve. Teams also puts the speaker's display name on
+          // the caption result, so fall back to the roster entry with that name
+          // rather than dropping the utterance.
+          const byName = rosterKeyForDisplayName(r?.displayName)
+          if (byName) {
+            resolved = byName
+            diag.captionMatched++
+          } else {
+            diag.captionUnmatched++
+          }
+        }
+        captionSpeakingUntil.set(resolved, Date.now() + window)
         // Only drive the speaker signal from captions when nothing better exists.
-        if (!csrcAvailable && !getDominantSpeakerParticipantId()) {
+        if (!csrcAvailable && !hasFreshDominantSpeaker()) {
           broadcastSpeakerUpdate("caption")
         }
       } catch {
         // ignore a malformed caption result
       }
+    }
+
+    // A dsh event only counts as a live active-speaker signal while it is fresh.
+    // The affected sessions emit dsh once or not at all; without this the single
+    // stale event pins one speaker for the rest of the call and blocks captions.
+    function hasFreshDominantSpeaker(): boolean {
+      if (lastDshAt === 0) return false
+      if (Date.now() - lastDshAt > DSH_FRESH_MS) return false
+      return getDominantSpeakerParticipantId() != null
     }
 
     // Roster deviceIds whose identity currently has an unexpired caption window.
@@ -390,13 +508,43 @@ export function teamsBrowserInterceptionLogic() {
       return out
     }
 
+    // Does any roster participant share this caption identity key? Used to count
+    // the caption→roster match per result rather than per broadcast.
+    function rosterHasIdentity(key: string): boolean {
+      for (const p of participantsByDeviceId.values()) {
+        if (identityKey(p.deviceId) === key) return true
+      }
+      return false
+    }
+
+    // Identity key of the roster participant with this display name, when the
+    // caption's userId did not resolve. Exact match only, and refused when the
+    // name is ambiguous across participants — attributing speech to the wrong
+    // person is worse than leaving the utterance unattributed.
+    function rosterKeyForDisplayName(displayName: any): string | null {
+      if (typeof displayName !== "string" || displayName.trim() === "") return null
+      const wanted = displayName.trim().toLowerCase()
+      let found: string | null = null
+      for (const p of participantsByDeviceId.values()) {
+        if (typeof p.displayName !== "string") continue
+        if (p.displayName.trim().toLowerCase() !== wanted) continue
+        if (found) return null
+        found = identityKey(p.deviceId)
+      }
+      return found
+    }
+
     // Start Teams live captions via the internal call SDK so the caption stream
     // (and thus the speaker timeline) exists. Best-effort + idempotent; degrades
     // to no-op when the internals are unavailable.
     function enableClosedCaptions(): void {
-      if (!CAPTION_DIARIZATION_ENABLED || captionsEnabled) return
+      if (captionsEnabled) return
       const call = getActiveCall()
-      if (!call || typeof call.startClosedCaption !== "function") return
+      if (!call || typeof call.startClosedCaption !== "function") {
+        // Internals absent on this client build — fall back to the UI control.
+        enableClosedCaptionsViaDom()
+        return
+      }
       try {
         if (typeof call.setClosedCaptionsLanguage === "function") {
           try {
@@ -420,10 +568,28 @@ export function teamsBrowserInterceptionLogic() {
       }
     }
 
+    // Last resort when the internal call SDK has no startClosedCaption on this
+    // client build: click the caption control itself. The button is only present
+    // once the meeting UI has rendered, so this is retried by the caption gate.
+    function enableClosedCaptionsViaDom(): void {
+      try {
+        const button =
+          document.querySelector("#closed-captions-button") ||
+          document.querySelector('[data-tid="closed-captions-button"]') ||
+          document.querySelector('[data-tid="call-captions-button"]')
+        if (!(button instanceof HTMLElement)) return
+        button.click()
+        captionsEnabled = true
+        diag.captionsEnabled = true
+      } catch {
+        // control not clickable — leave captions off rather than break the call
+      }
+    }
+
     // After a grace period, if no dsh has arrived and CSRC isn't authoritative,
     // this session has no native active-speaker signal — start captions as the
     // fallback. Captions are visible to participants, so only enable when needed.
-    if (CAPTION_DIARIZATION_ENABLED) {
+    {
       const captionGateTimer = setInterval(() => {
         if ((window as any).__teamsNetworkInterceptorStopped) {
           clearInterval(captionGateTimer)
@@ -434,12 +600,32 @@ export function teamsBrowserInterceptionLogic() {
           return
         }
         const inCallLongEnough = Date.now() - interceptorStartedAt >= CAPTION_ENABLE_DELAY_MS
-        const noNativeSignal = diag.dshSeen === 0 && !csrcAvailable
+        // Freshness, not "dshSeen === 0": the affected sessions emit dsh 0-1 times,
+        // so a raw-count test leaves every dsh=1 session — half the reported
+        // signature — without the fallback it exists for. Skipped entirely when
+        // captions are always on, which is the point of always on.
+        const noNativeSignal =
+          !hasFreshDominantSpeaker() && !csrcAvailable
         const haveRoster = participantsByDeviceId.size > 0
         if (inCallLongEnough && noNativeSignal && haveRoster) {
           enableClosedCaptions()
         }
       }, 5000)
+
+      // Captions arrive in bursts; when the last window lapses nothing else would
+      // emit the speaking→silent transition, so the final caption speaker would
+      // stay marked active until the next one arrives. Re-broadcast on expiry.
+      let hadCaptionSpeakers = false
+      const captionExpiryTimer = setInterval(() => {
+        if ((window as any).__teamsNetworkInterceptorStopped) {
+          clearInterval(captionExpiryTimer)
+          return
+        }
+        if (csrcAvailable || hasFreshDominantSpeaker()) return
+        const active = getCaptionSpeakingDeviceIds().size > 0
+        if (hadCaptionSpeakers && !active) broadcastSpeakerUpdate("caption")
+        hadCaptionSpeakers = active
+      }, 1000)
     }
 
     // ===== PER-PARTICIPANT SPEAKING STATE (CSRC polling) =====
@@ -556,10 +742,18 @@ export function teamsBrowserInterceptionLogic() {
         speaking = getCsrcSpeakingIds()
       } else {
         const dominant = getDominantSpeakerParticipantId()
-        if (dominant) {
+        // A live caption window outranks a dsh event that has gone stale — on the
+        // mixed-audio sessions the single early dsh would otherwise pin its speaker
+        // for the whole call. A fresh dsh still wins; healthy sessions ramp dsh
+        // continuously and never reach the caption branch.
+        const captionSpeaking =
+          !hasFreshDominantSpeaker()
+            ? getCaptionSpeakingDeviceIds()
+            : new Set<string>()
+        if (captionSpeaking.size > 0) {
+          speaking = captionSpeaking
+        } else if (dominant) {
           speaking = new Set([dominant])
-        } else if (CAPTION_DIARIZATION_ENABLED) {
-          speaking = getCaptionSpeakingDeviceIds()
         } else {
           speaking = new Set()
         }
@@ -616,7 +810,16 @@ export function teamsBrowserInterceptionLogic() {
       try {
         const q = (window as any).__teamsSpeakerQueue as any[]
         if (q.length > 500) q.splice(0, q.length - 500)
-        q.push({ users, timestamp: Date.now(), source })
+        // Node derives each diarization segment's position from this timestamp,
+        // so a caption-driven update carries the audio-clock start of the
+        // utterance instead of arrival time — otherwise every caption segment
+        // sits 1-3s late, which is the whole point of reading timestampAudioSent.
+        // Never stamp ahead of now: a clock skew would put speech in the future.
+        const stamp =
+          source === "caption" && lastCaptionAudioStartMs > 0
+            ? Math.min(lastCaptionAudioStartMs, Date.now())
+            : Date.now()
+        q.push({ users, timestamp: stamp, source })
         diag.broadcasts++
       } catch {
         // ignore
