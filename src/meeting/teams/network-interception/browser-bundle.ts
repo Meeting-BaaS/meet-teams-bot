@@ -645,9 +645,8 @@ export function teamsBrowserInterceptionLogic() {
         }
         if (csrcAvailable || hasFreshDominantSpeaker()) return
         const active = getCaptionSpeakingDeviceIds().size > 0
-        // stampNow: this update ends the last utterance, so it must sit on the
-        // wall clock — the caption audio clock would date it to that utterance's
-        // own start and collapse the segment.
+        // captionExpiry: this update ends the last utterance, so it sits on the
+        // wall clock and must not fall through to a stale dsh speaker.
         if (hadCaptionSpeakers && !active) broadcastSpeakerUpdate("caption", true)
         hadCaptionSpeakers = active
       }, 1000)
@@ -757,13 +756,15 @@ export function teamsBrowserInterceptionLogic() {
 
     // ===== BROADCAST TO NODE =====
 
-    // stampNow forces the update onto the wall clock instead of the caption audio
-    // clock. Required for the speaking→silent transition: that update ENDS the
-    // last utterance, so backdating it to that utterance's start would close the
-    // segment at or before its own start.
+    // captionExpiry marks the update that ENDS a caption utterance. Two things
+    // differ for it: it sits on the wall clock rather than the caption audio
+    // clock (backdating it to the utterance's own start would close the segment
+    // at or before it began), and it must not fall through to the sticky dsh
+    // speaker — the whole point of the update is to emit silence, and a single
+    // old dsh event would otherwise keep that speaker active indefinitely.
     function broadcastSpeakerUpdate(
       source: "roster" | "audio" | "caption",
-      stampNow = false
+      captionExpiry = false
     ): void {
       if ((window as any).__teamsNetworkInterceptorStopped) return
 
@@ -784,7 +785,11 @@ export function teamsBrowserInterceptionLogic() {
             : new Set<string>()
         if (captionSpeaking.size > 0) {
           speaking = captionSpeaking
-        } else if (dominant) {
+        } else if (dominant && !captionExpiry) {
+          // Not gated on hasFreshDominantSpeaker() in general: if Teams emits dsh
+          // only on speaker CHANGES, a long uninterrupted turn would go stale and
+          // silence a speaker who is still talking. Suppressed only for the
+          // expiry update, which exists precisely to report silence.
           speaking = new Set([dominant])
         } else {
           speaking = new Set()
@@ -848,7 +853,7 @@ export function teamsBrowserInterceptionLogic() {
         // sits 1-3s late, which is the whole point of reading timestampAudioSent.
         // Never stamp ahead of now: a clock skew would put speech in the future.
         const stamp =
-          source === "caption" && !stampNow && lastCaptionAudioStartMs > 0
+          source === "caption" && !captionExpiry && lastCaptionAudioStartMs > 0
             ? Math.min(lastCaptionAudioStartMs, Date.now())
             : Date.now()
         q.push({ users, timestamp: stamp, source })
