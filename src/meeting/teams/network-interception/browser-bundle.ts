@@ -85,10 +85,14 @@ export function teamsBrowserInterceptionLogic() {
     // describing the SAME speech; without this each partial would be treated as
     // fresh speech and re-extend the window past the real end of the utterance.
     const captionUtterance = new Map<string, { startMs: number; endMs: number }>()
-    // Audio-clock start of the most recent caption utterance, used to stamp the
-    // broadcast (see broadcastSpeakerUpdate) so the segment lands where the
-    // speech actually happened rather than where the caption arrived.
+    // Audio-clock start and end of the most recent caption utterance, used to
+    // stamp the broadcast (see broadcastSpeakerUpdate) so the segment lands where
+    // the speech actually happened rather than where the caption arrived. The end
+    // closes the segment: without it the close sits at wall-clock time and every
+    // caption segment is inflated by the caption delivery delay plus the speaking
+    // window, instead of measuring the utterance.
     let lastCaptionAudioStartMs = 0
+    let lastCaptionAudioEndMs = 0
     // True only once caption results are actually arriving — NOT when activation
     // was merely requested. Teams can accept startClosedCaption() (or the click)
     // and still never mount the renderer, so latching on the request would leave
@@ -468,6 +472,7 @@ export function teamsBrowserInterceptionLogic() {
           if (isFinal) captionUtterance.delete(key)
           else captionUtterance.set(key, utterance)
           lastCaptionAudioStartMs = utterance.startMs
+          lastCaptionAudioEndMs = Math.max(lastCaptionAudioEndMs, utterance.endMs)
         }
         // Counted per result so matched + unmatched sum to captionResults and read
         // as a roster match rate. A caption can legitimately arrive before the
@@ -785,11 +790,16 @@ export function teamsBrowserInterceptionLogic() {
             : new Set<string>()
         if (captionSpeaking.size > 0) {
           speaking = captionSpeaking
-        } else if (dominant && !captionExpiry) {
-          // Not gated on hasFreshDominantSpeaker() in general: if Teams emits dsh
-          // only on speaker CHANGES, a long uninterrupted turn would go stale and
-          // silence a speaker who is still talking. Suppressed only for the
-          // expiry update, which exists precisely to report silence.
+        } else if (
+          dominant &&
+          !captionExpiry &&
+          (!captionsEnabled || hasFreshDominantSpeaker())
+        ) {
+          // Gated on captionsEnabled, not on freshness alone: if Teams emits dsh
+          // only on speaker CHANGES, a freshness test would silence someone still
+          // mid-monologue on a healthy call. Captions only ever run on sessions
+          // whose dsh is already dead, so there a stale dominant must never come
+          // back — including on a roster update after the expiry emitted silence.
           speaking = new Set([dominant])
         } else {
           speaking = new Set()
@@ -852,10 +862,16 @@ export function teamsBrowserInterceptionLogic() {
         // utterance instead of arrival time — otherwise every caption segment
         // sits 1-3s late, which is the whole point of reading timestampAudioSent.
         // Never stamp ahead of now: a clock skew would put speech in the future.
-        const stamp =
-          source === "caption" && !captionExpiry && lastCaptionAudioStartMs > 0
-            ? Math.min(lastCaptionAudioStartMs, Date.now())
-            : Date.now()
+        // A caption update opens its segment at the utterance's audio start; the
+        // expiry update closes it at the utterance's audio END. Closing on the
+        // wall clock instead would stretch every segment by the caption delay
+        // plus CAPTION_SPEAKING_WINDOW_MS. Never stamp into the future, and fall
+        // back to now when the caption carried no usable timing.
+        let stamp = Date.now()
+        if (source === "caption") {
+          const audioStamp = captionExpiry ? lastCaptionAudioEndMs : lastCaptionAudioStartMs
+          if (audioStamp > 0) stamp = Math.min(audioStamp, Date.now())
+        }
         q.push({ users, timestamp: stamp, source })
         diag.broadcasts++
       } catch {
