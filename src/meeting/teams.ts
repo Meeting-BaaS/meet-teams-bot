@@ -407,6 +407,17 @@ export class TeamsProvider implements MeetingProviderInterface {
     // applies to later navigations). Keep failures local to this page attempt:
     // in-call-state verifies the browser hook after navigation and falls back
     // to UI detection if this injection did not install.
+    // Cleanup CSS goes in before navigation so the toolbar, toasts and the live
+    // caption overlay are hidden the instant they render. The recorder starts in
+    // the waiting room but the HTML cleaner only runs once in-call (~41s later),
+    // and that whole window was being recorded showing the raw Teams UI.
+    try {
+      const { setupTeamsCleanupStyles } = await import("./teams/htmlCleaner")
+      await setupTeamsCleanupStyles(page)
+    } catch (error) {
+      console.error("[Teams] ⚠️ Failed to install cleanup stylesheet:", formatError(error))
+    }
+
     try {
       const { setupTeamsNetworkInterceptionScripts } = await import("./teams/network-interception")
       const success = await setupTeamsNetworkInterceptionScripts(page)

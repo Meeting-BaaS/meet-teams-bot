@@ -2,6 +2,68 @@ import type { Page } from "@playwright/test"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import type { RecordingMode } from "../../types"
 
+/**
+ * Declarative cleanup rules: notification / alert / toast families and the live
+ * caption overlay. Hoisted to module scope because they are injected TWICE —
+ * once via addInitScript before navigation (see setupTeamsCleanupStyles) so the
+ * rules apply the instant a node renders, and again by the cleaner below, which
+ * can reach an iframe document the init script never sees.
+ *
+ * Never the toolbar (the bot clicks its "Leave" button to end the call, so it
+ * must stay in the layout) and never the video stage.
+ */
+export const TEAMS_CLEANUP_CSS = `
+  [data-tid^="ufd_"],
+  [data-tid^="callingAlert"],
+  [data-tid$="-alert-container"],
+  [data-severity],
+  [role="alert"],
+  .fui-Toast,
+  .fui-Toaster,
+  [data-tid^="closed-caption"],
+  [data-tid^="closedCaption"],
+  [data-tid*="caption-renderer" i],
+  [data-tid*="captions-container" i],
+  [data-tid*="cc-container" i],
+  [class*="closedCaption"],
+  [class*="captions-container"],
+  .ts-captions-container { display: none !important; }
+`
+
+export const TEAMS_CLEANUP_STYLE_ID = "mbaas-teams-cleanup-style"
+
+/**
+ * Install the cleanup stylesheet BEFORE navigation.
+ *
+ * The screen recorder starts while the bot is still in the waiting room, but the
+ * HTML cleaner only runs once the bot is in-call — measured at ~41s apart, and
+ * every one of those seconds was recorded showing the raw Teams UI: the toolbar,
+ * and once captions were raised for diarization, a caption panel covering the
+ * bottom of the frame. CSS is declarative and applies to nodes that do not exist
+ * yet, so injecting it up front removes that window entirely for everything the
+ * stylesheet covers. Must run before page.goto(): addInitScript only applies to
+ * later navigations.
+ */
+export async function setupTeamsCleanupStyles(page: Page): Promise<void> {
+  await page.addInitScript(
+    ({ css, id }: { css: string; id: string }) => {
+      const install = () => {
+        const root = document.head || document.documentElement
+        if (!root || document.getElementById(id)) return
+        const style = document.createElement("style")
+        style.id = id
+        style.textContent = css
+        root.appendChild(style)
+      }
+      install()
+      if (!document.getElementById(id)) {
+        document.addEventListener("DOMContentLoaded", install, { once: true })
+      }
+    },
+    { css: TEAMS_CLEANUP_CSS, id: TEAMS_CLEANUP_STYLE_ID }
+  )
+}
+
 export class TeamsHtmlCleaner {
   private page: Page
 
@@ -20,7 +82,7 @@ export class TeamsHtmlCleaner {
     await this.page.waitForTimeout(1000)
 
     // Inject Teams provider logic into browser context
-    await this.page.evaluate(async () => {
+    await this.page.evaluate(async ({ cleanupCss, cleanupStyleId }) => {
       // EXACT TEAMS PROVIDER FUNCTIONS FROM ORIGINAL EXTENSION
       function getDocumentRoot(): Document {
         for (const iframe of document.querySelectorAll("iframe")) {
@@ -49,7 +111,7 @@ export class TeamsHtmlCleaner {
       // re-render (unless Teams sets inline !important, which it doesn't here).
       // Covers the "Teams needs permission to access your camera" banner and the
       // "<name> joined" toast that were being captured in the recording.
-      const CLEANUP_STYLE_ID = "mbaas-teams-cleanup-style"
+      const CLEANUP_STYLE_ID = cleanupStyleId
       function injectCleanupStylesheet(documentRoot: Document) {
         if (documentRoot.getElementById(CLEANUP_STYLE_ID)) return
         const style = documentRoot.createElement("style")
@@ -57,29 +119,7 @@ export class TeamsHtmlCleaner {
         // Notification / alert / toast families only — never the toolbar (the
         // bot clicks its "Leave" button to end the call, so it must stay in the
         // layout) and never the video stage.
-        // The caption selectors below hide the live-caption overlay the bot turns
-        // on itself for diarization (raised by the Teams network
-        // interceptor). We read caption data off the websocket, never the DOM, so
-        // hiding the renderer costs no signal — it only keeps the caption bar out
-        // of the x11grab recording. These data-tids are best-effort across client
-        // versions; a solo join with captions on confirms which ones actually bite.
-        style.textContent = `
-          [data-tid^="ufd_"],
-          [data-tid^="callingAlert"],
-          [data-tid$="-alert-container"],
-          [data-severity],
-          [role="alert"],
-          .fui-Toast,
-          .fui-Toaster,
-          [data-tid^="closed-caption"],
-          [data-tid^="closedCaption"],
-          [data-tid*="caption-renderer" i],
-          [data-tid*="captions-container" i],
-          [data-tid*="cc-container" i],
-          [class*="closedCaption"],
-          [class*="captions-container"],
-          .ts-captions-container { display: none !important; }
-        `
+        style.textContent = cleanupCss
         const head = documentRoot.head || documentRoot.documentElement
         if (head) {
           head.appendChild(style)
@@ -372,7 +412,7 @@ export class TeamsHtmlCleaner {
 
       ;(window as any).htmlCleanerObserver = observer
       console.log("[Teams] HTML provider complete")
-    })
+    }, { cleanupCss: TEAMS_CLEANUP_CSS, cleanupStyleId: TEAMS_CLEANUP_STYLE_ID })
   }
 
   public async stop(): Promise<void> {
