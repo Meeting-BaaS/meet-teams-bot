@@ -566,13 +566,14 @@ export function teamsBrowserInterceptionLogic() {
         return
       }
       try {
-        if (typeof call.setClosedCaptionsLanguage === "function") {
-          try {
-            call.setClosedCaptionsLanguage("en-us")
-          } catch {
-            // language set is optional
-          }
-        }
+        // Deliberately NOT calling setClosedCaptionsLanguage. Forcing a language
+        // overrides the tenant's own default, and on a non-English tenant that
+        // suppresses the signal we came for: a Japanese meeting captioned as
+        // en-us returns few or no results, and captions may not start at all.
+        // Leaving it unset keeps whatever the meeting is already configured for.
+        // (Attribution reads userId and timestampAudioSent, never caption text,
+        // so recognition quality does not affect speaker names — only whether
+        // results arrive.)
         const result = call.startClosedCaption()
         captionAttempts++
         lastCaptionAttemptAt = Date.now()
