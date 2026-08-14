@@ -80,11 +80,32 @@ export function teamsBrowserInterceptionLogic() {
     // deviceId identity key → timestamp (ms) until which that participant counts
     // as speaking, derived from caption results.
     const captionSpeakingUntil = new Map<string, number>()
-    // identity key → the utterance currently being captioned for that speaker.
-    // Teams streams an utterance as repeated partial results and one final, all
-    // describing the SAME speech; without this each partial would be treated as
-    // fresh speech and re-extend the window past the real end of the utterance.
-    const captionUtterance = new Map<string, { startMs: number; endMs: number }>()
+    // identity key → that speaker's recent speech intervals on the AUDIO clock,
+    // built from timestampAudioSent + duration. Attribution asks "who was
+    // speaking at time T" against these rather than "who has a live wall-clock
+    // window": a caption arrives 1-3s after the speech it describes, so a
+    // wall-clock window keeps the previous speaker active into the next
+    // speaker's turn and reports sequential speech as concurrent.
+    // Teams streams an utterance as repeated partials then one final, all
+    // describing the SAME speech, so partials extend the open interval instead
+    // of opening new ones.
+    const captionIntervals = new Map<
+      string,
+      { startMs: number; endMs: number; open: boolean }[]
+    >()
+    // Intervals older than this are dropped; only recent speech can be current.
+    const CAPTION_INTERVAL_RETENTION_MS = 60000
+    // Wall-clock arrival of the last caption result. The audio clock cannot tell
+    // us speech STOPPED — only that captions went quiet — so silence is still
+    // detected on the wall clock, then stamped back onto the audio clock.
+    let lastCaptionResultAt = 0
+    const CAPTION_SILENCE_MS = 2500
+    // Identity of the most recent caption result. A roster update mid-speech
+    // broadcasts with a wall-clock stamp, and the audio intervals all sit in the
+    // past (captions lag), so an overlap lookup at "now" would find nobody and
+    // cut the current speaker's segment short. While captions are still flowing,
+    // non-caption updates hold the last caption speaker instead.
+    let lastCaptionIdentity: string | null = null
     // Audio-clock start and end of the most recent caption utterance, used to
     // stamp the broadcast (see broadcastSpeakerUpdate) so the segment lands where
     // the speech actually happened rather than where the caption arrived. The end
@@ -457,27 +478,12 @@ export function teamsBrowserInterceptionLogic() {
         const windowMs = Math.max(durMs, CAPTION_SPEAKING_WINDOW_MS)
         const key = identityKey(String(speakerRaw))
 
-        // Fold this result into the utterance it belongs to and record where the
-        // speech actually sat on the audio clock. Captions arrive 1-3s after the
-        // speech, so stamping the broadcast with arrival time shifts every
-        // segment late; timestampAudioSent is the real start.
-        const audioStartMs = captionAudioStartMs(r?.timestampAudioSent)
-        if (audioStartMs > 0) {
-          const isFinal = r?.isFinal === true
-          const open = captionUtterance.get(key)
-          const utterance = open
-            ? { startMs: open.startMs, endMs: Math.max(open.endMs, audioStartMs + durMs) }
-            : { startMs: audioStartMs, endMs: audioStartMs + durMs }
-          // A final result closes the utterance so the next one starts fresh.
-          if (isFinal) captionUtterance.delete(key)
-          else captionUtterance.set(key, utterance)
-          lastCaptionAudioStartMs = utterance.startMs
-          lastCaptionAudioEndMs = Math.max(lastCaptionAudioEndMs, utterance.endMs)
-        }
         // Counted per result so matched + unmatched sum to captionResults and read
         // as a roster match rate. A caption can legitimately arrive before the
         // roster lists its speaker, so early unmatched results are expected — a
         // run that stays entirely unmatched is the real failure signal.
+        // Resolved BEFORE the interval is recorded, so the interval is filed
+        // under the identity attribution will actually look it up by.
         let resolved = key
         if (rosterHasIdentity(key)) {
           diag.captionMatched++
@@ -493,7 +499,24 @@ export function teamsBrowserInterceptionLogic() {
             diag.captionUnmatched++
           }
         }
-        captionSpeakingUntil.set(resolved, Date.now() + windowMs)
+
+        lastCaptionResultAt = Date.now()
+        lastCaptionIdentity = resolved
+
+        // Record where the speech actually sat on the audio clock. Captions
+        // arrive 1-3s after the speech, so both the segment boundary and the
+        // attribution come from timestampAudioSent rather than arrival time.
+        const audioStartMs = captionAudioStartMs(r?.timestampAudioSent)
+        if (audioStartMs > 0) {
+          const endMs = audioStartMs + durMs
+          upsertCaptionInterval(resolved, audioStartMs, endMs, r?.isFinal === true)
+          lastCaptionAudioStartMs = audioStartMs
+          lastCaptionAudioEndMs = Math.max(lastCaptionAudioEndMs, endMs)
+        } else {
+          // No usable audio timing on this result — keep the old wall-clock
+          // window so attribution degrades rather than disappearing.
+          captionSpeakingUntil.set(resolved, Date.now() + windowMs)
+        }
         // Only drive the speaker signal from captions when nothing better exists.
         if (!csrcAvailable && !hasFreshDominantSpeaker()) {
           broadcastSpeakerUpdate("caption")
@@ -513,10 +536,71 @@ export function teamsBrowserInterceptionLogic() {
     }
 
     // Roster deviceIds whose identity currently has an unexpired caption window.
-    function getCaptionSpeakingDeviceIds(): Set<string> {
-      const now = Date.now()
+    // Fold a caption result into the speaker's open interval, or open a new one.
+    function upsertCaptionInterval(
+      key: string,
+      startMs: number,
+      endMs: number,
+      isFinal: boolean
+    ): void {
+      let list = captionIntervals.get(key)
+      if (!list) {
+        list = []
+        captionIntervals.set(key, list)
+      }
+      const last = list.length > 0 ? list[list.length - 1] : undefined
+      if (last && last.open) {
+        last.startMs = Math.min(last.startMs, startMs)
+        last.endMs = Math.max(last.endMs, endMs)
+        if (isFinal) last.open = false
+      } else {
+        list.push({ startMs, endMs, open: !isFinal })
+      }
+      const cutoff = endMs - CAPTION_INTERVAL_RETENTION_MS
+      for (const [k, l] of captionIntervals) {
+        const kept = l.filter((iv) => iv.endMs >= cutoff)
+        if (kept.length === 0) captionIntervals.delete(k)
+        else captionIntervals.set(k, kept)
+      }
+    }
+
+    // Which identity was speaking at this point on the audio clock. End is
+    // exclusive so the utterance that just ended does not bleed into the update
+    // that closes it. On genuine overlap the earliest start wins — one speaker
+    // per instant keeps the diarization timeline unambiguous.
+    function captionIdentityAt(tMs: number): string | null {
+      let bestKey: string | null = null
+      let bestStart = Number.POSITIVE_INFINITY
+      for (const [key, list] of captionIntervals) {
+        for (const iv of list) {
+          if (iv.startMs <= tMs && tMs < iv.endMs && iv.startMs < bestStart) {
+            bestStart = iv.startMs
+            bestKey = key
+          }
+        }
+      }
+      return bestKey
+    }
+
+    // Roster deviceIds speaking at tMs. Caption results that carried no usable
+    // audio timing fall back to the wall-clock window, so a client that omits
+    // timestampAudioSent still attributes rather than going silent.
+    function getCaptionSpeakingDeviceIds(tMs: number, audioClock: boolean): Set<string> {
       const out = new Set<string>()
       const activeKeys = new Set<string>()
+      if (audioClock) {
+        const byAudio = captionIdentityAt(tMs)
+        if (byAudio) activeKeys.add(byAudio)
+      } else if (
+        lastCaptionIdentity &&
+        lastCaptionResultAt > 0 &&
+        Date.now() - lastCaptionResultAt < CAPTION_SILENCE_MS
+      ) {
+        // Not a caption-driven update: captions are still flowing, so hold the
+        // current speaker rather than reading silence off a stale audio clock.
+        activeKeys.add(lastCaptionIdentity)
+      }
+      const now = Date.now()
       for (const [key, until] of captionSpeakingUntil) {
         if (until > now) activeKeys.add(key)
         else captionSpeakingUntil.delete(key)
@@ -650,11 +734,20 @@ export function teamsBrowserInterceptionLogic() {
           return
         }
         if (csrcAvailable || hasFreshDominantSpeaker()) return
-        const active = getCaptionSpeakingDeviceIds().size > 0
-        // captionExpiry: this update ends the last utterance, so it sits on the
-        // wall clock and must not fall through to a stale dsh speaker.
-        if (hadCaptionSpeakers && !active) broadcastSpeakerUpdate("caption", true)
-        hadCaptionSpeakers = active
+        // Speech having stopped can only be seen on the wall clock: the audio
+        // clock says nothing once captions go quiet. So the TRIGGER is "no
+        // caption result for CAPTION_SILENCE_MS", while the resulting update is
+        // stamped back onto the audio clock at the last utterance's end.
+        const sawCaptions = lastCaptionResultAt > 0
+        const goneQuiet = sawCaptions && Date.now() - lastCaptionResultAt >= CAPTION_SILENCE_MS
+        if (hadCaptionSpeakers && goneQuiet) {
+          // captionExpiry: sits on the audio end and must not fall through to a
+          // stale dsh speaker.
+          broadcastSpeakerUpdate("caption", true)
+          hadCaptionSpeakers = false
+          return
+        }
+        if (sawCaptions && !goneQuiet) hadCaptionSpeakers = true
       }, 1000)
     }
 
@@ -762,6 +855,18 @@ export function teamsBrowserInterceptionLogic() {
 
     // ===== BROADCAST TO NODE =====
 
+    // A caption update opens its segment at the utterance's audio start; the
+    // expiry update closes it at the utterance's audio END. Closing on the wall
+    // clock instead would stretch every segment by the caption delivery delay
+    // plus CAPTION_SPEAKING_WINDOW_MS. Never stamp into the future, and fall back
+    // to now when the caption carried no usable timing.
+    function computeBroadcastStamp(source: string, captionExpiry: boolean): number {
+      const now = Date.now()
+      if (source !== "caption") return now
+      const audioStamp = captionExpiry ? lastCaptionAudioEndMs : lastCaptionAudioStartMs
+      return audioStamp > 0 ? Math.min(audioStamp, now) : now
+    }
+
     // captionExpiry marks the update that ENDS a caption utterance. Two things
     // differ for it: it sits on the wall clock rather than the caption audio
     // clock (backdating it to the utterance's own start would close the segment
@@ -774,6 +879,11 @@ export function teamsBrowserInterceptionLogic() {
     ): void {
       if ((window as any).__teamsNetworkInterceptorStopped) return
 
+      // The stamp is computed FIRST because caption attribution is a function of
+      // it: the speaking set is "who was talking at this instant on the audio
+      // clock", not "who has a live window right now".
+      const stamp = computeBroadcastStamp(source, captionExpiry)
+
       // Priority: CSRC (silence == nobody) → dsh dominant speaker → captions.
       // Captions are the fallback for server-mixed sessions that emit neither.
       let speaking: Set<string>
@@ -785,10 +895,9 @@ export function teamsBrowserInterceptionLogic() {
         // mixed-audio sessions the single early dsh would otherwise pin its speaker
         // for the whole call. A fresh dsh still wins; healthy sessions ramp dsh
         // continuously and never reach the caption branch.
-        const captionSpeaking =
-          !hasFreshDominantSpeaker()
-            ? getCaptionSpeakingDeviceIds()
-            : new Set<string>()
+        const captionSpeaking = !hasFreshDominantSpeaker()
+          ? getCaptionSpeakingDeviceIds(stamp, source === "caption")
+          : new Set<string>()
         if (captionSpeaking.size > 0) {
           speaking = captionSpeaking
         } else if (
@@ -863,16 +972,6 @@ export function teamsBrowserInterceptionLogic() {
         // utterance instead of arrival time — otherwise every caption segment
         // sits 1-3s late, which is the whole point of reading timestampAudioSent.
         // Never stamp ahead of now: a clock skew would put speech in the future.
-        // A caption update opens its segment at the utterance's audio start; the
-        // expiry update closes it at the utterance's audio END. Closing on the
-        // wall clock instead would stretch every segment by the caption delay
-        // plus CAPTION_SPEAKING_WINDOW_MS. Never stamp into the future, and fall
-        // back to now when the caption carried no usable timing.
-        let stamp = Date.now()
-        if (source === "caption") {
-          const audioStamp = captionExpiry ? lastCaptionAudioEndMs : lastCaptionAudioStartMs
-          if (audioStamp > 0) stamp = Math.min(audioStamp, Date.now())
-        }
         q.push({ users, timestamp: stamp, source })
         diag.broadcasts++
       } catch {
