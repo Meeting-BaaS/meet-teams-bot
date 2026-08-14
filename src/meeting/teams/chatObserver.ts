@@ -121,7 +121,7 @@ export class TeamsChatObserver {
         }
 
         // Chat panel is closed — click the chat button to open it
-        const chatButtonClicked = await this.page.evaluate(() => {
+        const chatButtonState = await this.page.evaluate(() => {
           const selectors = [
             'button#chat-button',
             'button[aria-label*="chat" i]',
@@ -133,13 +133,31 @@ export class TeamsChatObserver {
             const el = document.querySelector(sel) as HTMLElement | null
             if (el) {
               el.click()
-              return true
+              return "clicked"
             }
           }
-          return false
+          // No chat control. Distinguish "the call UI has not rendered yet" from
+          // "this meeting genuinely has no chat" — guest and anonymous Teams
+          // links never expose one, and retrying those just stalls the entry
+          // message. The call toolbar is the marker that the UI is up.
+          const toolbarRendered = Boolean(
+            document.querySelector('[role="toolbar"]') ||
+              document.querySelector('[data-tid="calling-buttons"]') ||
+              document.querySelector('[id^="callingButtons"]') ||
+              document.querySelector('[data-tid="hangup-button"]')
+          )
+          return toolbarRendered ? "unavailable" : "not-rendered"
         })
 
-        if (!chatButtonClicked) {
+        if (chatButtonState === "unavailable") {
+          console.warn(
+            "[TeamsChatObserver] Call UI is up but exposes no chat control — this meeting has no chat"
+          )
+          this._chatDisabled = true
+          return false
+        }
+
+        if (chatButtonState !== "clicked") {
           console.log(`[TeamsChatObserver] Chat button not found, attempt ${attempt}/${MAX_CHAT_OPEN_RETRIES}`)
           if (attempt < MAX_CHAT_OPEN_RETRIES) {
             await this.page.waitForTimeout(CHAT_RETRY_INTERVAL_MS)
