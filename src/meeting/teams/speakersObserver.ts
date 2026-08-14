@@ -131,13 +131,25 @@ export class TeamsSpeakersObserver {
           const text = captionListText()
           if (!text || text === lastCaptionSignature) return
           lastCaptionSignature = text
-          // Only the tail matters — that is the utterance currently on screen.
+          // The caption list renders several recent entries, each labelled with
+          // its author, so two or three PREVIOUS speakers sit in the tail too.
+          // Marking every name found there reports them all as speaking at once
+          // and turns sequential speech into concurrent speakers. Only the entry
+          // closest to the end — the newest one — is currently being spoken, so
+          // attribute the window to that single author.
           const tail = text.slice(-400)
-          const now = Date.now()
+          let newestName = ""
+          let newestAt = -1
           for (const name of knownNames) {
-            if (name && tail.includes(name)) {
-              captionSpeakingUntil.set(name, now + CAPTION_SPEAKING_WINDOW_MS)
+            if (!name) continue
+            const at = tail.lastIndexOf(name)
+            if (at > newestAt) {
+              newestAt = at
+              newestName = name
             }
+          }
+          if (newestName) {
+            captionSpeakingUntil.set(newestName, Date.now() + CAPTION_SPEAKING_WINDOW_MS)
           }
         }
 

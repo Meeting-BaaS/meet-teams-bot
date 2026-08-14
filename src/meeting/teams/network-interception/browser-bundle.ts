@@ -89,7 +89,16 @@ export function teamsBrowserInterceptionLogic() {
     // broadcast (see broadcastSpeakerUpdate) so the segment lands where the
     // speech actually happened rather than where the caption arrived.
     let lastCaptionAudioStartMs = 0
+    // True only once caption results are actually arriving — NOT when activation
+    // was merely requested. Teams can accept startClosedCaption() (or the click)
+    // and still never mount the renderer, so latching on the request would leave
+    // the fallback silently dead for the rest of the meeting.
     let captionsEnabled = false
+    // Activation is retried until captions flow or the attempt cap is reached.
+    let captionAttempts = 0
+    let lastCaptionAttemptAt = 0
+    const CAPTION_RETRY_MS = 10000
+    const CAPTION_MAX_ATTEMPTS = 6
     let interceptorStartedAt = Date.now()
     // When the last dsh event arrived (0 = never). Freshness, not the raw count,
     // decides whether a native active-speaker signal exists.
@@ -433,9 +442,15 @@ export function teamsBrowserInterceptionLogic() {
         const speakerRaw = r?.userId
         if (speakerRaw == null) return
         diag.captionResults++
+        // A caption result is the only proof captions are really running, so this
+        // is where activation is confirmed and the retry gate stands down.
+        if (!captionsEnabled) {
+          captionsEnabled = true
+          diag.captionsEnabled = true
+        }
         const durTicks = typeof r?.duration === "number" ? r.duration : 0
         const durMs = durTicks > 0 ? Math.min(durTicks / 1e4, 8000) : 0
-        const window = Math.max(durMs, CAPTION_SPEAKING_WINDOW_MS)
+        const windowMs = Math.max(durMs, CAPTION_SPEAKING_WINDOW_MS)
         const key = identityKey(String(speakerRaw))
 
         // Fold this result into the utterance it belongs to and record where the
@@ -473,7 +488,7 @@ export function teamsBrowserInterceptionLogic() {
             diag.captionUnmatched++
           }
         }
-        captionSpeakingUntil.set(resolved, Date.now() + window)
+        captionSpeakingUntil.set(resolved, Date.now() + windowMs)
         // Only drive the speaker signal from captions when nothing better exists.
         if (!csrcAvailable && !hasFreshDominantSpeaker()) {
           broadcastSpeakerUpdate("caption")
@@ -554,13 +569,13 @@ export function teamsBrowserInterceptionLogic() {
           }
         }
         const result = call.startClosedCaption()
-        captionsEnabled = true
-        diag.captionsEnabled = true
-        debug("📝 live captions started (diarization fallback)")
+        captionAttempts++
+        lastCaptionAttemptAt = Date.now()
+        debug("📝 live captions requested (diarization fallback)")
         if (result && typeof result.catch === "function") {
+          // A rejection means this attempt failed outright; the gate retries.
           result.catch(() => {
-            captionsEnabled = false
-            diag.captionsEnabled = false
+            debug("caption start rejected")
           })
         }
       } catch (error) {
@@ -579,8 +594,8 @@ export function teamsBrowserInterceptionLogic() {
           document.querySelector('[data-tid="call-captions-button"]')
         if (!(button instanceof HTMLElement)) return
         button.click()
-        captionsEnabled = true
-        diag.captionsEnabled = true
+        captionAttempts++
+        lastCaptionAttemptAt = Date.now()
       } catch {
         // control not clickable — leave captions off rather than break the call
       }
@@ -595,19 +610,26 @@ export function teamsBrowserInterceptionLogic() {
           clearInterval(captionGateTimer)
           return
         }
+        // Stop only once captions are actually FLOWING. Teams can accept the
+        // request or the click and still never mount the renderer, so treating
+        // "we asked" as success would disable the fallback for the whole meeting.
         if (captionsEnabled) {
           clearInterval(captionGateTimer)
           return
         }
+        if (captionAttempts >= CAPTION_MAX_ATTEMPTS) {
+          clearInterval(captionGateTimer)
+          debug("caption activation gave up after", captionAttempts, "attempts")
+          return
+        }
         const inCallLongEnough = Date.now() - interceptorStartedAt >= CAPTION_ENABLE_DELAY_MS
+        const retryDue = Date.now() - lastCaptionAttemptAt >= CAPTION_RETRY_MS
         // Freshness, not "dshSeen === 0": the affected sessions emit dsh 0-1 times,
         // so a raw-count test leaves every dsh=1 session — half the reported
-        // signature — without the fallback it exists for. Skipped entirely when
-        // captions are always on, which is the point of always on.
-        const noNativeSignal =
-          !hasFreshDominantSpeaker() && !csrcAvailable
+        // signature — without the fallback it exists for.
+        const noNativeSignal = !hasFreshDominantSpeaker() && !csrcAvailable
         const haveRoster = participantsByDeviceId.size > 0
-        if (inCallLongEnough && noNativeSignal && haveRoster) {
+        if (inCallLongEnough && retryDue && noNativeSignal && haveRoster) {
           enableClosedCaptions()
         }
       }, 5000)
@@ -623,7 +645,10 @@ export function teamsBrowserInterceptionLogic() {
         }
         if (csrcAvailable || hasFreshDominantSpeaker()) return
         const active = getCaptionSpeakingDeviceIds().size > 0
-        if (hadCaptionSpeakers && !active) broadcastSpeakerUpdate("caption")
+        // stampNow: this update ends the last utterance, so it must sit on the
+        // wall clock — the caption audio clock would date it to that utterance's
+        // own start and collapse the segment.
+        if (hadCaptionSpeakers && !active) broadcastSpeakerUpdate("caption", true)
         hadCaptionSpeakers = active
       }, 1000)
     }
@@ -732,7 +757,14 @@ export function teamsBrowserInterceptionLogic() {
 
     // ===== BROADCAST TO NODE =====
 
-    function broadcastSpeakerUpdate(source: "roster" | "audio" | "caption"): void {
+    // stampNow forces the update onto the wall clock instead of the caption audio
+    // clock. Required for the speaking→silent transition: that update ENDS the
+    // last utterance, so backdating it to that utterance's start would close the
+    // segment at or before its own start.
+    function broadcastSpeakerUpdate(
+      source: "roster" | "audio" | "caption",
+      stampNow = false
+    ): void {
       if ((window as any).__teamsNetworkInterceptorStopped) return
 
       // Priority: CSRC (silence == nobody) → dsh dominant speaker → captions.
@@ -816,7 +848,7 @@ export function teamsBrowserInterceptionLogic() {
         // sits 1-3s late, which is the whole point of reading timestampAudioSent.
         // Never stamp ahead of now: a clock skew would put speech in the future.
         const stamp =
-          source === "caption" && lastCaptionAudioStartMs > 0
+          source === "caption" && !stampNow && lastCaptionAudioStartMs > 0
             ? Math.min(lastCaptionAudioStartMs, Date.now())
             : Date.now()
         q.push({ users, timestamp: stamp, source })
