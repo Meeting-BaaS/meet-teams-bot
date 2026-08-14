@@ -107,7 +107,12 @@ export async function setupTeamsNetworkInterceptionCallback(
               `[Teams NetworkInterceptor] diag ws=${d.wsCreated} rosterFrames=${d.wsRosterFrames}` +
                 ` httpRoster=${d.httpRosterHits} roster=${d.rosterParticipants} rtc=${d.rtcCreated}` +
                 ` dc=${d.dataChannels} dsh=${d.dshSeen} recv=${d.receiversAdded}` +
-                ` csrc=${d.csrcAvailable} bcast=${d.broadcasts} qLen=${d.queueLen} drained=${drainedTotal}`
+                ` csrc=${d.csrcAvailable} bcast=${d.broadcasts} qLen=${d.queueLen} drained=${drainedTotal}` +
+                // Caption rung: whether it engaged at all, and whether its speaker
+                // ids resolved against the roster. capOn=false on a healthy call is
+                // expected — captions only start when the network signal is absent.
+                ` capOn=${d.captionsEnabled} capResults=${d.captionResults}` +
+                ` capMatched=${d.captionMatched} capUnmatched=${d.captionUnmatched}`
             )
           }
         } catch {

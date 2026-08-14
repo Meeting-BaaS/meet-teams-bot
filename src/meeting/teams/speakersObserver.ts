@@ -88,6 +88,123 @@ export class TeamsSpeakersObserver {
           return document
         }
 
+        // Display name for a v2 tile. aria-label first (older builds), else the
+        // data-tid, which on the current client holds the display name. Never
+        // return an email — some builds put the address in data-tid and that is
+        // PII, not a name. A trailing "(Guest)" is part of Teams' label, not the
+        // person's name, and is stripped so it matches the caption author text.
+        function resolveTileName(element: Element): string {
+          const aria = element.getAttribute("aria-label")?.split(",")[0]?.trim()
+          if (aria) return aria
+          const tid = element.getAttribute("data-tid")?.trim() || ""
+          if (!tid || tid.includes("@")) return ""
+          return tid.replace(/\s*\(Guest\)\s*$/i, "").trim()
+        }
+
+        // ── Caption-derived speaking signal ────────────────────────────────
+        // The current Teams client exposes NO per-participant speaking state in
+        // the DOM: voice-level-stream-outline is an empty div with a constant
+        // class list and data-is-speaking was removed. Live captions are the only
+        // per-speaker signal left, and they survive server-mixed audio. We read
+        // the caption list the client already renders and attribute the newest
+        // entry to whichever known participant it names.
+        //
+        // Matching is done on the entry's text against the roster rather than on
+        // an inner data-tid, so it does not break when Fluent rotates class or
+        // tid hashes — the author name is the stable part.
+        const CAPTION_SPEAKING_WINDOW_MS = 2500
+        const captionSpeakingUntil = new Map<string, number>()
+        let lastCaptionSignature = ""
+
+        function captionListText(): string {
+          const documentRoot = getDocumentRoot()
+          const list =
+            documentRoot.querySelector('[data-tid="closed-caption-v2-virtual-list-content"]') ||
+            documentRoot.querySelector('[data-tid="closed-caption-renderer-wrapper"]') ||
+            documentRoot.querySelector('[aria-label="Live Captions"]')
+          return list instanceof HTMLElement ? list.innerText || list.textContent || "" : ""
+        }
+
+        // Refresh the caption-derived speaking set. Called once per collection
+        // pass so every tile in that pass sees a consistent view.
+        function refreshCaptionSpeaking(knownNames: string[]): void {
+          const text = captionListText()
+          if (!text || text === lastCaptionSignature) return
+          lastCaptionSignature = text
+          // The caption list renders several recent entries, each labelled with
+          // its author, so two or three PREVIOUS speakers sit in the tail too.
+          // Marking every name found there reports them all as speaking at once
+          // and turns sequential speech into concurrent speakers. Only the entry
+          // closest to the end — the newest one — is currently being spoken, so
+          // attribute the window to that single author.
+          const tail = text.slice(-400)
+          let newestName = ""
+          let newestAt = -1
+          for (const name of knownNames) {
+            if (!name) continue
+            const at = tail.lastIndexOf(name)
+            if (at > newestAt) {
+              newestAt = at
+              newestName = name
+            }
+          }
+          if (newestName) {
+            captionSpeakingUntil.set(newestName, Date.now() + CAPTION_SPEAKING_WINDOW_MS)
+          }
+        }
+
+        function captionSaysSpeaking(name: string): boolean {
+          const until = captionSpeakingUntil.get(name)
+          if (until == null) return false
+          if (until <= Date.now()) {
+            captionSpeakingUntil.delete(name)
+            return false
+          }
+          return true
+        }
+
+        // Turn on live captions so the signal above exists at all. Idempotent and
+        // best-effort: without the network interceptor injected, nothing else
+        // enables them, and this path has to stand alone.
+        let captionsRequested = false
+        function ensureCaptionsOn(): void {
+          if (captionsRequested) return
+          try {
+            const documentRoot = getDocumentRoot()
+            // Already on — the renderer is mounted.
+            if (documentRoot.querySelector('[data-tid="closed-caption-renderer-wrapper"]')) {
+              captionsRequested = true
+              return
+            }
+            // The caption toggle is not on the toolbar — it lives under
+            // More → Language and speech, so the submenu has to be opened first
+            // and the button looked for on a later pass once it renders.
+            const button =
+              documentRoot.querySelector("#closed-captions-button") ||
+              documentRoot.querySelector('[data-tid="closed-captions-button"]') ||
+              documentRoot.querySelector('[data-tid="call-captions-button"]')
+            if (button instanceof HTMLElement) {
+              button.click()
+              captionsRequested = true
+              console.log("[Teams-Browser] live captions enabled via UI control")
+              return
+            }
+            const languageAndSpeech =
+              documentRoot.querySelector('[data-tid="language-and-speech-button"]') ||
+              documentRoot.querySelector('[id="language-and-speech-button"]')
+            if (languageAndSpeech instanceof HTMLElement) {
+              languageAndSpeech.click()
+              return
+            }
+            const moreButton =
+              documentRoot.querySelector('[data-tid="callingButtons-showMoreBtn"]') ||
+              documentRoot.querySelector('[id="callingButtons-showMoreBtn"]')
+            if (moreButton instanceof HTMLElement) moreButton.click()
+          } catch (_e) {
+            // control absent or not clickable — leave captions off
+          }
+        }
+
         // EXACT SAME getSpeakerFromDocument as extension + DEBUG
         function getSpeakerFromDocument(timestamp: number): SpeakerData[] {
           const documentRoot = getDocumentRoot()
@@ -118,6 +235,22 @@ export class TeamsSpeakersObserver {
           if (speakerElements.length === 0) {
             return []
           }
+
+          // Captions are the only per-speaker signal this client exposes, so make
+          // sure they are on and refresh the derived speaking set once per pass
+          // (before the tiles below read it, so they all see the same view).
+          ensureCaptionsOn()
+          const knownNames: string[] = []
+          speakerElements.forEach((el) => {
+            const n = resolveTileName(el)
+            if (n) knownNames.push(n)
+          })
+          refreshCaptionSpeaking(knownNames)
+          console.log(
+            `[TEAMS-DEBUG] caption-derived speakers: ${
+              knownNames.filter((n) => captionSaysSpeaking(n)).join(", ") || "none"
+            }`
+          )
 
           const speakers = Array.from(speakerElements)
             .filter((element) => {
@@ -183,23 +316,28 @@ export class TeamsSpeakersObserver {
                   }
                 }
               } else {
-                // new teams (v2): tiles are [data-cid="calling-participant-stream"]
-                // with data-tid=<email> and aria-label="<Display Name>, ...". Prefer the
-                // display name; fall back to the tid.
-                // data-tid on v2 tiles holds the participant's raw email — never use it
-                // as a display name (PII). If aria-label parsing fails, skip the tile.
-                const name = element.getAttribute("aria-label")?.split(",")[0]?.trim() || ""
+                // new teams (v2): tiles are [data-stream-type="Video"].
+                // aria-label is ABSENT on the current client — the display name is
+                // on data-tid ("Amr El Shimy", "Jonny (Guest)"). Reading only
+                // aria-label skipped every tile, so the observer reported zero
+                // participants and the timeline came back empty.
+                // data-tid can hold a raw email on some builds, which must never be
+                // used as a display name (PII) — so take it only when it does not
+                // look like an address.
+                const name = resolveTileName(element)
                 if (name) {
                   const micPath = element.querySelector("g.ui-icon__outline path")
                   const isMuted = micPath?.getAttribute("d")?.startsWith("M12 5v4.879") || false
                   const voiceLevelIndicator = element.querySelector(
                     '[data-tid="voice-level-stream-outline"]'
                   )
-                  // v2 exposes the active speaker directly via data-is-speaking on the
-                  // voice-level-stream-outline — read it (reliable) and fall back to the
-                  // border/opacity heuristic only for older clients that lack it.
+                  // v2 used to expose the active speaker via data-is-speaking here.
+                  // On the current client that attribute is gone and the outline is
+                  // an empty div with a constant class list, so this check can only
+                  // ever return false — the captions fallback below is what actually
+                  // carries speech. Kept for older clients that still populate it.
                   const speakingAttr = voiceLevelIndicator?.getAttribute("data-is-speaking")
-                  const isSpeaking =
+                  const domSpeaking =
                     voiceLevelIndicator && !isMuted
                       ? speakingAttr != null
                         ? speakingAttr === "true"
@@ -210,7 +348,7 @@ export class TeamsSpeakersObserver {
                     name,
                     id: 0,
                     timestamp,
-                    isSpeaking
+                    isSpeaking: domSpeaking || (!isMuted && captionSaysSpeaking(name))
                   }
                 }
               }
