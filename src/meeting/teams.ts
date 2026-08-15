@@ -250,6 +250,21 @@ export class TeamsProvider implements MeetingProviderInterface {
             )
         }
 
+        // Cleanup CSS goes in before navigation so the toolbar, toasts and the
+        // live caption overlay are hidden the instant they render. The recorder
+        // starts in the waiting room but the HTML cleaner only runs once in-call
+        // (~41s later), and that whole window was being recorded showing the raw
+        // Teams UI.
+        try {
+            const { setupTeamsCleanupStyles } = await import('./teams/htmlCleaner')
+            await setupTeamsCleanupStyles(page)
+        } catch (error) {
+            console.error(
+                '[Teams] ⚠️ Failed to install cleanup stylesheet:',
+                formatError(error),
+            )
+        }
+
         // Inject Teams network speaker-detection scripts before navigation.
         // In-call setup verifies the hook and falls back to DOM observation if
         // Teams internals or the injected script are unavailable.

@@ -16,7 +16,9 @@ export type NetworkUser = {
 export type NetworkPayload = {
   users: NetworkUser[]
   timestamp: number
-  source: "roster" | "audio"
+  // "caption" is the server-mixed-audio fallback rung: an active-speaker timeline
+  // derived from Teams live-caption recognitionResults (attributed by audio time).
+  source: "roster" | "audio" | "caption"
   // Set by the in-page watchdog when the audio sub-path (dsh main-channel +
   // CSRC) has produced nothing despite an active multi-participant meeting —
   // the Node side should fall back to UI-based speaker observation.
