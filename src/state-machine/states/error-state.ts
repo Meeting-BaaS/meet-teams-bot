@@ -102,6 +102,19 @@ export class ErrorState extends BaseState {
                         console.log('Notifying API request stop')
                         await Events.apiRequestStop()
                         break
+                    case MeetingEndReason.ExitingMeetingBeforeRecord:
+                        // Customer-requested stop (stop-bot API) while the bot
+                        // was still joining / in the waiting room. Nothing
+                        // errored — suppress the meeting_error status so the
+                        // dashboard doesn't show "Meeting Error" for a stop the
+                        // customer asked for. The terminal recording_failed
+                        // (EXITING_MEETING_BEFORE_RECORD) emitted later by
+                        // handleFailedRecording is what maps to the standardized
+                        // "stopped before recording" description.
+                        console.log(
+                            'Stop requested before recording started — suppressing meeting_error status',
+                        )
+                        break
                     default:
                         // If a retry is pending, the requeue path
                         // (handleFailedRecording) emits its retry-flavoured
