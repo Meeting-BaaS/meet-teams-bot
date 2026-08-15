@@ -75,7 +75,7 @@ export class SpeakerManager {
             }
             return
         }
-        await this.handleSpeakerUpdate(observed)
+        await this.handleSpeakerUpdate(observed, 'ui-observer')
     }
 
     /**
@@ -158,8 +158,19 @@ export class SpeakerManager {
         return this.currentSpeaker
     }
 
-    public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
+    public async handleSpeakerUpdate(
+        speakers: SpeakerData[],
+        source: string,
+    ): Promise<void> {
         try {
+            // Which source drives every committed speaker update: network CSRC,
+            // network dcrpc (NetEq), roster, or the UI-observer bridge. This is the
+            // only node-side signal of source — the browser-side interceptor logs do
+            // not reach the bot log. Count only; names/ids are PII and this ships to S3.
+            const speakingNow = speakers.filter((s) => s.isSpeaking).length
+            console.log(
+                `[SPEAKER-SRC] source=${source} speaking=${speakingNow}/${speakers.length}`,
+            )
             // Track when we received this callback (for bot removal detection)
             this.lastCallbackTime = Date.now()
 
@@ -197,6 +208,7 @@ export class SpeakerManager {
     public async handleNetworkSpeakerUpdate(
         networkUsers: NetworkUser[],
         timestamp: number,
+        source: string = 'network',
     ): Promise<void> {
         const botCanSpeak = Boolean(GLOBAL.get().streaming_input)
 
@@ -237,7 +249,7 @@ export class SpeakerManager {
             )
         }
 
-        await this.handleSpeakerUpdate(speakers)
+        await this.handleSpeakerUpdate(speakers, source)
     }
 
     private async logSpeakers(speakers: SpeakerData[]): Promise<void> {

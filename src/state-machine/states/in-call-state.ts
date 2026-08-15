@@ -402,9 +402,18 @@ export class InCallState extends BaseState {
                     )
                 }
 
+                // Label which source drove this committed update, so the bot
+                // log distinguishes the dcrpc datachannel (NetEq) path from the
+                // CSRC audio path. dcrpc payloads ride the same source: "audio"
+                // channel and already feed the audio-path watchdog below via
+                // meetAudioEventCount, holding the network path on NetEq.
+                const speakerSource = payload.dcrpc
+                    ? 'network:dcrpc'
+                    : `network:${payload.source ?? 'audio'}`
                 await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
                     networkUsers,
                     payload.timestamp,
+                    speakerSource,
                 )
             } catch (error) {
                 console.error(
@@ -519,6 +528,7 @@ export class InCallState extends BaseState {
                     } else {
                         await SpeakerManager.getInstance().handleSpeakerUpdate(
                             speakers,
+                            'ui-observer',
                         )
                     }
                 } catch (error) {
