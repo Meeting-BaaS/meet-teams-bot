@@ -11,6 +11,10 @@ import { ParticipantState } from './state-machine/types'
 import { SpeakerData } from './types'
 import { uploadTranscriptTask } from './uploadTranscripts'
 import { PathManager } from './utils/PathManager'
+import {
+    createSequentialIdManager,
+    generateStableUserId,
+} from './utils/speaker-id'
 
 /** The placeholder every platform's interceptor falls back to before a roster lands. */
 const UNKNOWN_SPEAKER = "Unknown"
@@ -36,6 +40,10 @@ export class SpeakerManager {
     // stamp a user_id onto a segment during Unknown-backfill; the name is the
     // load-bearing repair. Keyed by deviceId to stay per-participant.
     private deviceUserIds = new Map<string, number>()
+    // Maps a stable per-participant hash (from name/profile-picture) to a
+    // sequential numeric id, so a participant keeps the SAME user_id across
+    // rejoins and roster reorderings — unlike the old roster-index id.
+    private sequentialIdManager = createSequentialIdManager()
     // File-based diarization tracker. Fed the active speaker from the single
     // sink below (network AND ui-observer flow through handleSpeakerUpdate), so
     // the health monitor arbitrates on ACTUAL segment production.
@@ -281,14 +289,23 @@ export class SpeakerManager {
                 const withinRosterGrace =
                     timestamp - this.firstSeenAt(user.deviceId, timestamp) <
                     ROSTER_GRACE_MS
+                // Stable per-participant id: hash the resolved name (or the
+                // more-stable profile picture) and map it to a sequential
+                // number, so the same person keeps the same user_id across
+                // rejoins and roster reorderings. Falls back to a resolved
+                // name; an unresolved "Unknown" hashes consistently too and is
+                // repaired at finalize once the name lands.
+                const stableUserId = this.sequentialIdManager.getSequentialId(
+                    generateStableUserId(stableName, user.profilePicture),
+                )
                 // Remember the id for this device so Unknown-backfill can stamp
-                // a user_id onto segments repaired at finalize.
+                // the SAME user_id onto segments repaired at finalize.
                 if (user.deviceId) {
-                    this.deviceUserIds.set(user.deviceId, index + 1)
+                    this.deviceUserIds.set(user.deviceId, stableUserId)
                 }
                 return {
                     name: stableName,
-                    id: index + 1,
+                    id: stableUserId,
                     timestamp,
                     // Carried so the diarization tracker can repair a segment
                     // opened before this device's name resolved.
