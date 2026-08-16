@@ -1175,7 +1175,17 @@ export function teamsBrowserInterceptionLogic() {
     // active participants and the audio sub-path has signalled nothing for
     // AUDIO_PATH_DEAD_AFTER_MS since install, report it ONCE so the Node side
     // can fall back to UI-based observation.
-    const AUDIO_PATH_DEAD_AFTER_MS = 45_000
+    //
+    // This is now a LONG BACKSTOP, not the primary trigger. The Node-side
+    // diarization health monitor is the primary arbiter and protects the Teams
+    // network path for 90s (networkMinDwellMs("teams")) because the
+    // dominant-speaker history trickles in — first entry ~15s, third by ~90s.
+    // At the old 45s this watchdog retired Teams before dsh arrived, finishing
+    // with an empty diarization and "Speaker N" labels. Raised well past the
+    // monitor's 90s window so the two can never fight: whichever fires first
+    // sets the same idempotent teamsNetworkFallbackTriggered flag; in practice
+    // the monitor decides at 90s and this only fires if the monitor never did.
+    const AUDIO_PATH_DEAD_AFTER_MS = 120_000
     const watchdogInterval = setInterval(() => {
       try {
         if ((window as any).__teamsNetworkInterceptorStopped) return

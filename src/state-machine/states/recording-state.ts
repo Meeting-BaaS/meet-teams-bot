@@ -17,6 +17,12 @@ import {
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
 import { uploadTranscriptTask } from '../../uploadTranscripts'
+import { DiarizationTracker } from '../../diarization-tracker'
+import {
+    checkDiarizationHealth,
+    logHealthStatus,
+    networkMinDwellMs,
+} from '../../utils/diarization-monitor'
 import { sleep } from '../../utils/sleep'
 import { SoundLevelMonitor } from '../../utils/sound-level-monitor'
 import { MeetingStateMachine } from '../machine'
@@ -47,7 +53,26 @@ const getSpeakerCallbackCheckWindow = (): number => {
     return provider === 'Teams' ? 60000 : 30000 // Teams: 60s, Meet: 30s
 }
 
+// How many consecutive stale health events (5s apart) trigger fallback to the
+// UI observer when the network path WAS producing segments and went quiet.
+const STALE_EVENT_THRESHOLD = 10
+// Fast-path threshold when the network path has NEVER produced a single
+// segment: the source is dead, not flapping, so waiting the full 10 events
+// (>=50s of speech) only loses labels. Two events (~10s of sound with zero
+// segments ever) is enough evidence to fall back. Short solo test calls could
+// mathematically never reach the 10-event threshold.
+const NEVER_PRODUCED_STALE_THRESHOLD = 2
+// Teams has a third rung between the network path and the UI observer: when a
+// session has no dsh/CSRC the interceptor raises live captions and derives the
+// timeline from those. Captions take a few seconds to enable and return their
+// first result, so at the 2-event threshold the UI fallback would retire the
+// network path before the caption rung ever reported. Four events (~20s)
+// leaves room for captions to produce; the first caption segment clears
+// neverProduced and the 90s dwell protection takes over from there.
+const TEAMS_NEVER_PRODUCED_STALE_THRESHOLD = 4
+
 export class RecordingState extends BaseState {
+    private readonly enteredAt: number = Date.now()
     private isProcessing: boolean = true
     private readonly CHECK_INTERVAL = 250
     private lastSoundActivity: number = Date.now()
@@ -56,6 +81,8 @@ export class RecordingState extends BaseState {
     private lastNoOneJoinedPeriodLog: number = 0
     private lastNoSpeakerLogTime: number = 0
     private hasNoOneJoinedPeriodEnded: boolean = false
+    private lastDiarizationHealthCheckTime: number = 0
+    private consecutiveStaleCount: number = 0
     private aloneInMeetingSince: number | null = null
 
     async execute(): StateExecuteResult {
@@ -288,6 +315,13 @@ export class RecordingState extends BaseState {
                 this.lastSoundActivity = now
             }
 
+            // Continuous, evidence-based diarization health check (throttled to
+            // 5s). This is the PRIMARY network→UI fallback arbiter: it retires
+            // the network path only when NO segments are being produced past the
+            // per-platform dwell, superseding the coarse one-shot audio-path
+            // watchdogs. Non-fatal — never blocks the end-condition checks.
+            await this.checkDiarizationHealthThrottled(now)
+
             // Check if we're still in the noone_joined_period
             const noOneJoinedResult = this.checkNoOneJoined(now)
             if (noOneJoinedResult.shouldEnd) {
@@ -406,6 +440,20 @@ export class RecordingState extends BaseState {
 
             // Close final transcript before other cleanup steps
             await this.closeFinalTranscript()
+
+            // Finalize the diarization tracker: closes the last segment and
+            // backfills every "Unknown" segment against the final roster before
+            // the artifact is closed. Must run before cleanup/upload.
+            try {
+                await SpeakerManager.finalize()
+                console.log('Diarization tracking finalized successfully')
+            } catch (error) {
+                console.error(
+                    'Failed to finalize diarization tracking:',
+                    formatError(error),
+                )
+                // Non-fatal — continue meeting-end handling.
+            }
 
             // These critical steps must execute regardless of previous steps
             console.info('Triggering call ended event')
@@ -579,6 +627,108 @@ export class RecordingState extends BaseState {
                 formatError(error),
             )
             // Don't throw - continue with cleanup even if this fails
+        }
+    }
+
+    /** Diarization health check, at most once every 5s. */
+    private async checkDiarizationHealthThrottled(now: number): Promise<void> {
+        if (now - this.lastDiarizationHealthCheckTime < 5000) return
+        this.lastDiarizationHealthCheckTime = now
+        await this.checkDiarizationHealth(now)
+    }
+
+    /**
+     * Evidence-based diarization health arbiter. When the network path has been
+     * stale (no segments produced) past the per-platform dwell, retires it and
+     * hands observation to the UI observer via the InCallState fallback
+     * controller — which flips the SAME instance flags the audio-path watchdogs
+     * use, so the network straggler-drop guards and the Meet UI bridge keep
+     * working.
+     *
+     * dcrpc/captions need no special hold here: when either produces a speaker
+     * it flows through SpeakerManager.handleSpeakerUpdate → the tracker → a
+     * segment, which keeps the monitor healthy and resets the stale counter. So
+     * the fallback ordering (dsh → caption → UI observer) is preserved: the UI
+     * observer is only reached when nothing upstream produced a segment.
+     */
+    private async checkDiarizationHealth(currentTime: number): Promise<void> {
+        const meetingStartTime = this.context.startTime
+        if (!meetingStartTime) {
+            return
+        }
+
+        try {
+            const status = await checkDiarizationHealth(
+                meetingStartTime,
+                currentTime,
+            )
+            logHealthStatus(status)
+
+            if (status.status !== 'stale') {
+                // Reset the counter on any good status.
+                if (this.consecutiveStaleCount > 0) {
+                    console.log(
+                        '[DiarizationHealth] ✅ Diarization health recovered, resetting stale counter',
+                    )
+                    this.consecutiveStaleCount = 0
+                }
+                return
+            }
+
+            this.consecutiveStaleCount++
+
+            const platform = GLOBAL.get().meetingProvider.toLowerCase()
+            // Never-produced = the source is dead, not flapping — use the fast
+            // threshold so short meetings still get labels via the UI observer
+            // instead of ending with an all-"Unknown" diarization.
+            const neverProduced =
+                !DiarizationTracker.getInstance().hasEverTrackedSegment()
+            const neverProducedThreshold =
+                platform === 'teams'
+                    ? TEAMS_NEVER_PRODUCED_STALE_THRESHOLD
+                    : NEVER_PRODUCED_STALE_THRESHOLD
+            const threshold = neverProduced
+                ? neverProducedThreshold
+                : STALE_EVENT_THRESHOLD
+
+            console.log(
+                `[DiarizationHealth] [${platform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? ' (no segment ever produced — fast fallback)' : ''}`,
+            )
+
+            if (this.consecutiveStaleCount < threshold) {
+                return
+            }
+
+            // The dwell hold protects a slow-but-alive network path while its
+            // first speaker signal is still arriving (Teams dsh trickles in;
+            // third entry only by ~90s). It does NOT apply when the path never
+            // produced a segment despite sound — holding a dead source just
+            // converts the wait into a guaranteed leading-"Unknown" run.
+            const minDwellMs = networkMinDwellMs(platform)
+            const dwellElapsed = Date.now() - this.enteredAt
+            if (!neverProduced && dwellElapsed < minDwellMs) {
+                console.log(
+                    `[DiarizationHealth] [${platform}] ⏳ Holding network path (${Math.round(dwellElapsed / 1000)}s < ${minDwellMs / 1000}s) — speaker signal may still be arriving`,
+                )
+                return
+            }
+
+            const fallback = this.context.networkFallback
+            if (!fallback || fallback.isFallbackTriggered()) {
+                // Already retired (by a watchdog or a prior monitor decision),
+                // or no controller registered — nothing to do.
+                return
+            }
+
+            console.log(
+                `[DiarizationHealth] [${platform}] 🔄 Triggering fallback to UI-based diarization after ${this.consecutiveStaleCount} consecutive stale events`,
+            )
+            await fallback.requestFallback('diarization-stale')
+        } catch (error) {
+            console.error(
+                '[DiarizationHealth] Error checking diarization health:',
+                formatError(error),
+            )
         }
     }
 

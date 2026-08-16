@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 
+import { DiarizationTracker } from './diarization-tracker'
 import { MeetingStateMachine } from './state-machine/machine'
 import { Streaming } from './streaming'
 
@@ -30,6 +31,15 @@ export class SpeakerManager {
     // and a later payload can omit a name that an earlier one carried; without
     // this, a participant flips back to "Unknown" mid-meeting.
     private deviceNames = new Map<string, string>()
+    // Best-effort sequential id last seen per network device. v1 assigns ids by
+    // roster index (not a stable per-participant key), so this is only used to
+    // stamp a user_id onto a segment during Unknown-backfill; the name is the
+    // load-bearing repair. Keyed by deviceId to stay per-participant.
+    private deviceUserIds = new Map<string, number>()
+    // File-based diarization tracker. Fed the active speaker from the single
+    // sink below (network AND ui-observer flow through handleSpeakerUpdate), so
+    // the health monitor arbitrates on ACTUAL segment production.
+    private diarizationTracker: DiarizationTracker | null = null
     // When each device was first seen, so the roster-race grace window is
     // scoped to that participant rather than to the start of the meeting: a
     // participant joining at minute 20 races their own roster entry exactly
@@ -151,7 +161,49 @@ export class SpeakerManager {
     }
 
     public static start(): void {
-        SpeakerManager.getInstance()
+        const instance = SpeakerManager.getInstance()
+        // Initialize the file-based diarization tracker (no API calls). Safe to
+        // call more than once — getInstance() is a singleton.
+        instance.diarizationTracker = DiarizationTracker.getInstance()
+    }
+
+    /**
+     * Finalize diarization tracking when the meeting ends. Hands the FINAL
+     * roster to the tracker so any segment written while a participant was
+     * still unnamed ("Unknown") gets repaired before the artifact is closed:
+     * the live path can only ever fix the segment that is still open; by the
+     * end of the meeting we know every name we are ever going to know.
+     */
+    public static async finalize(): Promise<void> {
+        const instance = SpeakerManager.getInstance()
+        if (!instance.diarizationTracker) {
+            return
+        }
+        const lastTimestamp = Date.now()
+        const meetingStartTime = MeetingStateMachine.instance?.getStartTime()
+        if (!meetingStartTime) {
+            return
+        }
+        await instance.diarizationTracker.end(
+            lastTimestamp,
+            meetingStartTime,
+            (deviceId) => instance.resolveDeviceForBackfill(deviceId),
+        )
+    }
+
+    /**
+     * Final name + best-effort id for a device, or undefined if the roster
+     * never named it. Keyed by device (never by name) so two participants both
+     * sitting under "Unknown" can't have one's speech handed to the other.
+     */
+    private resolveDeviceForBackfill(
+        deviceId: string,
+    ): { name: string; userId: number } | undefined {
+        const name = this.deviceNames.get(deviceId)
+        if (!name || name === UNKNOWN_SPEAKER) {
+            return undefined
+        }
+        return { name, userId: this.deviceUserIds.get(deviceId) ?? 0 }
     }
 
     public getCurrentSpeaker(): SpeakerData | null {
@@ -229,10 +281,18 @@ export class SpeakerManager {
                 const withinRosterGrace =
                     timestamp - this.firstSeenAt(user.deviceId, timestamp) <
                     ROSTER_GRACE_MS
+                // Remember the id for this device so Unknown-backfill can stamp
+                // a user_id onto segments repaired at finalize.
+                if (user.deviceId) {
+                    this.deviceUserIds.set(user.deviceId, index + 1)
+                }
                 return {
                     name: stableName,
                     id: index + 1,
                     timestamp,
+                    // Carried so the diarization tracker can repair a segment
+                    // opened before this device's name resolved.
+                    deviceId: user.deviceId,
                     isSpeaking:
                         user.isSpeaking === true &&
                         (nameResolved || !withinRosterGrace) &&
@@ -347,8 +407,18 @@ export class SpeakerManager {
         const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
         if (!activeSpeaker) return
 
+        // Meeting clock for the diarization tracker. Guarded (not early-return)
+        // so the existing transcript path is never skipped when it is 0/unset.
+        const meetingStartTime = MeetingStateMachine.instance?.getStartTime()
+
         if (activeSpeaker.name !== this.currentSpeaker?.name) {
             // Changement de speaker
+            if (meetingStartTime) {
+                this.diarizationTracker?.updateSpeaker(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
+            }
             await uploadTranscriptTask(activeSpeaker, false)
         } else if (this.currentSpeaker.isSpeaking === false) {
             // The speaker has started speaking again after a pause
@@ -356,6 +426,12 @@ export class SpeakerManager {
                 activeSpeaker.timestamp >=
                 this.currentSpeaker.timestamp + this.PAUSE_BETWEEN_SENTENCES
             ) {
+                if (meetingStartTime) {
+                    this.diarizationTracker?.updateSpeaker(
+                        activeSpeaker,
+                        meetingStartTime,
+                    )
+                }
                 await uploadTranscriptTask(activeSpeaker, false)
             }
         }
@@ -371,6 +447,10 @@ export class SpeakerManager {
                 speaker.isSpeaking === true,
         )
 
+        // Meeting clock for the diarization tracker. Guarded (not early-return)
+        // so the existing transcript path is never skipped when it is 0/unset.
+        const meetingStartTime = MeetingStateMachine.instance?.getStartTime()
+
         if (hasSpeakingCurrentSpeaker) {
             const activeSpeaker = speakers.find(
                 (speaker) => speaker.name === this.currentSpeaker!.name,
@@ -381,12 +461,24 @@ export class SpeakerManager {
                     this.currentSpeaker!.timestamp +
                         this.PAUSE_BETWEEN_SENTENCES
                 ) {
+                    if (meetingStartTime) {
+                        this.diarizationTracker?.updateSpeaker(
+                            activeSpeaker,
+                            meetingStartTime,
+                        )
+                    }
                     await uploadTranscriptTask(activeSpeaker, false)
                 }
             }
             this.currentSpeaker = activeSpeaker
         } else {
             const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
+            if (meetingStartTime) {
+                this.diarizationTracker?.updateSpeaker(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
+            }
             await uploadTranscriptTask(activeSpeaker, false)
             this.currentSpeaker = activeSpeaker
         }
