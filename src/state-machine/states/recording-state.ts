@@ -545,8 +545,13 @@ export class RecordingState extends BaseState {
         // network-audio speaker event arrived recently — a live path resolving
         // names. A genuinely dead path (no recent event) still fast-falls-back,
         // so the leading-"Unknown" regression is avoided.
+        // Meet only: this hold exists specifically for the force-native roster
+        // race. Teams/Zoom keep their never-produced fast-path unchanged — for
+        // Teams, holding a never-produced path would delay the caption/UI
+        // fallback that actually fixes its mixed-audio "Speaker N" case.
         const NATIVE_AUDIO_ALIVE_MS = 5000
         if (
+          meetingPlatform === "meet" &&
           this.consecutiveStaleCount >= threshold &&
           neverProduced &&
           dwellElapsed < minDwellMs &&

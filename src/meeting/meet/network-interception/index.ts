@@ -151,14 +151,29 @@ export async function setupForceNativeAudioPipeline(page: Page): Promise<boolean
                     return;
                 }
                 var removed = [];
-                if ("createEncodedStreams" in proto) {
-                    try { delete proto.createEncodedStreams; removed.push("createEncodedStreams"); } catch (e) {}
+                var failed = [];
+                // Record a name as removed only if the delete actually took AND the
+                // property is no longer resolvable on proto (covers non-configurable
+                // own props where delete returns false, and inherited props that
+                // survive on the prototype chain). Otherwise the native path was NOT
+                // forced and the log must say so rather than claim a false success.
+                function hide(name) {
+                    if (!(name in proto)) return;
+                    try {
+                        if (Reflect.deleteProperty(proto, name) && !(name in proto)) {
+                            removed.push(name);
+                        } else {
+                            failed.push(name);
+                        }
+                    } catch (e) {
+                        failed.push(name);
+                    }
                 }
+                hide("createEncodedStreams");
                 // webkit-prefixed variant, present on some builds.
-                if ("webkitCreateEncodedStreams" in proto) {
-                    try { delete proto.webkitCreateEncodedStreams; removed.push("webkitCreateEncodedStreams"); } catch (e) {}
-                }
-                console.log("[ForceNativeAudio] createEncodedStreams support hidden on RTCRtpReceiver.prototype (removed: " + (removed.join(", ") || "none present") + ") — forcing native WebRTC inbound-audio path for per-participant speaker attribution");
+                hide("webkitCreateEncodedStreams");
+                var msg = "[ForceNativeAudio] createEncodedStreams support on RTCRtpReceiver.prototype (removed: " + (removed.join(", ") || "none present") + (failed.length ? "; FAILED to hide: " + failed.join(", ") : "") + ") — forcing native WebRTC inbound-audio path for per-participant speaker attribution";
+                if (failed.length) { console.error(msg); } else { console.log(msg); }
             } catch (e) {
                 console.error("[ForceNativeAudio] Failed to hide createEncodedStreams:", e);
             }
