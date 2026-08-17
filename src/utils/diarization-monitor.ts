@@ -44,11 +44,19 @@ export async function checkDiarizationHealth(
 // when no segment has been produced yet — otherwise the dwell would never cover
 // the scenario it was measured against.
 //
-// Meet has no dwell: its per-participant audio levels arrive immediately, so
-// silence there really does mean the network path is dead.
+// Meet: with MEET_FORCE_NATIVE_AUDIO_PIPELINE, hiding createEncodedStreams
+// flips Meet onto the native WebRTC path so getContributingSources()/CSRC
+// finally reports per-participant tracks (source=audio). But the first audio
+// events land as (none)/"Unknown" during the initial roster race, so with a 0
+// dwell the neverProduced fast-fallback (~4s) retired the now-working native
+// path before names resolved — observed live: 3/5 bots produced named audio
+// and stayed, 2/5 fast-retired mid roster-race. A short 15s floor lets the
+// roster resolve and the first named segment open before the stale detector
+// may retire; a genuinely dead path still falls back shortly after.
 const NETWORK_MIN_DWELL_MS: Record<string, number> = {
   zoom: 45_000,
-  teams: 90_000
+  teams: 90_000,
+  meet: 15_000
 }
 
 /**

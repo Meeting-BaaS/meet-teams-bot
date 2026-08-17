@@ -12,8 +12,8 @@ describe("networkMinDwellMs", () => {
     expect(networkMinDwellMs("zoom")).toBe(45_000)
   })
 
-  it("does not delay the Meet fallback: its audio levels arrive immediately", () => {
-    expect(networkMinDwellMs("meet")).toBe(0)
+  it("gives Meet a short dwell so the force-native audio path survives the roster race", () => {
+    expect(networkMinDwellMs("meet")).toBe(15_000)
   })
 
   it("treats an unknown platform as unprotected rather than throwing", () => {
