@@ -678,14 +678,40 @@ export class RecordingState extends BaseState {
                 return
             }
 
-            this.consecutiveStaleCount++
-
             const platform = GLOBAL.get().meetingProvider.toLowerCase()
             // Never-produced = the source is dead, not flapping — use the fast
             // threshold so short meetings still get labels via the UI observer
             // instead of ending with an all-"Unknown" diarization.
             const neverProduced =
                 !DiarizationTracker.getInstance().hasEverTrackedSegment()
+
+            // Sound-gated re-arm guard for a silent open. If the path has never
+            // produced a segment AND no real audio has ever been detected, the
+            // room is simply silent — the network path is not blind, it just has
+            // nothing to attribute yet. Retiring now would strand the bot on the
+            // UI observer when speech finally starts, because the force-native
+            // Meet path only surfaces CSRC/getContributingSources while live
+            // audio is flowing and cannot re-arm after fallback (observed: bots
+            // joining an empty stage retired at ~20s, then got zero speakers
+            // when audio arrived 8 min later). Hold the path armed and keep the
+            // stale counter at zero so the fast-fallback window starts fresh
+            // once real audio arrives. Gate on GLOBAL.getSoundDetectedInMeeting()
+            // (latched true only by actual sound, never by attendee presence) so
+            // a populated-but-silent stage is held too, not just an empty one. A
+            // genuinely blind path (sound present but no segment) is unaffected:
+            // the latch is true by then, so it still retires on schedule.
+            if (neverProduced && !GLOBAL.getSoundDetectedInMeeting()) {
+                if (this.consecutiveStaleCount > 0) {
+                    this.consecutiveStaleCount = 0
+                }
+                console.log(
+                    `[DiarizationHealth] [${platform}] 🔇 Silent open — holding network path armed until first sound (stale ignored)`,
+                )
+                return
+            }
+
+            this.consecutiveStaleCount++
+
             const neverProducedThreshold =
                 platform === 'teams'
                     ? TEAMS_NEVER_PRODUCED_STALE_THRESHOLD
