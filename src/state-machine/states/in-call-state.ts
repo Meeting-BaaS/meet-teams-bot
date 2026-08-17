@@ -390,8 +390,15 @@ export class InCallState extends BaseState {
               // Per-participant native tracks are delivering frames. The path is
               // alive even during a silence window (no speaker active right now),
               // so mark it so the roster-race hold doesn't fast-fall-back while a
-              // pause coincides with the never-produced threshold.
-              GLOBAL.markNetworkAudioFrames()
+              // pause coincides with the never-produced threshold. Gate on a
+              // RECENT frame (lastFrameAgeMs): a nonzero activeTrackCount can
+              // reflect a track that delivered earlier and has since gone quiet,
+              // which would wrongly keep the liveness timestamp fresh (and could
+              // hold or re-arm a path whose frames have actually stopped).
+              const FRAME_FRESH_MS = 3000
+              if (lastFrameAgeMs != null && lastFrameAgeMs < FRAME_FRESH_MS) {
+                GLOBAL.markNetworkAudioFrames()
+              }
               console.log(
                 `[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) delivering frames)`
               )

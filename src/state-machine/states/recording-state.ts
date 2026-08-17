@@ -542,9 +542,17 @@ export class RecordingState extends BaseState {
         // real sound has been heard recently, keep the network path armed and don't
         // let this stale tick drive a retire; reset the counter so, once sound does
         // arrive, the path gets a fair fresh threshold before any fallback.
+        // Only trust the silence gate when the SoundLevelMonitor is actually
+        // running — a down monitor can never update lastRealSoundAt, so the gate
+        // would fire on every check and a genuinely dead path would never reach
+        // the UI-observer fallback. When the monitor is down we have no silence
+        // evidence, so let the fallback proceed (re-arm still recovers the path if
+        // native frames resume).
         const NEVER_PRODUCED_SOUND_GATE_MS = 10000
+        const soundMonitorActive = Boolean(SoundLevelMonitor.peekInstance()?.getIsActive())
         if (
           neverProduced &&
+          soundMonitorActive &&
           currentTime - this.lastRealSoundAt > NEVER_PRODUCED_SOUND_GATE_MS
         ) {
           this.consecutiveStaleCount = 0
