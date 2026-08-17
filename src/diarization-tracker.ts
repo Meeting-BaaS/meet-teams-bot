@@ -55,11 +55,22 @@ export class DiarizationTracker {
   private filePath: string
   private isEnded = false
   private hasTrackedAnySegment = false // True once ANY speaker segment was ever opened
+  private streamFailed = false // True once the append stream errored and was dropped
 
   private constructor(tempDir: string) {
     this.filePath = join(tempDir, "diarization.jsonl")
     // Open file stream for append-only writing (efficient for continuous logs)
     this.fileStream = createWriteStream(this.filePath, { flags: "a" })
+    // Unhandled 'error' (ENOSPC) would kill the bot mid-meeting. Degrade to
+    // memory — end() rewrites the file from allSegments.
+    this.fileStream.on("error", (error) => {
+      if (this.streamFailed) return
+      this.streamFailed = true
+      this.fileStream = null
+      console.error(
+        `[DiarizationTracker] Append stream failed (${error}) — continuing in memory; segments are rewritten from the buffer on end()`
+      )
+    })
   }
 
   public static getInstance(): DiarizationTracker {
@@ -371,7 +382,10 @@ export class DiarizationTracker {
    */
   private writeToFile(segment: DiarizationSegment): void {
     if (!this.fileStream) {
-      console.error("DiarizationTracker: File stream not initialized")
+      // Already reported once by the error handler.
+      if (!this.streamFailed) {
+        console.error("DiarizationTracker: File stream not initialized")
+      }
       return
     }
 

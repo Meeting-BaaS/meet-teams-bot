@@ -203,6 +203,35 @@ describe("DiarizationTracker recording-clock clamp", () => {
     expect(segments.every((s) => s.start_time >= 0)).toBe(true)
   })
 
+  it("survives an append-stream failure instead of taking the bot down", async () => {
+    const tracker = freshTracker()
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {})
+
+    try {
+      // With no listener Node throws 'error' as an uncaught exception and the bot
+      // dies mid-meeting. ENOSPC on the pod's ephemeral disk is the real trigger.
+      const stream = (tracker as unknown as { fileStream: NodeJS.EventEmitter | null }).fileStream
+      expect(stream).not.toBeNull()
+      const diskFull = Object.assign(new Error("no space left on device"), { code: "ENOSPC" })
+      expect(() => stream?.emit("error", diskFull)).not.toThrow()
+
+      // Segments still accumulate in memory; end() rewrites the file from them.
+      tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
+      tracker.updateSpeaker(speech("dev-b", "Jonny", 4), MEETING_START)
+
+      await tracker.end(MEETING_START + 8000, MEETING_START, () => undefined)
+
+      expect(readSegments().map((s) => s.speaker)).toEqual(["Amr El Shimy", "Jonny"])
+      // Reported once, not per speaker change.
+      const failureLogs = errorSpy.mock.calls.filter((call) =>
+        String(call[0]).includes("Append stream failed")
+      )
+      expect(failureLogs).toHaveLength(1)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
   it("drops a segment the clamp collapses to zero length", async () => {
     const tracker = freshTracker()
 
