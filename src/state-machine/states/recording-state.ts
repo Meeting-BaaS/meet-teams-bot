@@ -79,6 +79,10 @@ export class RecordingState extends BaseState {
     private isProcessing: boolean = true
     private readonly CHECK_INTERVAL = 250
     private lastSoundActivity: number = Date.now()
+    // Timestamp of the FIRST real sound in the meeting (null until it arrives).
+    // The network dwell is anchored here, not to enteredAt, so a silent open
+    // does not burn down the roster-race grace before anyone speaks.
+    private firstSoundAt: number | null = null
     private lastSoundActivityLogTime: number = 0
     private lastSoundMonitorInactiveLogTime: number = 0
     private lastNoOneJoinedPeriodLog: number = 0
@@ -316,6 +320,11 @@ export class RecordingState extends BaseState {
                 
                 // Reset the silence timer (this is the critical timer for automatic leave)
                 this.lastSoundActivity = now
+                // Anchor the network dwell to the first real sound so the
+                // roster-race grace measures audio-present time, not silence.
+                if (this.firstSoundAt === null) {
+                    this.firstSoundAt = now
+                }
             }
 
             // Continuous, evidence-based diarization health check (throttled to
@@ -739,8 +748,15 @@ export class RecordingState extends BaseState {
             // dead source is not held. The Teams caption rung clears this early
             // in the happy path — its first segment flips neverProduced and
             // recovers the health status before the floor elapses.
+            // Anchor the dwell to the first real sound, falling back to
+            // enteredAt only if no sound has been recorded yet. On a silent
+            // open the wall-clock from recording start would already exceed the
+            // dwell by the time speech begins, retiring the path ~10s into the
+            // first utterance (2 stale cycles) instead of giving the roster
+            // race its full grace window of audio-present time.
             const minDwellMs = networkMinDwellMs(platform)
-            const dwellElapsed = Date.now() - this.enteredAt
+            const dwellAnchor = this.firstSoundAt ?? this.enteredAt
+            const dwellElapsed = Date.now() - dwellAnchor
             if (dwellElapsed < minDwellMs) {
                 console.log(
                     `[DiarizationHealth] [${platform}] ⏳ Holding network path (${Math.round(dwellElapsed / 1000)}s < ${minDwellMs / 1000}s) — speaker signal may still be arriving`,
