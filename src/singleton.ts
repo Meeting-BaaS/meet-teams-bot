@@ -481,6 +481,19 @@ class Global {
     return this.hasTriggeredDiarizationFallback
   }
 
+  /**
+   * Re-arm the network diarization path after a fallback. Clears BOTH latches
+   * (fallback-triggered and interception-setup-failed) so the source arbitration
+   * in SpeakerManager flips back: network updates are processed again and the UI
+   * bridge re-mutes automatically. Only call this once the network path is
+   * demonstrably alive again (per-participant tracks delivering frames), so
+   * clearing the interception-failed latch reflects reality.
+   */
+  public rearmNetworkDiarization(): void {
+    this.hasTriggeredDiarizationFallback = false
+    this.networkInterceptionSetupFailed = false
+  }
+
   private metricsCollector: MetricsCollector | null = null
 
   public getMetricsCollector(): MetricsCollector {

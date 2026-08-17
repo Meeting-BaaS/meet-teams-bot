@@ -92,6 +92,10 @@ export class RecordingState extends BaseState {
   private hasNoOneJoinedPeriodEnded = false
   private lastDiarizationHealthCheckTime = 0
   private consecutiveStaleCount = 0
+  // How many times the network diarization path has been re-armed after a
+  // fallback this call. Capped so a pathologically flapping path can't oscillate
+  // network↔UI forever; after the cap it stays on the UI observer.
+  private diarizationRearmCount = 0
   private aloneInMeetingSince: number | null = null
   private gracePeriodStartLogged = false
   private wasInGracePeriod = false
@@ -486,6 +490,31 @@ export class RecordingState extends BaseState {
     try {
       const status = await checkDiarizationHealth(meetingStartTime, currentTime)
       logHealthStatus(status)
+
+      // Re-arm: recover a previously-retired network path once it is demonstrably
+      // alive again. Retirement is otherwise terminal (the UI observer is blind
+      // under CloakBrowser), so a bot that retired during an early quiet/roster
+      // race would name no one for the rest of the call. When per-participant
+      // tracks are delivering frames again, flip the latches back: the SpeakerManager
+      // arbitration then reprocesses network updates and re-mutes the UI bridge
+      // automatically. Meet-only (force-native path), and capped so a genuinely
+      // flapping path can't oscillate forever.
+      const REARM_FRAMES_ALIVE_MS = 6000
+      const MAX_DIARIZATION_REARMS = 3
+      if (
+        GLOBAL.get().meeting_platform === "meet" &&
+        GLOBAL.hasDiarizationFallbackTriggered() &&
+        this.diarizationRearmCount < MAX_DIARIZATION_REARMS &&
+        GLOBAL.msSinceLastNetworkAudioFrames() < REARM_FRAMES_ALIVE_MS
+      ) {
+        GLOBAL.rearmNetworkDiarization()
+        this.consecutiveStaleCount = 0
+        this.diarizationRearmCount++
+        console.log(
+          `[DiarizationHealth] [meet] 🔁 Network audio path recovered (tracks delivering frames) — re-armed network diarization (re-arm ${this.diarizationRearmCount}/${MAX_DIARIZATION_REARMS}); UI observer auto-muted`
+        )
+        return
+      }
 
       // Debouncing logic for fallback
       if (status.status === "stale") {
