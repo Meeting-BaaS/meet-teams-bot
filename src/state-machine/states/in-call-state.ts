@@ -466,7 +466,7 @@ export class InCallState extends BaseState implements NetworkFallbackController 
         // path and hand observation to the UI observer, which is proven on
         // current Meet markup.
         const MEET_AUDIO_DEAD_AFTER_MS = 45_000
-        const watchdogStart = Date.now()
+        let watchdogStart = Date.now()
         this.meetAudioEventCount = 0
         this.meetAudioWatchdog = setInterval(() => {
             void (async () => {
@@ -480,6 +480,21 @@ export class InCallState extends BaseState implements NetworkFallbackController 
                         console.log(
                             '[MeetNetworkInterceptor] ✅ Audio path alive — watchdog disarmed',
                         )
+                        return
+                    }
+                    // Sound-gated: this watchdog exists to catch the tracks=0
+                    // blindness where sound IS flowing but no audio-source event
+                    // fires. On a silent open there is simply no audio yet, so
+                    // firing here would retire a healthy native path that has
+                    // nothing to expose — and force-native CSRC cannot re-arm
+                    // after the switch to the UI observer (blind under
+                    // CloakBrowser), stranding the bot when speech finally
+                    // starts. While no real sound has been detected, keep
+                    // resetting the clock so the 45s "blind" window only measures
+                    // time WITH audio present; the path stays armed and gets a
+                    // fresh 45s once speech begins.
+                    if (!GLOBAL.getSoundDetectedInMeeting()) {
+                        watchdogStart = Date.now()
                         return
                     }
                     if (Date.now() - watchdogStart < MEET_AUDIO_DEAD_AFTER_MS) {
