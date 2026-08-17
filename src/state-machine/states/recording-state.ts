@@ -79,6 +79,12 @@ export class RecordingState extends BaseState {
   private isProcessing = true
   private readonly CHECK_INTERVAL = 250
   private lastSoundActivity: number = Date.now()
+  // Date.now() of the last time real audio energy crossed the activity threshold.
+  // Distinct from lastSoundActivity (which grace-period housekeeping also bumps in
+  // silence): this is set ONLY on genuine sound, so the never-produced fallback can
+  // tell a silent/empty stage (nothing to attribute) from an actually-failing path.
+  // 0 = no sound heard yet this meeting.
+  private lastRealSoundAt = 0
   private lastSoundActivityLogTime = 0
   private lastSoundMonitorInactiveLogTime = 0
   private lastNoOneJoinedPeriodLog = 0
@@ -308,6 +314,9 @@ export class RecordingState extends BaseState {
         // unnecessary fallback to the UI observer, which still names speakers.
         const graceMonitor = SoundLevelMonitor.peekInstance()
         const soundLevel = graceMonitor?.getCurrentSoundLevel() ?? 0
+        if (soundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+          this.lastRealSoundAt = now
+        }
         if (soundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD || !graceMonitor?.getIsActive()) {
           await this.checkDiarizationHealthThrottled(now)
         }
@@ -373,6 +382,7 @@ export class RecordingState extends BaseState {
 
         // Reset the silence timer (this is the critical timer for automatic leave)
         this.lastSoundActivity = now
+        this.lastRealSoundAt = now
 
         await this.checkDiarizationHealthThrottled(now)
       } else if (!monitor?.getIsActive()) {
@@ -493,6 +503,31 @@ export class RecordingState extends BaseState {
         console.log(
           `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? " (no segment ever produced — fast fallback)" : ""}`
         )
+
+        // Sound-gate the never-produced fast-fallback. Force-native CSRC only
+        // populates while live audio flows, so a silent/empty stage produces zero
+        // segments through no fault of the path. Retiring here strands the bot:
+        // once on the UI observer the network path can't re-arm, and under
+        // CloakBrowser that observer is blind — so when audio finally starts (seen
+        // live: first sound 8+ min after a 21s retire) the bot names no one. If no
+        // real sound has been heard recently, keep the network path armed and don't
+        // let this stale tick drive a retire; reset the counter so, once sound does
+        // arrive, the path gets a fair fresh threshold before any fallback.
+        const NEVER_PRODUCED_SOUND_GATE_MS = 10000
+        if (
+          neverProduced &&
+          currentTime - this.lastRealSoundAt > NEVER_PRODUCED_SOUND_GATE_MS
+        ) {
+          this.consecutiveStaleCount = 0
+          const quietFor =
+            this.lastRealSoundAt === 0
+              ? "no sound yet"
+              : `${Math.round((currentTime - this.lastRealSoundAt) / 1000)}s since sound`
+          console.log(
+            `[DiarizationHealth] [${meetingPlatform}] ⏸ Never produced but silent stage (${quietFor}) — keeping network path armed, not retiring to the (CloakBrowser-blind) UI observer`
+          )
+          return
+        }
 
         // dcrpc (the NetEq network speaker signal) recently decoded an active
         // speaker: the network path is alive even if the diarization file looks
