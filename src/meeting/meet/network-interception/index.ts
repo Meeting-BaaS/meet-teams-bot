@@ -311,3 +311,68 @@ export async function stopNetworkInterception(page: Page): Promise<void> {
     console.error("[NetworkInterceptor] ❌ Failed to stop network interception:", error)
   }
 }
+
+/**
+ * Force the Meet client onto its native WebRTC inbound-audio media path
+ * (port of v2 PR #301; default ON for on-prem, off-switch via env
+ * MEET_FORCE_NATIVE_AUDIO_PIPELINE=false).
+ *
+ * Must run BEFORE page.goto — like the other interception init scripts, this
+ * runs on every navigation before the Meet client's own page JS, the only
+ * point at which the feature-detection can be intercepted.
+ *
+ * Meet feature-detects RTCRtpReceiver.prototype.createEncodedStreams to pick
+ * its inbound-audio media path. When present it uses an encoded/insertable-
+ * streams path: audio is decoded by an AudioWorklet and mixed into a single
+ * MediaStreamAudioDestination track that carries no RTCRtpReceiver, so
+ * getContributingSources()-based per-participant (CSRC + audioLevel)
+ * attribution has nothing to read (observed live: tracks=0, diarization
+ * collapses to the DOM UI observer). When absent the client falls back to the
+ * native WebRTC path, where the SFU's recvonly audio tracks each expose a live
+ * RTCRtpReceiver whose getContributingSources() reports the active participant.
+ *
+ * Deleting createEncodedStreams from the receiver prototype before the client
+ * runs forces the native path so the existing CSRC sampler + __audioTrackLayer
+ * receive per-participant tracks. It leaves the datachannel/AudioWorklet
+ * fallback dormant rather than breaking it.
+ */
+export async function setupForceNativeAudioPipeline(page: Page): Promise<boolean> {
+    const script = `
+        (function() {
+            try {
+                var proto = window.RTCRtpReceiver && window.RTCRtpReceiver.prototype;
+                if (!proto) {
+                    console.error("[ForceNativeAudio] RTCRtpReceiver.prototype unavailable; cannot force native audio pipeline");
+                    return;
+                }
+                var removed = [];
+                if ("createEncodedStreams" in proto) {
+                    try { delete proto.createEncodedStreams; } catch (e) {}
+                    // Report only if the property is actually gone (delete can
+                    // return false / an inherited prop stays "in proto").
+                    if (!("createEncodedStreams" in proto)) removed.push("createEncodedStreams");
+                }
+                if ("webkitCreateEncodedStreams" in proto) {
+                    try { delete proto.webkitCreateEncodedStreams; } catch (e) {}
+                    if (!("webkitCreateEncodedStreams" in proto)) removed.push("webkitCreateEncodedStreams");
+                }
+                console.log("[ForceNativeAudio] createEncodedStreams support hidden on RTCRtpReceiver.prototype (removed: " + (removed.join(", ") || "none") + ") — forcing native WebRTC inbound-audio path for per-participant speaker attribution");
+            } catch (e) {
+                console.error("[ForceNativeAudio] Failed to hide createEncodedStreams:", e);
+            }
+        })();
+    `
+    try {
+        await page.addInitScript(script)
+        console.log(
+            '[ForceNativeAudio] ✅ Native-audio-pipeline init script injected',
+        )
+        return true
+    } catch (error) {
+        console.error(
+            '[ForceNativeAudio] ❌ Failed to inject native-audio-pipeline init script:',
+            error,
+        )
+        return false
+    }
+}
