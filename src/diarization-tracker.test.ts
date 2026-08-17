@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, type WriteStream } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DiarizationTracker } from "./diarization-tracker"
@@ -210,10 +210,13 @@ describe("DiarizationTracker recording-clock clamp", () => {
     try {
       // With no listener Node throws 'error' as an uncaught exception and the bot
       // dies mid-meeting. ENOSPC on the pod's ephemeral disk is the real trigger.
-      const stream = (tracker as unknown as { fileStream: NodeJS.EventEmitter | null }).fileStream
+      // destroy() rather than emit() so the stream really tears down.
+      const stream = (tracker as unknown as { fileStream: WriteStream | null }).fileStream
       expect(stream).not.toBeNull()
       const diskFull = Object.assign(new Error("no space left on device"), { code: "ENOSPC" })
-      expect(() => stream?.emit("error", diskFull)).not.toThrow()
+      const closed = new Promise<void>((resolve) => stream?.once("close", () => resolve()))
+      stream?.destroy(diskFull)
+      await closed
 
       // Segments still accumulate in memory; end() rewrites the file from them.
       tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
@@ -225,6 +228,32 @@ describe("DiarizationTracker recording-clock clamp", () => {
       // Reported once, not per speaker change.
       const failureLogs = errorSpy.mock.calls.filter((call) =>
         String(call[0]).includes("Append stream failed")
+      )
+      expect(failureLogs).toHaveLength(1)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it("reports a stream that fails during end() once, not from both listeners", async () => {
+    const tracker = freshTracker()
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {})
+
+    try {
+      tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
+
+      // Failure at close time: the constructor listener and closeStream's own
+      // listener both see it, and would otherwise log the same fault twice.
+      const stream = (tracker as unknown as { fileStream: WriteStream }).fileStream
+      jest.spyOn(stream, "end").mockImplementation(function (this: WriteStream) {
+        this.destroy(Object.assign(new Error("disk lost"), { code: "EIO" }))
+        return this
+      } as WriteStream["end"])
+
+      await tracker.end(MEETING_START + 5000, MEETING_START, () => undefined)
+
+      const failureLogs = errorSpy.mock.calls.filter((call) =>
+        /Append stream failed|Error closing stream/.test(String(call[0]))
       )
       expect(failureLogs).toHaveLength(1)
     } finally {

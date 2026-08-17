@@ -288,7 +288,10 @@ export class DiarizationTracker {
       stream.end()
       stream.once("finish", () => resolve())
       stream.once("error", (error) => {
-        console.error(`DiarizationTracker: Error closing stream: ${error}`)
+        // The constructor listener runs first and already reported this one.
+        if (!this.streamFailed) {
+          console.error(`DiarizationTracker: Error closing stream: ${error}`)
+        }
         resolve()
       })
     })
