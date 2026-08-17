@@ -1,5 +1,5 @@
 import type { NetworkUser } from "./meeting/meet/network-interception/types"
-import type { Participant } from "./types"
+import type { Participant, SpeakerData } from "./types"
 
 /**
  * The global speaker registry is append-only and ends up in the final payload,
@@ -20,6 +20,7 @@ function addOnce(registry: string[], name: string) {
 
 let networkInterceptionFailed = false
 let diarizationFallbackTriggered = false
+let rearmedNetworkDiarization = false
 
 jest.mock("./singleton", () => ({
   GLOBAL: {
@@ -29,7 +30,8 @@ jest.mock("./singleton", () => ({
     addSpeakerIfNotExists: (participant: Participant) =>
       addOnce(registeredSpeakers, participant.name),
     hasNetworkInterceptionSetupFailed: () => networkInterceptionFailed,
-    hasDiarizationFallbackTriggered: () => diarizationFallbackTriggered
+    hasDiarizationFallbackTriggered: () => diarizationFallbackTriggered,
+    hasRearmedNetworkDiarization: () => rearmedNetworkDiarization
   }
 }))
 
@@ -59,6 +61,12 @@ import { SpeakerManager } from "./speaker-manager"
 
 function networkUser(name: string, isSpeaking: boolean, deviceId: string): NetworkUser {
   return { name, fullName: name, isSpeaking, deviceId } as NetworkUser
+}
+
+// The observers run in the page with no id manager, so they emit the id-0
+// sentinel; reconciliation happens node-side.
+function uiSpeaker(name: string, isSpeaking: boolean): SpeakerData {
+  return { name, id: 0, timestamp: 1785941000000, isSpeaking }
 }
 
 describe("SpeakerManager network speaker registration", () => {
@@ -114,16 +122,13 @@ describe("SpeakerManager network speaker registration", () => {
  * speaker it is authoritative, unless it is later retired by the fallback.
  */
 describe("SpeakerManager UI bridge arbitration", () => {
-  function uiSpeaker(name: string, isSpeaking: boolean) {
-    return { name, id: 0, timestamp: 1785941000000, isSpeaking }
-  }
-
   beforeEach(() => {
     registeredSpeakers.length = 0
     registeredParticipants.length = 0
     params = { bot_name: "SPEAKER SEP Test", streaming_input: undefined }
     networkInterceptionFailed = false
     diarizationFallbackTriggered = false
+    rearmedNetworkDiarization = false
     ;(SpeakerManager as unknown as { instance: SpeakerManager | null }).instance = null
     jest.spyOn(console, "table").mockImplementation(() => {})
   })
@@ -175,6 +180,7 @@ describe("SpeakerManager network updates after fallback", () => {
     params = { bot_name: "SPEAKER SEP Test", streaming_input: undefined }
     networkInterceptionFailed = false
     diarizationFallbackTriggered = false
+    rearmedNetworkDiarization = false
     ;(SpeakerManager as unknown as { instance: SpeakerManager | null }).instance = null
     jest.spyOn(console, "table").mockImplementation(() => {})
   })
@@ -191,5 +197,53 @@ describe("SpeakerManager network updates after fallback", () => {
 
     expect(registeredSpeakers).toEqual([])
     expect(registeredParticipants).toEqual([])
+  })
+
+  it("re-mutes the UI bridge on re-arm, before the network path reports a speaker", async () => {
+    const manager = SpeakerManager.getInstance()
+
+    // A re-arm follows a never-produced fallback, so the network path has never
+    // reported a speaker: the bridge's own first-speaker latch is still false.
+    // Without the re-arm check both sources would commit boundaries here.
+    diarizationFallbackTriggered = true
+    await manager.handleUiBridgeUpdate([uiSpeaker("During Fallback", true)])
+    expect(registeredSpeakers).toEqual(["During Fallback"])
+
+    diarizationFallbackTriggered = false
+    networkInterceptionFailed = false
+    rearmedNetworkDiarization = true
+    await manager.handleUiBridgeUpdate([uiSpeaker("After Rearm", true)])
+
+    expect(registeredSpeakers).toEqual(["During Fallback"])
+  })
+
+  it("gives a UI speaker the id the network already assigned to that name", async () => {
+    const manager = SpeakerManager.getInstance()
+
+    // Network names Alice, so she holds a real sequential id. A fallback then
+    // hands the floor to the observer, which emits id 0 — and a re-arm hands it
+    // back. Without reconciliation Alice is two speakers in one meeting.
+    await manager.handleNetworkSpeakerUpdate([networkUser("Alice", true, "device-1")], 1785941000000)
+
+    diarizationFallbackTriggered = true
+    const captured: SpeakerData[] = []
+    jest
+      .spyOn(
+        manager as unknown as {
+          handleSpeakerUpdate: (s: SpeakerData[], src: string) => Promise<void>
+        },
+        "handleSpeakerUpdate"
+      )
+      .mockImplementation(async (speakers: SpeakerData[]) => {
+        captured.push(...speakers)
+      })
+
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    await manager.handleUiBridgeUpdate([uiSpeaker("Never Networked", true)])
+
+    expect(captured[0].id).toBe(1)
+    // Nobody the network ever named keeps the id-0 sentinel, so observer-only
+    // meetings are unchanged.
+    expect(captured[1].id).toBe(0)
   })
 })

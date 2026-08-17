@@ -24,6 +24,7 @@ class Global {
   private lastDcrpcSpeakerAt = 0 // Date.now() of the last active speaker decoded from the dcrpc datachannel (NetEq)
   private lastNetworkAudioSpeakerAt = 0 // Date.now() of the last active speaker seen on the network audio path (CSRC/getContributingSources — force-native)
   private lastNetworkAudioFramesAt = 0 // Date.now() of the last health check reporting per-participant tracks delivering frames (path alive even during silence)
+  private rearmedNetworkDiarization = false // Track if the network path was ever re-armed after a fallback
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -492,6 +493,18 @@ class Global {
   public rearmNetworkDiarization(): void {
     this.hasTriggeredDiarizationFallback = false
     this.networkInterceptionSetupFailed = false
+    this.rearmedNetworkDiarization = true
+  }
+
+  /**
+   * True once the network path has been re-armed at least this call. The UI
+   * bridge mutes on it: a re-arm usually follows a never-produced fallback, so
+   * the network path has never reported a speaker and the bridge's own
+   * first-speaker latch is still false — without this both sources would commit
+   * speaker boundaries until the first network speaker arrives.
+   */
+  public hasRearmedNetworkDiarization(): boolean {
+    return this.rearmedNetworkDiarization
   }
 
   private metricsCollector: MetricsCollector | null = null
