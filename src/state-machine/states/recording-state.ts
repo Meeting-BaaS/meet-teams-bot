@@ -549,13 +549,24 @@ export class RecordingState extends BaseState {
         // race. Teams/Zoom keep their never-produced fast-path unchanged — for
         // Teams, holding a never-produced path would delay the caption/UI
         // fallback that actually fixes its mixed-audio "Speaker N" case.
-        const NATIVE_AUDIO_ALIVE_MS = 5000
+        // Liveness = a recent active speaker OR per-participant tracks recently
+        // delivering frames. The frames signal is what covers a silence window:
+        // observed live (bot 98b89959) the native tracks came alive ~0.1s before
+        // the never-produced threshold fired during a "speaking=0" moment, so the
+        // speaker-only signal was Infinity and the path was wrongly retired. The
+        // frames window is wider than the speaker one because the health check
+        // that sets it is periodic (can gap several seconds between reports).
+        const NATIVE_AUDIO_SPEAKER_ALIVE_MS = 5000
+        const NATIVE_AUDIO_FRAMES_ALIVE_MS = 12000
+        const nativeAudioAlive =
+          GLOBAL.msSinceLastNetworkAudioSpeaker() < NATIVE_AUDIO_SPEAKER_ALIVE_MS ||
+          GLOBAL.msSinceLastNetworkAudioFrames() < NATIVE_AUDIO_FRAMES_ALIVE_MS
         if (
           meetingPlatform === "meet" &&
           this.consecutiveStaleCount >= threshold &&
           neverProduced &&
           dwellElapsed < minDwellMs &&
-          GLOBAL.msSinceLastNetworkAudioSpeaker() < NATIVE_AUDIO_ALIVE_MS &&
+          nativeAudioAlive &&
           !GLOBAL.hasNetworkInterceptionSetupFailed() &&
           !GLOBAL.hasDiarizationFallbackTriggered()
         ) {

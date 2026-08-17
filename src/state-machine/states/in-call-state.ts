@@ -387,6 +387,11 @@ export class InCallState extends BaseState {
                 "[NetworkInterceptor] ℹ️ Health Check: Subscribed but no audio tracks detected yet (0 tracks)"
               )
             } else {
+              // Per-participant native tracks are delivering frames. The path is
+              // alive even during a silence window (no speaker active right now),
+              // so mark it so the roster-race hold doesn't fast-fall-back while a
+              // pause coincides with the never-produced threshold.
+              GLOBAL.markNetworkAudioFrames()
               console.log(
                 `[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) delivering frames)`
               )

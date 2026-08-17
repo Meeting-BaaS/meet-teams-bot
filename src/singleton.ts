@@ -23,6 +23,7 @@ class Global {
   private hasTriggeredDiarizationFallback = false // Track if diarization fallback has been triggered
   private lastDcrpcSpeakerAt = 0 // Date.now() of the last active speaker decoded from the dcrpc datachannel (NetEq)
   private lastNetworkAudioSpeakerAt = 0 // Date.now() of the last active speaker seen on the network audio path (CSRC/getContributingSources — force-native)
+  private lastNetworkAudioFramesAt = 0 // Date.now() of the last health check reporting per-participant tracks delivering frames (path alive even during silence)
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -445,6 +446,25 @@ class Global {
   public msSinceLastNetworkAudioSpeaker(): number {
     if (this.lastNetworkAudioSpeakerAt === 0) return Number.POSITIVE_INFINITY
     return Date.now() - this.lastNetworkAudioSpeakerAt
+  }
+
+  /**
+   * Record that the network audio interceptor just reported per-participant
+   * tracks delivering frames. This is the liveness signal that survives a
+   * silence window: the native path can be alive (tracks flowing) with no
+   * speaker active at the instant the never-produced stale threshold fires.
+   */
+  public markNetworkAudioFrames(): void {
+    this.lastNetworkAudioFramesAt = Date.now()
+  }
+
+  /**
+   * Milliseconds since the network audio path last reported tracks delivering
+   * frames, or Infinity if it never has.
+   */
+  public msSinceLastNetworkAudioFrames(): number {
+    if (this.lastNetworkAudioFramesAt === 0) return Number.POSITIVE_INFINITY
+    return Date.now() - this.lastNetworkAudioFramesAt
   }
 
   /**
