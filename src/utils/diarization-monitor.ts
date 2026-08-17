@@ -41,11 +41,20 @@ export async function checkDiarizationHealth(
 // see under CloakBrowser, which is how Teams bots finished with an empty
 // diarization.jsonl and a transcript full of "Speaker 1"/"Speaker 2".
 //
-// Meet has no dwell: its per-participant audio levels arrive immediately, so
-// silence there really does mean the network path is dead.
+// Meet: with MEET_FORCE_NATIVE_AUDIO_PIPELINE, hiding createEncodedStreams flips
+// Meet onto the native WebRTC path so getContributingSources()/CSRC finally
+// reports per-participant tracks (source=audio). The first audio events land as
+// (none)/"Unknown" during the initial roster race, so with a 0 dwell the
+// neverProduced fast-fallback (~4s) retired the now-working native path before
+// names resolved — observed live: 2/5 bots fast-retired mid roster-race. This
+// floor gives the roster time to resolve. It is NOT applied unconditionally
+// during neverProduced (that would reintroduce ~30s leading-"Unknown" heads on
+// genuinely dead paths); the caller gates the neverProduced hold on a recent
+// network-audio speaker event, so only a live-but-unresolved path is held.
 const NETWORK_MIN_DWELL_MS: Record<string, number> = {
   zoom: 45_000,
-  teams: 90_000
+  teams: 90_000,
+  meet: 15_000
 }
 
 /**

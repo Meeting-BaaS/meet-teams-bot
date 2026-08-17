@@ -12,8 +12,12 @@ describe("networkMinDwellMs", () => {
     expect(networkMinDwellMs("zoom")).toBe(45_000)
   })
 
-  it("does not delay the Meet fallback: its audio levels arrive immediately", () => {
-    expect(networkMinDwellMs("meet")).toBe(0)
+  it("gives Meet a short dwell so the force-native audio path survives the roster race", () => {
+    // With MEET_FORCE_NATIVE_AUDIO_PIPELINE the native audio path emits
+    // source=audio events that are still (none)/"Unknown" until the roster
+    // resolves. The caller only holds when such an event arrived recently, so a
+    // dead path still fast-falls-back; this floor bounds the live-path hold.
+    expect(networkMinDwellMs("meet")).toBe(15_000)
   })
 
   it("treats an unknown platform as unprotected rather than throwing", () => {

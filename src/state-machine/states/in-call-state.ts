@@ -410,6 +410,16 @@ export class InCallState extends BaseState {
             GLOBAL.markDcrpcSpeaker()
           }
 
+          // Any live network speaker event (CSRC/getContributingSources on the
+          // force-native path, or dcrpc) means the network audio path is alive
+          // and resolving — even while names are still (none)/"Unknown" during
+          // the initial roster race. The stale monitor uses this to hold the
+          // path through that race instead of fast-falling-back to the UI
+          // observer; a path with no recent event is treated as genuinely dead.
+          if (networkUsers.some((u) => u.isSpeaking)) {
+            GLOBAL.markNetworkAudioSpeaker()
+          }
+
           // Confirms diarization is coming from the network path. Never log names or
           // ids here — this goes to the bot log and on to S3. Participants are
           // referred to by a stable per-meeting index instead.

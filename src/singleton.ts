@@ -22,6 +22,7 @@ class Global {
   private networkDiarizationActive = false // Track if network diarization is actually active and working
   private hasTriggeredDiarizationFallback = false // Track if diarization fallback has been triggered
   private lastDcrpcSpeakerAt = 0 // Date.now() of the last active speaker decoded from the dcrpc datachannel (NetEq)
+  private lastNetworkAudioSpeakerAt = 0 // Date.now() of the last active speaker seen on the network audio path (CSRC/getContributingSources — force-native)
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -423,6 +424,27 @@ class Global {
   public msSinceLastDcrpcSpeaker(): number {
     if (this.lastDcrpcSpeakerAt === 0) return Number.POSITIVE_INFINITY
     return Date.now() - this.lastDcrpcSpeakerAt
+  }
+
+  /**
+   * Record that the network audio path (CSRC / getContributingSources, exposed
+   * once MEET_FORCE_NATIVE_AUDIO_PIPELINE flips Meet onto the native WebRTC
+   * pipeline) just reported an active speaker — even if the name has not
+   * resolved yet. Used to tell a live-but-unresolved path (roster race) apart
+   * from a genuinely dead one so the stale monitor holds the former and
+   * fast-falls-back the latter.
+   */
+  public markNetworkAudioSpeaker(): void {
+    this.lastNetworkAudioSpeakerAt = Date.now()
+  }
+
+  /**
+   * Milliseconds since the last network-audio active speaker, or Infinity if
+   * the network audio path has never reported one.
+   */
+  public msSinceLastNetworkAudioSpeaker(): number {
+    if (this.lastNetworkAudioSpeakerAt === 0) return Number.POSITIVE_INFINITY
+    return Date.now() - this.lastNetworkAudioSpeakerAt
   }
 
   /**

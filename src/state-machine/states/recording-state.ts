@@ -535,6 +535,31 @@ export class RecordingState extends BaseState {
           return
         }
 
+        // Roster-race hold (neverProduced). With MEET_FORCE_NATIVE_AUDIO_PIPELINE
+        // the native audio path emits source=audio events that are still
+        // (none)/"Unknown" until the roster resolves, so no named segment exists
+        // yet (neverProduced) even though the path is alive. The plain dwell
+        // above is deliberately gated on !neverProduced to avoid holding a dead
+        // source (which would just produce a leading-"Unknown" run of the dwell
+        // length). Distinguish the two here: hold up to the dwell ONLY while a
+        // network-audio speaker event arrived recently — a live path resolving
+        // names. A genuinely dead path (no recent event) still fast-falls-back,
+        // so the leading-"Unknown" regression is avoided.
+        const NATIVE_AUDIO_ALIVE_MS = 5000
+        if (
+          this.consecutiveStaleCount >= threshold &&
+          neverProduced &&
+          dwellElapsed < minDwellMs &&
+          GLOBAL.msSinceLastNetworkAudioSpeaker() < NATIVE_AUDIO_ALIVE_MS &&
+          !GLOBAL.hasNetworkInterceptionSetupFailed() &&
+          !GLOBAL.hasDiarizationFallbackTriggered()
+        ) {
+          console.log(
+            `[DiarizationHealth] [${meetingPlatform}] ⏳ Holding network path through roster race (${Math.round(dwellElapsed / 1000)}s < ${minDwellMs / 1000}s) — force-native audio events still arriving, names resolving`
+          )
+          return
+        }
+
         if (
           this.consecutiveStaleCount >= threshold &&
           (meetingPlatform === "meet" ||
