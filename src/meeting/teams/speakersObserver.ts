@@ -161,8 +161,29 @@ export class TeamsSpeakersObserver {
                     let newestAt = -1
                     for (const name of knownNames) {
                         if (!name) continue
-                        const at = tail.lastIndexOf(name)
-                        if (at > newestAt) {
+                        // Unanchored substring search misattributes when one name
+                        // contains another ("Jon" inside "Jonny", which return the
+                        // same lastIndexOf and let the shorter name win on the
+                        // tie). Require a non-word character (or end of text) after
+                        // the match so an embedded name does not match, and on a
+                        // genuine tie prefer the LONGER name.
+                        let at = -1
+                        let from = tail.length
+                        while (from >= 0) {
+                            const found = tail.lastIndexOf(name, from)
+                            if (found === -1) break
+                            const after = tail.charAt(found + name.length)
+                            if (after === '' || /[^\w]/.test(after)) {
+                                at = found
+                                break
+                            }
+                            from = found - 1
+                        }
+                        if (
+                            at > newestAt ||
+                            (at === newestAt &&
+                                name.length > newestName.length)
+                        ) {
                             newestAt = at
                             newestName = name
                         }
@@ -190,11 +211,22 @@ export class TeamsSpeakersObserver {
                 // injected, nothing else enables them, and this path has to
                 // stand alone.
                 let captionsRequested = false
+                // Bound the DOM caption activation. Each pass through the More →
+                // Language and speech menu counts as an attempt BEFORE clicking,
+                // and attempts are spaced out, so a client build where the
+                // control never appears does not click through the menu forever.
+                let captionAttempts = 0
+                let lastCaptionAttemptAt = 0
+                const CAPTION_MAX_ATTEMPTS = 8
+                const CAPTION_RETRY_MS = 3000
                 function ensureCaptionsOn(): void {
                     if (captionsRequested) return
                     try {
                         const documentRoot = getDocumentRoot()
-                        // Already on — the renderer is mounted.
+                        // Latch ONLY when the renderer is actually mounted —
+                        // captions are truly flowing. Latching on a click (below)
+                        // would kill the fallback whenever the click did not
+                        // mount the renderer, which Teams does not guarantee.
                         if (
                             documentRoot.querySelector(
                                 '[data-tid="closed-caption-renderer-wrapper"]',
@@ -203,6 +235,16 @@ export class TeamsSpeakersObserver {
                             captionsRequested = true
                             return
                         }
+                        // Bound the clicking: give up after the cap, and space
+                        // attempts out so we do not walk the menu every pass.
+                        if (captionAttempts >= CAPTION_MAX_ATTEMPTS) return
+                        if (
+                            Date.now() - lastCaptionAttemptAt <
+                            CAPTION_RETRY_MS
+                        )
+                            return
+                        captionAttempts++
+                        lastCaptionAttemptAt = Date.now()
                         // The caption toggle is not on the toolbar — it lives
                         // under More → Language and speech, so the submenu has to
                         // be opened first and the button looked for on a later
@@ -219,9 +261,11 @@ export class TeamsSpeakersObserver {
                             )
                         if (button instanceof HTMLElement) {
                             button.click()
-                            captionsRequested = true
+                            // Do NOT latch captionsRequested here: the click may
+                            // not mount the renderer. The renderer check above
+                            // latches once captions actually flow.
                             console.log(
-                                '[Teams-Browser] live captions enabled via UI control',
+                                '[Teams-Browser] live captions toggle clicked (awaiting renderer)',
                             )
                             return
                         }

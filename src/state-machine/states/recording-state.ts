@@ -19,7 +19,7 @@ import { SpeakerManager } from '../../speaker-manager'
 import { uploadTranscriptTask } from '../../uploadTranscripts'
 import { DiarizationTracker } from '../../diarization-tracker'
 import {
-    checkDiarizationHealth,
+    checkDiarizationHealth as checkTrackerDiarizationHealth,
     logHealthStatus,
     networkMinDwellMs,
 } from '../../utils/diarization-monitor'
@@ -67,8 +67,11 @@ const NEVER_PRODUCED_STALE_THRESHOLD = 2
 // timeline from those. Captions take a few seconds to enable and return their
 // first result, so at the 2-event threshold the UI fallback would retire the
 // network path before the caption rung ever reported. Four events (~20s)
-// leaves room for captions to produce; the first caption segment clears
-// neverProduced and the 90s dwell protection takes over from there.
+// leaves room for captions to produce. The threshold only decides WHEN the
+// retirement is CONSIDERED; the 90s Teams dwell floor (applied below even when
+// neverProduced) is what actually protects the still-arriving dsh path, and a
+// caption segment landing first flips neverProduced and recovers health before
+// the floor elapses.
 const TEAMS_NEVER_PRODUCED_STALE_THRESHOLD = 4
 
 export class RecordingState extends BaseState {
@@ -658,7 +661,7 @@ export class RecordingState extends BaseState {
         }
 
         try {
-            const status = await checkDiarizationHealth(
+            const status = await checkTrackerDiarizationHealth(
                 meetingStartTime,
                 currentTime,
             )
@@ -700,13 +703,19 @@ export class RecordingState extends BaseState {
             }
 
             // The dwell hold protects a slow-but-alive network path while its
-            // first speaker signal is still arriving (Teams dsh trickles in;
-            // third entry only by ~90s). It does NOT apply when the path never
-            // produced a segment despite sound — holding a dead source just
-            // converts the wait into a guaranteed leading-"Unknown" run.
+            // first speaker signal is still arriving. It matters MOST in the
+            // neverProduced case: the Teams dsh trickles in (third entry only by
+            // ~90s) so at the ~20s neverProduced threshold zero segments exist
+            // yet — exactly the scenario the 90s dwell was measured against.
+            // Applying the floor unconditionally on platforms that DECLARE one
+            // (Teams 90s, Zoom 45s) keeps their slow paths alive; platforms with
+            // no declared dwell (Meet: 0) still fall back fast, so a genuinely
+            // dead source is not held. The Teams caption rung clears this early
+            // in the happy path — its first segment flips neverProduced and
+            // recovers the health status before the floor elapses.
             const minDwellMs = networkMinDwellMs(platform)
             const dwellElapsed = Date.now() - this.enteredAt
-            if (!neverProduced && dwellElapsed < minDwellMs) {
+            if (dwellElapsed < minDwellMs) {
                 console.log(
                     `[DiarizationHealth] [${platform}] ⏳ Holding network path (${Math.round(dwellElapsed / 1000)}s < ${minDwellMs / 1000}s) — speaker signal may still be arriving`,
                 )

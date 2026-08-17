@@ -1,5 +1,5 @@
 import { createWriteStream, type WriteStream } from "fs"
-import { writeFile } from "fs/promises"
+import { rename, writeFile } from "fs/promises"
 import { join } from "path"
 import { type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
@@ -55,11 +55,29 @@ export class DiarizationTracker {
   private filePath: string
   private isEnded = false
   private hasTrackedAnySegment = false // True once ANY speaker segment was ever opened
+  // Meeting-relative seconds of the last time the OPEN segment saw genuine
+  // speaker activity. A continuous same-speaker utterance does not reopen a
+  // segment (SpeakerManager only calls updateSpeaker on a speaker change or
+  // resumed speech), so without a separate activity clock a valid utterance
+  // that runs past 5min would be misreported as "stale" and wrongly retire the
+  // network path. handleNoSpeakers stops refreshing this, so an ABANDONED open
+  // segment still ages into "stale" and the post-stop fallback is preserved.
+  private lastActivitySeconds: number | null = null
 
   private constructor(tempDir: string) {
     this.filePath = join(tempDir, "diarization.jsonl")
     // Open file stream for append-only writing (efficient for continuous logs)
     this.fileStream = createWriteStream(this.filePath, { flags: "a" })
+    // A WriteStream is an EventEmitter: an unhandled "error" event throws and
+    // kills the process mid-meeting (e.g. the temp dir becomes unwritable).
+    // closeStream() only attaches a listener at finalize time, so without this
+    // the whole meeting window is unprotected. The append log is best-effort
+    // (end() rewrites the file from the in-memory buffer), so log and drop the
+    // stream instead of crashing.
+    this.fileStream.on("error", (error) => {
+      console.error(`DiarizationTracker: stream error on ${this.filePath}: ${error}`)
+      this.fileStream = null
+    })
   }
 
   public static getInstance(): DiarizationTracker {
@@ -132,7 +150,30 @@ export class DiarizationTracker {
       userId: speaker.id,
       deviceId: speaker.deviceId
     }
+    this.lastActivitySeconds = relativeTime
     this.hasTrackedAnySegment = true
+  }
+
+  /**
+   * Refresh the open segment's activity clock on CONTINUED same-speaker speech.
+   * SpeakerManager reopens a segment (updateSpeaker) only on a speaker change or
+   * resumed speech, so an uninterrupted utterance by one participant never calls
+   * updateSpeaker again; without this the open segment would look stale after a
+   * few minutes even while that person is still talking. No-op when nothing is
+   * open or the activity is for a different speaker, so handleNoSpeakers (which
+   * stops calling this) still lets an abandoned open segment age into "stale".
+   */
+  public noteActivity(speaker: SpeakerData, meetingStartTime: number): void {
+    if (this.isEnded || !this.currentSegment) {
+      return
+    }
+    if (speaker.name !== this.currentSegment.speaker) {
+      return
+    }
+    const relativeTime = Math.max(0, (speaker.timestamp - meetingStartTime) / 1000)
+    if (this.lastActivitySeconds === null || relativeTime > this.lastActivitySeconds) {
+      this.lastActivitySeconds = relativeTime
+    }
   }
 
   /**
@@ -215,15 +256,21 @@ export class DiarizationTracker {
     // Close the final segment into the buffer so it can be repaired too — it is
     // frequently the one that opened before the roster landed.
     if (this.currentSegment) {
-      this.allSegments.push({
-        segment: {
-          speaker: this.currentSegment.speaker,
-          start_time: this.currentSegment.startTime,
-          end_time: Math.max(0, (lastTimestamp - meetingStartTime) / 1000),
-          user_id: this.currentSegment.userId
-        },
-        deviceId: this.currentSegment.deviceId
-      })
+      const endTime = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
+      // Same rule as updateSpeaker: a segment that spans no audio is noise. An
+      // API stop at/before meetingStartTime clamps end_time to 0 while
+      // start_time is also 0, so guard against writing a zero-duration segment.
+      if (endTime > this.currentSegment.startTime) {
+        this.allSegments.push({
+          segment: {
+            speaker: this.currentSegment.speaker,
+            start_time: this.currentSegment.startTime,
+            end_time: endTime,
+            user_id: this.currentSegment.userId
+          },
+          deviceId: this.currentSegment.deviceId
+        })
+      }
       this.currentSegment = null
     }
 
@@ -250,7 +297,12 @@ export class DiarizationTracker {
     // contain names that were still unresolved at the time they were flushed.
     try {
       const body = this.allSegments.map((e) => `${JSON.stringify(e.segment)}\n`).join("")
-      await writeFile(this.filePath, body)
+      // Write to a sibling temp file and rename it. `rename` is atomic on the
+      // same filesystem, so a crash inside this window leaves the file as either
+      // the intact append log or the fully-repaired body — never truncated.
+      const tempPath = `${this.filePath}.tmp`
+      await writeFile(tempPath, body)
+      await rename(tempPath, this.filePath)
     } catch (error) {
       console.error(`DiarizationTracker: Failed to rewrite ${this.filePath}: ${error}`)
     }
@@ -317,10 +369,15 @@ export class DiarizationTracker {
     let segmentCount60s = 0
     let segmentCount5min = 0
 
-    // Check current active segment
+    // Check current active segment. Age it by the last time it saw genuine
+    // speaker activity, not by when it opened: an open segment is not proof of
+    // ongoing speech (handleNoSpeakers leaves it open after the path goes
+    // quiet), so a long-running utterance stays "recent" while it is still
+    // active but a segment abandoned mid-flight ages into "stale" as intended.
     if (this.currentSegment) {
       hasActive = true
-      const segmentAge = currentTimeSeconds - this.currentSegment.startTime
+      const activityRef = this.lastActivitySeconds ?? this.currentSegment.startTime
+      const segmentAge = currentTimeSeconds - activityRef
 
       if (segmentAge < window60s) {
         hasRecent60s = true

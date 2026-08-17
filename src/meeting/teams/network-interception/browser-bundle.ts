@@ -695,6 +695,12 @@ export function teamsBrowserInterceptionLogic() {
         enableClosedCaptionsViaDom()
         return
       }
+      // Count the attempt BEFORE the activation action. A synchronous throw
+      // from startClosedCaption() (or a later async rejection) otherwise
+      // consumes no attempt and never advances the retry clock, so the gate
+      // repeats for the whole meeting and CAPTION_MAX_ATTEMPTS never binds.
+      captionAttempts++
+      lastCaptionAttemptAt = Date.now()
       try {
         // Deliberately NOT calling setClosedCaptionsLanguage. Forcing a language
         // overrides the tenant's own default, and on a non-English tenant that
@@ -705,8 +711,6 @@ export function teamsBrowserInterceptionLogic() {
         // so recognition quality does not affect speaker names — only whether
         // results arrive.)
         const result = call.startClosedCaption()
-        captionAttempts++
-        lastCaptionAttemptAt = Date.now()
         debug("📝 live captions requested (diarization fallback)")
         if (result && typeof result.catch === "function") {
           // A rejection means this attempt failed outright; the gate retries.
@@ -723,6 +727,11 @@ export function teamsBrowserInterceptionLogic() {
     // client build: click the caption control itself. The button is only present
     // once the meeting UI has rendered, so this is retried by the caption gate.
     function enableClosedCaptionsViaDom(): void {
+      // Count the attempt regardless of outcome: a missing/unclickable control
+      // or a throw must still consume an attempt and advance the retry clock, or
+      // the gate never gives up and never spaces its retries.
+      captionAttempts++
+      lastCaptionAttemptAt = Date.now()
       try {
         const button =
           document.querySelector("#closed-captions-button") ||
@@ -730,8 +739,6 @@ export function teamsBrowserInterceptionLogic() {
           document.querySelector('[data-tid="call-captions-button"]')
         if (!(button instanceof HTMLElement)) return
         button.click()
-        captionAttempts++
-        lastCaptionAttemptAt = Date.now()
       } catch {
         // control not clickable — leave captions off rather than break the call
       }

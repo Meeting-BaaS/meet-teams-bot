@@ -196,7 +196,31 @@ export class SpeakerManager {
             lastTimestamp,
             meetingStartTime,
             (deviceId) => instance.resolveDeviceForBackfill(deviceId),
+            (userId) => instance.resolveUserIdForBackfill(userId),
         )
+    }
+
+    /**
+     * Final name for a stable user id, for the tracker's second repair pass
+     * (churning-SSRC segments whose deviceId never mapped but whose user id
+     * did resolve while the participant spoke).
+     *
+     * Refuses ambiguous ids: while a name is unresolved,
+     * generateStableUserId(UNKNOWN_SPEAKER, undefined) hashes identically for
+     * every unnamed participant, so several devices transiently share one
+     * sequential id. Returning a name for such an id could hand one
+     * participant's speech to another, so only resolve an id owned by exactly
+     * one device with a real (non-"Unknown") name.
+     */
+    private resolveUserIdForBackfill(userId: number): string | undefined {
+        const devices = [...this.deviceUserIds.entries()]
+            .filter(([, id]) => id === userId)
+            .map(([deviceId]) => deviceId)
+        if (devices.length !== 1) {
+            return undefined
+        }
+        const name = this.deviceNames.get(devices[0])
+        return name && name !== UNKNOWN_SPEAKER ? name : undefined
     }
 
     /**
@@ -451,6 +475,17 @@ export class SpeakerManager {
                 }
                 await uploadTranscriptTask(activeSpeaker, false)
             }
+        } else {
+            // Same speaker, still talking without a pause — no segment reopen,
+            // so refresh the open segment's activity clock instead. Otherwise a
+            // long single-speaker utterance (which never re-calls updateSpeaker)
+            // would age into "stale" and wrongly retire the network path.
+            if (meetingStartTime) {
+                this.diarizationTracker?.noteActivity(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
+            }
         }
         this.currentSpeaker = activeSpeaker
     }
@@ -486,12 +521,37 @@ export class SpeakerManager {
                     }
                     await uploadTranscriptTask(activeSpeaker, false)
                 }
+            } else if (meetingStartTime && activeSpeaker) {
+                // Current speaker still talking amid overlap — keep the open
+                // segment's activity clock fresh without reopening it.
+                this.diarizationTracker?.noteActivity(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
             }
             this.currentSpeaker = activeSpeaker
         } else {
             const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
-            if (meetingStartTime) {
+            // Guard the tracker update with the same speaker-change check
+            // handleSingleSpeaker uses. Without it, an unconditional
+            // updateSpeaker on every ~250ms network payload closes and reopens
+            // a segment each poll; when two participants overlap the selected
+            // activeSpeaker alternates between them, fragmenting one span of
+            // speech into a run of sub-second segments and inflating
+            // segmentCount60s so a degraded path is masked as "optimal".
+            if (
+                meetingStartTime &&
+                activeSpeaker &&
+                activeSpeaker.name !== this.currentSpeaker?.name
+            ) {
                 this.diarizationTracker?.updateSpeaker(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
+            } else if (meetingStartTime && activeSpeaker) {
+                // Same speaker still talking — refresh the open segment's
+                // activity clock so a long utterance is not misread as stale.
+                this.diarizationTracker?.noteActivity(
                     activeSpeaker,
                     meetingStartTime,
                 )

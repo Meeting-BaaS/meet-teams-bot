@@ -164,6 +164,56 @@ describe("DiarizationTracker backfill", () => {
   })
 })
 
+describe("DiarizationTracker health activity clock", () => {
+  it("keeps a long continuous single-speaker utterance out of 'stale'", () => {
+    const tracker = freshTracker()
+
+    // One participant opens a segment and keeps talking. SpeakerManager does
+    // NOT reopen a segment for continued same-speaker speech — it calls
+    // noteActivity — so without the activity clock this open segment would look
+    // stale after 5min even though the person is still speaking.
+    tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
+    tracker.noteActivity(speech("dev-a", "Amr El Shimy", 315), MEETING_START)
+
+    const status = tracker.hasActiveOrRecentSegment(
+      MEETING_START,
+      MEETING_START + 320_000
+    )
+    expect(status.hasActive).toBe(true)
+    expect(status.status).not.toBe("stale")
+  })
+
+  it("lets an abandoned open segment age into 'stale' (no activity refresh)", () => {
+    const tracker = freshTracker()
+
+    // Segment opened once, then the path went quiet — handleNoSpeakers leaves it
+    // open but stops refreshing activity. It must still go stale so the network
+    // path can be retired after it stops producing.
+    tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
+
+    const status = tracker.hasActiveOrRecentSegment(
+      MEETING_START,
+      MEETING_START + 320_000
+    )
+    expect(status.status).toBe("stale")
+  })
+
+  it("noteActivity ignores activity attributed to a different speaker", () => {
+    const tracker = freshTracker()
+
+    tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
+    // A note for someone who is not the open speaker must not keep the segment
+    // fresh — attribution stays per-speaker.
+    tracker.noteActivity(speech("dev-b", "Jonny", 315), MEETING_START)
+
+    const status = tracker.hasActiveOrRecentSegment(
+      MEETING_START,
+      MEETING_START + 320_000
+    )
+    expect(status.status).toBe("stale")
+  })
+})
+
 describe("DiarizationTracker first-segment telemetry", () => {
   it("logs the first-segment latency exactly once", async () => {
     const tracker = freshTracker()

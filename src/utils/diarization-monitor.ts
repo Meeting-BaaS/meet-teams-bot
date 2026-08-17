@@ -39,7 +39,10 @@ export async function checkDiarizationHealth(
 // by ~90s. Retiring the path at ~10s hands the meeting to a UI observer that
 // delivers speakers through an exposeFunction binding the page cannot always
 // see under CloakBrowser, which is how Teams bots finished with an empty
-// diarization.jsonl and a transcript full of "Speaker 1"/"Speaker 2".
+// diarization.jsonl and a transcript full of "Speaker 1"/"Speaker 2". Because
+// that trickle IS the neverProduced case, the caller applies this floor even
+// when no segment has been produced yet — otherwise the dwell would never cover
+// the scenario it was measured against.
 //
 // Meet has no dwell: its per-participant audio levels arrive immediately, so
 // silence there really does mean the network path is dead.

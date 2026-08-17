@@ -906,14 +906,35 @@ export function browserInterceptionLogic(schema: any[]) {
       try {
         const freshSources: any[] = []
         const now = performance.now()
+        // An empty array from a FRESH receiver is Meet reporting silence, which
+        // is different from having NO fresh receiver at all (state unknown, hold
+        // the last speaker). Track whether any fresh receiver was seen so genuine
+        // silence still clears the speaker below.
+        let sawFreshReceiver = false
         for (const [receiver, sources] of receiverManager.receiverMap) {
           const stamp = receiverManager.sourceStamp.get(receiver)
-          if (stamp === undefined || now - stamp >= 2000) continue
+          if (stamp === undefined || now - stamp >= 2000) {
+            // A receiver not mirrored for well past the 2s freshness window is
+            // retired (Meet renegotiates receivers over a long meeting). Drop it
+            // from every map so they stay bounded and the loop stops walking
+            // dead receivers — otherwise both memory and per-tick work grow for
+            // the whole session.
+            if (stamp === undefined || now - stamp >= 60000) {
+              receiverManager.receiverMap.delete(receiver)
+              receiverManager.sourceStamp.delete(receiver)
+              receiverManager.receiverToTrackMap.delete(receiver)
+            }
+            continue
+          }
+          sawFreshReceiver = true
           for (const s of sources || []) {
             if (s) freshSources.push(s)
           }
         }
-        if (freshSources.length === 0) return
+        // No fresh receiver at all: cannot tell speaking from silent, so hold
+        // the current speaker state. (When a fresh receiver DID report an empty
+        // list that is real silence and must fall through to the clear below.)
+        if (!sawFreshReceiver) return
 
         const usersWithAudioLevels = getUsersWithAudio(freshSources, userManager)
         const loudestSpeaker = usersWithAudioLevels[0]

@@ -97,6 +97,33 @@ describe("decodeDcrpcFrame", () => {
     expect(result).toEqual([{ deviceId: "device-ccc", speaking: true }])
   })
 
+  it("skips a gzip blob whose inflate returns undefined instead of throwing", () => {
+    // pako.inflate can return undefined (not throw) for a truncated payload that
+    // still carries a valid gzip header. The decoder guards that falsy result;
+    // this pins the guard so a later refactor cannot drop it silently.
+    const frame = buildStateFrame([participant("device-eee", true)])
+    const inflate = jest.fn(() => undefined)
+
+    const result = decodeDcrpcFrame(
+      frame,
+      inflate as unknown as (b: Uint8Array) => Uint8Array
+    )
+
+    expect(inflate).toHaveBeenCalled()
+    expect(result).toEqual([])
+  })
+
+  it("skips a gzip blob whose inflate throws", () => {
+    const frame = buildStateFrame([participant("device-fff", true)])
+    const inflate = jest.fn(() => {
+      throw new Error("incorrect header check")
+    })
+
+    expect(
+      decodeDcrpcFrame(frame, inflate as unknown as (b: Uint8Array) => Uint8Array)
+    ).toEqual([])
+  })
+
   it("finds participants even with an extra wrapper level (defensive walk)", () => {
     // field 2 { field 2 { field 2 { field 4(participant) } } } — one level deeper
     // than the common layout, to prove the walk is not depth-locked.
