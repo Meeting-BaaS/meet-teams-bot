@@ -1,6 +1,5 @@
 import { DiarizationTracker } from "../../diarization-tracker"
 import { Events } from "../../events"
-import { stopNetworkInterception } from "../../meeting/meet/network-interception"
 import { stopTeamsNetworkInterception } from "../../meeting/teams/network-interception"
 import { stopZoomNetworkInterception } from "../../meeting/zoom/network-interception"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
@@ -661,14 +660,21 @@ export class RecordingState extends BaseState {
             `[DiarizationHealth] [${meetingPlatform}] 🔄 Triggering fallback to UI-based diarization after ${this.consecutiveStaleCount} consecutive stale events`
           )
 
-          // Stop network interception to prevent duplicate logs
+          // Stop network interception to prevent duplicate logs.
+          // EXCEPT Meet: leave the interceptor running so it keeps reporting
+          // per-participant track health/CSRC. The re-arm path (below, in the
+          // health loop) needs that live signal to detect the native path
+          // recovering; __stopNetworkInterception aborts the tracks and clears
+          // the CSRC sampler with no restart, which would leave a re-arm muting
+          // the UI observer while network stays permanently dead (blind). Double
+          // logging/commit is already prevented node-side: handleNetworkSpeakerUpdate
+          // drops network updates while the fallback latch is set, so a running-but-
+          // ignored interceptor is harmless until re-arm flips the latch back.
           try {
             if (meetingPlatform === "teams") {
               await stopTeamsNetworkInterception(this.context.playwrightPage)
             } else if (meetingPlatform === "zoom") {
               await stopZoomNetworkInterception(this.context.playwrightPage)
-            } else {
-              await stopNetworkInterception(this.context.playwrightPage)
             }
           } catch (error) {
             console.error(
