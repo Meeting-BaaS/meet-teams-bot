@@ -49,7 +49,9 @@ export function resolveSpeakingSet(evidence: SpeakerTimelineEvidence): SpeakerTi
     return { deviceIds: evidence.captionAtInstant, rung: "caption-interval" }
   }
 
-  if (evidence.dominant && !evidence.captionExpiry && evidence.dominantFresh) {
+  // Reached on expiry too: a live dsh is the right answer when an utterance ends,
+  // and emitting silence there would cut the speaker off mid-turn.
+  if (evidence.dominant && evidence.dominantFresh) {
     return { deviceIds: [evidence.dominant], rung: "dsh-fresh" }
   }
 

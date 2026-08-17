@@ -754,7 +754,10 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
           clearInterval(captionExpiryTimer)
           return
         }
-        if (csrcAvailable || hasFreshDominantSpeaker()) return
+        // Not gated on dsh freshness: once a caption interval has been selected,
+        // only this update ends it, and resolveSpeakingSet hands the floor back to
+        // a live dsh rather than emitting silence.
+        if (csrcAvailable) return
         // Speech having stopped can only be seen on the wall clock: the audio
         // clock says nothing once captions go quiet. So the TRIGGER is "no
         // caption result for CAPTION_SILENCE_MS", while the resulting update is

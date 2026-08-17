@@ -38,8 +38,9 @@ describe("resolveSpeakingSet — the hybrid dsh + caption session", () => {
     expect(decision).toEqual({ deviceIds: ["dev-a"], rung: "dsh-fresh" })
   })
 
-  it("emits silence on the caption expiry update rather than re-selecting either source", () => {
-    // Falling through to either source would swallow the silence.
+  it("hands the floor back to a live dsh when the caption utterance expires", () => {
+    // Only the expiry update ends a selected caption interval; emitting silence
+    // here would cut off a speaker dsh still reports as active.
     const decision = resolveSpeakingSet(
       evidence({
         captionAtInstant: ["dev-b"],
@@ -48,6 +49,14 @@ describe("resolveSpeakingSet — the hybrid dsh + caption session", () => {
         captionsEnabled: true,
         captionExpiry: true
       })
+    )
+
+    expect(decision).toEqual({ deviceIds: ["dev-a"], rung: "dsh-fresh" })
+  })
+
+  it("emits silence on expiry when dsh is not live either", () => {
+    const decision = resolveSpeakingSet(
+      evidence({ dominant: "dev-a", captionsEnabled: true, captionExpiry: true })
     )
 
     expect(decision).toEqual({ deviceIds: [], rung: "silence" })
