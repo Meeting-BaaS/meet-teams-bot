@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import { Api } from "../api/methods"
 import { brandingReady } from "../branding"
+import { envVars } from "../config/env-vars"
 import { listenPage } from "../browser/page-logger"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
@@ -115,9 +116,22 @@ export class MeetProvider implements MeetingProviderInterface {
       // Setup network interception scripts BEFORE navigation
       // addInitScript must be called before page.goto() to work properly
       try {
-        const { setupNetworkInterceptionScripts, setupBotDetectionRoute } = await import(
-          "./meet/network-interception"
-        )
+        const {
+          setupNetworkInterceptionScripts,
+          setupBotDetectionRoute,
+          setupForceNativeAudioPipeline
+        } = await import("./meet/network-interception")
+
+        // A/B experiment (Meet only, default OFF): hide createEncodedStreams so
+        // the Meet client picks its native WebRTC inbound-audio path, exposing
+        // the per-participant recvonly tracks that getContributingSources-based
+        // speaker attribution needs. Injected BEFORE page.goto (same timing as
+        // the network interceptor). Flag OFF = nothing injected = byte-identical
+        // current behaviour.
+        if (envVars.MEET_FORCE_NATIVE_AUDIO_PIPELINE) {
+          await setupForceNativeAudioPipeline(page)
+        }
+
         const success = await setupNetworkInterceptionScripts(page)
         if (success) {
           console.log("[Meet] ✅ Network interception scripts set up")
