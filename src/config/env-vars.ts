@@ -92,24 +92,7 @@ export const envVars = cleanEnv(process.env, {
   // source (total-budget math lives there).
   IN_PROCESS_RETRY_MAX: num({ default: 2 }),
   POD_NAME: str({ default: "" }),
-  NODE_NAME: str({ default: "" }),
-  // A/B experiment (Meet only, default OFF). When true, an init script deletes
-  // RTCRtpReceiver.prototype.createEncodedStreams (and the webkit-prefixed
-  // variant) BEFORE the Meet client's page JS runs. The Meet client feature-
-  // detects createEncodedStreams to decide which inbound-audio media path to
-  // use: when present it selects an encoded/insertable-streams path (audio is
-  // decoded by an AudioWorklet and mixed into a single MediaStreamAudioDestination
-  // track with no RTCRtpReceiver, so getContributingSources() per-participant
-  // attribution is unavailable); when absent it falls back to the native WebRTC
-  // media path, where the SFU's small fixed pool of recvonly audio tracks each
-  // carry a live RTCRtpReceiver whose getContributingSources() exposes the
-  // active participant's CSRC + audioLevel. Prod telemetry shows ~54% of Meet
-  // bots produce zero network diarization segments and collapse to the DOM UI
-  // observer (single-identity). Hiding createEncodedStreams forces the native
-  // path so the existing getContributingSources/CSRC attribution receives
-  // per-participant tracks. OFF = byte-identical current behaviour (no init
-  // script injected).
-  MEET_FORCE_NATIVE_AUDIO_PIPELINE: bool({ default: false })
+  NODE_NAME: str({ default: "" })
 })
 
 export type EnvVars = typeof envVars

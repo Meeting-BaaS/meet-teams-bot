@@ -41,8 +41,7 @@ export async function checkDiarizationHealth(
 // see under CloakBrowser, which is how Teams bots finished with an empty
 // diarization.jsonl and a transcript full of "Speaker 1"/"Speaker 2".
 //
-// Meet: with MEET_FORCE_NATIVE_AUDIO_PIPELINE, hiding createEncodedStreams flips
-// Meet onto the native WebRTC path so getContributingSources()/CSRC finally
+// Meet: hiding createEncodedStreams flips Meet onto the native WebRTC path so getContributingSources()/CSRC finally
 // reports per-participant tracks (source=audio). The first audio events land as
 // (none)/"Unknown" during the initial roster race, so with a 0 dwell the
 // neverProduced fast-fallback (~4s) retired the now-working native path before

@@ -1,7 +1,6 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import { Api } from "../api/methods"
 import { brandingReady } from "../branding"
-import { envVars } from "../config/env-vars"
 import { listenPage } from "../browser/page-logger"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
@@ -122,15 +121,13 @@ export class MeetProvider implements MeetingProviderInterface {
           setupForceNativeAudioPipeline
         } = await import("./meet/network-interception")
 
-        // A/B experiment (Meet only, default OFF): hide createEncodedStreams so
-        // the Meet client picks its native WebRTC inbound-audio path, exposing
-        // the per-participant recvonly tracks that getContributingSources-based
-        // speaker attribution needs. Injected BEFORE page.goto (same timing as
-        // the network interceptor). Flag OFF = nothing injected = byte-identical
-        // current behaviour.
-        if (envVars.MEET_FORCE_NATIVE_AUDIO_PIPELINE) {
-          await setupForceNativeAudioPipeline(page)
-        }
+        // Hide createEncodedStreams so the Meet client picks its native WebRTC
+        // inbound-audio path, which is the only one that exposes the
+        // per-participant recvonly tracks getContributingSources needs. Injected
+        // BEFORE page.goto, same timing as the network interceptor. Not optional:
+        // on the encoded-streams path there is no RTCRtpReceiver to read, so
+        // per-participant attribution cannot exist at all.
+        await setupForceNativeAudioPipeline(page)
 
         const success = await setupNetworkInterceptionScripts(page)
         if (success) {

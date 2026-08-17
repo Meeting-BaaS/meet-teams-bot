@@ -116,7 +116,7 @@ export async function setupNetworkInterceptionScripts(page: Page): Promise<boole
 
 /**
  * Force the Meet client onto its native WebRTC inbound-audio media path
- * (A/B experiment, gated by MEET_FORCE_NATIVE_AUDIO_PIPELINE).
+ * Always applied: without it there is no per-participant signal to read.
  *
  * Must be called BEFORE page.goto() — like the other interception init scripts,
  * this runs on every navigation before the Meet client's own page JS, which is
@@ -182,7 +182,7 @@ export async function setupForceNativeAudioPipeline(page: Page): Promise<boolean
   try {
     await page.addInitScript(script)
     console.log(
-      "[ForceNativeAudio] ✅ Native-audio-pipeline init script injected (MEET_FORCE_NATIVE_AUDIO_PIPELINE=true)"
+      "[ForceNativeAudio] ✅ Native-audio-pipeline init script injected"
     )
     return true
   } catch (error) {

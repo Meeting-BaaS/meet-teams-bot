@@ -13,7 +13,7 @@ describe("networkMinDwellMs", () => {
   })
 
   it("gives Meet a short dwell so the force-native audio path survives the roster race", () => {
-    // With MEET_FORCE_NATIVE_AUDIO_PIPELINE the native audio path emits
+    // On the forced-native path Meet emits
     // source=audio events that are still (none)/"Unknown" until the roster
     // resolves. The caller only holds when such an event arrived recently, so a
     // dead path still fast-falls-back; this floor bounds the live-path hold.
