@@ -4,6 +4,7 @@
 import path from "node:path"
 import type { Page } from "@playwright/test"
 import { teamsBrowserInterceptionLogic } from "./browser-bundle"
+import { resolveSpeakingSet } from "./speaker-timeline"
 
 export type { NetworkPayload, NetworkUser } from "./types"
 import type { NetworkPayload } from "./types"
@@ -42,7 +43,8 @@ export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<
                 if (!window.pako) {
                     console.error("[Teams NetworkInterceptor] pako dependency not loaded");
                 }
-                (${teamsBrowserInterceptionLogic.toString()})();
+                // As source: the stringified bundle cannot import it.
+                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()});
             } catch (e) {
                 console.error("[Teams NetworkInterceptor] Initialization error:", e);
             }

@@ -8,7 +8,11 @@
 
 /** biome-ignore-all lint/suspicious/noExplicitAny: browser-side bundle over untyped Teams/WebRTC internals. */
 
-export function teamsBrowserInterceptionLogic() {
+// Type-only: erased, so the stringified bundle stays self-contained.
+import type { SpeakerSetResolver, SpeakerTimelineRung } from "./speaker-timeline"
+
+/** @param resolveSpeakingSet - Passed in, not imported: this is stringified into the page. */
+export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetResolver) {
   try {
     if ((window as any).__teamsNetworkInterceptorInitialized === true) {
       console.warn("[Teams NetworkInterceptor] ⚠️ Already initialized, skipping duplicate")
@@ -152,6 +156,10 @@ export function teamsBrowserInterceptionLogic() {
     const speakingStateMachines = new Map<string, any>()
     // last logged speaking set, to log only on change
     let lastSpeakingLogKey = ""
+    // Floors the caption stamp on hybrid sessions.
+    let lastBroadcastStamp = 0
+    // Log the rung only on change.
+    let lastRung: SpeakerTimelineRung | "" = ""
     // Lean, non-PII pipeline counters. The browser console is filtered in prod, so
     // Node reads these via page.evaluate to see which stage stops producing.
     ;(window as any).__teamsNetDiag = (window as any).__teamsNetDiag || {
@@ -172,7 +180,9 @@ export function teamsBrowserInterceptionLogic() {
       captionResults: 0,
       captionMatched: 0,
       captionUnmatched: 0,
-      captionsEnabled: false
+      captionsEnabled: false,
+      // Caption interval overruling a live dsh — 0 on single-signal sessions.
+      rungCaptionOverDsh: 0
     }
     const diag = (window as any).__teamsNetDiag
 
@@ -517,8 +527,8 @@ export function teamsBrowserInterceptionLogic() {
           // window so attribution degrades rather than disappearing.
           captionSpeakingUntil.set(resolved, Date.now() + windowMs)
         }
-        // Only drive the speaker signal from captions when nothing better exists.
-        if (!csrcAvailable && !hasFreshDominantSpeaker()) {
+        // Every result, not only when dsh is dead — resolveSpeakingSet arbitrates.
+        if (!csrcAvailable) {
           broadcastSpeakerUpdate("caption")
         }
       } catch {
@@ -582,11 +592,26 @@ export function teamsBrowserInterceptionLogic() {
       return bestKey
     }
 
+    // Roster deviceIds sharing any of these caption identity keys.
+    function deviceIdsForIdentityKeys(activeKeys: Set<string>): Set<string> {
+      const out = new Set<string>()
+      if (activeKeys.size === 0) return out
+      for (const p of participantsByDeviceId.values()) {
+        if (activeKeys.has(identityKey(p.deviceId))) out.add(p.deviceId)
+      }
+      return out
+    }
+
+    // deviceIds whose caption interval CONTAINS tMs — no hold or window mixed in.
+    function captionDeviceIdsAtAudioTime(tMs: number): Set<string> {
+      const key = captionIdentityAt(tMs)
+      return deviceIdsForIdentityKeys(key ? new Set([key]) : new Set<string>())
+    }
+
     // Roster deviceIds speaking at tMs. Caption results that carried no usable
     // audio timing fall back to the wall-clock window, so a client that omits
     // timestampAudioSent still attributes rather than going silent.
     function getCaptionSpeakingDeviceIds(tMs: number, audioClock: boolean): Set<string> {
-      const out = new Set<string>()
       const activeKeys = new Set<string>()
       if (audioClock) {
         const byAudio = captionIdentityAt(tMs)
@@ -605,11 +630,7 @@ export function teamsBrowserInterceptionLogic() {
         if (until > now) activeKeys.add(key)
         else captionSpeakingUntil.delete(key)
       }
-      if (activeKeys.size === 0) return out
-      for (const p of participantsByDeviceId.values()) {
-        if (activeKeys.has(identityKey(p.deviceId))) out.add(p.deviceId)
-      }
-      return out
+      return deviceIdsForIdentityKeys(activeKeys)
     }
 
     // Does any roster participant share this caption identity key? Used to count
@@ -733,7 +754,10 @@ export function teamsBrowserInterceptionLogic() {
           clearInterval(captionExpiryTimer)
           return
         }
-        if (csrcAvailable || hasFreshDominantSpeaker()) return
+        // Not gated on dsh freshness: once a caption interval has been selected,
+        // only this update ends it, and resolveSpeakingSet hands the floor back to
+        // a live dsh rather than emitting silence.
+        if (csrcAvailable) return
         // Speech having stopped can only be seen on the wall clock: the audio
         // clock says nothing once captions go quiet. So the TRIGGER is "no
         // caption result for CAPTION_SILENCE_MS", while the resulting update is
@@ -864,7 +888,22 @@ export function teamsBrowserInterceptionLogic() {
       const now = Date.now()
       if (source !== "caption") return now
       const audioStamp = captionExpiry ? lastCaptionAudioEndMs : lastCaptionAudioStartMs
-      return audioStamp > 0 ? Math.min(audioStamp, now) : now
+      if (audioStamp <= 0) return now
+      const stamp = Math.min(audioStamp, now)
+      // Hybrid only: a backdated caption would close the dsh segment before it
+      // opened and the tracker drops that as zero-length.
+      if (stamp < lastBroadcastStamp && hasFreshDominantSpeaker()) {
+        return Math.min(lastBroadcastStamp, now)
+      }
+      return stamp
+    }
+
+    // Rung labels only — no PII, this log ships to S3.
+    function logRungChange(rung: SpeakerTimelineRung): void {
+      if (rung === "caption-interval") diag.rungCaptionOverDsh++
+      if (rung === lastRung) return
+      lastRung = rung
+      debug("🎚️ speaker evidence rung →", rung)
     }
 
     // captionExpiry marks the update that ENDS a caption utterance. Two things
@@ -884,37 +923,25 @@ export function teamsBrowserInterceptionLogic() {
       // clock", not "who has a live window right now".
       const stamp = computeBroadcastStamp(source, captionExpiry)
 
-      // Priority: CSRC (silence == nobody) → dsh dominant speaker → captions.
-      // Captions are the fallback for server-mixed sessions that emit neither.
-      let speaking: Set<string>
-      if (csrcAvailable) {
-        speaking = getCsrcSpeakingIds()
-      } else {
-        const dominant = getDominantSpeakerParticipantId()
-        // A live caption window outranks a dsh event that has gone stale — on the
-        // mixed-audio sessions the single early dsh would otherwise pin its speaker
-        // for the whole call. A fresh dsh still wins; healthy sessions ramp dsh
-        // continuously and never reach the caption branch.
-        const captionSpeaking = !hasFreshDominantSpeaker()
-          ? getCaptionSpeakingDeviceIds(stamp, source === "caption")
-          : new Set<string>()
-        if (captionSpeaking.size > 0) {
-          speaking = captionSpeaking
-        } else if (
-          dominant &&
-          !captionExpiry &&
-          (!captionsEnabled || hasFreshDominantSpeaker())
-        ) {
-          // Gated on captionsEnabled, not on freshness alone: if Teams emits dsh
-          // only on speaker CHANGES, a freshness test would silence someone still
-          // mid-monologue on a healthy call. Captions only ever run on sessions
-          // whose dsh is already dead, so there a stale dominant must never come
-          // back — including on a roster update after the expiry emitted silence.
-          speaking = new Set([dominant])
-        } else {
-          speaking = new Set()
-        }
-      }
+      // One timeline: sources are evidence, ranked — none suppresses another.
+      const dominantFresh = hasFreshDominantSpeaker()
+      const decision = resolveSpeakingSet({
+        csrcAvailable,
+        csrcSpeaking: csrcAvailable ? Array.from(getCsrcSpeakingIds()) : [],
+        // Only scanned where the rung can fire.
+        captionAtInstant:
+          !csrcAvailable && dominantFresh ? Array.from(captionDeviceIdsAtAudioTime(stamp)) : [],
+        captionWindowed:
+          !csrcAvailable && !dominantFresh
+            ? Array.from(getCaptionSpeakingDeviceIds(stamp, source === "caption"))
+            : [],
+        dominant: getDominantSpeakerParticipantId(),
+        dominantFresh,
+        captionsEnabled,
+        captionExpiry
+      })
+      logRungChange(decision.rung)
+      const speaking = new Set(decision.deviceIds)
 
       const rawUsers = Array.from(participantsByDeviceId.values()).map((p) => ({
         deviceId: p.deviceId,
@@ -973,6 +1000,8 @@ export function teamsBrowserInterceptionLogic() {
         // sits 1-3s late, which is the whole point of reading timestampAudioSent.
         // Never stamp ahead of now: a clock skew would put speech in the future.
         q.push({ users, timestamp: stamp, source })
+        // Only once the update is really on its way to Node.
+        lastBroadcastStamp = Math.max(lastBroadcastStamp, stamp)
         diag.broadcasts++
       } catch {
         // ignore
