@@ -25,6 +25,7 @@ class Global {
   private lastNetworkAudioSpeakerAt = 0 // Date.now() of the last active speaker seen on the network audio path (CSRC/getContributingSources — force-native)
   private lastNetworkAudioFramesAt = 0 // Date.now() of the last health check reporting per-participant tracks delivering frames (path alive even during silence)
   private rearmedNetworkDiarization = false // Track if the network path was ever re-armed after a fallback
+  private networkInterceptionStopped = false // Page-side interceptor was torn down; nothing can restart it
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -490,10 +491,30 @@ class Global {
    * demonstrably alive again (per-participant tracks delivering frames), so
    * clearing the interception-failed latch reflects reality.
    */
-  public rearmNetworkDiarization(): void {
+  public rearmNetworkDiarization(): boolean {
+    // Refuse to re-arm a path that was torn down. __stopNetworkInterception
+    // aborts the tracks and clears the CSRC sampler with no restart, so clearing
+    // the latches would mute the UI bridge in favour of a source that can never
+    // produce again — worse than the fallback it replaces. Meet never stops the
+    // interceptor, which is what makes its re-arm safe; this keeps that a
+    // checked invariant rather than a convention.
+    if (this.networkInterceptionStopped) return false
     this.hasTriggeredDiarizationFallback = false
     this.networkInterceptionSetupFailed = false
     this.rearmedNetworkDiarization = true
+    return true
+  }
+
+  /**
+   * Record that the page-side interceptor was torn down. One-way: there is no
+   * restart path, so a stopped interceptor stays stopped for the meeting.
+   */
+  public markNetworkInterceptionStopped(): void {
+    this.networkInterceptionStopped = true
+  }
+
+  public isNetworkInterceptionStopped(): boolean {
+    return this.networkInterceptionStopped
   }
 
   /**

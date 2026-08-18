@@ -503,16 +503,20 @@ export class RecordingState extends BaseState {
       if (
         GLOBAL.get().meeting_platform === "meet" &&
         GLOBAL.hasDiarizationFallbackTriggered() &&
+        !GLOBAL.isNetworkInterceptionStopped() &&
         this.diarizationRearmCount < MAX_DIARIZATION_REARMS &&
         GLOBAL.msSinceLastNetworkAudioFrames() < REARM_FRAMES_ALIVE_MS
       ) {
-        GLOBAL.rearmNetworkDiarization()
-        this.consecutiveStaleCount = 0
-        this.diarizationRearmCount++
-        console.log(
-          `[DiarizationHealth] [meet] 🔁 Network audio path recovered (tracks delivering frames) — re-armed network diarization (re-arm ${this.diarizationRearmCount}/${MAX_DIARIZATION_REARMS}); UI observer auto-muted`
-        )
-        return
+        // rearmNetworkDiarization refuses a torn-down interceptor, so a re-arm
+        // can never mute the UI bridge in favour of a source that is gone.
+        if (GLOBAL.rearmNetworkDiarization()) {
+          this.consecutiveStaleCount = 0
+          this.diarizationRearmCount++
+          console.log(
+            `[DiarizationHealth] [meet] 🔁 Network audio path recovered (tracks delivering frames) — re-armed network diarization (re-arm ${this.diarizationRearmCount}/${MAX_DIARIZATION_REARMS}); UI observer auto-muted`
+          )
+          return
+        }
       }
 
       // Debouncing logic for fallback
@@ -673,8 +677,10 @@ export class RecordingState extends BaseState {
           try {
             if (meetingPlatform === "teams") {
               await stopTeamsNetworkInterception(this.context.playwrightPage)
+              GLOBAL.markNetworkInterceptionStopped()
             } else if (meetingPlatform === "zoom") {
               await stopZoomNetworkInterception(this.context.playwrightPage)
+              GLOBAL.markNetworkInterceptionStopped()
             }
           } catch (error) {
             console.error(
@@ -683,19 +689,21 @@ export class RecordingState extends BaseState {
             )
           }
 
-          // Mark network interception as failed
-          GLOBAL.setNetworkInterceptionSetupFailed()
-
-          // Start UI-based observation
+          // Both flags are set only once the observer is actually running. Setting
+          // them first (as this did) and then failing to start it left the network
+          // path retired AND the UI bridge unmuted — two sources committing speaker
+          // boundaries, with no retry because the retirement had already latched.
+          // Failing here now leaves the network path owning attribution, and the
+          // stale counter simply tries again on the next check.
           try {
             await startUIBasedObserver(this.context.playwrightPage, this.context)
+            GLOBAL.setNetworkInterceptionSetupFailed()
             GLOBAL.setDiarizationFallbackTriggered()
           } catch (error) {
             console.error(
               "[DiarizationHealth] Failed to start UI-based observer fallback:",
               formatError(error)
             )
-            // Retry not possible since network interception was already marked as failed
           }
         }
       } else if (status.status === "optimal" || status.status === "acceptable") {
