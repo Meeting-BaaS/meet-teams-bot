@@ -115,6 +115,83 @@ export async function setupNetworkInterceptionScripts(page: Page): Promise<boole
 }
 
 /**
+ * Force the Meet client onto its native WebRTC inbound-audio media path
+ * Always applied: without it there is no per-participant signal to read.
+ *
+ * Must be called BEFORE page.goto() — like the other interception init scripts,
+ * this runs on every navigation before the Meet client's own page JS, which is
+ * the only point at which the feature-detection can be intercepted.
+ *
+ * The Meet client feature-detects RTCRtpReceiver.prototype.createEncodedStreams
+ * to choose which inbound-audio media path to use. When it is present the client
+ * selects an encoded/insertable-streams path: audio is decoded by an AudioWorklet
+ * and mixed into a single MediaStreamAudioDestination track that carries no
+ * RTCRtpReceiver, so RTCRtpReceiver.getContributingSources() — our per-participant
+ * (CSRC + audioLevel) speaker attribution — has nothing to read and diarization
+ * collapses to the DOM UI observer. When createEncodedStreams is absent the client
+ * falls back to the native WebRTC media path, where the SFU's small fixed pool of
+ * recvonly audio tracks each expose a live RTCRtpReceiver whose
+ * getContributingSources() reports the active participant per slot.
+ *
+ * Deleting createEncodedStreams from the receiver prototype before the client
+ * runs therefore forces the native path so the existing getContributingSources /
+ * CSRC attribution (see setupRTCRtpReceiverInterceptor + the CSRC sampler in
+ * browser-bundle.ts) receives per-participant tracks. It does not remove or
+ * disable the datachannel/AudioWorklet fallback path — that path is driven by the
+ * Meet client's own choice, so forcing native simply leaves it dormant rather
+ * than breaking it.
+ */
+export async function setupForceNativeAudioPipeline(page: Page): Promise<boolean> {
+  const script = `
+        (function() {
+            try {
+                var proto = window.RTCRtpReceiver && window.RTCRtpReceiver.prototype;
+                if (!proto) {
+                    console.error("[ForceNativeAudio] RTCRtpReceiver.prototype unavailable; cannot force native audio pipeline");
+                    return;
+                }
+                var removed = [];
+                var failed = [];
+                // Record a name as removed only if the delete actually took AND the
+                // property is no longer resolvable on proto (covers non-configurable
+                // own props where delete returns false, and inherited props that
+                // survive on the prototype chain). Otherwise the native path was NOT
+                // forced and the log must say so rather than claim a false success.
+                function hide(name) {
+                    if (!(name in proto)) return;
+                    try {
+                        if (Reflect.deleteProperty(proto, name) && !(name in proto)) {
+                            removed.push(name);
+                        } else {
+                            failed.push(name);
+                        }
+                    } catch (e) {
+                        failed.push(name);
+                    }
+                }
+                hide("createEncodedStreams");
+                // webkit-prefixed variant, present on some builds.
+                hide("webkitCreateEncodedStreams");
+                var msg = "[ForceNativeAudio] createEncodedStreams support on RTCRtpReceiver.prototype (removed: " + (removed.join(", ") || "none present") + (failed.length ? "; FAILED to hide: " + failed.join(", ") : "") + ") — forcing native WebRTC inbound-audio path for per-participant speaker attribution";
+                if (failed.length) { console.error(msg); } else { console.log(msg); }
+            } catch (e) {
+                console.error("[ForceNativeAudio] Failed to hide createEncodedStreams:", e);
+            }
+        })();
+    `
+  try {
+    await page.addInitScript(script)
+    console.log(
+      "[ForceNativeAudio] ✅ Native-audio-pipeline init script injected"
+    )
+    return true
+  } catch (error) {
+    console.error("[ForceNativeAudio] ❌ Failed to inject native-audio-pipeline init script:", error)
+    return false
+  }
+}
+
+/**
  * Setup network interception callback (can be called AFTER page.goto())
  * This exposes the callback function that receives speaker updates
  */

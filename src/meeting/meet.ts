@@ -115,9 +115,20 @@ export class MeetProvider implements MeetingProviderInterface {
       // Setup network interception scripts BEFORE navigation
       // addInitScript must be called before page.goto() to work properly
       try {
-        const { setupNetworkInterceptionScripts, setupBotDetectionRoute } = await import(
-          "./meet/network-interception"
-        )
+        const {
+          setupNetworkInterceptionScripts,
+          setupBotDetectionRoute,
+          setupForceNativeAudioPipeline
+        } = await import("./meet/network-interception")
+
+        // Hide createEncodedStreams so the Meet client picks its native WebRTC
+        // inbound-audio path, which is the only one that exposes the
+        // per-participant recvonly tracks getContributingSources needs. Injected
+        // BEFORE page.goto, same timing as the network interceptor. Not optional:
+        // on the encoded-streams path there is no RTCRtpReceiver to read, so
+        // per-participant attribution cannot exist at all.
+        await setupForceNativeAudioPipeline(page)
+
         const success = await setupNetworkInterceptionScripts(page)
         if (success) {
           console.log("[Meet] ✅ Network interception scripts set up")

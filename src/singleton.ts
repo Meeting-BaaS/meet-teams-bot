@@ -22,6 +22,10 @@ class Global {
   private networkDiarizationActive = false // Track if network diarization is actually active and working
   private hasTriggeredDiarizationFallback = false // Track if diarization fallback has been triggered
   private lastDcrpcSpeakerAt = 0 // Date.now() of the last active speaker decoded from the dcrpc datachannel (NetEq)
+  private lastNetworkAudioSpeakerAt = 0 // Date.now() of the last active speaker seen on the network audio path (CSRC/getContributingSources — force-native)
+  private lastNetworkAudioFramesAt = 0 // Date.now() of the last health check reporting per-participant tracks delivering frames (path alive even during silence)
+  private rearmedNetworkDiarization = false // Track if the network path was ever re-armed after a fallback
+  private networkInterceptionStopped = false // Page-side interceptor was torn down; nothing can restart it
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -426,6 +430,46 @@ class Global {
   }
 
   /**
+   * Record that the network audio path (CSRC / getContributingSources, exposed
+   * once MEET_FORCE_NATIVE_AUDIO_PIPELINE flips Meet onto the native WebRTC
+   * pipeline) just reported an active speaker — even if the name has not
+   * resolved yet. Used to tell a live-but-unresolved path (roster race) apart
+   * from a genuinely dead one so the stale monitor holds the former and
+   * fast-falls-back the latter.
+   */
+  public markNetworkAudioSpeaker(): void {
+    this.lastNetworkAudioSpeakerAt = Date.now()
+  }
+
+  /**
+   * Milliseconds since the last network-audio active speaker, or Infinity if
+   * the network audio path has never reported one.
+   */
+  public msSinceLastNetworkAudioSpeaker(): number {
+    if (this.lastNetworkAudioSpeakerAt === 0) return Number.POSITIVE_INFINITY
+    return Date.now() - this.lastNetworkAudioSpeakerAt
+  }
+
+  /**
+   * Record that the network audio interceptor just reported per-participant
+   * tracks delivering frames. This is the liveness signal that survives a
+   * silence window: the native path can be alive (tracks flowing) with no
+   * speaker active at the instant the never-produced stale threshold fires.
+   */
+  public markNetworkAudioFrames(): void {
+    this.lastNetworkAudioFramesAt = Date.now()
+  }
+
+  /**
+   * Milliseconds since the network audio path last reported tracks delivering
+   * frames, or Infinity if it never has.
+   */
+  public msSinceLastNetworkAudioFrames(): number {
+    if (this.lastNetworkAudioFramesAt === 0) return Number.POSITIVE_INFINITY
+    return Date.now() - this.lastNetworkAudioFramesAt
+  }
+
+  /**
    * Set that diarization fallback has been triggered.
    */
   public setDiarizationFallbackTriggered(): void {
@@ -437,6 +481,51 @@ class Global {
    */
   public hasDiarizationFallbackTriggered(): boolean {
     return this.hasTriggeredDiarizationFallback
+  }
+
+  /**
+   * Re-arm the network diarization path after a fallback. Clears BOTH latches
+   * (fallback-triggered and interception-setup-failed) so the source arbitration
+   * in SpeakerManager flips back: network updates are processed again and the UI
+   * bridge re-mutes automatically. Only call this once the network path is
+   * demonstrably alive again (per-participant tracks delivering frames), so
+   * clearing the interception-failed latch reflects reality.
+   */
+  public rearmNetworkDiarization(): boolean {
+    // Refuse to re-arm a path that was torn down. __stopNetworkInterception
+    // aborts the tracks and clears the CSRC sampler with no restart, so clearing
+    // the latches would mute the UI bridge in favour of a source that can never
+    // produce again — worse than the fallback it replaces. Meet never stops the
+    // interceptor, which is what makes its re-arm safe; this keeps that a
+    // checked invariant rather than a convention.
+    if (this.networkInterceptionStopped) return false
+    this.hasTriggeredDiarizationFallback = false
+    this.networkInterceptionSetupFailed = false
+    this.rearmedNetworkDiarization = true
+    return true
+  }
+
+  /**
+   * Record that the page-side interceptor was torn down. One-way: there is no
+   * restart path, so a stopped interceptor stays stopped for the meeting.
+   */
+  public markNetworkInterceptionStopped(): void {
+    this.networkInterceptionStopped = true
+  }
+
+  public isNetworkInterceptionStopped(): boolean {
+    return this.networkInterceptionStopped
+  }
+
+  /**
+   * True once the network path has been re-armed at least this call. The UI
+   * bridge mutes on it: a re-arm usually follows a never-produced fallback, so
+   * the network path has never reported a speaker and the bridge's own
+   * first-speaker latch is still false — without this both sources would commit
+   * speaker boundaries until the first network speaker arrives.
+   */
+  public hasRearmedNetworkDiarization(): boolean {
+    return this.rearmedNetworkDiarization
   }
 
   private metricsCollector: MetricsCollector | null = null

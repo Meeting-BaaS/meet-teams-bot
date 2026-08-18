@@ -153,17 +153,44 @@ export class SpeakerManager {
     const networkRetired =
       GLOBAL.hasNetworkInterceptionSetupFailed() || GLOBAL.hasDiarizationFallbackTriggered()
 
-    if (this.networkSpeakerActive && !networkRetired) {
+    // A re-arm mutes the bridge on its own. Re-arms follow a never-produced
+    // fallback, so the network path has never reported a speaker and
+    // networkSpeakerActive is still false — gating on that alone would leave the
+    // observer live alongside the just-restored network path, both committing
+    // speaker boundaries until the first network speaker finally lands.
+    const networkOwnsFloor = this.networkSpeakerActive || GLOBAL.hasRearmedNetworkDiarization()
+
+    if (networkOwnsFloor && !networkRetired) {
       if (!this.uiBridgeMuteLogged) {
         this.uiBridgeMuteLogged = true
-        console.log(
-          "[SpeakerBridge] Network path delivered its first speaker — UI bridge muted"
-        )
+        console.log("[SpeakerBridge] Network path owns attribution — UI bridge muted")
       }
       return
     }
 
-    await this.handleSpeakerUpdate(observed, "ui-observer")
+    await this.handleSpeakerUpdate(
+      observed.map((speaker) => ({ ...speaker, id: this.resolveUiUserId(speaker.name) })),
+      "ui-observer"
+    )
+  }
+
+  /**
+   * Reuse the id the network path already gave this name.
+   *
+   * The observers emit id 0 — they run in the page with no access to the
+   * sequential id manager. That was harmless while retirement was permanent, but
+   * the path can now be re-armed, so one person would land as user_id 2, then 0,
+   * then 2 again across a single meeting and read downstream as two speakers.
+   *
+   * Falls back to 0 when the network never named them, so a meeting that only
+   * ever used the observer keeps exactly the ids it has today.
+   */
+  private resolveUiUserId(name: string): number {
+    if (!name || name === UNKNOWN_SPEAKER) return 0
+    for (const [id, known] of this.userIdNames) {
+      if (id !== 0 && known === name) return id
+    }
+    return 0
   }
 
   public async handleSpeakerUpdate(

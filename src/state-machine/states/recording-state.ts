@@ -1,6 +1,5 @@
 import { DiarizationTracker } from "../../diarization-tracker"
 import { Events } from "../../events"
-import { stopNetworkInterception } from "../../meeting/meet/network-interception"
 import { stopTeamsNetworkInterception } from "../../meeting/teams/network-interception"
 import { stopZoomNetworkInterception } from "../../meeting/zoom/network-interception"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
@@ -79,6 +78,12 @@ export class RecordingState extends BaseState {
   private isProcessing = true
   private readonly CHECK_INTERVAL = 250
   private lastSoundActivity: number = Date.now()
+  // Date.now() of the last time real audio energy crossed the activity threshold.
+  // Distinct from lastSoundActivity (which grace-period housekeeping also bumps in
+  // silence): this is set ONLY on genuine sound, so the never-produced fallback can
+  // tell a silent/empty stage (nothing to attribute) from an actually-failing path.
+  // 0 = no sound heard yet this meeting.
+  private lastRealSoundAt = 0
   private lastSoundActivityLogTime = 0
   private lastSoundMonitorInactiveLogTime = 0
   private lastNoOneJoinedPeriodLog = 0
@@ -86,6 +91,10 @@ export class RecordingState extends BaseState {
   private hasNoOneJoinedPeriodEnded = false
   private lastDiarizationHealthCheckTime = 0
   private consecutiveStaleCount = 0
+  // How many times the network diarization path has been re-armed after a
+  // fallback this call. Capped so a pathologically flapping path can't oscillate
+  // network↔UI forever; after the cap it stays on the UI observer.
+  private diarizationRearmCount = 0
   private aloneInMeetingSince: number | null = null
   private gracePeriodStartLogged = false
   private wasInGracePeriod = false
@@ -308,6 +317,9 @@ export class RecordingState extends BaseState {
         // unnecessary fallback to the UI observer, which still names speakers.
         const graceMonitor = SoundLevelMonitor.peekInstance()
         const soundLevel = graceMonitor?.getCurrentSoundLevel() ?? 0
+        if (soundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
+          this.lastRealSoundAt = now
+        }
         if (soundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD || !graceMonitor?.getIsActive()) {
           await this.checkDiarizationHealthThrottled(now)
         }
@@ -373,6 +385,7 @@ export class RecordingState extends BaseState {
 
         // Reset the silence timer (this is the critical timer for automatic leave)
         this.lastSoundActivity = now
+        this.lastRealSoundAt = now
 
         await this.checkDiarizationHealthThrottled(now)
       } else if (!monitor?.getIsActive()) {
@@ -477,6 +490,35 @@ export class RecordingState extends BaseState {
       const status = await checkDiarizationHealth(meetingStartTime, currentTime)
       logHealthStatus(status)
 
+      // Re-arm: recover a previously-retired network path once it is demonstrably
+      // alive again. Retirement is otherwise terminal (the UI observer is blind
+      // under CloakBrowser), so a bot that retired during an early quiet/roster
+      // race would name no one for the rest of the call. When per-participant
+      // tracks are delivering frames again, flip the latches back: the SpeakerManager
+      // arbitration then reprocesses network updates and re-mutes the UI bridge
+      // automatically. Meet-only (force-native path), and capped so a genuinely
+      // flapping path can't oscillate forever.
+      const REARM_FRAMES_ALIVE_MS = 6000
+      const MAX_DIARIZATION_REARMS = 3
+      if (
+        GLOBAL.get().meeting_platform === "meet" &&
+        GLOBAL.hasDiarizationFallbackTriggered() &&
+        !GLOBAL.isNetworkInterceptionStopped() &&
+        this.diarizationRearmCount < MAX_DIARIZATION_REARMS &&
+        GLOBAL.msSinceLastNetworkAudioFrames() < REARM_FRAMES_ALIVE_MS
+      ) {
+        // rearmNetworkDiarization refuses a torn-down interceptor, so a re-arm
+        // can never mute the UI bridge in favour of a source that is gone.
+        if (GLOBAL.rearmNetworkDiarization()) {
+          this.consecutiveStaleCount = 0
+          this.diarizationRearmCount++
+          console.log(
+            `[DiarizationHealth] [meet] 🔁 Network audio path recovered (tracks delivering frames) — re-armed network diarization (re-arm ${this.diarizationRearmCount}/${MAX_DIARIZATION_REARMS}); UI observer auto-muted`
+          )
+          return
+        }
+      }
+
       // Debouncing logic for fallback
       if (status.status === "stale") {
         this.consecutiveStaleCount++
@@ -493,6 +535,39 @@ export class RecordingState extends BaseState {
         console.log(
           `[DiarizationHealth] [${meetingPlatform}] ⚠️ Stale event ${this.consecutiveStaleCount}/${threshold}${neverProduced ? " (no segment ever produced — fast fallback)" : ""}`
         )
+
+        // Sound-gate the never-produced fast-fallback. Force-native CSRC only
+        // populates while live audio flows, so a silent/empty stage produces zero
+        // segments through no fault of the path. Retiring here strands the bot:
+        // once on the UI observer the network path can't re-arm, and under
+        // CloakBrowser that observer is blind — so when audio finally starts (seen
+        // live: first sound 8+ min after a 21s retire) the bot names no one. If no
+        // real sound has been heard recently, keep the network path armed and don't
+        // let this stale tick drive a retire; reset the counter so, once sound does
+        // arrive, the path gets a fair fresh threshold before any fallback.
+        // Only trust the silence gate when the SoundLevelMonitor is actually
+        // running — a down monitor can never update lastRealSoundAt, so the gate
+        // would fire on every check and a genuinely dead path would never reach
+        // the UI-observer fallback. When the monitor is down we have no silence
+        // evidence, so let the fallback proceed (re-arm still recovers the path if
+        // native frames resume).
+        const NEVER_PRODUCED_SOUND_GATE_MS = 10000
+        const soundMonitorActive = Boolean(SoundLevelMonitor.peekInstance()?.getIsActive())
+        if (
+          neverProduced &&
+          soundMonitorActive &&
+          currentTime - this.lastRealSoundAt > NEVER_PRODUCED_SOUND_GATE_MS
+        ) {
+          this.consecutiveStaleCount = 0
+          const quietFor =
+            this.lastRealSoundAt === 0
+              ? "no sound yet"
+              : `${Math.round((currentTime - this.lastRealSoundAt) / 1000)}s since sound`
+          console.log(
+            `[DiarizationHealth] [${meetingPlatform}] ⏸ Never produced but silent stage (${quietFor}) — keeping network path armed, not retiring to the (CloakBrowser-blind) UI observer`
+          )
+          return
+        }
 
         // dcrpc (the NetEq network speaker signal) recently decoded an active
         // speaker: the network path is alive even if the diarization file looks
@@ -535,6 +610,47 @@ export class RecordingState extends BaseState {
           return
         }
 
+        // Roster-race hold (neverProduced). With MEET_FORCE_NATIVE_AUDIO_PIPELINE
+        // the native audio path emits source=audio events that are still
+        // (none)/"Unknown" until the roster resolves, so no named segment exists
+        // yet (neverProduced) even though the path is alive. The plain dwell
+        // above is deliberately gated on !neverProduced to avoid holding a dead
+        // source (which would just produce a leading-"Unknown" run of the dwell
+        // length). Distinguish the two here: hold up to the dwell ONLY while a
+        // network-audio speaker event arrived recently — a live path resolving
+        // names. A genuinely dead path (no recent event) still fast-falls-back,
+        // so the leading-"Unknown" regression is avoided.
+        // Meet only: this hold exists specifically for the force-native roster
+        // race. Teams/Zoom keep their never-produced fast-path unchanged — for
+        // Teams, holding a never-produced path would delay the caption/UI
+        // fallback that actually fixes its mixed-audio "Speaker N" case.
+        // Liveness = a recent active speaker OR per-participant tracks recently
+        // delivering frames. The frames signal is what covers a silence window:
+        // observed live (bot 98b89959) the native tracks came alive ~0.1s before
+        // the never-produced threshold fired during a "speaking=0" moment, so the
+        // speaker-only signal was Infinity and the path was wrongly retired. The
+        // frames window is wider than the speaker one because the health check
+        // that sets it is periodic (can gap several seconds between reports).
+        const NATIVE_AUDIO_SPEAKER_ALIVE_MS = 5000
+        const NATIVE_AUDIO_FRAMES_ALIVE_MS = 12000
+        const nativeAudioAlive =
+          GLOBAL.msSinceLastNetworkAudioSpeaker() < NATIVE_AUDIO_SPEAKER_ALIVE_MS ||
+          GLOBAL.msSinceLastNetworkAudioFrames() < NATIVE_AUDIO_FRAMES_ALIVE_MS
+        if (
+          meetingPlatform === "meet" &&
+          this.consecutiveStaleCount >= threshold &&
+          neverProduced &&
+          dwellElapsed < minDwellMs &&
+          nativeAudioAlive &&
+          !GLOBAL.hasNetworkInterceptionSetupFailed() &&
+          !GLOBAL.hasDiarizationFallbackTriggered()
+        ) {
+          console.log(
+            `[DiarizationHealth] [${meetingPlatform}] ⏳ Holding network path through roster race (${Math.round(dwellElapsed / 1000)}s < ${minDwellMs / 1000}s) — force-native audio events still arriving, names resolving`
+          )
+          return
+        }
+
         if (
           this.consecutiveStaleCount >= threshold &&
           (meetingPlatform === "meet" ||
@@ -548,14 +664,23 @@ export class RecordingState extends BaseState {
             `[DiarizationHealth] [${meetingPlatform}] 🔄 Triggering fallback to UI-based diarization after ${this.consecutiveStaleCount} consecutive stale events`
           )
 
-          // Stop network interception to prevent duplicate logs
+          // Stop network interception to prevent duplicate logs.
+          // EXCEPT Meet: leave the interceptor running so it keeps reporting
+          // per-participant track health/CSRC. The re-arm path (below, in the
+          // health loop) needs that live signal to detect the native path
+          // recovering; __stopNetworkInterception aborts the tracks and clears
+          // the CSRC sampler with no restart, which would leave a re-arm muting
+          // the UI observer while network stays permanently dead (blind). Double
+          // logging/commit is already prevented node-side: handleNetworkSpeakerUpdate
+          // drops network updates while the fallback latch is set, so a running-but-
+          // ignored interceptor is harmless until re-arm flips the latch back.
           try {
             if (meetingPlatform === "teams") {
               await stopTeamsNetworkInterception(this.context.playwrightPage)
+              GLOBAL.markNetworkInterceptionStopped()
             } else if (meetingPlatform === "zoom") {
               await stopZoomNetworkInterception(this.context.playwrightPage)
-            } else {
-              await stopNetworkInterception(this.context.playwrightPage)
+              GLOBAL.markNetworkInterceptionStopped()
             }
           } catch (error) {
             console.error(
@@ -564,19 +689,21 @@ export class RecordingState extends BaseState {
             )
           }
 
-          // Mark network interception as failed
-          GLOBAL.setNetworkInterceptionSetupFailed()
-
-          // Start UI-based observation
+          // Both flags are set only once the observer is actually running. Setting
+          // them first (as this did) and then failing to start it left the network
+          // path retired AND the UI bridge unmuted — two sources committing speaker
+          // boundaries, with no retry because the retirement had already latched.
+          // Failing here now leaves the network path owning attribution, and the
+          // stale counter simply tries again on the next check.
           try {
             await startUIBasedObserver(this.context.playwrightPage, this.context)
+            GLOBAL.setNetworkInterceptionSetupFailed()
             GLOBAL.setDiarizationFallbackTriggered()
           } catch (error) {
             console.error(
               "[DiarizationHealth] Failed to start UI-based observer fallback:",
               formatError(error)
             )
-            // Retry not possible since network interception was already marked as failed
           }
         }
       } else if (status.status === "optimal" || status.status === "acceptable") {

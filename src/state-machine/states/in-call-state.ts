@@ -387,6 +387,18 @@ export class InCallState extends BaseState {
                 "[NetworkInterceptor] ℹ️ Health Check: Subscribed but no audio tracks detected yet (0 tracks)"
               )
             } else {
+              // Per-participant native tracks are delivering frames. The path is
+              // alive even during a silence window (no speaker active right now),
+              // so mark it so the roster-race hold doesn't fast-fall-back while a
+              // pause coincides with the never-produced threshold. Gate on a
+              // RECENT frame (lastFrameAgeMs): a nonzero activeTrackCount can
+              // reflect a track that delivered earlier and has since gone quiet,
+              // which would wrongly keep the liveness timestamp fresh (and could
+              // hold or re-arm a path whose frames have actually stopped).
+              const FRAME_FRESH_MS = 3000
+              if (lastFrameAgeMs != null && lastFrameAgeMs < FRAME_FRESH_MS) {
+                GLOBAL.markNetworkAudioFrames()
+              }
               console.log(
                 `[NetworkInterceptor] ✅ Health Check: Audio processing active (${activeTrackCount} track(s) delivering frames)`
               )
@@ -408,6 +420,16 @@ export class InCallState extends BaseState {
           // network path instead of retiring it to the UI observer.
           if (payload.dcrpc && networkUsers.some((u) => u.isSpeaking)) {
             GLOBAL.markDcrpcSpeaker()
+          }
+
+          // Any live network speaker event (CSRC/getContributingSources on the
+          // force-native path, or dcrpc) means the network audio path is alive
+          // and resolving — even while names are still (none)/"Unknown" during
+          // the initial roster race. The stale monitor uses this to hold the
+          // path through that race instead of fast-falling-back to the UI
+          // observer; a path with no recent event is treated as genuinely dead.
+          if (networkUsers.some((u) => u.isSpeaking)) {
+            GLOBAL.markNetworkAudioSpeaker()
           }
 
           // Confirms diarization is coming from the network path. Never log names or
