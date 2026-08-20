@@ -252,10 +252,10 @@ export const findVisibleDenialTextIndex = (args: {
         const n = node as Element
         const c =
           typeof n.className === "string" ? n.className.split(/\s+/).slice(0, 2).join(".") : ""
-        chain.push(`${n.tagName.toLowerCase()}${c ? "." + c : ""}`)
+        chain.push(`${n.tagName.toLowerCase()}${c ? `.${c}` : ""}`)
       }
     }
-    return `${tag}${cls ? "." + cls : ""}${id}${role ? `[role=${role}]` : ""} < ${chain.join(" < ")}`
+    return `${tag}${cls ? `.${cls}` : ""}${id}${role ? `[role=${role}]` : ""} < ${chain.join(" < ")}`
   }
 
   // Patterns in config order — the first pattern with a valid rendered,

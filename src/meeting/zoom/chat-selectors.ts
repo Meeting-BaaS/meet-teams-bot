@@ -32,13 +32,26 @@ export const CHAT_MESSAGE_SELECTORS = [
 ] as const
 
 /**
+ * Chat-scoped forms of the generic virtualized-row selector, used only by the
+ * denial ignore-list. The bare `div[data-index]` also matches participants
+ * lists and other virtualized panels anywhere in the Zoom DOM — using it in
+ * the ignore-list would create denial blind spots outside chat.
+ */
+const CHAT_SCOPED_MESSAGE_SELECTORS = [
+  ".chat-virtuoso-wrapper div[data-index]",
+  ".chat-container__chat-list div[data-index]",
+  ".chat-list-content div[data-index]"
+] as const
+
+/**
  * Every subtree whose text must NEVER be treated as a meeting-end/denial signal.
  * Union of the chat containers/message items the observer reads, plus the
  * top-level chat panel roots and the compose editor.
  */
 export const CHAT_IGNORE_SELECTORS: readonly string[] = [
   ...CHAT_CONTAINER_SELECTORS,
-  ...CHAT_MESSAGE_SELECTORS,
+  ...CHAT_MESSAGE_SELECTORS.filter((s) => s !== "div[data-index]"),
+  ...CHAT_SCOPED_MESSAGE_SELECTORS,
   "#chat",
   ".chat-container",
   ".chat-rtf-box__editor-outer",

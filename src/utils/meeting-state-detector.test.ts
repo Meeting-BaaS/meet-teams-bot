@@ -98,8 +98,18 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
       await page.setContent(`
         ${IN_MEETING_HTML}
         <div class="future-virtualized-chat-list">
-          <div data-index="0">You have been removed from the meeting</div>
+          <div class="future-virtualized-chat-row">You have been removed from the meeting</div>
         </div>`)
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(false)
+    })
+
+    it("does NOT match removal text inside unrelated modals (settings/feedback)", async () => {
+      await page.setContent(`
+        ${IN_MEETING_HTML}
+        <div class="settings-modal"><div>You have been removed from the meeting</div></div>
+        <div class="feedback-modal"><div>meeting has ended</div></div>`)
 
       const result = await detector.isDenied(page)
       expect(result.matched).toBe(false)

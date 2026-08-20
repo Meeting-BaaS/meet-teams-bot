@@ -132,7 +132,8 @@ export class ZoomChatObserver {
         for (let i = 0; i < 4 && cur; i++, cur = cur.parentElement) {
           const al = cur.getAttribute?.("aria-label") || ""
           const m = al.match(/^(.+?)\s+(?:said|to\s+Everyone|to\s+[A-Z])/i)
-          if (m && m[1].trim()) return m[1].trim()
+          const sender = m?.[1]?.trim()
+          if (sender) return sender
         }
         return ""
       }
@@ -204,7 +205,7 @@ export class ZoomChatObserver {
         for (const sel of MESSAGE_SELECTORS) {
           const nodes = root.querySelectorAll(sel)
           if (nodes.length) {
-            nodes.forEach((n) => emit(n))
+            for (const n of nodes) emit(n)
             return
           }
         }

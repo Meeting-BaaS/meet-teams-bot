@@ -11,14 +11,26 @@
 
 let entryMessageSentAt: number | null = null
 
+/**
+ * Record that the bot just posted its Zoom entry chat message. Called by
+ * ChatManager.sendViaZoom once the message bubble is persisted.
+ */
 export function markZoomEntryMessageSent(): void {
   entryMessageSentAt = Date.now()
 }
 
+/**
+ * Timestamp (ms epoch) of the last entry-message send, or null if none was
+ * sent this session. Read by zoom.ts findEndMeeting to suppress denial matches
+ * during the post-send grace window.
+ */
 export function getZoomEntryMessageSentAt(): number | null {
   return entryMessageSentAt
 }
 
+/**
+ * Clear the entry-message timestamp (e.g. on a fresh bot session).
+ */
 export function resetZoomEntryMessageTiming(): void {
   entryMessageSentAt = null
 }

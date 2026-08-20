@@ -55,10 +55,12 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
       // end-of-meeting UI (modal / full-page end screen). They are never scanned
       // on the general page, so chat content — including the bot's own entry
       // message — can never trip BotRemoved again, even in a chat container the
-      // ignore-list does not (yet) know about.
+      // ignore-list does not (yet) know about. Deliberately narrow: the generic
+      // [class*="modal"] was rejected in review because it also matches
+      // settings/feedback modals, which must never be treated as end-of-meeting
+      // UI.
       scopeSelectors: [
         ".zm-modal",
-        '[class*="modal"]',
         '[class*="meeting-ended"]',
         '[class*="ended-meeting"]',
         '[class*="end-screen"]',
