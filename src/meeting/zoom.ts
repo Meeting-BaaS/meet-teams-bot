@@ -15,6 +15,7 @@ import { humanClick, humanType } from "../utils/humanize"
 import { formatError } from "../utils/Logger"
 import { createStateDetector } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
+import { getZoomEntryMessageSentAt } from "./zoom/entry-message-timing"
 import { ZOOM_STATE_CONFIG } from "./zoom-state-config"
 
 // Zoom Web Client selectors (verified against the live DOM). Two client variants
@@ -58,6 +59,16 @@ const HOST_NOT_STARTED_MAX_WAIT_MS = 10 * 60 * 1000
 // any transient repaint.
 const LEAVE_MISS_THRESHOLD = 3
 const LEAVE_GRACE_MS = 20_000
+
+// After the bot posts its entry chat message, Zoom echoes it into the rendered
+// chat list. Depending on the DOM it may land in a container the denial
+// scanner's ignore-list does not know yet, and the message text can contain
+// denial-ish wording ("…can be removed from the meeting…") — which killed bots
+// ~200-700ms after joining (2026-08 production incident). During this window a
+// denial match is only trusted if the in-meeting controls (Leave button) are
+// GONE — i.e. a genuine removal would hide them — otherwise the echo of our own
+// message must never end the meeting.
+const ENTRY_MESSAGE_GRACE_MS = 10_000
 
 const zoomStateDetector = createStateDetector(ZOOM_STATE_CONFIG)
 
@@ -822,11 +833,33 @@ export class ZoomProvider implements MeetingProviderInterface {
       return true
     }
 
-    // Removal / meeting-ended modal text.
+    // Removal / meeting-ended modal text. Within the post-entry-message grace
+    // window this is only trusted if the in-meeting controls are gone (a real
+    // removal hides the Leave button) — otherwise the bot's own echoed chat
+    // message could kill the meeting.
     const denied = await zoomStateDetector.isDenied(page)
     if (denied.matched) {
-      console.log(`[Zoom] End detected: "${denied.matchedText}"`)
-      return true
+      const entrySentAt = getZoomEntryMessageSentAt()
+      const withinEntryGrace =
+        entrySentAt !== null && Date.now() - entrySentAt < ENTRY_MESSAGE_GRACE_MS
+      if (withinEntryGrace) {
+        const leaveStillVisible = await page
+          .locator(LEAVE_BUTTON)
+          .first()
+          .isVisible({ timeout: 300 })
+          .catch(() => false)
+        if (leaveStillVisible) {
+          console.warn(
+            `[Zoom] Suppressed denial match "${denied.matchedText}" within entry-message grace window (${Date.now() - entrySentAt}ms, Leave still visible)`
+          )
+        } else {
+          console.log(`[Zoom] End detected: "${denied.matchedText}"`)
+          return true
+        }
+      } else {
+        console.log(`[Zoom] End detected: "${denied.matchedText}"`)
+        return true
+      }
     }
 
     // Leave button gone → probably removed. But recording-state ends the meeting

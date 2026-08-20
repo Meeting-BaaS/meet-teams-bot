@@ -1,5 +1,6 @@
 import { MeetingEndReason } from "../state-machine/types"
 import type { StateDetectionConfig } from "../utils/meeting-state-detector"
+import { CHAT_IGNORE_SELECTORS } from "./zoom/chat-selectors"
 
 /**
  * Zoom Web Client (browser) state-detection config (live-DOM-verified).
@@ -43,14 +44,36 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
         "This meeting has been ended by host",
         "host ended the meeting",
         "ended by the host",
-        "removed from the meeting",
         "You have been removed",
         "meeting has ended",
         "Meeting has ended"
       ],
       reason: MeetingEndReason.BotRemoved,
       logPrefix: "XXXXXXXXXXXXXXXXXX Zoom removed the bot / meeting ended",
-      errorMessage: "Bot removed or Zoom meeting ended"
+      errorMessage: "Bot removed or Zoom meeting ended",
+      // POSITIVE scoping: these phrases must ONLY count inside genuine Zoom
+      // end-of-meeting UI (modal / full-page end screen). They are never scanned
+      // on the general page, so chat content — including the bot's own entry
+      // message — can never trip BotRemoved again, even in a chat container the
+      // ignore-list does not (yet) know about. Deliberately narrow: the generic
+      // [class*="modal"] was rejected in review because it also matches
+      // settings/feedback modals, which must never be treated as end-of-meeting
+      // UI.
+      //
+      // Accepted residual risk (deliberate, false-negative-averse): `.zm-modal`
+      // is Zoom's generic modal class, so a hypothetical non-removal dialog
+      // rendering one of these phrases would still match. Tightening further
+      // (e.g. requiring a `modal-body-title` descendant) risks MISSING genuine
+      // removals when Zoom's markup shifts — a bot lingering in a dead meeting
+      // is worse than a rare early exit. Keep this broad enough to always catch
+      // the real removal modal.
+      scopeSelectors: [
+        ".zm-modal",
+        '[class*="meeting-ended"]',
+        '[class*="ended-meeting"]',
+        '[class*="end-screen"]',
+        '[class*="leave-page"]'
+      ]
     }
   ],
   // Never treat chat content as a meeting-end signal. The bot's own entry chat
@@ -59,15 +82,9 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
   // message was sent — the bot killed itself 1-2s after joining. Any participant
   // typing "removed from the meeting"/"meeting has ended" into chat (message or
   // the compose box) would do the same. Genuine removal/meeting-ended UI is a
-  // Zoom modal / full-page overlay (.zm-modal, leave page), never inside the
-  // chat panel (#chat > .chat-container, items .new-chat-item__*/
-  // .new-chat-message__*, compose .chat-rtf-box__*).
-  denialIgnoreWithinSelectors: [
-    "#chat",
-    ".chat-container",
-    ".chat-rtf-box__editor-outer",
-    '[class*="new-chat"]'
-  ],
+  // Zoom modal / full-page overlay, never inside a chat subtree. The list is
+  // shared with ZoomChatObserver (single source of truth) so it can't drift.
+  denialIgnoreWithinSelectors: [...CHAT_IGNORE_SELECTORS],
   waitingRoomPattern: {
     // The waiting room has no unique class — only text. Substring match survives
     // minor copy changes.
