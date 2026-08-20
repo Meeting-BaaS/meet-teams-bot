@@ -43,7 +43,6 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
         "This meeting has been ended by host",
         "host ended the meeting",
         "ended by the host",
-        "removed from the meeting",
         "You have been removed",
         "meeting has ended",
         "Meeting has ended"
@@ -65,8 +64,16 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
   denialIgnoreWithinSelectors: [
     "#chat",
     ".chat-container",
+    '[aria-label="Chat Message List"]',
+    ".chat-virtuoso-wrapper",
+    "#chat-list-content",
+    ".chat-list-content",
+    ".chat-container__chat-list",
     ".chat-rtf-box__editor-outer",
-    '[class*="new-chat"]'
+    '[id^="chat-message-"]',
+    '[class*="new-chat"]',
+    '[class*="chat-message"]',
+    '[class*="chatMessage"]'
   ],
   waitingRoomPattern: {
     // The waiting room has no unique class — only text. Substring match survives

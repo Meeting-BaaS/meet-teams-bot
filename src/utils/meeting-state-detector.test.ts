@@ -28,7 +28,7 @@ const ZOOM_LIKE_CONFIG: StateDetectionConfig = {
     {
       texts: [
         "This meeting has been ended by host",
-        "removed from the meeting",
+        "You have been removed",
         "meeting has ended"
       ],
       reason: MeetingEndReason.BotRemoved,
@@ -38,8 +38,16 @@ const ZOOM_LIKE_CONFIG: StateDetectionConfig = {
   denialIgnoreWithinSelectors: [
     "#chat",
     ".chat-container",
+    '[aria-label="Chat Message List"]',
+    ".chat-virtuoso-wrapper",
+    "#chat-list-content",
+    ".chat-list-content",
+    ".chat-container__chat-list",
     ".chat-rtf-box__editor-outer",
-    '[class*="new-chat"]'
+    '[id^="chat-message-"]',
+    '[class*="new-chat"]',
+    '[class*="chat-message"]',
+    '[class*="chatMessage"]'
   ],
   inMeetingPattern: {
     selectors: ['button[aria-label="Leave"]'],
@@ -101,6 +109,26 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
       expect(result.matched).toBe(false)
     })
 
+    it("does NOT match the ambiguous removal fragment outside known chat roots", async () => {
+      await page.setContent(`
+        ${IN_MEETING_HTML}
+        <div class="future-zoom-message-wrapper">removed from the meeting</div>`)
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(false)
+    })
+
+    it("does NOT match remaining denial text in Zoom's virtualized chat portal", async () => {
+      await page.setContent(`
+        ${IN_MEETING_HTML}
+        <div class="chat-virtuoso-wrapper">
+          <div data-index="0">lol watch this: meeting has ended</div>
+        </div>`)
+
+      const result = await detector.isDenied(page)
+      expect(result.matched).toBe(false)
+    })
+
     it("does NOT match a participant typing 'meeting has ended' into a chat message (griefing vector)", async () => {
       await page.setContent(`
         ${IN_MEETING_HTML}
@@ -123,15 +151,15 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
   })
 
   describe("genuine denial UI still detected", () => {
-    it("matches the same phrase in a visible Zoom modal outside the chat panel", async () => {
+    it("matches Zoom's real removal copy in a visible modal outside the chat panel", async () => {
       await page.setContent(`
         <div class="zm-modal zm-modal-legacy">
-          <div class="zm-modal-body-title">You have been removed from the meeting</div>
+          <div class="zm-modal-body-title">You have been removed from this meeting by the host.</div>
         </div>`)
 
       const result = await detector.isDenied(page)
       expect(result.matched).toBe(true)
-      expect(result.matchedText).toBe("removed from the meeting")
+      expect(result.matchedText).toBe("You have been removed")
       expect(result.pattern?.reason).toBe(MeetingEndReason.BotRemoved)
     })
 
@@ -195,7 +223,7 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
 
       const result = await detector.isDenied(page)
       expect(result.matched).toBe(true)
-      expect(result.matchedText).toBe("removed from the meeting")
+      expect(result.matchedText).toBe("You have been removed")
       expect(result.pattern?.reason).toBe(MeetingEndReason.BotRemoved)
     })
 
@@ -225,7 +253,7 @@ describe("meeting-state-detector isDenied (real Chromium DOM)", () => {
 
       const result = await detector.isDenied(page)
       expect(result.matched).toBe(true)
-      expect(result.matchedText).toBe("removed from the meeting")
+      expect(result.matchedText).toBe("You have been removed")
       expect(result.pattern?.reason).toBe(MeetingEndReason.BotRemoved)
     })
 
