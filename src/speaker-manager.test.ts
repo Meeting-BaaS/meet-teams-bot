@@ -153,6 +153,39 @@ describe("SpeakerManager UI bridge arbitration", () => {
     expect(registeredParticipants).not.toContain("Late UI Speaker")
   })
 
+  it("keeps shadow UI evidence while unresolved dcrpc mutes attribution", async () => {
+    const manager = SpeakerManager.getInstance()
+    const log = jest.spyOn(console, "log").mockImplementation(() => {})
+
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Unknown", true, "device-1")],
+      1785941000000,
+      "network:dcrpc"
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Alice", false, "device-1")],
+      1785941000600,
+      "network:roster"
+    )
+
+    // UI remains muted for product behavior.
+    expect(registeredSpeakers).toEqual(["Unknown"])
+    // Alice enters participants only when the later roster callback resolves her.
+    expect(registeredParticipants).toContain("Alice")
+
+    const shadowLine = log.mock.calls
+      .map(([message]) => String(message))
+      .find((message) => message.includes('"event":"resolved_exact_device"'))
+    if (!shadowLine) throw new Error("resolved shadow event not logged")
+    const event = JSON.parse(shadowLine.slice(shadowLine.indexOf("{")))
+    expect(event.ui_candidate).toMatchObject({
+      samples: 1,
+      distinct_identities: 1,
+      matches_resolved: true
+    })
+  })
+
   it("does not mute the bridge on roster-only network updates (nobody speaking)", async () => {
     const manager = SpeakerManager.getInstance()
     await manager.handleNetworkSpeakerUpdate([networkUser("Silent Sam", false, "device-3")], 1785941000000)

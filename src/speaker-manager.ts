@@ -6,6 +6,7 @@ import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
+import { SpeakerAttributionShadowTracker } from "./speaker-attribution-shadow"
 import { type Participant, type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
 import { PiiRedactor } from "./utils/PiiRedactor"
@@ -41,6 +42,8 @@ export class SpeakerManager {
   // seconds after they first speak — Meet's UI indicator fires much earlier.
   private networkSpeakerActive = false
   private uiBridgeMuteLogged = false
+  // Diagnostic-only arbitration evidence. Never changes speaker ownership.
+  private readonly attributionShadow = new SpeakerAttributionShadowTracker()
 
   private constructor() {}
 
@@ -95,21 +98,34 @@ export class SpeakerManager {
    */
   public static async finalize(): Promise<void> {
     const instance = SpeakerManager.getInstance()
-    if (instance.diarizationTracker) {
-      const lastTimestamp = Date.now()
-      const meetingStartTime = MeetingStateMachine.instance.getStartTime()
-      if (meetingStartTime) {
-        // Hand over the FINAL roster so any segment written while a participant
-        // was still unnamed gets repaired before the artifact is uploaded. The
-        // live path can only ever fix the segment that is still open; by the end
-        // of the meeting we know every name we are ever going to know.
-        await instance.diarizationTracker.end(
-          lastTimestamp,
-          meetingStartTime,
-          (deviceId) => instance.resolveDeviceForBackfill(deviceId),
-          (userId) => instance.userIdNames.get(userId)
-        )
+    const lastTimestamp = Date.now()
+    try {
+      if (instance.diarizationTracker) {
+        const meetingStartTime = MeetingStateMachine.instance.getStartTime()
+        if (meetingStartTime) {
+          // Hand over the FINAL roster so any segment written while a participant
+          // was still unnamed gets repaired before the artifact is uploaded. The
+          // live path can only ever fix the segment that is still open; by the end
+          // of the meeting we know every name we are ever going to know.
+          await instance.diarizationTracker.end(
+            lastTimestamp,
+            meetingStartTime,
+            (deviceId) => instance.resolveDeviceForBackfill(deviceId),
+            (userId) => instance.userIdNames.get(userId)
+          )
+        }
       }
+    } finally {
+      instance.observeAttributionShadow(() => instance.attributionShadow.finalize(lastTimestamp))
+    }
+  }
+
+  /** Shadow telemetry must never change recording or finalization behavior. */
+  private observeAttributionShadow(observe: () => void): void {
+    try {
+      observe()
+    } catch {
+      console.error("[SPEAKER-SHADOW] telemetry_error")
     }
   }
 
@@ -150,6 +166,16 @@ export class SpeakerManager {
    * automatically and the same observer becomes the primary source.
    */
   public async handleUiBridgeUpdate(observed: SpeakerData[]): Promise<void> {
+    const timestamps = observed
+      .map((speaker) => speaker.timestamp)
+      .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0)
+    this.observeAttributionShadow(() =>
+      this.attributionShadow.observeUi(
+        observed,
+        timestamps.length > 0 ? Math.max(...timestamps) : Date.now()
+      )
+    )
+
     const networkRetired =
       GLOBAL.hasNetworkInterceptionSetupFailed() || GLOBAL.hasDiarizationFallbackTriggered()
 
@@ -255,7 +281,7 @@ export class SpeakerManager {
   public async handleNetworkSpeakerUpdate(
     networkUsers: NetworkUser[],
     timestamp: number,
-    source: string = "network"
+    source = "network"
   ): Promise<void> {
     // Once the fallback has retired the network path, the UI observer is the
     // primary source. Stopping the page-side interceptor is best-effort, so a
@@ -324,6 +350,10 @@ export class SpeakerManager {
           isSpeaking
         }
       })
+
+      this.observeAttributionShadow(() =>
+        this.attributionShadow.observeNetwork(speakers, timestamp, source)
+      )
 
       // First actual speaker from the network path mutes the UI bridge — from
       // here the track-based signal is live and authoritative.
