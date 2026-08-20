@@ -180,13 +180,8 @@ export class ChatManager {
       const { sendChatMessage } = await import("./meeting/meet/network-interception")
       const success = await sendChatMessage(page, message)
       if (success) {
-this.persistBotSentMessage(message)
-      // Record when the bot's own chat bubble was posted. The end-of-meeting
-      // denial scanner must not trust a "removed"/"ended" text match right after
-      // this — Zoom echoes our own message into the chat list (2026-08 Noota
-      // incident). zoom.ts consults this during its grace window.
-      markZoomEntryMessageSent()
-      return { success: true }
+        this.persistBotSentMessage(message)
+        return { success: true }
       }
       return { success: false, error: "Failed to send chat message via network", status: 500 }
     } catch (error) {
@@ -291,6 +286,11 @@ this.persistBotSentMessage(message)
       await page.keyboard.press("Enter")
 
       this.persistBotSentMessage(message)
+      // Record when the bot's own chat bubble was posted. The end-of-meeting
+      // denial scanner must not trust a "removed"/"ended" text match right after
+      // this — Zoom echoes our own message into the chat list (2026-08 Noota
+      // incident). zoom.ts consults this during its grace window.
+      markZoomEntryMessageSent()
       return { success: true }
     } catch (error) {
       console.error("[ChatManager] Zoom send failed:", formatError(error))
