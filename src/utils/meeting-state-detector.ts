@@ -13,6 +13,14 @@ export type DenialPattern = {
   reason?: MeetingEndReason
   logPrefix?: string
   errorMessage?: string
+  // POSITIVE scoping. When set, a matched text only counts if it lives inside a
+  // subtree matching one of these selectors (modal / full-page end-of-meeting
+  // UI). This is the robust counterpart to denialIgnoreWithinSelectors: instead
+  // of trying to deny-list every place user content can appear (chat, compose,
+  // virtualized lists…), a scoped pattern can only ever fire on genuine end UI.
+  // Unset/empty = match anywhere on the page (used for unambiguous full-page
+  // walls such as the anti-bot screen).
+  scopeSelectors?: string[]
 }
 
 export type SelectorPattern = {
@@ -126,13 +134,12 @@ async function checkIndicators(
  * Exported for tests; production callers go through isDenied().
  */
 export const findVisibleDenialTextIndex = (args: {
-  texts: string[]
+  patterns: { texts: string[]; scopeSelectors: string[] }[]
   ignoreSelectors: string[]
-}): number => {
+}): { patternIdx: number; textIdx: number; detail: string } => {
   const normalize = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase()
-  const needles = args.texts.map(normalize)
   const root = document.body || document.documentElement
-  if (!root) return -1
+  if (!root) return { patternIdx: -1, textIdx: -1, detail: "" }
 
   // ── one post-order pass: normalized subtree text per element, entering
   //    open shadow roots ──────────────────────────────────────────────────
@@ -206,16 +213,72 @@ export const findVisibleDenialTextIndex = (args: {
     return view.getComputedStyle(el).visibility === "visible"
   }
 
-  // Needles in config order: the first one with a valid rendered match wins
-  for (let i = 0; i < needles.length; i++) {
-    if (!needles[i]) continue
-    const candidates: Element[] = []
-    findInnermost(root, needles[i], candidates)
-    for (const candidate of candidates) {
-      if (!isIgnored(candidate) && isRendered(candidate)) return i
+  // Positive scoping: candidate must sit inside a subtree matching one of the
+  // pattern's scopeSelectors (empty scope list = match anywhere).
+  const isInScope = (el: Element, scopeSelectors: string[]): boolean => {
+    if (scopeSelectors.length === 0) return true
+    let node: Node | null = el
+    while (node) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        for (const selector of scopeSelectors) {
+          try {
+            if ((node as Element).matches(selector)) return true
+          } catch (_e) {
+            // Invalid selector must never break end-of-meeting detection
+          }
+        }
+        node = node.parentNode
+      } else if (node instanceof ShadowRoot) {
+        node = node.host
+      } else {
+        node = node.parentNode
+      }
+    }
+    return false
+  }
+
+  // Compact forensic descriptor of the matched element so every false positive
+  // is provable from the logs (tag/class/id/role + ancestor chain).
+  const describe = (el: Element): string => {
+    const tag = el.tagName.toLowerCase()
+    const cls =
+      typeof el.className === "string" ? el.className.split(/\s+/).slice(0, 3).join(".") : ""
+    const id = el.id ? `#${el.id}` : ""
+    const role = el.getAttribute("role") || ""
+    const chain: string[] = []
+    let node: Node | null = el
+    for (let i = 0; i < 5 && node; i++, node = node.parentNode) {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const n = node as Element
+        const c =
+          typeof n.className === "string" ? n.className.split(/\s+/).slice(0, 2).join(".") : ""
+        chain.push(`${n.tagName.toLowerCase()}${c ? "." + c : ""}`)
+      }
+    }
+    return `${tag}${cls ? "." + cls : ""}${id}${role ? `[role=${role}]` : ""} < ${chain.join(" < ")}`
+  }
+
+  // Patterns in config order — the first pattern with a valid rendered,
+  // non-ignored, in-scope match wins.
+  for (let p = 0; p < args.patterns.length; p++) {
+    const { texts, scopeSelectors } = args.patterns[p]
+    for (let i = 0; i < texts.length; i++) {
+      const needle = normalize(texts[i])
+      if (!needle) continue
+      const candidates: Element[] = []
+      findInnermost(root, needle, candidates)
+      for (const candidate of candidates) {
+        if (
+          !isIgnored(candidate) &&
+          isRendered(candidate) &&
+          isInScope(candidate, scopeSelectors)
+        ) {
+          return { patternIdx: p, textIdx: i, detail: describe(candidate) }
+        }
+      }
     }
   }
-  return -1
+  return { patternIdx: -1, textIdx: -1, detail: "" }
 }
 
 /**
@@ -235,23 +298,27 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
         }
 
         // Single in-page pass instead of one locator round-trip per phrase
-        const matchedIndex = await page.evaluate(findVisibleDenialTextIndex, {
-          texts: allTexts,
+        const matched = await page.evaluate(findVisibleDenialTextIndex, {
+          patterns: config.denialPatterns.map((p) => ({
+            texts: p.texts,
+            scopeSelectors: p.scopeSelectors ?? []
+          })),
           ignoreSelectors: config.denialIgnoreWithinSelectors ?? []
         })
 
-        if (matchedIndex >= 0) {
-          let offset = 0
-          for (const pattern of config.denialPatterns) {
-            if (matchedIndex < offset + pattern.texts.length) {
-              return {
-                state: "denied",
-                matched: true,
-                matchedText: pattern.texts[matchedIndex - offset],
-                pattern
-              }
-            }
-            offset += pattern.texts.length
+        if (matched.patternIdx >= 0) {
+          const pattern = config.denialPatterns[matched.patternIdx]
+          const matchedText = pattern.texts[matched.textIdx]
+          // Log the matched element's tag/class/id/role + ancestry so any future
+          // false positive is provable from the logs instead of a fresh incident.
+          console.warn(
+            `[${config.providerName}] Denial match "${matchedText}" at ${matched.detail}`
+          )
+          return {
+            state: "denied",
+            matched: true,
+            matchedText,
+            pattern
           }
         }
         return { state: "denied", matched: false }

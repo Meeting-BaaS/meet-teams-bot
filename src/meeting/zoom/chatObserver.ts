@@ -2,6 +2,10 @@ import type { Page } from "@playwright/test"
 import { ChatManager } from "../../chat-manager"
 import { GLOBAL } from "../../singleton"
 import type { ChatMessageData } from "../../types"
+import {
+  CHAT_CONTAINER_SELECTORS,
+  CHAT_MESSAGE_SELECTORS
+} from "./chat-selectors"
 
 declare global {
   interface Window {
@@ -91,24 +95,11 @@ export class ZoomChatObserver {
       }
     )
 
-    await this.page.evaluate(() => {
-      const CONTAINER_SELECTORS = [
-        '[aria-label="Chat Message List"]',
-        ".chat-virtuoso-wrapper",
-        "#chat-list-content",
-        ".chat-list-content",
-        ".chat-container__chat-list",
-        '[class*="chat-list"]',
-        '[class*="chat-message-list"]'
-      ]
-      const MESSAGE_SELECTORS = [
-        '[id^="chat-message-"]',
-        ".new-chat-message__container",
-        '[class*="chat-message-item"]',
-        '[class*="chatMessage"]',
-        "div[data-index]"
-      ]
-      const SENDER_SELECTORS = [
+    await this.page.evaluate(
+      ({ containers, messages }) => {
+        const CONTAINER_SELECTORS = containers
+        const MESSAGE_SELECTORS = messages
+        const SENDER_SELECTORS = [
         ".chat-message-text__user-name",
         '[class*="user-name"]',
         '[class*="userName"]',
@@ -247,7 +238,9 @@ export class ZoomChatObserver {
         window.clearInterval(poll)
         observer.disconnect()
       }
-    })
+      },
+      { containers: CHAT_CONTAINER_SELECTORS, messages: CHAT_MESSAGE_SELECTORS }
+    )
 
     this.isObserving = true
     console.log("[ZoomChatObserver] Chat observation started")
