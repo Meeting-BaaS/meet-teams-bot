@@ -64,7 +64,7 @@ const LEAVE_GRACE_MS = 20_000
 // chat list. Depending on the DOM it may land in a container the denial
 // scanner's ignore-list does not know yet, and the message text can contain
 // denial-ish wording ("…can be removed from the meeting…") — which killed bots
-// ~200-700ms after joining (2026-08 Noota incident). During this window a
+// ~200-700ms after joining (2026-08 production incident). During this window a
 // denial match is only trusted if the in-meeting controls (Leave button) are
 // GONE — i.e. a genuine removal would hide them — otherwise the echo of our own
 // message must never end the meeting.

@@ -3,11 +3,11 @@
  *
  * The end-of-meeting denial scanner can false-positive on the bot's OWN entry
  * message: it echoes into the rendered chat list and, depending on Zoom's DOM,
- * may not sit in a container the ignore-list knows about (2026-08 Noota
- * incident: bots c97b775f / ee8053f9 killed themselves ~200-700ms after
- * sending it). Module-scoped so both the in-call state machine (writes, on the
- * ENTRY message only) and the Zoom end detector (reads) share one clock
- * without threading an instance through.
+ * may not sit in a container the ignore-list knows about (2026-08 production
+ * incident: bots killed themselves ~200-700ms after sending it). Module-scoped
+ * so both the in-call state machine (writes, on the ENTRY message only) and
+ * the Zoom end detector (reads) share one clock without threading an instance
+ * through.
  */
 
 let entryMessageSentAt: number | null = null

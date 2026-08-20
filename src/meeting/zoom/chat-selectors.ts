@@ -6,7 +6,7 @@
  * place means the denial scanner's ignore-list can never drift from what the
  * observer actually reads — the exact gap that let the bot's own entry message
  * ("…can be removed from the meeting…") escape the ignore-list and kill the bot
- * ~200ms after joining (2026-08 Noota incident, bots c97b775f / ee8053f9).
+ * ~200ms after joining (2026-08 production incident).
  *
  * The observer must pass these into page.evaluate as ARGS (Playwright
  * serializes them into the page context); the denial scanner imports them
