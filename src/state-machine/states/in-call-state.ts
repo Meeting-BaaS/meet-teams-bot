@@ -12,6 +12,7 @@ import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
 import { formatError } from "../../utils/Logger"
+import { markZoomEntryMessageSent } from "../../meeting/zoom/entry-message-timing"
 import { MEETING_CONSTANTS } from "../constants"
 import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
@@ -226,6 +227,13 @@ export class InCallState extends BaseState {
         )
         if (result.success) {
           console.log("[InCallState] Entry message sent successfully")
+          // Only the ENTRY message arms the zoom end-detection grace window.
+          // Mid-meeting bot chat sends (e.g. API-triggered) must NOT re-arm it,
+          // otherwise a genuine removal right after such a message could be
+          // suppressed. See zoom.ts findEndMeeting.
+          if (platform === "zoom") {
+            markZoomEntryMessageSent()
+          }
         } else {
           console.error("[InCallState] Entry message failed:", (result as { error: string }).error)
         }

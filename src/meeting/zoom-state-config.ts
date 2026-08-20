@@ -59,6 +59,14 @@ export const ZOOM_STATE_CONFIG: StateDetectionConfig = {
       // [class*="modal"] was rejected in review because it also matches
       // settings/feedback modals, which must never be treated as end-of-meeting
       // UI.
+      //
+      // Accepted residual risk (deliberate, false-negative-averse): `.zm-modal`
+      // is Zoom's generic modal class, so a hypothetical non-removal dialog
+      // rendering one of these phrases would still match. Tightening further
+      // (e.g. requiring a `modal-body-title` descendant) risks MISSING genuine
+      // removals when Zoom's markup shifts — a bot lingering in a dead meeting
+      // is worse than a rare early exit. Keep this broad enough to always catch
+      // the real removal modal.
       scopeSelectors: [
         ".zm-modal",
         '[class*="meeting-ended"]',

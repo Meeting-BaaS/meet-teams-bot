@@ -5,7 +5,6 @@ import type { Page } from "@playwright/test"
 import axios from "./api/axios-instance"
 import { envVars } from "./config/env-vars"
 import type { ChatObserver } from "./meeting/chatObserver"
-import { markZoomEntryMessageSent } from "./meeting/zoom/entry-message-timing"
 import { GLOBAL } from "./singleton"
 import type { ChatMessageData, MeetingProvider } from "./types"
 import { formatError } from "./utils/Logger"
@@ -286,11 +285,6 @@ export class ChatManager {
       await page.keyboard.press("Enter")
 
       this.persistBotSentMessage(message)
-      // Record when the bot's own chat bubble was posted. The end-of-meeting
-      // denial scanner must not trust a "removed"/"ended" text match right after
-      // this — Zoom echoes our own message into the chat list (2026-08 Noota
-      // incident). zoom.ts consults this during its grace window.
-      markZoomEntryMessageSent()
       return { success: true }
     } catch (error) {
       console.error("[ChatManager] Zoom send failed:", formatError(error))

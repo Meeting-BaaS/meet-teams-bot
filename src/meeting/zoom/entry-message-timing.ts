@@ -5,15 +5,18 @@
  * message: it echoes into the rendered chat list and, depending on Zoom's DOM,
  * may not sit in a container the ignore-list knows about (2026-08 Noota
  * incident: bots c97b775f / ee8053f9 killed themselves ~200-700ms after
- * sending it). Module-scoped so both ChatManager (writes) and the Zoom end
- * detector (reads) share one clock without threading an instance through.
+ * sending it). Module-scoped so both the in-call state machine (writes, on the
+ * ENTRY message only) and the Zoom end detector (reads) share one clock
+ * without threading an instance through.
  */
 
 let entryMessageSentAt: number | null = null
 
 /**
- * Record that the bot just posted its Zoom entry chat message. Called by
- * ChatManager.sendViaZoom once the message bubble is persisted.
+ * Record that the bot just posted its Zoom entry chat message. Called by the
+ * in-call state machine after a successful entry-message send (zoom only) —
+ * deliberately NOT on other mid-meeting chat sends, so the grace window cannot
+ * be re-armed by API-triggered messages.
  */
 export function markZoomEntryMessageSent(): void {
   entryMessageSentAt = Date.now()
