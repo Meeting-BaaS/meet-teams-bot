@@ -63,6 +63,7 @@ export class DiarizationTracker {
   // network path. handleNoSpeakers stops refreshing this, so an ABANDONED open
   // segment still ages into "stale" and the post-stop fallback is preserved.
   private lastActivitySeconds: number | null = null
+  private streamFailed = false // True once the append stream errored and was dropped
 
   private constructor(tempDir: string) {
     this.filePath = join(tempDir, "diarization.jsonl")
@@ -75,6 +76,8 @@ export class DiarizationTracker {
     // (end() rewrites the file from the in-memory buffer), so log and drop the
     // stream instead of crashing.
     this.fileStream.on("error", (error) => {
+      if (this.streamFailed) return
+      this.streamFailed = true
       console.error(`DiarizationTracker: stream error on ${this.filePath}: ${error}`)
       this.fileStream = null
     })
@@ -329,7 +332,10 @@ export class DiarizationTracker {
       stream.end()
       stream.once("finish", () => resolve())
       stream.once("error", (error) => {
-        console.error(`DiarizationTracker: Error closing stream: ${error}`)
+        // The constructor listener runs first and already reported this one.
+        if (!this.streamFailed) {
+          console.error(`DiarizationTracker: Error closing stream: ${error}`)
+        }
         resolve()
       })
     })
@@ -428,7 +434,10 @@ export class DiarizationTracker {
    */
   private writeToFile(segment: DiarizationSegment): void {
     if (!this.fileStream) {
-      console.error("DiarizationTracker: File stream not initialized")
+      // Already reported once by the error handler.
+      if (!this.streamFailed) {
+        console.error("DiarizationTracker: File stream not initialized")
+      }
       return
     }
 

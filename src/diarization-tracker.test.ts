@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "fs"
+import { mkdtempSync, readFileSync, type WriteStream } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { DiarizationTracker } from "./diarization-tracker"
@@ -251,6 +251,32 @@ describe("DiarizationTracker recording-clock clamp", () => {
     expect(segments.length).toBeGreaterThan(0)
     expect(segments[0].start_time).toBe(0)
     expect(segments.every((s) => s.start_time >= 0)).toBe(true)
+  })
+
+  it("reports a stream that fails during end() once, not from both listeners", async () => {
+    const tracker = freshTracker()
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {})
+
+    try {
+      tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
+
+      // Failure at close time: the constructor listener and closeStream's own
+      // listener both see it, and would otherwise log the same fault twice.
+      const stream = (tracker as unknown as { fileStream: WriteStream }).fileStream
+      jest.spyOn(stream, "end").mockImplementation(function (this: WriteStream) {
+        this.destroy(Object.assign(new Error("disk lost"), { code: "EIO" }))
+        return this
+      } as WriteStream["end"])
+
+      await tracker.end(MEETING_START + 5000, MEETING_START, () => undefined)
+
+      const failureLogs = errorSpy.mock.calls.filter((call) =>
+        /stream error on|Error closing stream/.test(String(call[0]))
+      )
+      expect(failureLogs).toHaveLength(1)
+    } finally {
+      errorSpy.mockRestore()
+    }
   })
 
   it("drops a segment the clamp collapses to zero length", async () => {
