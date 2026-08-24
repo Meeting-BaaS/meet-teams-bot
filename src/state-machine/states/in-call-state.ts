@@ -371,7 +371,9 @@ export class InCallState extends BaseState {
               registeredTrackCount,
               lastFrameAgeMs,
               audioProcessingActive,
-              subscriptionError
+              subscriptionError,
+              dcrpcNumericLate,
+              dcrpcNumericPending
             } = payload.health
 
             if (subscriptionError) {
@@ -416,6 +418,14 @@ export class InCallState extends BaseState {
             console.log(
               `[NetworkInterceptor] Health Status: subscribed=${subscribed}, delivering=${activeTrackCount}, registered=${registeredTrackCount ?? "n/a"}, lastFrameAgeMs=${lastFrameAgeMs ?? "never"}, processing=${audioProcessingActive}`
             )
+
+            // dcrpc numeric-speaker resolution telemetry (counts only): how much
+            // of the residual Unknown is late-resolving timing vs never-resolved.
+            if ((dcrpcNumericLate ?? 0) > 0 || (dcrpcNumericPending ?? 0) > 0) {
+              console.log(
+                `[DCRPC-NUMERIC] resolvedLate=${dcrpcNumericLate ?? 0} pending=${dcrpcNumericPending ?? 0}`
+              )
+            }
 
             return // Don't process as speaker update
           }

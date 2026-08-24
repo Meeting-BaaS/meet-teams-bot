@@ -408,11 +408,25 @@ export function browserInterceptionLogic(schema: any[]) {
       // same participant twice with conflicting speaking states.
       const speakingDeviceIds = new Set<string>()
       const resolvedById = new Map<string, any>()
+      // Measurement only: a dcrpc speaker is reported by a numeric id resolved to
+      // a name via the collections streamId map. Track how many numeric speakers
+      // resolve LATE (their deviceOutput only reached collections after they first
+      // spoke — a timing gap that a finalize re-resolution could close) vs NEVER
+      // (no deviceOutput ever published — genuinely unnameable). Counts only.
+      const numPending: Set<string> = ((window as any).__dcrpcNumPending ||= new Set())
       for (const id of speakingIds) {
         const user = getUserByStreamId(userManager, id)
         const dev = user?.deviceId ?? id
         speakingDeviceIds.add(dev)
-        if (user) resolvedById.set(dev, user)
+        if (user) {
+          resolvedById.set(dev, user)
+          if (numPending.has(id)) {
+            numPending.delete(id)
+            ;(window as any).__dcrpcNumLate = ((window as any).__dcrpcNumLate || 0) + 1
+          }
+        } else if (/^\d+$/.test(id)) {
+          numPending.add(id)
+        }
       }
 
       const filteredUsers = filterActiveUsers(getAllUsers(userManager))
@@ -1100,6 +1114,14 @@ export function browserInterceptionLogic(schema: any[]) {
         lastFrameAgeMs,
         audioProcessingActive,
         subscriptionError,
+        // dcrpc numeric-speaker resolution telemetry (counts only):
+        //   late    = numeric speakers whose deviceOutput reached collections
+        //             only after they first spoke (a finalize re-resolution
+        //             could recover these)
+        //   pending = numeric speakers still unresolved (no deviceOutput yet /
+        //             ever — genuinely unnameable if it stays this way)
+        dcrpcNumericLate: (window as any).__dcrpcNumLate || 0,
+        dcrpcNumericPending: ((window as any).__dcrpcNumPending?.size as number) || 0,
         timestamp: Date.now()
       }
 

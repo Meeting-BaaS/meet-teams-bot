@@ -44,6 +44,10 @@ export type NetworkPayload = {
     lastFrameAgeMs?: number | null
     audioProcessingActive: boolean
     subscriptionError: string | null
+    /** dcrpc numeric speakers whose deviceOutput resolved after first speech. */
+    dcrpcNumericLate?: number
+    /** dcrpc numeric speakers still unresolved (no deviceOutput yet/ever). */
+    dcrpcNumericPending?: number
     timestamp: number
   }
   failure?: {
