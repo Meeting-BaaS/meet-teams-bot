@@ -420,6 +420,29 @@ export function browserInterceptionLogic(schema: any[]) {
       })
       for (const deviceId of speakingIds) {
         if (seen.has(deviceId)) continue
+        // dcrpc reports the active speaker by a numeric id (its device-path is
+        // absent), so it is not in the roster and lands as "Unknown". That numeric
+        // is a deviceOutput streamId, which the collections channel maps to a
+        // real device-path (harvested into ssrcToDeviceMap). Resolve through it —
+        // getUserByStreamId reads that mapping — before falling back to Unknown.
+        const resolved = getUserByStreamId(userManager, deviceId)
+        if (resolved) {
+          seen.add(deviceId)
+          users.push({
+            deviceId: resolved.deviceId ?? deviceId,
+            name: decodeUserName(resolved),
+            isCurrentUser:
+              resolved.isCurrentUserString === "true" || resolved.isCurrentUserString === "1",
+            isSpeaking: true,
+            status: resolved.status ?? 1,
+            isHost: resolved.isHost === 1,
+            audioLevel: 1,
+            fullName: decodeFullName(resolved),
+            displayName: resolved.displayName,
+            profilePicture: resolved.profilePicture
+          })
+          continue
+        }
         users.push({
           deviceId,
           name: "Unknown",
@@ -1135,6 +1158,90 @@ export function browserInterceptionLogic(schema: any[]) {
       reportHealthCheck()
     }, 10000)
 
+    // Harvest every streamId(field 4, numeric string) -> deviceId(field 6,
+    // device path) pair from a raw collections frame, independent of the schema
+    // decoder. The schema's deviceOutputInfoList path misses some deviceOutput
+    // records, so the dcrpc active-speaker numeric (which IS a deviceOutput
+    // streamId) never reaches ssrcToDeviceMap and the speaker lands as "Unknown".
+    // Walking the raw bytes catches all of them.
+    function harvestDeviceMappings(buf: Uint8Array, um: any, depth: number): void {
+      if (depth > 12) return
+      const parseLevel = (b: Uint8Array): { [f: number]: { wt: number; bytes?: Uint8Array }[] } => {
+        const fields: { [f: number]: { wt: number; bytes?: Uint8Array }[] } = {}
+        let pos = 0
+        while (pos < b.length) {
+          let tag = 0
+          let sh = 0
+          let x: number
+          do {
+            if (pos >= b.length) return fields
+            x = b[pos++]
+            tag += (x & 0x7f) * 2 ** sh
+            sh += 7
+            if (sh > 70) return fields
+          } while (x & 0x80)
+          const field = Math.floor(tag / 8)
+          const wt = tag % 8
+          if (wt === 0) {
+            do {
+              if (pos >= b.length) return fields
+            } while (b[pos++] & 0x80)
+            ;(fields[field] ||= []).push({ wt })
+          } else if (wt === 2) {
+            let len = 0
+            let s2 = 0
+            let y: number
+            do {
+              if (pos >= b.length) return fields
+              y = b[pos++]
+              len += (y & 0x7f) * 2 ** s2
+              s2 += 7
+              if (s2 > 70) return fields
+            } while (y & 0x80)
+            if (pos + len > b.length) return fields
+            ;(fields[field] ||= []).push({ wt, bytes: b.subarray(pos, pos + len) })
+            pos += len
+          } else if (wt === 1) {
+            pos += 8
+          } else if (wt === 5) {
+            pos += 4
+          } else {
+            return fields
+          }
+        }
+        return fields
+      }
+      const fields = parseLevel(buf)
+      const asStr = (e?: { bytes?: Uint8Array }): string | null => {
+        if (!e?.bytes) return null
+        try {
+          return new TextDecoder("utf-8", { fatal: true }).decode(e.bytes)
+        } catch {
+          return null
+        }
+      }
+      const f4 = fields[4]?.[0]
+      const f6 = fields[6]?.[0]
+      if (f4?.wt === 2 && f6?.wt === 2) {
+        const sid = asStr(f4)
+        const dev = asStr(f6)
+        if (sid && dev && /^\d+$/.test(sid) && dev.indexOf("spaces/") === 0) {
+          if (um.ssrcToDeviceMap.get(sid) !== dev) {
+            um.ssrcToDeviceMap.set(sid, dev)
+            const n = Number.parseInt(sid, 10)
+            if (!Number.isNaN(n)) um.ssrcToDeviceMap.set(n, dev)
+          }
+        }
+      }
+      for (const key of Object.keys(fields)) {
+        for (const e of fields[Number(key)]) {
+          if (e.wt === 2 && e.bytes && e.bytes.length > 1) {
+            harvestDeviceMappings(e.bytes, um, depth + 1)
+          }
+        }
+      }
+    }
+
     // Decode the active-speaker state carried on the dcrpc datachannel (NetEq
     // sessions). Returns the sorted set of speaking device ids for dedupe, or
     // null when the frame is a keepalive / not a state frame.
@@ -1226,6 +1333,13 @@ export function browserInterceptionLogic(schema: any[]) {
               throw new Error("pako.inflate is not available")
             }
             const inflated = (window as any).pako.inflate(rawData)
+            // Harvest streamId->deviceId pairs the schema decoder misses, so the
+            // dcrpc active-speaker numeric resolves to a name.
+            try {
+              harvestDeviceMappings(inflated, userManager, 0)
+            } catch {
+              // never break the collections decode
+            }
             const eventData = messageDecoders["CollectionEvent"](inflated)
             const body = eventData.body
             if (body) {
