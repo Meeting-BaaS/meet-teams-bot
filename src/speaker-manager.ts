@@ -8,6 +8,7 @@ import { enablePrintPageLogs } from './browser/page-logger'
 import type { NetworkUser } from './meeting/teams/network-interception/types'
 import { GLOBAL } from './singleton'
 import { ParticipantState } from './state-machine/types'
+import { SpeakerAttributionShadowTracker } from './speaker-attribution-shadow'
 import { SpeakerData } from './types'
 import { uploadTranscriptTask } from './uploadTranscripts'
 import { PathManager } from './utils/PathManager'
@@ -61,8 +62,19 @@ export class SpeakerManager {
     // few seconds after they first speak — Meet's UI indicator fires earlier.
     private networkSpeakerActive = false
     private uiBridgeMuteLogged = false
+    // Diagnostic-only arbitration evidence. Never changes speaker ownership.
+    private readonly attributionShadow = new SpeakerAttributionShadowTracker()
 
     private constructor() {}
+
+    /** Shadow telemetry must never change recording or finalization behavior. */
+    private observeAttributionShadow(observe: () => void): void {
+        try {
+            observe()
+        } catch {
+            console.error('[SPEAKER-SHADOW] telemetry_error')
+        }
+    }
 
     /**
      * Entry point for the Meet UI speaker bridge: the DOM speaking indicator
@@ -84,6 +96,16 @@ export class SpeakerManager {
         observed: SpeakerData[],
         networkRetired: boolean,
     ): Promise<void> {
+        const timestamps = observed
+            .map((speaker) => speaker.timestamp)
+            .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0)
+        this.observeAttributionShadow(() =>
+            this.attributionShadow.observeUi(
+                observed,
+                timestamps.length > 0 ? Math.max(...timestamps) : Date.now(),
+            ),
+        )
+
         if (this.networkSpeakerActive && !networkRetired) {
             if (!this.uiBridgeMuteLogged) {
                 this.uiBridgeMuteLogged = true
@@ -184,20 +206,25 @@ export class SpeakerManager {
      */
     public static async finalize(): Promise<void> {
         const instance = SpeakerManager.getInstance()
-        if (!instance.diarizationTracker) {
-            return
-        }
         const lastTimestamp = Date.now()
-        const meetingStartTime = MeetingStateMachine.instance?.getStartTime()
-        if (!meetingStartTime) {
-            return
+        try {
+            if (instance.diarizationTracker) {
+                const meetingStartTime =
+                    MeetingStateMachine.instance?.getStartTime()
+                if (meetingStartTime) {
+                    await instance.diarizationTracker.end(
+                        lastTimestamp,
+                        meetingStartTime,
+                        (deviceId) => instance.resolveDeviceForBackfill(deviceId),
+                        (userId) => instance.resolveUserIdForBackfill(userId),
+                    )
+                }
+            }
+        } finally {
+            instance.observeAttributionShadow(() =>
+                instance.attributionShadow.finalize(lastTimestamp),
+            )
         }
-        await instance.diarizationTracker.end(
-            lastTimestamp,
-            meetingStartTime,
-            (deviceId) => instance.resolveDeviceForBackfill(deviceId),
-            (userId) => instance.resolveUserIdForBackfill(userId),
-        )
     }
 
     /**
@@ -340,6 +367,10 @@ export class SpeakerManager {
                         (botCanSpeak || !this.isBotName(stableName)),
                 }
             })
+
+        this.observeAttributionShadow(() =>
+            this.attributionShadow.observeNetwork(speakers, timestamp, source),
+        )
 
         // First actual speaker from the network path mutes the Meet UI bridge —
         // from here the track-based signal is live and authoritative.
