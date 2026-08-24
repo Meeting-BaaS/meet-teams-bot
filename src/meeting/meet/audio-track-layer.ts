@@ -117,6 +117,51 @@ function generateAudioTrackLayerScript(): string {
                     })
                 }
 
+                // NetEq decoder tap. In roughly half of Meet sessions (server-side
+                // experiment) audio never arrives as WebRTC tracks: it is decoded
+                // by a "neteq-processor" AudioWorklet node and wired into a
+                // MediaStreamAudioDestinationNode for playback. That destination
+                // node exposes a real MediaStreamTrack — hand it to the same track
+                // layer the WebRTC path uses, and the downstream frame pipeline
+                // (activity detection, health checks) works unchanged. The tap
+                // fires on connect(), so ordering between node and destination
+                // creation does not matter, and notifyTrackSubscribers dedupes by
+                // track id if Meet reconnects the graph.
+                if (typeof window.AudioWorkletNode === "function") {
+                    const OriginalAWN = window.AudioWorkletNode
+                    const WrappedAWN = function (...args) {
+                        const processorName = typeof args[1] === "string" ? args[1] : ""
+                        const node = Reflect.construct(OriginalAWN, args, new.target || WrappedAWN)
+                        if (processorName.toLowerCase().indexOf("neteq") !== -1) {
+                            try {
+                                const originalConnect = node.connect.bind(node)
+                                node.connect = function (...connectArgs) {
+                                    const result = originalConnect(...connectArgs)
+                                    try {
+                                        const dest = connectArgs[0]
+                                        if (dest && dest.stream && typeof dest.stream.getAudioTracks === "function") {
+                                            const tapped = dest.stream.getAudioTracks()[0]
+                                            if (tapped) {
+                                                console.log("${LOG_PREFIX} NetEq decoder output tapped: track " + tapped.id)
+                                                notifyTrackSubscribers(tapped, null, null)
+                                            }
+                                        }
+                                    } catch (tapError) {
+                                        console.error("${LOG_PREFIX} NetEq tap error:", tapError)
+                                    }
+                                    return result
+                                }
+                            } catch (wrapError) {
+                                console.error("${LOG_PREFIX} NetEq connect wrap failed:", wrapError)
+                            }
+                        }
+                        return node
+                    }
+                    WrappedAWN.prototype = OriginalAWN.prototype
+                    Object.setPrototypeOf(WrappedAWN, OriginalAWN)
+                    window.AudioWorkletNode = WrappedAWN
+                }
+
                 // Proxy RTCPeerConnection to capture audio tracks. Meet's PC is
                 // created after navigation, so wrapping the constructor here
                 // (pre-goto) guarantees we see it before Meet grabs the original.
