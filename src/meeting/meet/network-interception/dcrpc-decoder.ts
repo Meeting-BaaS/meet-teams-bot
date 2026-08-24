@@ -32,6 +32,11 @@
 export type DcrpcParticipant = {
   deviceId: string
   speaking: boolean
+  // Numeric device id(s) carried alongside the device-path (participant field 8,
+  // and the ints inside it if it is a length-delimited pair). The CSRC path
+  // resolves speakers by a raw numeric SSRC that the roster (keyed by the
+  // device-path) never maps, so these let us bridge numeric -> device-path.
+  numericIds: string[]
 }
 
 /**
@@ -142,7 +147,25 @@ export function decodeDcrpcFrame(
       const active = parseFields(f9[0].bytes)
       if (active[2] && active[2].length > 0) speaking = true
     }
-    return { deviceId, speaking }
+
+    // Field 8 carries the participant's numeric device id (a bare varint, or a
+    // length-delimited pair of varints). Collect every numeric it yields — one
+    // of them is expected to match the raw SSRC the CSRC path resolves against.
+    const numericIds: string[] = []
+    for (const entry of fields[8] || []) {
+      if (entry.wt === 0 && entry.val !== undefined) {
+        numericIds.push(String(entry.val))
+      } else if (entry.wt === 2 && entry.bytes) {
+        const inner = parseFields(entry.bytes)
+        for (const key of Object.keys(inner)) {
+          for (const sub of inner[Number(key)]) {
+            if (sub.wt === 0 && sub.val !== undefined) numericIds.push(String(sub.val))
+          }
+        }
+      }
+    }
+
+    return { deviceId, speaking, numericIds }
   }
 
   // Descend through field-2 wrappers, stopping at the first level whose field-4

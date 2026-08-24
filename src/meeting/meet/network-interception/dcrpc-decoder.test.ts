@@ -16,10 +16,16 @@ function activeMessage(): Uint8Array {
   return w.finish()
 }
 
-/** One participant record: field 4 = device id, field 9 = active (optional). */
-function participant(deviceId: string, speaking: boolean): Uint8Array {
+/**
+ * One participant record: field 4 = device id, field 9 = active (optional),
+ * field 8 = numeric device id (optional varint).
+ */
+function participant(deviceId: string, speaking: boolean, numericId?: number): Uint8Array {
   const w = protobuf.Writer.create()
   w.uint32(tag(4, 2)).string(deviceId)
+  if (numericId !== undefined) {
+    w.uint32(tag(8, 0)).uint32(numericId)
+  }
   if (speaking) {
     w.uint32(tag(9, 2)).bytes(activeMessage())
   }
@@ -66,8 +72,8 @@ describe("decodeDcrpcFrame", () => {
     const result = decodeDcrpcFrame(frame, pako.inflate)
 
     expect(result).toEqual([
-      { deviceId: "device-aaa", speaking: true },
-      { deviceId: "device-bbb", speaking: false }
+      { deviceId: "device-aaa", speaking: true, numericIds: [] },
+      { deviceId: "device-bbb", speaking: false, numericIds: [] }
     ])
   })
 
@@ -94,7 +100,7 @@ describe("decodeDcrpcFrame", () => {
     const result = decodeDcrpcFrame(frame, inflate as unknown as (b: Uint8Array) => Uint8Array)
 
     expect(inflate).not.toHaveBeenCalled()
-    expect(result).toEqual([{ deviceId: "device-ccc", speaking: true }])
+    expect(result).toEqual([{ deviceId: "device-ccc", speaking: true, numericIds: [] }])
   })
 
   it("finds participants even with an extra wrapper level (defensive walk)", () => {
@@ -107,7 +113,18 @@ describe("decodeDcrpcFrame", () => {
     const frame = wrapField(2, gzipped)
 
     expect(decodeDcrpcFrame(frame, pako.inflate)).toEqual([
-      { deviceId: "device-ddd", speaking: true }
+      { deviceId: "device-ddd", speaking: true, numericIds: [] }
+    ])
+  })
+
+  it("extracts the numeric device id from participant field 8", () => {
+    const frame = buildStateFrame([
+      participant("device-eee", true, 2375728588),
+      participant("device-fff", false)
+    ])
+    expect(decodeDcrpcFrame(frame, pako.inflate)).toEqual([
+      { deviceId: "device-eee", speaking: true, numericIds: ["2375728588"] },
+      { deviceId: "device-fff", speaking: false, numericIds: [] }
     ])
   })
 })

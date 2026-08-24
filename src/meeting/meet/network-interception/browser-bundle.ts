@@ -1144,13 +1144,37 @@ export function browserInterceptionLogic(schema: any[]) {
       if (typeof decode !== "function" || !pako || typeof pako.inflate !== "function") {
         return
       }
-      let participants: Array<{ deviceId: string; speaking: boolean }> | null
+      let participants: Array<{
+        deviceId: string
+        speaking: boolean
+        numericIds?: string[]
+      }> | null
       try {
         participants = decode(rawData, pako.inflate)
       } catch {
         return
       }
       if (participants === null) return // keepalive / non-state frame
+
+      // Bridge the numeric device id(s) dcrpc carries for each participant to
+      // their device-path, into the same ssrcToDeviceMap the CSRC path reads.
+      // The force-native CSRC path resolves speakers by a raw numeric SSRC that
+      // the roster (keyed by device-path) never maps, so those speakers land as
+      // "Unknown"; this lets getUserByStreamId resolve them to the real name.
+      for (const p of participants) {
+        if (!p.deviceId || !p.numericIds || p.numericIds.length === 0) continue
+        for (const numeric of p.numericIds) {
+          if (userManager.ssrcToDeviceMap.get(numeric) === p.deviceId) continue
+          userManager.ssrcToDeviceMap.set(numeric, p.deviceId)
+          const asNumber = Number.parseInt(numeric, 10)
+          if (!Number.isNaN(asNumber)) {
+            userManager.ssrcToDeviceMap.set(asNumber, p.deviceId)
+          }
+          console.error(
+            `[NetworkInterceptor] 🔗 dcrpc bridged numeric ${numeric} → device (roster-known: ${userManager.allUsersMap.has(p.deviceId)})`
+          )
+        }
+      }
 
       const speakingIds: string[] = []
       for (const p of participants) {
