@@ -399,12 +399,27 @@ export function browserInterceptionLogic(schema: any[]) {
       if ((window as any).__networkInterceptorStopped) return
       if (typeof (window as any).onNetworkSpeakerUpdate !== "function") return
 
-      const speakingSet = new Set(speakingIds)
+      // Normalize each speaking id to its roster device-path up front. dcrpc
+      // reports the active speaker by a numeric id (its device-path is absent);
+      // that numeric is a deviceOutput streamId the collections channel maps to a
+      // real device-path (harvested into ssrcToDeviceMap, read by
+      // getUserByStreamId). Resolving here — instead of after the roster map —
+      // lets a roster user be marked speaking directly and avoids emitting the
+      // same participant twice with conflicting speaking states.
+      const speakingDeviceIds = new Set<string>()
+      const resolvedById = new Map<string, any>()
+      for (const id of speakingIds) {
+        const user = getUserByStreamId(userManager, id)
+        const dev = user?.deviceId ?? id
+        speakingDeviceIds.add(dev)
+        if (user) resolvedById.set(dev, user)
+      }
+
       const filteredUsers = filterActiveUsers(getAllUsers(userManager))
       const seen = new Set<string>()
       const users = filteredUsers.map((user: any) => {
         seen.add(user.deviceId)
-        const isSpeaking = speakingSet.has(user.deviceId)
+        const isSpeaking = speakingDeviceIds.has(user.deviceId)
         return {
           deviceId: user.deviceId,
           name: decodeUserName(user),
@@ -418,42 +433,25 @@ export function browserInterceptionLogic(schema: any[]) {
           profilePicture: user.profilePicture
         }
       })
-      for (const deviceId of speakingIds) {
-        if (seen.has(deviceId)) continue
-        // dcrpc reports the active speaker by a numeric id (its device-path is
-        // absent), so it is not in the roster and lands as "Unknown". That numeric
-        // is a deviceOutput streamId, which the collections channel maps to a
-        // real device-path (harvested into ssrcToDeviceMap). Resolve through it —
-        // getUserByStreamId reads that mapping — before falling back to Unknown.
-        const resolved = getUserByStreamId(userManager, deviceId)
-        if (resolved) {
-          seen.add(deviceId)
-          users.push({
-            deviceId: resolved.deviceId ?? deviceId,
-            name: decodeUserName(resolved),
-            isCurrentUser:
-              resolved.isCurrentUserString === "true" || resolved.isCurrentUserString === "1",
-            isSpeaking: true,
-            status: resolved.status ?? 1,
-            isHost: resolved.isHost === 1,
-            audioLevel: 1,
-            fullName: decodeFullName(resolved),
-            displayName: resolved.displayName,
-            profilePicture: resolved.profilePicture
-          })
-          continue
-        }
+      // Speakers not already emitted from the roster above: a resolved user that
+      // filterActiveUsers dropped (emit it under its real name), or a numeric id
+      // with no deviceOutput mapping at all (genuinely Unknown).
+      for (const dev of speakingDeviceIds) {
+        if (seen.has(dev)) continue
+        seen.add(dev)
+        const user = resolvedById.get(dev)
         users.push({
-          deviceId,
-          name: "Unknown",
-          isCurrentUser: false,
+          deviceId: user?.deviceId ?? dev,
+          name: user ? decodeUserName(user) : "Unknown",
+          isCurrentUser:
+            user?.isCurrentUserString === "true" || user?.isCurrentUserString === "1",
           isSpeaking: true,
-          status: 1,
-          isHost: false,
+          status: user?.status ?? 1,
+          isHost: user?.isHost === 1,
           audioLevel: 1,
-          fullName: undefined,
-          displayName: undefined,
-          profilePicture: undefined
+          fullName: user ? decodeFullName(user) : undefined,
+          displayName: user?.displayName,
+          profilePicture: user?.profilePicture
         })
       }
 
