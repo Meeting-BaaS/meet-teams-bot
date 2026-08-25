@@ -197,6 +197,78 @@ export function browserInterceptionLogic(schema: any[]) {
       return Array.from(userManager.allUsersMap.values())
     }
 
+    // DOM-sourced SSRC -> device-path harvest.
+    //
+    // Google Meet stamps every rendered media tile with
+    // `data-ssrc="<rtp-ssrc>"`, nested inside that participant's
+    // `[data-participant-id="spaces/<space>/devices/<n>"]` container. That SSRC
+    // is exactly the numeric id dcrpc reports as the active speaker. For most
+    // participants the `collections` deviceOutputs channel already carries the
+    // same streamId -> device-path link (see updateDeviceOutputs /
+    // harvestDeviceMappings). But for some joiners that deviceOutput record
+    // never arrives, so the dcrpc numeric can't be resolved and the speaker
+    // lands as "Unknown" even though they are a fully rostered participant
+    // (confirmed in prod: a dcrpc numeric matched a rostered user's tile ssrc in
+    // the DOM but was absent from every deviceOutput).
+    //
+    // The DOM binding is authoritative and present once the tile renders, so
+    // mirroring it into ssrcToDeviceMap closes the gap with the participant's
+    // real name. Throttled to at most once per 500ms; tiles/ssrcs populate and
+    // change over the call, so this must run repeatedly, not once at join.
+    function harvestSsrcFromDom(userManager: any): void {
+      const now = Date.now()
+      if (
+        userManager.__lastDomSsrcHarvest &&
+        now - userManager.__lastDomSsrcHarvest < 500
+      ) {
+        return
+      }
+      userManager.__lastDomSsrcHarvest = now
+      let tiles: any
+      try {
+        tiles = document.querySelectorAll("[data-ssrc]")
+      } catch {
+        return
+      }
+      tiles.forEach((el: any) => {
+        const ssrc = el.getAttribute("data-ssrc")
+        if (!ssrc) return
+        const container = el.closest("[data-participant-id]")
+        if (!container) return
+        const devicePath = container.getAttribute("data-participant-id")
+        if (!devicePath) return
+        if (userManager.ssrcToDeviceMap.get(ssrc) === devicePath) return
+
+        // Was this SSRC already known from the collections deviceOutputs
+        // channel? If not, the DOM is the ONLY source that resolves it — the
+        // exact case this harvest exists for. Log those (throttled to one line
+        // per newly-resolved ssrc) so prod review can quantify how often the DOM
+        // path was load-bearing vs. redundant with deviceOutputs.
+        let knownFromDeviceOutputs = false
+        for (const dOut of userManager.deviceOutputMap.values()) {
+          if (dOut?.streamId != null && String(dOut.streamId) === String(ssrc)) {
+            knownFromDeviceOutputs = true
+            break
+          }
+        }
+
+        userManager.ssrcToDeviceMap.set(ssrc, devicePath)
+        const numericSSRC = Number.parseInt(ssrc, 10)
+        if (!Number.isNaN(numericSSRC)) {
+          userManager.ssrcToDeviceMap.set(numericSSRC, devicePath)
+        }
+
+        if (!knownFromDeviceOutputs) {
+          const resolvedUser = userManager.allUsersMap.get(devicePath)
+          const resolvedName = resolvedUser ? decodeUserName(resolvedUser) : "(unrostered)"
+          console.log(
+            `[SSRC-DOM] resolved ssrc=${ssrc} -> ${devicePath} name=${resolvedName} ` +
+              `(absent from deviceOutputs — DOM harvest was necessary)`
+          )
+        }
+      })
+    }
+
     function getUserByStreamId(userManager: any, streamId: any) {
       let deviceId = userManager.ssrcToDeviceMap.get(streamId)
       if (!deviceId && typeof streamId !== "string") {
@@ -406,6 +478,11 @@ export function browserInterceptionLogic(schema: any[]) {
       // getUserByStreamId). Resolving here — instead of after the roster map —
       // lets a roster user be marked speaking directly and avoids emitting the
       // same participant twice with conflicting speaking states.
+      // Refresh SSRC -> device-path from the DOM first, so a dcrpc numeric that
+      // never appeared in the deviceOutputs channel still resolves to the real
+      // rostered participant instead of "Unknown".
+      harvestSsrcFromDom(userManager)
+
       const speakingDeviceIds = new Set<string>()
       const resolvedById = new Map<string, any>()
       for (const id of speakingIds) {
