@@ -215,21 +215,26 @@ export function browserInterceptionLogic(schema: any[]) {
     // mirroring it into ssrcToDeviceMap closes the gap with the participant's
     // real name. Throttled to at most once per 500ms; tiles/ssrcs populate and
     // change over the call, so this must run repeatedly, not once at join.
-    function harvestSsrcFromDom(userManager: any): void {
+    // Returns true when it added at least one new SSRC -> device-path mapping,
+    // so the caller can force a speaker broadcast even when the dcrpc speaking
+    // set is unchanged (a tile can render only after the frame that first marks
+    // that participant as speaking).
+    function harvestSsrcFromDom(userManager: any): boolean {
       const now = Date.now()
       if (
         userManager.__lastDomSsrcHarvest &&
         now - userManager.__lastDomSsrcHarvest < 500
       ) {
-        return
+        return false
       }
       userManager.__lastDomSsrcHarvest = now
       let tiles: any
       try {
         tiles = document.querySelectorAll("[data-ssrc]")
       } catch {
-        return
+        return false
       }
+      let addedNew = false
       tiles.forEach((el: any) => {
         const ssrc = el.getAttribute("data-ssrc")
         if (!ssrc) return
@@ -241,9 +246,11 @@ export function browserInterceptionLogic(schema: any[]) {
 
         // Was this SSRC already known from the collections deviceOutputs
         // channel? If not, the DOM is the ONLY source that resolves it — the
-        // exact case this harvest exists for. Log those (throttled to one line
-        // per newly-resolved ssrc) so prod review can quantify how often the DOM
-        // path was load-bearing vs. redundant with deviceOutputs.
+        // exact case this harvest exists for. Log those (one line per newly
+        // resolved ssrc) so prod review can quantify how often the DOM path was
+        // load-bearing vs. redundant with deviceOutputs. Log only the SSRC and
+        // whether it resolved to a rostered user — never the device-path or
+        // participant name, which are PII that page logging would persist.
         let knownFromDeviceOutputs = false
         for (const dOut of userManager.deviceOutputMap.values()) {
           if (dOut?.streamId != null && String(dOut.streamId) === String(ssrc)) {
@@ -257,16 +264,17 @@ export function browserInterceptionLogic(schema: any[]) {
         if (!Number.isNaN(numericSSRC)) {
           userManager.ssrcToDeviceMap.set(numericSSRC, devicePath)
         }
+        addedNew = true
 
         if (!knownFromDeviceOutputs) {
-          const resolvedUser = userManager.allUsersMap.get(devicePath)
-          const resolvedName = resolvedUser ? decodeUserName(resolvedUser) : "(unrostered)"
+          const rostered = userManager.allUsersMap.has(devicePath)
           console.log(
-            `[SSRC-DOM] resolved ssrc=${ssrc} -> ${devicePath} name=${resolvedName} ` +
+            `[SSRC-DOM] resolved ssrc=${ssrc} rostered=${rostered} ` +
               `(absent from deviceOutputs — DOM harvest was necessary)`
           )
         }
       })
+      return addedNew
     }
 
     function getUserByStreamId(userManager: any, streamId: any) {
@@ -478,11 +486,6 @@ export function browserInterceptionLogic(schema: any[]) {
       // getUserByStreamId). Resolving here — instead of after the roster map —
       // lets a roster user be marked speaking directly and avoids emitting the
       // same participant twice with conflicting speaking states.
-      // Refresh SSRC -> device-path from the DOM first, so a dcrpc numeric that
-      // never appeared in the deviceOutputs channel still resolves to the real
-      // rostered participant instead of "Unknown".
-      harvestSsrcFromDom(userManager)
-
       const speakingDeviceIds = new Set<string>()
       const resolvedById = new Map<string, any>()
       for (const id of speakingIds) {
@@ -1361,7 +1364,15 @@ export function browserInterceptionLogic(schema: any[]) {
       }
       speakingIds.sort()
       const key = speakingIds.join("|")
-      if (key === lastDcrpcSpeakingKey) return
+
+      // Refresh SSRC -> device-path from the DOM before the unchanged-state
+      // early return. A participant tile can render only after the frame that
+      // first marks that participant as speaking; if harvesting resolves a
+      // previously unmapped SSRC we must re-broadcast even when the speaking set
+      // is identical, or that speaker stays "Unknown" until the set next changes.
+      const harvestedNew = harvestSsrcFromDom(userManager)
+
+      if (key === lastDcrpcSpeakingKey && !harvestedNew) return
       lastDcrpcSpeakingKey = key
       broadcastDcrpcSpeakers(userManager, speakingIds)
     }
