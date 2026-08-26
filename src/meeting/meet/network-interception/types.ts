@@ -97,6 +97,13 @@ export type UserManager = {
   deviceOutputMap: Map<string, DeviceOutput>
   allUsersMap: Map<string, RawUser>
   ssrcToDeviceMap: Map<unknown, string>
+  /**
+   * SSRCs whose device-path came from an authoritative collections source
+   * (deviceOutputs records or harvestDeviceMappings). The DOM fallback harvest
+   * never overwrites these — it only fills SSRCs no collections source provided.
+   * Holds both string and numeric variants of each SSRC.
+   */
+  authoritativeSsrc?: Set<unknown>
 }
 
 // --- Utility Types ---
