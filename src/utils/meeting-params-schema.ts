@@ -83,7 +83,7 @@ export const BotMessageSchema = object({
   max_recording_duration: number()
     .int()
     .positive()
-    .max(6 * 60 * 60)
+    .max(12 * 60 * 60)
     .nullable()
     .default(null),
   ignored_participant_names: array(string()).default([]),
