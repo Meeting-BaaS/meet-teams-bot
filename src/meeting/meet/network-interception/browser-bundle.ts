@@ -1308,14 +1308,20 @@ export function browserInterceptionLogic(schema: any[]) {
         const sid = asStr(f4)
         const dev = asStr(f6)
         if (sid && dev && /^\d+$/.test(sid) && dev.indexOf("spaces/") === 0) {
+          // Record provenance unconditionally: even when the mapping already
+          // matches (e.g. the DOM fallback set it first), this SSRC is now
+          // confirmed by an authoritative collections source and must be marked
+          // so a later stale/reused tile cannot overwrite it.
           if (um.ssrcToDeviceMap.get(sid) !== dev) {
             um.ssrcToDeviceMap.set(sid, dev)
-            um.authoritativeSsrc?.add(sid)
-            const n = Number.parseInt(sid, 10)
-            if (!Number.isNaN(n)) {
+          }
+          um.authoritativeSsrc?.add(sid)
+          const n = Number.parseInt(sid, 10)
+          if (!Number.isNaN(n)) {
+            if (um.ssrcToDeviceMap.get(n) !== dev) {
               um.ssrcToDeviceMap.set(n, dev)
-              um.authoritativeSsrc?.add(n)
             }
+            um.authoritativeSsrc?.add(n)
           }
         }
       }
