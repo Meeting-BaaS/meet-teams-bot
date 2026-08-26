@@ -139,7 +139,12 @@ export function browserInterceptionLogic(schema: any[]) {
       return {
         deviceOutputMap: new Map(),
         allUsersMap: new Map(),
-        ssrcToDeviceMap: new Map()
+        ssrcToDeviceMap: new Map(),
+        // SSRCs whose device-path came from an authoritative collections source
+        // (deviceOutputs records or harvestDeviceMappings). The DOM fallback must
+        // never overwrite these — it only fills SSRCs no collections source
+        // provided. Holds both string and numeric variants of each SSRC.
+        authoritativeSsrc: new Set()
       }
     }
 
@@ -177,9 +182,11 @@ export function browserInterceptionLogic(schema: any[]) {
           userManager.deviceOutputMap.set(key, deviceOutput)
           if (output.streamId) {
             userManager.ssrcToDeviceMap.set(output.streamId, output.deviceId)
+            userManager.authoritativeSsrc?.add(String(output.streamId))
             const numericSSRC = Number.parseInt(output.streamId, 10)
             if (!Number.isNaN(numericSSRC)) {
               userManager.ssrcToDeviceMap.set(numericSSRC, output.deviceId)
+              userManager.authoritativeSsrc?.add(numericSSRC)
             }
           }
         })
@@ -244,17 +251,20 @@ export function browserInterceptionLogic(schema: any[]) {
         if (!devicePath) return
         if (userManager.ssrcToDeviceMap.get(ssrc) === devicePath) return
 
-        // If deviceOutputs already carries this SSRC, it wins — leave its
-        // mapping untouched and let the DOM only populate SSRCs it never
-        // provided (exactly the residual this harvest targets).
-        for (const dOut of userManager.deviceOutputMap.values()) {
-          if (dOut?.streamId != null && String(dOut.streamId) === String(ssrc)) {
-            return
-          }
+        // If an authoritative collections source (deviceOutputs records or
+        // harvestDeviceMappings) already resolved this SSRC, it wins — leave its
+        // mapping untouched. The DOM only populates SSRCs no collections source
+        // provided (exactly the residual this harvest targets); a stale or reused
+        // tile must never reassign an authoritative SSRC to the wrong participant.
+        const numericSSRC = Number.parseInt(ssrc, 10)
+        if (
+          userManager.authoritativeSsrc?.has(ssrc) ||
+          (!Number.isNaN(numericSSRC) && userManager.authoritativeSsrc?.has(numericSSRC))
+        ) {
+          return
         }
 
         userManager.ssrcToDeviceMap.set(ssrc, devicePath)
-        const numericSSRC = Number.parseInt(ssrc, 10)
         if (!Number.isNaN(numericSSRC)) {
           userManager.ssrcToDeviceMap.set(numericSSRC, devicePath)
         }
@@ -266,7 +276,7 @@ export function browserInterceptionLogic(schema: any[]) {
         const rostered = userManager.allUsersMap.has(devicePath)
         console.log(
           `[SSRC-DOM] resolved ssrc=${ssrc} rostered=${rostered} ` +
-            `(absent from deviceOutputs — DOM harvest was necessary)`
+            `(no authoritative collections mapping — DOM harvest was necessary)`
         )
       })
     }
@@ -1300,8 +1310,12 @@ export function browserInterceptionLogic(schema: any[]) {
         if (sid && dev && /^\d+$/.test(sid) && dev.indexOf("spaces/") === 0) {
           if (um.ssrcToDeviceMap.get(sid) !== dev) {
             um.ssrcToDeviceMap.set(sid, dev)
+            um.authoritativeSsrc?.add(sid)
             const n = Number.parseInt(sid, 10)
-            if (!Number.isNaN(n)) um.ssrcToDeviceMap.set(n, dev)
+            if (!Number.isNaN(n)) {
+              um.ssrcToDeviceMap.set(n, dev)
+              um.authoritativeSsrc?.add(n)
+            }
           }
         }
       }
