@@ -63,6 +63,15 @@ export class Streaming {
     private lastWsNotReadyLogTime: number = 0
     private readonly WS_NOT_READY_LOG_INTERVAL_MS: number = 10000 // Log at most every 10 seconds
 
+    // Inbound (injection) byte remainder: incoming ws audio messages are raw
+    // Int16 PCM but are NOT guaranteed to carry a whole number of samples — a
+    // 16-bit sample can straddle two messages, and a message can have an odd
+    // byte length. `new Int16Array(buffer)` then throws on odd lengths (dropping
+    // the whole chunk) or, worse, silently byte-shifts every subsequent sample,
+    // which plays back as garbled/"overloaded-mic" audio. Carry the leftover
+    // byte(s) across messages so only complete samples are ever decoded.
+    private inboundRemainder: Buffer = Buffer.alloc(0)
+
     // Debug: Save streamed audio to file
     private debugAudioStream: fs.WriteStream | null = null
     private debugAudioBytesWritten: number = 0
@@ -415,6 +424,9 @@ export class Streaming {
         }
 
         this.isPaused = true
+        // Drop any partial inbound sample: paused messages are discarded, so a
+        // leftover byte would misalign the first message after resume.
+        this.inboundRemainder = Buffer.alloc(0)
         console.log('🔇 Streaming paused')
     }
 
@@ -455,6 +467,7 @@ export class Streaming {
         this.isInitialized = false
         this.isPaused = false
         this.pausedChunks = []
+        this.inboundRemainder = Buffer.alloc(0)
         Streaming.instance = null
 
         console.log('✅ Streaming service stopped successfully')
@@ -572,6 +585,11 @@ export class Streaming {
     }
 
     private createAudioStreamFromWebSocket = (input_ws: WebSocket) => {
+        // Fresh stream (e.g. a dual-channel WebSocket reconnect attaching a new
+        // handler on the same Streaming instance) must not inherit a stale partial
+        // sample from the previous connection.
+        this.inboundRemainder = Buffer.alloc(0)
+
         const stream = new Readable({
             read() {},
         })
@@ -582,18 +600,36 @@ export class Streaming {
             }
 
             if (message instanceof Buffer) {
-                const uint8Array = new Uint8Array(message)
                 try {
-                    const s16Array = new Int16Array(uint8Array.buffer)
-                    const f32Array = new Float32Array(s16Array.length)
-                    for (let i = 0; i < s16Array.length; i++) {
-                        f32Array[i] = s16Array[i] / 32768
+                    // Prepend any leftover byte from the previous message, then decode
+                    // only whole Int16 samples (2-byte aligned). Anything trailing is an
+                    // incomplete sample — hold it for the next message instead of
+                    // dropping it or misaligning the stream.
+                    const buf =
+                        this.inboundRemainder.length > 0
+                            ? Buffer.concat([this.inboundRemainder, message])
+                            : message
+                    const alignedLen = buf.length - (buf.length % 2)
+                    if (alignedLen === 0) {
+                        this.inboundRemainder = Buffer.from(buf)
+                        return
+                    }
+                    this.inboundRemainder =
+                        alignedLen < buf.length
+                            ? Buffer.from(buf.subarray(alignedLen))
+                            : Buffer.alloc(0)
+
+                    const sampleCount = alignedLen / 2
+                    const f32Array = new Float32Array(sampleCount)
+                    for (let i = 0; i < sampleCount; i++) {
+                        // Read Int16 LE explicitly — avoids ArrayBuffer alignment/offset
+                        // pitfalls of `new Int16Array(buf.buffer)` on pooled Node buffers.
+                        f32Array[i] = buf.readInt16LE(i * 2) / 32768
                     }
 
                     // Note: Sound level analysis removed (now in SoundLevelMonitor)
                     // External audio injection still works for bidirectional streaming
-                    const buffer = Buffer.from(f32Array.buffer)
-                    stream.push(buffer)
+                    stream.push(Buffer.from(f32Array.buffer))
                 } catch (error) {
                     console.error(
                         'Error processing external audio chunk:',

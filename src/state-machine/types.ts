@@ -128,6 +128,25 @@ export interface MeetingContext {
     // running through Decodo during Meet join phase. Undefined when proxy is
     // disabled, unreachable, or on the last SQS retry.
     proxyUrl?: string
+
+    // Network-path fallback controller, registered by InCallState during setup.
+    // Lets the diarization health monitor (which runs in RecordingState, a
+    // different state instance) drive the SAME instance-flag fallback machinery
+    // InCallState owns, so the network straggler-drop guards and the Meet UI
+    // bridge keep working after the monitor retires the network path.
+    networkFallback?: NetworkFallbackController
+}
+
+/**
+ * Retires the network speaker path and hands observation to the UI observer,
+ * idempotently. Implemented by InCallState (keeps the fallback flags as
+ * instance state) and invoked by the diarization health monitor.
+ */
+export interface NetworkFallbackController {
+    /** True once a network→UI fallback has already been requested. */
+    isFallbackTriggered(): boolean
+    /** Retire the network path (pause/stop interception) and start the UI observer. */
+    requestFallback(reason: string): Promise<void>
 }
 
 export interface StateTransition {

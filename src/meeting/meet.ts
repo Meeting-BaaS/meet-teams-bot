@@ -115,6 +115,26 @@ export class MeetProvider implements MeetingProviderInterface {
                 )
             }
 
+            // Force Meet's native WebRTC inbound-audio path (port of v2 PR #301)
+            // so per-receiver getContributingSources()/CSRC attribution actually
+            // gets tracks — the encoded/AudioWorklet path yields tracks=0 and
+            // collapses diarization to the UI observer (observed live). Default
+            // ON for on-prem; off-switch via MEET_FORCE_NATIVE_AUDIO_PIPELINE=false.
+            // Must run BEFORE goto and before the interception scripts.
+            if (process.env.MEET_FORCE_NATIVE_AUDIO_PIPELINE !== 'false') {
+                try {
+                    const { setupForceNativeAudioPipeline } = await import(
+                        './meet/network-interception'
+                    )
+                    await setupForceNativeAudioPipeline(page)
+                } catch (error) {
+                    console.warn(
+                        '[Meet] ⚠️ Force-native-audio injection error (non-fatal):',
+                        formatError(error),
+                    )
+                }
+            }
+
             // Inject network-interception scripts (protobuf/pako libs bundle +
             // browser logic). Must run BEFORE page.goto — addInitScript only
             // applies to later navigations. Failure is non-fatal: the in-call

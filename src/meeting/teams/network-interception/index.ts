@@ -3,6 +3,7 @@
 
 import type { Page } from "@playwright/test"
 import { teamsBrowserInterceptionLogic } from "./browser-bundle"
+import { resolveSpeakingSet } from "./speaker-timeline"
 
 export type { NetworkPayload, NetworkUser } from "./types"
 import type { NetworkPayload } from "./types"
@@ -67,7 +68,8 @@ export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<
                 if (!window.pako) {
                     console.error("[Teams NetworkInterceptor] pako dependency not loaded");
                 }
-                (${teamsBrowserInterceptionLogic.toString()})();
+                // As source: the stringified bundle cannot import it.
+                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()});
             } catch (e) {
                 console.error("[Teams NetworkInterceptor] Initialization error:", e);
             }
@@ -169,7 +171,12 @@ export async function setupTeamsNetworkInterceptionCallback(
               `[Teams NetworkInterceptor] diag ws=${d.wsCreated} rosterFrames=${d.wsRosterFrames}` +
                 ` httpRoster=${d.httpRosterHits} roster=${d.rosterParticipants} rtc=${d.rtcCreated}` +
                 ` dc=${d.dataChannels} dsh=${d.dshSeen} recv=${d.receiversAdded}` +
-                ` csrc=${d.csrcAvailable} bcast=${d.broadcasts} qLen=${d.queueLen} drained=${drainedTotal}`
+                ` csrc=${d.csrcAvailable} bcast=${d.broadcasts} qLen=${d.queueLen} drained=${drainedTotal}` +
+                // Caption rung: whether it engaged at all, and whether its speaker
+                // ids resolved against the roster. capOn=false on a healthy call is
+                // expected — captions only start when the network signal is absent.
+                ` capOn=${d.captionsEnabled} capResults=${d.captionResults}` +
+                ` capMatched=${d.captionMatched} capUnmatched=${d.captionUnmatched}`
             )
           }
         } catch {

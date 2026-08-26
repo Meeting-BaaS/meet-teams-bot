@@ -11,16 +11,25 @@ import { ScreenRecorderManager } from '../../recording/ScreenRecorder'
 import { GLOBAL } from '../../singleton'
 import { SpeakerManager } from '../../speaker-manager'
 import { MEETING_CONSTANTS } from '../constants'
-import { MeetingEndReason, MeetingStateType, StateExecuteResult } from '../types'
+import {
+    MeetingEndReason,
+    MeetingStateType,
+    NetworkFallbackController,
+    StateExecuteResult,
+} from '../types'
 import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
 import { sendEntryMessage } from '../../meeting/meet'
 import { verifyMeetAudioCapture } from '../../meeting/meet/audio-capture'
 
-export class InCallState extends BaseState {
+export class InCallState extends BaseState implements NetworkFallbackController {
     private isStartingUIObserver = false
     private teamsNetworkFallbackTriggered: boolean = false
     private meetNetworkFallbackTriggered: boolean = false
+    // Set once ANY fallback is requested (including by the diarization health
+    // monitor for a provider without a node-side network path, e.g. Zoom), so
+    // repeated monitor triggers are idempotent.
+    private diarizationFallbackRequested: boolean = false
     private meetAudioEventCount = 0
     private meetAudioWatchdog?: ReturnType<typeof setInterval>
     private lastNetworkSpeakingKey?: string
@@ -198,6 +207,11 @@ export class InCallState extends BaseState {
         // Start SpeakerManager
         SpeakerManager.start()
 
+        // Expose this state's network-fallback machinery so the diarization
+        // health monitor (which runs later, in RecordingState) can drive the
+        // same instance-flag fallback path this state owns.
+        this.context.networkFallback = this
+
         if (!this.context.playwrightPage) {
             console.error(
                 'Playwright page not available for speakers observation',
@@ -231,6 +245,21 @@ export class InCallState extends BaseState {
                     console.log(
                         '✅ Network-based speaker detection enabled for Meet',
                     )
+                    // Also start the UI observer as an early-window BRIDGE. At
+                    // first speech after silence the speaker's audio track takes
+                    // seconds to spin up before the network path can attribute
+                    // anything, while Meet's UI indicator fires almost
+                    // immediately — that gap produced leading "Unknown" runs.
+                    // The SpeakerManager arbiter mutes this source once the
+                    // network path reports its first speaker. Non-blocking:
+                    // opening the People panel can take seconds and must not
+                    // delay the recording-started event.
+                    this.startUIBasedObservation().catch((error) => {
+                        console.warn(
+                            '[SpeakerBridge] UI bridge failed to start (network path still active):',
+                            formatError(error),
+                        )
+                    })
                     return
                 }
             } catch (error) {
@@ -387,9 +416,18 @@ export class InCallState extends BaseState {
                     )
                 }
 
+                // Label which source drove this committed update, so the bot
+                // log distinguishes the dcrpc datachannel (NetEq) path from the
+                // CSRC audio path. dcrpc payloads ride the same source: "audio"
+                // channel and already feed the audio-path watchdog below via
+                // meetAudioEventCount, holding the network path on NetEq.
+                const speakerSource = payload.dcrpc
+                    ? 'network:dcrpc'
+                    : `network:${payload.source ?? 'audio'}`
                 await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
                     networkUsers,
                     payload.timestamp,
+                    speakerSource,
                 )
             } catch (error) {
                 console.error(
@@ -428,7 +466,7 @@ export class InCallState extends BaseState {
         // path and hand observation to the UI observer, which is proven on
         // current Meet markup.
         const MEET_AUDIO_DEAD_AFTER_MS = 45_000
-        const watchdogStart = Date.now()
+        let watchdogStart = Date.now()
         this.meetAudioEventCount = 0
         this.meetAudioWatchdog = setInterval(() => {
             void (async () => {
@@ -442,6 +480,21 @@ export class InCallState extends BaseState {
                         console.log(
                             '[MeetNetworkInterceptor] ✅ Audio path alive — watchdog disarmed',
                         )
+                        return
+                    }
+                    // Sound-gated: this watchdog exists to catch the tracks=0
+                    // blindness where sound IS flowing but no audio-source event
+                    // fires. On a silent open there is simply no audio yet, so
+                    // firing here would retire a healthy native path that has
+                    // nothing to expose — and force-native CSRC cannot re-arm
+                    // after the switch to the UI observer (blind under
+                    // CloakBrowser), stranding the bot when speech finally
+                    // starts. While no real sound has been detected, keep
+                    // resetting the clock so the 45s "blind" window only measures
+                    // time WITH audio present; the path stays armed and gets a
+                    // fresh 45s once speech begins.
+                    if (!GLOBAL.getSoundDetectedInMeeting()) {
+                        watchdogStart = Date.now()
                         return
                     }
                     if (Date.now() - watchdogStart < MEET_AUDIO_DEAD_AFTER_MS) {
@@ -473,6 +526,12 @@ export class InCallState extends BaseState {
             console.log('UI speakers observer startup already in progress')
             return
         }
+        // Already running (e.g. started as the Meet bridge, now re-requested by
+        // the watchdog fallback) — don't spin up a second observer.
+        if (this.context.speakersObserver) {
+            console.log('UI speakers observer already running')
+            return
+        }
 
         this.isStartingUIObserver = true
 
@@ -482,12 +541,25 @@ export class InCallState extends BaseState {
                 GLOBAL.get().meetingProvider,
             )
 
-            // Callback to handle speakers changes
+            // Callback to handle speakers changes. On Meet the observer may run
+            // as an early-window BRIDGE alongside a live network path, so route
+            // it through the arbiter: it feeds diarization only until the
+            // network path reports its first speaker (or the network path is
+            // retired by the watchdog, in which case this observer is primary).
+            // Teams has its own pause-based fallback and feeds directly.
             const onSpeakersChange = async (speakers: any[]) => {
                 try {
-                    await SpeakerManager.getInstance().handleSpeakerUpdate(
-                        speakers,
-                    )
+                    if (GLOBAL.get().meetingProvider === 'Meet') {
+                        await SpeakerManager.getInstance().handleUiBridgeUpdate(
+                            speakers,
+                            this.meetNetworkFallbackTriggered,
+                        )
+                    } else {
+                        await SpeakerManager.getInstance().handleSpeakerUpdate(
+                            speakers,
+                            'ui-observer',
+                        )
+                    }
                 } catch (error) {
                     console.error(
                         'Error handling speaker update:',
@@ -515,6 +587,66 @@ export class InCallState extends BaseState {
             throw error
         } finally {
             this.isStartingUIObserver = false
+        }
+    }
+
+    /**
+     * NetworkFallbackController: true once a network→UI fallback has already
+     * been requested through ANY path (in-page audio-path watchdog, Meet audio
+     * watchdog, or the diarization health monitor).
+     */
+    public isFallbackTriggered(): boolean {
+        return (
+            this.diarizationFallbackRequested ||
+            this.teamsNetworkFallbackTriggered ||
+            this.meetNetworkFallbackTriggered
+        )
+    }
+
+    /**
+     * NetworkFallbackController: retire the network speaker path and hand
+     * observation to the UI observer. Idempotent. Sets the SAME instance flags
+     * the existing watchdogs use, so the network straggler-drop guards and the
+     * Meet UI bridge (handleUiBridgeUpdate) keep working. Invoked by the
+     * diarization health monitor once the network path has been stale past the
+     * platform dwell.
+     */
+    public async requestFallback(reason: string): Promise<void> {
+        if (this.isFallbackTriggered()) {
+            return
+        }
+        this.diarizationFallbackRequested = true
+        const provider = GLOBAL.get().meetingProvider
+        console.warn(
+            `[NetworkFallback][${provider}] Retiring network path (reason: ${reason}) — switching to UI-based speaker observation`,
+        )
+        try {
+            if (provider === 'Teams') {
+                this.teamsNetworkFallbackTriggered = true
+                const { pauseTeamsNetworkInterception } = await import(
+                    '../../meeting/teams/network-interception'
+                )
+                pauseTeamsNetworkInterception()
+            } else if (provider === 'Meet') {
+                this.meetNetworkFallbackTriggered = true
+                if (this.context.playwrightPage) {
+                    const meetNetworkInterception = await import(
+                        '../../meeting/meet/network-interception'
+                    )
+                    await meetNetworkInterception.stopNetworkInterception(
+                        this.context.playwrightPage as Page,
+                    )
+                }
+            }
+            // Zoom (and any other provider) already runs on the UI observer from
+            // setup — there is no node-side network path to retire — so this
+            // just (re)starts it, which is a no-op if already running.
+            await this.startUIBasedObservation()
+        } catch (error) {
+            console.error(
+                `[NetworkFallback][${provider}] Failed to retire network path:`,
+                formatError(error),
+            )
         }
     }
 

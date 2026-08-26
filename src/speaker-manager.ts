@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 
+import { DiarizationTracker } from './diarization-tracker'
 import { MeetingStateMachine } from './state-machine/machine'
 import { Streaming } from './streaming'
 
@@ -7,9 +8,14 @@ import { enablePrintPageLogs } from './browser/page-logger'
 import type { NetworkUser } from './meeting/teams/network-interception/types'
 import { GLOBAL } from './singleton'
 import { ParticipantState } from './state-machine/types'
+import { SpeakerAttributionShadowTracker } from './speaker-attribution-shadow'
 import { SpeakerData } from './types'
 import { uploadTranscriptTask } from './uploadTranscripts'
 import { PathManager } from './utils/PathManager'
+import {
+    createSequentialIdManager,
+    generateStableUserId,
+} from './utils/speaker-id'
 
 /** The placeholder every platform's interceptor falls back to before a roster lands. */
 const UNKNOWN_SPEAKER = "Unknown"
@@ -30,6 +36,19 @@ export class SpeakerManager {
     // and a later payload can omit a name that an earlier one carried; without
     // this, a participant flips back to "Unknown" mid-meeting.
     private deviceNames = new Map<string, string>()
+    // Best-effort sequential id last seen per network device. v1 assigns ids by
+    // roster index (not a stable per-participant key), so this is only used to
+    // stamp a user_id onto a segment during Unknown-backfill; the name is the
+    // load-bearing repair. Keyed by deviceId to stay per-participant.
+    private deviceUserIds = new Map<string, number>()
+    // Maps a stable per-participant hash (from name/profile-picture) to a
+    // sequential numeric id, so a participant keeps the SAME user_id across
+    // rejoins and roster reorderings — unlike the old roster-index id.
+    private sequentialIdManager = createSequentialIdManager()
+    // File-based diarization tracker. Fed the active speaker from the single
+    // sink below (network AND ui-observer flow through handleSpeakerUpdate), so
+    // the health monitor arbitrates on ACTUAL segment production.
+    private diarizationTracker: DiarizationTracker | null = null
     // When each device was first seen, so the roster-race grace window is
     // scoped to that participant rather than to the start of the meeting: a
     // participant joining at minute 20 races their own roster entry exactly
@@ -37,7 +56,67 @@ export class SpeakerManager {
     // have expired long ago.
     private deviceFirstSeen = new Map<string, number>()
 
+    // True once the network path has reported an actual SPEAKING participant.
+    // Until then the Meet UI bridge (handleUiBridgeUpdate) is allowed to feed
+    // diarization, because a participant's audio track only starts flowing a
+    // few seconds after they first speak — Meet's UI indicator fires earlier.
+    private networkSpeakerActive = false
+    private uiBridgeMuteLogged = false
+    // Diagnostic-only arbitration evidence. Never changes speaker ownership.
+    private readonly attributionShadow = new SpeakerAttributionShadowTracker()
+
     private constructor() {}
+
+    /** Shadow telemetry must never change recording or finalization behavior. */
+    private observeAttributionShadow(observe: () => void): void {
+        try {
+            observe()
+        } catch {
+            console.error('[SPEAKER-SHADOW] telemetry_error')
+        }
+    }
+
+    /**
+     * Entry point for the Meet UI speaker bridge: the DOM speaking indicator
+     * observed in parallel with the (primary) network path.
+     *
+     * Why it exists: at first speech after silence, a participant's WebRTC
+     * audio track takes 3-5s to spin up before the network path can see them —
+     * Meet's own UI indicator lights up almost immediately. That gap produced
+     * leading-"Unknown" runs at the start of transcripts.
+     *
+     * Arbitration: UI events flow only while the network path has never
+     * reported a speaking participant, OR the network path has been retired
+     * (watchdog fallback — networkRetired=true, this observer is now primary).
+     * From the first network speaker on, with the network path still live, the
+     * bridge is muted: the network path carries deviceIds and survives DOM
+     * changes, so it stays authoritative.
+     */
+    public async handleUiBridgeUpdate(
+        observed: SpeakerData[],
+        networkRetired: boolean,
+    ): Promise<void> {
+        const timestamps = observed
+            .map((speaker) => speaker.timestamp)
+            .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0)
+        this.observeAttributionShadow(() =>
+            this.attributionShadow.observeUi(
+                observed,
+                timestamps.length > 0 ? Math.max(...timestamps) : Date.now(),
+            ),
+        )
+
+        if (this.networkSpeakerActive && !networkRetired) {
+            if (!this.uiBridgeMuteLogged) {
+                this.uiBridgeMuteLogged = true
+                console.log(
+                    '[SpeakerBridge] Network path delivered its first speaker — UI bridge muted',
+                )
+            }
+            return
+        }
+        await this.handleSpeakerUpdate(observed, 'ui-observer')
+    }
 
     /**
      * Timestamp this device was first observed, recording it on first sight.
@@ -112,15 +191,97 @@ export class SpeakerManager {
     }
 
     public static start(): void {
-        SpeakerManager.getInstance()
+        const instance = SpeakerManager.getInstance()
+        // Initialize the file-based diarization tracker (no API calls). Safe to
+        // call more than once — getInstance() is a singleton.
+        instance.diarizationTracker = DiarizationTracker.getInstance()
+    }
+
+    /**
+     * Finalize diarization tracking when the meeting ends. Hands the FINAL
+     * roster to the tracker so any segment written while a participant was
+     * still unnamed ("Unknown") gets repaired before the artifact is closed:
+     * the live path can only ever fix the segment that is still open; by the
+     * end of the meeting we know every name we are ever going to know.
+     */
+    public static async finalize(): Promise<void> {
+        const instance = SpeakerManager.getInstance()
+        const lastTimestamp = Date.now()
+        try {
+            if (instance.diarizationTracker) {
+                const meetingStartTime =
+                    MeetingStateMachine.instance?.getStartTime()
+                if (meetingStartTime) {
+                    await instance.diarizationTracker.end(
+                        lastTimestamp,
+                        meetingStartTime,
+                        (deviceId) => instance.resolveDeviceForBackfill(deviceId),
+                        (userId) => instance.resolveUserIdForBackfill(userId),
+                    )
+                }
+            }
+        } finally {
+            instance.observeAttributionShadow(() =>
+                instance.attributionShadow.finalize(lastTimestamp),
+            )
+        }
+    }
+
+    /**
+     * Final name for a stable user id, for the tracker's second repair pass
+     * (churning-SSRC segments whose deviceId never mapped but whose user id
+     * did resolve while the participant spoke).
+     *
+     * Refuses ambiguous ids: while a name is unresolved,
+     * generateStableUserId(UNKNOWN_SPEAKER, undefined) hashes identically for
+     * every unnamed participant, so several devices transiently share one
+     * sequential id. Returning a name for such an id could hand one
+     * participant's speech to another, so only resolve an id owned by exactly
+     * one device with a real (non-"Unknown") name.
+     */
+    private resolveUserIdForBackfill(userId: number): string | undefined {
+        const devices = [...this.deviceUserIds.entries()]
+            .filter(([, id]) => id === userId)
+            .map(([deviceId]) => deviceId)
+        if (devices.length !== 1) {
+            return undefined
+        }
+        const name = this.deviceNames.get(devices[0])
+        return name && name !== UNKNOWN_SPEAKER ? name : undefined
+    }
+
+    /**
+     * Final name + best-effort id for a device, or undefined if the roster
+     * never named it. Keyed by device (never by name) so two participants both
+     * sitting under "Unknown" can't have one's speech handed to the other.
+     */
+    private resolveDeviceForBackfill(
+        deviceId: string,
+    ): { name: string; userId: number } | undefined {
+        const name = this.deviceNames.get(deviceId)
+        if (!name || name === UNKNOWN_SPEAKER) {
+            return undefined
+        }
+        return { name, userId: this.deviceUserIds.get(deviceId) ?? 0 }
     }
 
     public getCurrentSpeaker(): SpeakerData | null {
         return this.currentSpeaker
     }
 
-    public async handleSpeakerUpdate(speakers: SpeakerData[]): Promise<void> {
+    public async handleSpeakerUpdate(
+        speakers: SpeakerData[],
+        source: string,
+    ): Promise<void> {
         try {
+            // Which source drives every committed speaker update: network CSRC,
+            // network dcrpc (NetEq), roster, or the UI-observer bridge. This is the
+            // only node-side signal of source — the browser-side interceptor logs do
+            // not reach the bot log. Count only; names/ids are PII and this ships to S3.
+            const speakingNow = speakers.filter((s) => s.isSpeaking).length
+            console.log(
+                `[SPEAKER-SRC] source=${source} speaking=${speakingNow}/${speakers.length}`,
+            )
             // Track when we received this callback (for bot removal detection)
             this.lastCallbackTime = Date.now()
 
@@ -158,6 +319,7 @@ export class SpeakerManager {
     public async handleNetworkSpeakerUpdate(
         networkUsers: NetworkUser[],
         timestamp: number,
+        source: string = 'network',
     ): Promise<void> {
         const botCanSpeak = Boolean(GLOBAL.get().streaming_input)
 
@@ -178,10 +340,27 @@ export class SpeakerManager {
                 const withinRosterGrace =
                     timestamp - this.firstSeenAt(user.deviceId, timestamp) <
                     ROSTER_GRACE_MS
+                // Stable per-participant id: hash the resolved name (or the
+                // more-stable profile picture) and map it to a sequential
+                // number, so the same person keeps the same user_id across
+                // rejoins and roster reorderings. Falls back to a resolved
+                // name; an unresolved "Unknown" hashes consistently too and is
+                // repaired at finalize once the name lands.
+                const stableUserId = this.sequentialIdManager.getSequentialId(
+                    generateStableUserId(stableName, user.profilePicture),
+                )
+                // Remember the id for this device so Unknown-backfill can stamp
+                // the SAME user_id onto segments repaired at finalize.
+                if (user.deviceId) {
+                    this.deviceUserIds.set(user.deviceId, stableUserId)
+                }
                 return {
                     name: stableName,
-                    id: index + 1,
+                    id: stableUserId,
                     timestamp,
+                    // Carried so the diarization tracker can repair a segment
+                    // opened before this device's name resolved.
+                    deviceId: user.deviceId,
                     isSpeaking:
                         user.isSpeaking === true &&
                         (nameResolved || !withinRosterGrace) &&
@@ -189,7 +368,20 @@ export class SpeakerManager {
                 }
             })
 
-        await this.handleSpeakerUpdate(speakers)
+        this.observeAttributionShadow(() =>
+            this.attributionShadow.observeNetwork(speakers, timestamp, source),
+        )
+
+        // First actual speaker from the network path mutes the Meet UI bridge —
+        // from here the track-based signal is live and authoritative.
+        if (!this.networkSpeakerActive && speakers.some((s) => s.isSpeaking)) {
+            this.networkSpeakerActive = true
+            console.log(
+                '[SpeakerBridge] First speaking participant on the network path',
+            )
+        }
+
+        await this.handleSpeakerUpdate(speakers, source)
     }
 
     private async logSpeakers(speakers: SpeakerData[]): Promise<void> {
@@ -287,8 +479,18 @@ export class SpeakerManager {
         const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
         if (!activeSpeaker) return
 
+        // Meeting clock for the diarization tracker. Guarded (not early-return)
+        // so the existing transcript path is never skipped when it is 0/unset.
+        const meetingStartTime = MeetingStateMachine.instance?.getStartTime()
+
         if (activeSpeaker.name !== this.currentSpeaker?.name) {
             // Changement de speaker
+            if (meetingStartTime) {
+                this.diarizationTracker?.updateSpeaker(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
+            }
             await uploadTranscriptTask(activeSpeaker, false)
         } else if (this.currentSpeaker.isSpeaking === false) {
             // The speaker has started speaking again after a pause
@@ -296,7 +498,24 @@ export class SpeakerManager {
                 activeSpeaker.timestamp >=
                 this.currentSpeaker.timestamp + this.PAUSE_BETWEEN_SENTENCES
             ) {
+                if (meetingStartTime) {
+                    this.diarizationTracker?.updateSpeaker(
+                        activeSpeaker,
+                        meetingStartTime,
+                    )
+                }
                 await uploadTranscriptTask(activeSpeaker, false)
+            }
+        } else {
+            // Same speaker, still talking without a pause — no segment reopen,
+            // so refresh the open segment's activity clock instead. Otherwise a
+            // long single-speaker utterance (which never re-calls updateSpeaker)
+            // would age into "stale" and wrongly retire the network path.
+            if (meetingStartTime) {
+                this.diarizationTracker?.noteActivity(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
             }
         }
         this.currentSpeaker = activeSpeaker
@@ -311,6 +530,10 @@ export class SpeakerManager {
                 speaker.isSpeaking === true,
         )
 
+        // Meeting clock for the diarization tracker. Guarded (not early-return)
+        // so the existing transcript path is never skipped when it is 0/unset.
+        const meetingStartTime = MeetingStateMachine.instance?.getStartTime()
+
         if (hasSpeakingCurrentSpeaker) {
             const activeSpeaker = speakers.find(
                 (speaker) => speaker.name === this.currentSpeaker!.name,
@@ -321,12 +544,49 @@ export class SpeakerManager {
                     this.currentSpeaker!.timestamp +
                         this.PAUSE_BETWEEN_SENTENCES
                 ) {
+                    if (meetingStartTime) {
+                        this.diarizationTracker?.updateSpeaker(
+                            activeSpeaker,
+                            meetingStartTime,
+                        )
+                    }
                     await uploadTranscriptTask(activeSpeaker, false)
                 }
+            } else if (meetingStartTime && activeSpeaker) {
+                // Current speaker still talking amid overlap — keep the open
+                // segment's activity clock fresh without reopening it.
+                this.diarizationTracker?.noteActivity(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
             }
             this.currentSpeaker = activeSpeaker
         } else {
             const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
+            // Guard the tracker update with the same speaker-change check
+            // handleSingleSpeaker uses. Without it, an unconditional
+            // updateSpeaker on every ~250ms network payload closes and reopens
+            // a segment each poll; when two participants overlap the selected
+            // activeSpeaker alternates between them, fragmenting one span of
+            // speech into a run of sub-second segments and inflating
+            // segmentCount60s so a degraded path is masked as "optimal".
+            if (
+                meetingStartTime &&
+                activeSpeaker &&
+                activeSpeaker.name !== this.currentSpeaker?.name
+            ) {
+                this.diarizationTracker?.updateSpeaker(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
+            } else if (meetingStartTime && activeSpeaker) {
+                // Same speaker still talking — refresh the open segment's
+                // activity clock so a long utterance is not misread as stale.
+                this.diarizationTracker?.noteActivity(
+                    activeSpeaker,
+                    meetingStartTime,
+                )
+            }
             await uploadTranscriptTask(activeSpeaker, false)
             this.currentSpeaker = activeSpeaker
         }

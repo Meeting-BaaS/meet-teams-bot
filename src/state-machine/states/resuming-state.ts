@@ -59,6 +59,7 @@ export class ResumingState extends BaseState {
                     try {
                         await SpeakerManager.getInstance().handleSpeakerUpdate(
                             speakers,
+                            'ui-observer',
                         )
                     } catch (error) {
                         console.error(
