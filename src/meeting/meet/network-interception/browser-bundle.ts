@@ -139,7 +139,12 @@ export function browserInterceptionLogic(schema: any[]) {
       return {
         deviceOutputMap: new Map(),
         allUsersMap: new Map(),
-        ssrcToDeviceMap: new Map()
+        ssrcToDeviceMap: new Map(),
+        // SSRCs whose device-path came from an authoritative collections source
+        // (deviceOutputs records or harvestDeviceMappings). The DOM fallback must
+        // never overwrite these — it only fills SSRCs no collections source
+        // provided. Holds both string and numeric variants of each SSRC.
+        authoritativeSsrc: new Set()
       }
     }
 
@@ -177,9 +182,11 @@ export function browserInterceptionLogic(schema: any[]) {
           userManager.deviceOutputMap.set(key, deviceOutput)
           if (output.streamId) {
             userManager.ssrcToDeviceMap.set(output.streamId, output.deviceId)
+            userManager.authoritativeSsrc?.add(String(output.streamId))
             const numericSSRC = Number.parseInt(output.streamId, 10)
             if (!Number.isNaN(numericSSRC)) {
               userManager.ssrcToDeviceMap.set(numericSSRC, output.deviceId)
+              userManager.authoritativeSsrc?.add(numericSSRC)
             }
           }
         })
@@ -195,6 +202,83 @@ export function browserInterceptionLogic(schema: any[]) {
 
     function getAllUsers(userManager: any) {
       return Array.from(userManager.allUsersMap.values())
+    }
+
+    // DOM-sourced SSRC -> device-path harvest.
+    //
+    // Google Meet stamps every rendered media tile with
+    // `data-ssrc="<rtp-ssrc>"`, nested inside that participant's
+    // `[data-participant-id="spaces/<space>/devices/<n>"]` container. That SSRC
+    // is exactly the numeric id dcrpc reports as the active speaker. For most
+    // participants the `collections` deviceOutputs channel already carries the
+    // same streamId -> device-path link (see updateDeviceOutputs /
+    // harvestDeviceMappings). But for some joiners that deviceOutput record
+    // never arrives, so the dcrpc numeric can't be resolved and the speaker
+    // lands as "Unknown" even though they are a fully rostered participant
+    // (confirmed in prod: a dcrpc numeric matched a rostered user's tile ssrc in
+    // the DOM but was absent from every deviceOutput).
+    //
+    // The DOM binding is authoritative and present once the tile renders, so
+    // mirroring it into ssrcToDeviceMap closes the gap with the participant's
+    // real name. Throttled to at most once per 500ms; tiles/ssrcs populate and
+    // change over the call, so this must run repeatedly, not once at join.
+    //
+    // Precedence: the collections deviceOutputs channel is authoritative. The
+    // DOM only *fills* SSRCs deviceOutputs never mapped — it never overwrites an
+    // existing deviceOutputs mapping, since a stale or reused tile could
+    // otherwise reassign an SSRC to the wrong participant.
+    function harvestSsrcFromDom(userManager: any): void {
+      const now = Date.now()
+      if (
+        userManager.__lastDomSsrcHarvest &&
+        now - userManager.__lastDomSsrcHarvest < 500
+      ) {
+        return
+      }
+      userManager.__lastDomSsrcHarvest = now
+      let tiles: any
+      try {
+        tiles = document.querySelectorAll("[data-ssrc]")
+      } catch {
+        return
+      }
+      tiles.forEach((el: any) => {
+        const ssrc = el.getAttribute("data-ssrc")
+        if (!ssrc) return
+        const container = el.closest("[data-participant-id]")
+        if (!container) return
+        const devicePath = container.getAttribute("data-participant-id")
+        if (!devicePath) return
+        if (userManager.ssrcToDeviceMap.get(ssrc) === devicePath) return
+
+        // If an authoritative collections source (deviceOutputs records or
+        // harvestDeviceMappings) already resolved this SSRC, it wins — leave its
+        // mapping untouched. The DOM only populates SSRCs no collections source
+        // provided (exactly the residual this harvest targets); a stale or reused
+        // tile must never reassign an authoritative SSRC to the wrong participant.
+        const numericSSRC = Number.parseInt(ssrc, 10)
+        if (
+          userManager.authoritativeSsrc?.has(ssrc) ||
+          (!Number.isNaN(numericSSRC) && userManager.authoritativeSsrc?.has(numericSSRC))
+        ) {
+          return
+        }
+
+        userManager.ssrcToDeviceMap.set(ssrc, devicePath)
+        if (!Number.isNaN(numericSSRC)) {
+          userManager.ssrcToDeviceMap.set(numericSSRC, devicePath)
+        }
+
+        // One line per newly resolved SSRC so prod review can quantify where the
+        // DOM path was load-bearing. Log only the SSRC and whether it resolved
+        // to a rostered user — never the device-path or participant name, which
+        // are PII that page logging would persist.
+        const rostered = userManager.allUsersMap.has(devicePath)
+        console.log(
+          `[SSRC-DOM] resolved ssrc=${ssrc} rostered=${rostered} ` +
+            `(no authoritative collections mapping — DOM harvest was necessary)`
+        )
+      })
     }
 
     function getUserByStreamId(userManager: any, streamId: any) {
@@ -1224,10 +1308,20 @@ export function browserInterceptionLogic(schema: any[]) {
         const sid = asStr(f4)
         const dev = asStr(f6)
         if (sid && dev && /^\d+$/.test(sid) && dev.indexOf("spaces/") === 0) {
+          // Record provenance unconditionally: even when the mapping already
+          // matches (e.g. the DOM fallback set it first), this SSRC is now
+          // confirmed by an authoritative collections source and must be marked
+          // so a later stale/reused tile cannot overwrite it.
           if (um.ssrcToDeviceMap.get(sid) !== dev) {
             um.ssrcToDeviceMap.set(sid, dev)
-            const n = Number.parseInt(sid, 10)
-            if (!Number.isNaN(n)) um.ssrcToDeviceMap.set(n, dev)
+          }
+          um.authoritativeSsrc?.add(sid)
+          const n = Number.parseInt(sid, 10)
+          if (!Number.isNaN(n)) {
+            if (um.ssrcToDeviceMap.get(n) !== dev) {
+              um.ssrcToDeviceMap.set(n, dev)
+            }
+            um.authoritativeSsrc?.add(n)
           }
         }
       }
@@ -1262,7 +1356,26 @@ export function browserInterceptionLogic(schema: any[]) {
         if (p.speaking) speakingIds.push(p.deviceId)
       }
       speakingIds.sort()
-      const key = speakingIds.join("|")
+
+      // Refresh SSRC -> device-path from the DOM before computing the dedup key,
+      // so the key reflects the freshest resolution.
+      harvestSsrcFromDom(userManager)
+
+      // Dedup on the *resolved* state, not the raw speaking ids. A speaker can be
+      // marked speaking before their SSRC maps (DOM harvest) or before their name
+      // enters the roster (updateUsers) — resolving to "Unknown" on the first
+      // broadcast. Those later resolutions touch neither the speaking set nor
+      // lastDcrpcSpeakingKey, so keying on ids alone would dedup the corrected
+      // frame away and strand the speaker as "Unknown". Folding each speaker's
+      // resolved device id into the key makes any resolution change (Unknown ->
+      // named) a new key that re-broadcasts.
+      const key = speakingIds
+        .map((id) => {
+          const user = getUserByStreamId(userManager, id)
+          return `${id}=${user?.deviceId ?? "?"}`
+        })
+        .join("|")
+
       if (key === lastDcrpcSpeakingKey) return
       lastDcrpcSpeakingKey = key
       broadcastDcrpcSpeakers(userManager, speakingIds)
