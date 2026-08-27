@@ -407,7 +407,33 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
   // Zoom Web renders via SwiftShader software-WebGL + a software video decoder;
   // the standalone gpu-process measured ~357% CPU. --in-process-gpu
   // folds that into the renderer and drops per-bot demand from ~4.4 cores to
-  // ~115%. Meet/Teams don't need it, so scope it to Zoom.
+  // ~115%. Teams doesn't need it, so it stays on the plain no-GPU set.
+  //
+  // Meet is the exception, and for fingerprint reasons rather than rendering
+  // ones. With --disable-gpu AND --disable-software-rasterizer there is no GL
+  // backend at all, so every WebGL context request fails and the page reports
+  // no renderer string. A browser with no WebGL whatsoever is close to extinct
+  // among real users, which makes "WebGL absent" a stronger signal than any
+  // renderer string we could present. Meet gets a software GL backend so the
+  // context succeeds.
+  //
+  // Cost is bounded by what Meet actually draws, which is very little: the bot
+  // sends no camera, so there is no background-blur pipeline, and remote tiles
+  // are <video> elements the browser composites — not GL draw calls. Creating a
+  // context is cheap; only drawing is not. --disable-gpu-compositing is KEPT so
+  // page compositing stays exactly where it is today, and --in-process-gpu
+  // folds GL into the renderer instead of spawning the separate gpu-process
+  // that cost Zoom ~357%.
+  const meetGpuArgs = [
+    // Compositing path unchanged — this only re-enables a GL backend.
+    "--disable-gpu-compositing",
+    "--in-process-gpu",
+    // Chromium >= M128 refuses to back WebGL with SwiftShader unless this is
+    // set, so without it dropping --disable-gpu buys nothing. Ignored as an
+    // unknown switch on older builds, so it is safe to pass unconditionally.
+    "--enable-unsafe-swiftshader"
+  ]
+
   const gpuArgs =
     platform === "zoom"
       ? [
@@ -416,7 +442,9 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
         "--disable-gpu-compositing",
         "--in-process-gpu"
       ]
-      : ["--disable-gpu", "--disable-software-rasterizer", "--disable-gpu-compositing"]
+      : platform === "meet"
+        ? meetGpuArgs
+        : ["--disable-gpu", "--disable-software-rasterizer", "--disable-gpu-compositing"]
 
   // Local dev (e.g. macOS) has no PulseAudio/v4l2loopback virtual devices, so
   // Chromium finds no real mic/camera and Teams gets stuck on its pre-join
