@@ -1,3 +1,4 @@
+import type { FingerprintSummary } from "../browser/fingerprint-probe"
 import { envVars } from "../config/env-vars"
 import type { MeetBotDetectionSignal } from "../meeting/meet/network-interception"
 import { getProxyTelemetry } from "../proxy/toggle-proxy"
@@ -196,7 +197,11 @@ export class Api {
     }
   }
 
-  public reportMeetBotDetection(signal: MeetBotDetectionSignal, pageAttempt: number): void {
+  public reportMeetBotDetection(
+    signal: MeetBotDetectionSignal,
+    pageAttempt: number,
+    fingerprint?: FingerprintSummary | null
+  ): void {
     if (GLOBAL.isServerless()) {
       console.log("[MeetBotDetection] Serverless mode, skipping telemetry")
       return
@@ -214,6 +219,9 @@ export class Api {
       bot_image_loop_mode: params.bot_image_config?.loop_mode ?? null,
       streaming_input_enabled: Boolean(params.streaming_input),
       network_interception_setup_failed: GLOBAL.hasNetworkInterceptionSetupFailed(),
+      // The fingerprint the detector saw when it decided (null if the probe
+      // failed). Phase-0 instrumentation: correlate each tell vs detected_as_bot.
+      fingerprint: fingerprint ?? null,
       proxy
     }
 

@@ -15,6 +15,7 @@ import {
   type SelectorPattern
 } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
+import { probeFingerprint } from "../browser/fingerprint-probe"
 import { enableMeetAudioCapture } from "./meet/audio-capture"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
@@ -141,7 +142,7 @@ export class MeetProvider implements MeetingProviderInterface {
         // Wire the Meet bot-detection observer (page.on('response') on the
         // CreateMeetingDevice RPC). Must be installed before page.goto so the
         // response listener is in place when the join handshake fires.
-        await setupBotDetectionRoute(page, (signal) => {
+        await setupBotDetectionRoute(page, async (signal) => {
           if (!signal.decoded) {
             console.warn("[Meet] ⚠️ Meet bot-detection response could not be decoded")
           } else if (signal.detectedAsBot) {
@@ -153,7 +154,12 @@ export class MeetProvider implements MeetingProviderInterface {
               `[Meet] ✅ Meet did NOT flag this bot — detectedAsBot=${signal.detectedAsBot} (raw field 36 = ${signal.rawField})`
             )
           }
-          Api.instance?.reportMeetBotDetection(signal, attempts)
+          // Capture the fingerprint the detector saw at the moment it decided,
+          // so the api-server can correlate each tell (CDP leak, mixed-OS font
+          // mix, …) against detected_as_bot. Best-effort — never blocks or
+          // fails the signal report.
+          const fingerprint = await probeFingerprint(page).catch(() => null)
+          Api.instance?.reportMeetBotDetection(signal, attempts, fingerprint)
         })
       } catch (error) {
         console.warn(

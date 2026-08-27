@@ -19,10 +19,14 @@ import { PathManager } from "../utils/PathManager"
  *   - WebGL UNMASKED_VENDOR / UNMASKED_RENDERER — the SwiftShader / GPU tell
  *   - font enumeration (Windows-core vs Linux-only candidates) — the font-list tell
  *   - screen / dpr / viewport geometry — the spoofed-resolution coherence tell
+ *   - CDP Runtime.enable leak self-test — the fingerprint-independent automation tell
  *
- * Output is a JSON blob + a screenshot in the html-snapshots dir, already
- * uploaded to s3://<logs-bucket>/<uuid>/. Gated on BROWSER_DEBUG_CAPTURE, off by
- * default, pure read-only diagnostic — it changes nothing the page can observe.
+ * Two entry points share one page.evaluate:
+ *   - probeFingerprint(): returns a compact summary for telemetry. Runs in prod
+ *     (no debug gate, no file writes), so every Meet detection signal can carry
+ *     the fingerprint the detector saw and we can correlate tells vs flag rate.
+ *   - captureFingerprint(): the debug dump (full JSON + screenshot to the
+ *     html-snapshots dir), gated on BROWSER_DEBUG_CAPTURE. Read-only diagnostic.
  */
 
 // Windows core fonts a real Windows Chrome exposes. Absent in our container.
@@ -64,16 +68,56 @@ const LINUX_FONTS = [
   "Ubuntu"
 ]
 
-/**
- * Capture the runtime fingerprint once. `label` distinguishes call sites in the
- * filename (e.g. "zoom_prejoin"). Never throws — diagnostics must not break join.
- */
-export async function captureFingerprint(page: Page, label: string): Promise<void> {
-  if (!envVars.BROWSER_DEBUG_CAPTURE) return
-  if (page.isClosed()) return
+/** Raw fingerprint object returned by the in-page evaluate. */
+type RawFingerprint = {
+  navigator: {
+    userAgent: unknown
+    platform: unknown
+    webdriver: unknown
+    [k: string]: unknown
+  }
+  cdp: { runtimeEnableLeak: boolean | null }
+  webgl: { renderer?: unknown; unmaskedRenderer?: unknown } | null
+  webgl2: { renderer?: unknown; unmaskedRenderer?: unknown } | null
+  fonts: {
+    windowsProbed: number
+    windowsPresent: string[]
+    linuxProbed: number
+    linuxPresent: string[]
+    documentFontsSize: number | null
+  }
+  geometry: {
+    dpr: number
+    screen: string
+    inner: string
+    [k: string]: unknown
+  }
+}
 
+/**
+ * Compact, high-signal slice of the fingerprint, sized for telemetry: it rides
+ * in every Meet detection signal's run_context so each attribute can be
+ * correlated against detected_as_bot. Keep it small — one row per bot join.
+ */
+export type FingerprintSummary = {
+  verdict: "CDP-RUNTIME-LEAK" | "MIXED-OS-TELL" | "ok"
+  cdp_runtime_leak: boolean | null
+  claims_windows: boolean
+  platform: string | null
+  webdriver: boolean | null
+  win_fonts_present: number
+  lin_fonts_present: number
+  webgl_renderer: string | null
+  dpr: number | null
+  screen: string | null
+  inner: string | null
+}
+
+/** Run the in-page fingerprint evaluate. Never throws; null on any failure. */
+async function evaluateFingerprint(page: Page): Promise<RawFingerprint | null> {
+  if (page.isClosed()) return null
   try {
-    const fp = await page.evaluate(
+    return (await page.evaluate(
       ({ winFonts, linFonts }) => {
         const nav = navigator as Navigator & {
           userAgentData?: {
@@ -204,7 +248,8 @@ export async function captureFingerprint(page: Page, label: string): Promise<voi
             windowsPresent: detectFonts(winFonts).present,
             linuxProbed: linFonts.length,
             linuxPresent: detectFonts(linFonts).present,
-            documentFontsSize: (document as unknown as { fonts?: { size?: number } }).fonts?.size ?? null
+            documentFontsSize:
+              (document as unknown as { fonts?: { size?: number } }).fonts?.size ?? null
           },
           geometry: {
             dpr: window.devicePixelRatio,
@@ -217,37 +262,102 @@ export async function captureFingerprint(page: Page, label: string): Promise<voi
         }
       },
       { winFonts: WINDOWS_FONTS, linFonts: LINUX_FONTS }
-    )
+    )) as unknown as RawFingerprint
+  } catch {
+    return null
+  }
+}
 
-    // Coherence verdict: Windows UA/platform but Linux fonts present and no
-    // Windows fonts = the mixed-OS tell. Logged inline so it shows in the bot
-    // log without downloading the JSON.
-    const claimsWindows =
-      /windows/i.test(String(fp.navigator.userAgent)) ||
-      String(fp.navigator.platform).startsWith("Win")
-    const winFontCount = fp.fonts.windowsPresent.length
-    const linFontCount = fp.fonts.linuxPresent.length
-    // CDP leak is the most severe tell, so it wins the verdict; then the font mix.
-    const verdict =
-      fp.cdp.runtimeEnableLeak === true
-        ? "CDP-RUNTIME-LEAK"
-        : claimsWindows && winFontCount === 0 && linFontCount > 0
-          ? "MIXED-OS-TELL"
-          : "ok"
+/** Reduce the raw fingerprint to the coherence verdict + telemetry summary. */
+function summarizeFingerprint(fp: RawFingerprint): FingerprintSummary {
+  // Coherence verdict: Windows UA/platform but Linux fonts present and no
+  // Windows fonts = the mixed-OS tell. CDP leak is the most severe tell, so it
+  // wins the verdict; then the font mix.
+  const claimsWindows =
+    /windows/i.test(String(fp.navigator.userAgent)) ||
+    String(fp.navigator.platform).startsWith("Win")
+  const winFontCount = fp.fonts.windowsPresent.length
+  const linFontCount = fp.fonts.linuxPresent.length
+  const verdict =
+    fp.cdp.runtimeEnableLeak === true
+      ? "CDP-RUNTIME-LEAK"
+      : claimsWindows && winFontCount === 0 && linFontCount > 0
+        ? "MIXED-OS-TELL"
+        : "ok"
+
+  const renderer = fp.webgl?.unmaskedRenderer ?? fp.webgl?.renderer ?? null
+  return {
+    verdict,
+    cdp_runtime_leak: fp.cdp.runtimeEnableLeak,
+    claims_windows: claimsWindows,
+    platform: fp.navigator.platform == null ? null : String(fp.navigator.platform),
+    webdriver: typeof fp.navigator.webdriver === "boolean" ? fp.navigator.webdriver : null,
+    win_fonts_present: winFontCount,
+    lin_fonts_present: linFontCount,
+    webgl_renderer: renderer == null ? null : String(renderer),
+    dpr: typeof fp.geometry.dpr === "number" ? fp.geometry.dpr : null,
+    screen: fp.geometry.screen == null ? null : String(fp.geometry.screen),
+    inner: fp.geometry.inner == null ? null : String(fp.geometry.inner)
+  }
+}
+
+// The probe runs a page.evaluate, which has no per-call timeout and can hang if
+// the renderer is wedged — precisely the state a flagged/blocked bot's page may
+// be in. Since this gates the detection-signal report, bound it: on deadline we
+// report fingerprint: null rather than losing the signal for that bot.
+const PROBE_TIMEOUT_MS = 3000
+
+/**
+ * Prod telemetry entry: capture the fingerprint the detector saw and return a
+ * compact summary for the detection signal's run_context. Never throws, writes
+ * no files, and is NOT gated on BROWSER_DEBUG_CAPTURE — this is how we correlate
+ * fingerprint tells against Meet's flag decision. Returns null if the page is
+ * gone, the evaluate fails, or the probe exceeds PROBE_TIMEOUT_MS; callers must
+ * treat null as "unknown".
+ */
+export async function probeFingerprint(page: Page): Promise<FingerprintSummary | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), PROBE_TIMEOUT_MS)
+    // Don't let a pending probe keep the process alive on shutdown.
+    timer.unref?.()
+  })
+  try {
+    const fp = await Promise.race([evaluateFingerprint(page), deadline])
+    return fp ? summarizeFingerprint(fp) : null
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/**
+ * Debug dump: full fingerprint JSON + screenshot to the html-snapshots dir.
+ * `label` distinguishes call sites in the filename (e.g. "zoom_prejoin").
+ * Gated on BROWSER_DEBUG_CAPTURE, off by default. Never throws.
+ */
+export async function captureFingerprint(page: Page, label: string): Promise<void> {
+  if (!envVars.BROWSER_DEBUG_CAPTURE) return
+  if (page.isClosed()) return
+
+  try {
+    const fp = await evaluateFingerprint(page)
+    if (!fp) return
+    const summary = summarizeFingerprint(fp)
 
     console.log(
-      `[FingerprintProbe:${label}] verdict=${verdict} ` +
-        `cdpRuntimeLeak=${fp.cdp.runtimeEnableLeak} ` +
-        `platform=${fp.navigator.platform} webdriver=${fp.navigator.webdriver} ` +
-        `winFonts=${winFontCount}/${fp.fonts.windowsProbed} linFonts=${linFontCount}/${fp.fonts.linuxProbed} ` +
-        `glRenderer=${fp.webgl?.unmaskedRenderer ?? fp.webgl?.renderer ?? "?"} ` +
-        `dpr=${fp.geometry.dpr} screen=${fp.geometry.screen} inner=${fp.geometry.inner}`
+      `[FingerprintProbe:${label}] verdict=${summary.verdict} ` +
+        `cdpRuntimeLeak=${summary.cdp_runtime_leak} ` +
+        `platform=${summary.platform} webdriver=${summary.webdriver} ` +
+        `winFonts=${summary.win_fonts_present}/${fp.fonts.windowsProbed} ` +
+        `linFonts=${summary.lin_fonts_present}/${fp.fonts.linuxProbed} ` +
+        `glRenderer=${summary.webgl_renderer ?? "?"} ` +
+        `dpr=${summary.dpr} screen=${summary.screen} inner=${summary.inner}`
     )
 
     const dir = PathManager.getInstance().getHtmlSnapshotsPath()
     await fs.mkdir(dir, { recursive: true }).catch(() => {})
     const jsonPath = path.join(dir, `${Date.now()}_fingerprint_${label}.json`)
-    await fs.writeFile(jsonPath, JSON.stringify({ label, verdict, ...fp }, null, 2))
+    await fs.writeFile(jsonPath, JSON.stringify({ label, verdict: summary.verdict, ...fp }, null, 2))
     console.log(`[FingerprintProbe:${label}] dump written: ${path.basename(jsonPath)}`)
 
     try {
