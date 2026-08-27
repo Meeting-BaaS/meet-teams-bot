@@ -129,9 +129,18 @@ export class InCallState extends BaseState {
     // healthy bot resolves in ~1s, so the race settles instantly and the timer is
     // cleared in `finally` — zero added latency for the common path.
     let speakersObservationTimer: NodeJS.Timeout | undefined
+    // When the timer wins the race, startSpeakersObservation() keeps running
+    // (Promise.race can't cancel the loser). That is deliberate: a late-arriving
+    // Teams interceptor still brings the speaker timeline online — a few seconds
+    // of leading "Unknown" beats no diarization at all, and SpeakerManager already
+    // tolerates updates arriving at any point during the recording. We keep a
+    // handle only to swallow a *late* rejection so it can't surface as an
+    // unhandled rejection after the race has already settled.
+    const observationSetup = this.startSpeakersObservation()
+    observationSetup.catch(() => {})
     try {
       await Promise.race([
-        this.startSpeakersObservation(),
+        observationSetup,
         new Promise<never>((_, reject) => {
           speakersObservationTimer = setTimeout(
             () => reject(new Error("Speakers observation setup timed out")),
