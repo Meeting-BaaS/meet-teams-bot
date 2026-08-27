@@ -508,9 +508,14 @@ export function browserInterceptionLogic(schema: any[]) {
         // DOM path was load-bearing. Log only the SSRC and whether it resolved
         // to a rostered user — never the device-path or participant name, which
         // are PII that page logging would persist.
+        //
+        // Emit as console.warn WITH the [NetworkInterceptor] prefix: page-logger
+        // only forwards page console output to the node logs when LOG_LEVEL=debug
+        // OR the line is a NetworkInterceptor error/warning. A plain console.log
+        // would be dropped in prod, making this observability invisible.
         const rostered = userManager.allUsersMap.has(devicePath)
-        console.log(
-          `[SSRC-DOM] resolved ssrc=${ssrc} rostered=${rostered} ` +
+        console.warn(
+          `[NetworkInterceptor] [SSRC-DOM] resolved ssrc=${ssrc} rostered=${rostered} ` +
             `(no authoritative collections mapping — DOM harvest was necessary)`
         )
       })
