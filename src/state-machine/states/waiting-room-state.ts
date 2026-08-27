@@ -6,7 +6,6 @@ import {
 } from "../../browser/browser-session"
 import { IN_PROCESS_RETRY_MAX } from "../../config/retry-config"
 import { Events } from "../../events"
-import { setDirectMode } from "../../proxy/toggle-proxy"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import { GLOBAL } from "../../singleton"
@@ -440,7 +439,6 @@ export class WaitingRoomState extends BaseState {
             if (this.context.playwrightPage) {
               dehumanize(this.context.playwrightPage)
             }
-            setDirectMode()
           },
           this.context.dialogObserver,
           onAdmissionDetected
