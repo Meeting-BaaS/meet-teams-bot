@@ -520,7 +520,7 @@ export function browserInterceptionLogic(schema: any[]) {
         return
       }
       const originalGetContributingSources = OriginalRTCRtpReceiver.prototype.getContributingSources
-      OriginalRTCRtpReceiver.prototype.getContributingSources = function (...args: any[]) {
+      const wrappedGetContributingSources = function (this: any, ...args: any[]) {
         const result = originalGetContributingSources.apply(this, args)
         // Mirror EVERY call, including empty results: an empty array is Meet
         // telling us the previous speaker went quiet, and skipping it would
@@ -531,6 +531,19 @@ export function browserInterceptionLogic(schema: any[]) {
         }
         return result
       }
+      // Lock the prototype method behind an accessor so nothing later -- Meet's
+      // own active-speaker instrumentation is known to poll this same method --
+      // can reassign it back to an unmasked function. Live telemetry showed a
+      // detectably-patched getContributingSources in a meaningful fraction of
+      // sessions despite the wrap+mask below running. A getter/setter (not a
+      // plain non-writable value) avoids a strict-mode throw on Meet's own page
+      // if it ever tries to reassign this itself -- the setter just no-ops.
+      Object.defineProperty(OriginalRTCRtpReceiver.prototype, "getContributingSources", {
+        get: () => wrappedGetContributingSources,
+        set: () => {},
+        configurable: false,
+        enumerable: true
+      })
       // Mask so Function.prototype.toString.call(getContributingSources) still
       // reports native code — same technique as fetch/RTCPeerConnection above,
       // zero behavior change, only the toString readback is covered.
@@ -1919,7 +1932,7 @@ export function browserInterceptionLogic(schema: any[]) {
     })
 
     const originalFetch = window.fetch
-    window.fetch = async (...args) => {
+    const wrappedFetch = async (...args: Parameters<typeof fetch>) => {
       const url = args[0] instanceof Request ? args[0].url : args[0]
       const response = await originalFetch.apply(window, args)
       try {
@@ -1962,6 +1975,22 @@ export function browserInterceptionLogic(schema: any[]) {
       }
       return response
     }
+    // Lock window.fetch behind an accessor so nothing later -- Meet's own page
+    // JS instrumenting fetch for its own telemetry, or any other script -- can
+    // replace our wrapper with an unmasked one. Live telemetry showed ~30% of
+    // sessions with a detectably-patched fetch despite this exact wrap+mask
+    // running; a plain assignment lets a later `window.fetch = ...` win
+    // silently. A getter/setter (not a plain non-writable value) is deliberate:
+    // Meet's bundled JS almost certainly runs in strict mode, where assigning
+    // to a non-writable data property throws -- an uncaught exception on
+    // Meet's own page would be a worse, more visible tell than the one this
+    // fixes. The setter here just silently swallows the attempt instead.
+    Object.defineProperty(window, "fetch", {
+      get: () => wrappedFetch,
+      set: () => {},
+      configurable: false,
+      enumerable: true
+    })
     // Mask the fetch wrapper so Function.prototype.toString.call(fetch) reports
     // native code (detectors flag a non-native fetch as automation).
     __maskNative(window.fetch, "fetch")
