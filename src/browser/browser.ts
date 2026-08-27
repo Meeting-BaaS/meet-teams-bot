@@ -329,7 +329,18 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
   if (timezoneId) console.log(`[Browser] Aligning timezone with exit IP: ${timezoneId}`)
 
   const sharedArgs = [
-    // Window size and position - must match Xvfb display exactly
+    // Browser WINDOW geometry. It no longer matches the Xvfb display, and that
+    // is the point: the display is now a real monitor size (1920x1080 /
+    // 2560x1440) because the page reads it as screen.width/height and
+    // CloakBrowser does not spoof it — "Screen and window size come from the
+    // real display, not this flag" (cloakbrowser/dist/config.js). Sizing the
+    // display to the window gave every bot screen=1280x860, a resolution no
+    // monitor has ever had, which is one property read away from blowing the
+    // Windows persona.
+    //
+    // Position MUST stay 0,0. The recorder x11grabs windowWidth x windowHeight
+    // from the display origin and crops the top 140px of browser chrome; move
+    // the window and the recording captures the wrong pixels.
     `--window-size=${windowWidth},${windowHeight}`,
     "--window-position=0,0",
 

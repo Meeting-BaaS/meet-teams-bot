@@ -138,15 +138,19 @@ export PULSE_RUNTIME_PATH=/tmp/pulse\n\
 export XDG_RUNTIME_DIR=/tmp/pulse\n\
 mkdir -p $PULSE_RUNTIME_PATH\n\
 \n# Determine resolution from RESOLUTION env var (default: 720p)\n\
+\n# X11_* is the virtual MONITOR and must be a resolution real monitors have:\n\
+\n# the page reads it as screen.width/height and CloakBrowser does not spoof it.\n\
+\n# The browser WINDOW stays 1280x860 / 1920x1220 (set by browser.ts), anchored\n\
+\n# at 0,0, so the x11grab region and its 140px chrome crop are unchanged.\n\
 RESOLUTION=${RESOLUTION:-720}\n\
 if [ "$RESOLUTION" = "1080" ]; then\n\
-    X11_WIDTH=1920\n\
-    X11_HEIGHT=1220\n\
-    echo "📐 Using 1080p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
+    X11_WIDTH=2560\n\
+    X11_HEIGHT=1440\n\
+    echo "📐 Using 1080p: 1920x1220 window on a ${X11_WIDTH}x${X11_HEIGHT} display"\n\
 else\n\
-    X11_WIDTH=1280\n\
-    X11_HEIGHT=860\n\
-    echo "📐 Using 720p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
+    X11_WIDTH=1920\n\
+    X11_HEIGHT=1080\n\
+    echo "📐 Using 720p: 1280x860 window on a ${X11_WIDTH}x${X11_HEIGHT} display"\n\
 fi\n\
 \n# Start virtual display with enhanced cursor hiding\n\
 Xvfb :99 -screen 0 ${X11_WIDTH}x${X11_HEIGHT}x24 -ac +extension GLX +render -noreset -nocursor -nolisten tcp &\n\
