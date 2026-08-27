@@ -116,8 +116,11 @@ export function browserInterceptionLogic(schema: any[]) {
       const curW = window.innerWidth || 1280
       const curH = window.innerHeight || 720
       // Only presets at least as large as the actual viewport are coherent
-      // (a real monitor can't be smaller than the window on it).
-      const viable = __SCREEN_PRESETS.filter((p) => p.w >= curW && p.h >= curH)
+      // (a real monitor can't be smaller than the window on it). availHeight
+      // reserves a 40px taskbar, so require the preset to still clear
+      // innerHeight after that deduction (e.g. a bare 1920x1080 monitor would
+      // report availHeight=1040 < a 1080-tall viewport — incoherent).
+      const viable = __SCREEN_PRESETS.filter((p) => p.w >= curW && p.h - 40 >= curH)
       const pick = (viable.length > 0 ? viable : __SCREEN_PRESETS)[
         Math.floor(Math.random() * (viable.length > 0 ? viable.length : __SCREEN_PRESETS.length))
       ]
@@ -179,6 +182,19 @@ export function browserInterceptionLogic(schema: any[]) {
                 : AUDIO_INPUT_LABELS
           return list[Math.floor(Math.random() * list.length)]
         }
+        // Cache one label per {kind, deviceId} so repeated enumerateDevices()
+        // calls within a session stay consistent -- a device's label changing
+        // between calls is itself a coherence tell no real browser exhibits.
+        const __labelCache = new Map<string, string>()
+        const stableLabel = (kind: string, deviceId: string): string => {
+          const key = `${kind}:${deviceId}`
+          let label = __labelCache.get(key)
+          if (!label) {
+            label = pickLabel(kind)
+            __labelCache.set(key, label)
+          }
+          return label
+        }
         const originalEnumerate = md.enumerateDevices.bind(md)
         md.enumerateDevices = async function (...args: any[]) {
           const devices = await originalEnumerate(...args)
@@ -191,7 +207,7 @@ export function browserInterceptionLogic(schema: any[]) {
               // Leave devices with no label (permission not yet granted) untouched
               // -- a filled-in label before permission is itself a coherence tell.
               Object.defineProperty(clone, "label", {
-                value: d.label ? pickLabel(d.kind) : d.label,
+                value: d.label ? stableLabel(d.kind, d.deviceId) : d.label,
                 enumerable: true
               })
               return clone

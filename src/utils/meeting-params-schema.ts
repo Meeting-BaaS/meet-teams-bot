@@ -93,7 +93,8 @@ export const BotMessageSchema = object({
   // ISO-3166 alpha-2 countries the residential proxy exit may pin to, chosen by
   // the team in settings (api-server passes them through). The bot picks one;
   // if that region's pool is unreachable it falls through to the next. Empty =
-  // no pinning (env RESIDENTIAL_PROXY_COUNTRY default applies).
+  // falls back to RESIDENTIAL_PROXY_COUNTRY, then to a rotated
+  // DEFAULT_PROXY_COUNTRIES candidate set (see toggle-proxy.ts) -- not unpinned.
   proxy_countries: array(string()).default([]),
 
   // Meet SSO authenticated bot config — present when api-server assigned a meet_login.
