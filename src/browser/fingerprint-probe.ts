@@ -77,6 +77,14 @@ type RawFingerprint = {
     [k: string]: unknown
   }
   cdp: { runtimeEnableLeak: boolean | null }
+  patches: {
+    createEncodedStreamsPresent: boolean | null
+    getContributingSourcesNative: boolean | null
+    fetchNative: boolean | null
+    rtcPeerConnectionNative: boolean | null
+    getUserMediaNative: boolean | null
+    exposedBindings: string[]
+  }
   webgl: { renderer?: unknown; unmaskedRenderer?: unknown } | null
   webgl2: { renderer?: unknown; unmaskedRenderer?: unknown } | null
   fonts: {
@@ -100,8 +108,16 @@ type RawFingerprint = {
  * correlated against detected_as_bot. Keep it small — one row per bot join.
  */
 export type FingerprintSummary = {
-  verdict: "CDP-RUNTIME-LEAK" | "MIXED-OS-TELL" | "ok"
+  verdict: "CDP-RUNTIME-LEAK" | "PATCHED-NATIVE-API" | "MIXED-OS-TELL" | "ok"
   cdp_runtime_leak: boolean | null
+  // Tells we inflict on ourselves, one field per patch so each can be fixed and
+  // A/B'd independently. self_patch_count is the roll-up for a first cut at the
+  // data; the individual fields say which patch to go after.
+  self_patch_count: number
+  encoded_streams_deleted: boolean | null
+  fetch_patched: boolean | null
+  contributing_sources_patched: boolean | null
+  exposed_bindings: string[]
   claims_windows: boolean
   platform: string | null
   webdriver: boolean | null
@@ -213,6 +229,81 @@ async function evaluateFingerprint(page: Page): Promise<RawFingerprint | null> {
           return { present }
         }
 
+        // --- Self-inflicted tells ---
+        //
+        // Everything above measures what the CONTAINER looks like. This block
+        // measures what WE did to the page, which is a different and more
+        // specific class of tell: our own injected scripts patch native WebRTC
+        // and network APIs that Meet's client itself feature-detects, and
+        // nothing masks Function.prototype.toString, so each patch is one line
+        // for a detector to find.
+        //
+        //   createEncodedStreams  — deleted outright by setupForceNativeAudioPipeline,
+        //                           so a UA claiming a Chrome that ships the API
+        //                           meets a page where the API is missing.
+        //   getContributingSources / fetch
+        //                         — replaced with plain JS functions by the
+        //                           network-interception bundle.
+        //   exposed bindings      — page.exposeFunction() leaves a uniquely named
+        //                           global (e.g. meetSpeakersChanged) on window.
+        //
+        // Reported per-tell rather than as one boolean so a fix can be A/B'd one
+        // patch at a time.
+        const isNative = (fn: unknown): boolean | null => {
+          if (typeof fn !== "function") return null
+          try {
+            return /\{\s*\[native code\]\s*\}/.test(Function.prototype.toString.call(fn))
+          } catch {
+            return null
+          }
+        }
+
+        const rtcReceiverProto = (
+          window as unknown as { RTCRtpReceiver?: { prototype?: Record<string, unknown> } }
+        ).RTCRtpReceiver?.prototype
+
+        // Every name we hand to page.exposeFunction(), across all platforms.
+        // Playwright installs each as a real property on `window`, so a detector
+        // enumerating globals sees a function named after the product it is
+        // defending. The names are ours, so an exact list beats a heuristic scan.
+        //
+        // onNetworkSpeakerUpdate and onChatMessageReceived matter most on Meet:
+        // both are installed BEFORE page.goto, so they are present on window at
+        // the moment CreateMeetingDevice decides. The *SpeakersChanged bindings
+        // arrive later, in-call.
+        const EXPOSED_BINDINGS = [
+          "onNetworkSpeakerUpdate", // meet + teams + zoom, pre-goto
+          "onChatMessageReceived", // meet, pre-goto
+          "meetSpeakersChanged",
+          "teamsSpeakersChanged",
+          "onTeamsChatMessage",
+          "zoomSpeakersChanged",
+          "zoomSpeakerForensics",
+          "zoomCleanerLog",
+          "zoomChatMessage"
+        ]
+
+        const patches = {
+          // null = the API does not exist in this build at all, which is not the
+          // same as us having removed it. Only `false` means we deleted it.
+          createEncodedStreamsPresent: rtcReceiverProto
+            ? "createEncodedStreams" in rtcReceiverProto
+            : null,
+          getContributingSourcesNative: rtcReceiverProto
+            ? isNative(rtcReceiverProto.getContributingSources)
+            : null,
+          fetchNative: isNative(window.fetch),
+          // Baselines. If these ever read false we are patching something we
+          // did not intend to, or a dependency is.
+          rtcPeerConnectionNative: isNative(
+            (window as unknown as { RTCPeerConnection?: unknown }).RTCPeerConnection
+          ),
+          getUserMediaNative: isNative(navigator.mediaDevices?.getUserMedia),
+          exposedBindings: EXPOSED_BINDINGS.filter(
+            (n) => typeof (window as unknown as Record<string, unknown>)[n] !== "undefined"
+          )
+        }
+
         // --- CDP Runtime.enable leak self-test ---
         // The dominant modern bot tell, and fingerprint-INDEPENDENT: if the
         // automation layer has sent Runtime.enable (vanilla Playwright/Puppeteer
@@ -241,6 +332,7 @@ async function evaluateFingerprint(page: Page): Promise<RawFingerprint | null> {
         return {
           navigator: navigatorInfo,
           cdp: { runtimeEnableLeak },
+          patches,
           webgl: readGl("webgl"),
           webgl2: readGl("webgl2"),
           fonts: {
@@ -278,17 +370,41 @@ function summarizeFingerprint(fp: RawFingerprint): FingerprintSummary {
     String(fp.navigator.platform).startsWith("Win")
   const winFontCount = fp.fonts.windowsPresent.length
   const linFontCount = fp.fonts.linuxPresent.length
+  // A deleted or re-implemented native API is a harder tell than a font mix —
+  // it contradicts the UA on a capability Meet's own client feature-detects —
+  // so it outranks MIXED-OS-TELL. The CDP leak still wins overall: it defeats
+  // every other disguise on the page.
+  const encodedStreamsDeleted =
+    fp.patches.createEncodedStreamsPresent === null ? null : !fp.patches.createEncodedStreamsPresent
+  const fetchPatched = fp.patches.fetchNative === null ? null : !fp.patches.fetchNative
+  const contributingSourcesPatched =
+    fp.patches.getContributingSourcesNative === null ? null : !fp.patches.getContributingSourcesNative
+  const selfPatchCount =
+    (encodedStreamsDeleted === true ? 1 : 0) +
+    (fetchPatched === true ? 1 : 0) +
+    (contributingSourcesPatched === true ? 1 : 0) +
+    (fp.patches.rtcPeerConnectionNative === false ? 1 : 0) +
+    (fp.patches.getUserMediaNative === false ? 1 : 0) +
+    fp.patches.exposedBindings.length
+
   const verdict =
     fp.cdp.runtimeEnableLeak === true
       ? "CDP-RUNTIME-LEAK"
-      : claimsWindows && winFontCount === 0 && linFontCount > 0
-        ? "MIXED-OS-TELL"
-        : "ok"
+      : selfPatchCount > 0
+        ? "PATCHED-NATIVE-API"
+        : claimsWindows && winFontCount === 0 && linFontCount > 0
+          ? "MIXED-OS-TELL"
+          : "ok"
 
   const renderer = fp.webgl?.unmaskedRenderer ?? fp.webgl?.renderer ?? null
   return {
     verdict,
     cdp_runtime_leak: fp.cdp.runtimeEnableLeak,
+    self_patch_count: selfPatchCount,
+    encoded_streams_deleted: encodedStreamsDeleted,
+    fetch_patched: fetchPatched,
+    contributing_sources_patched: contributingSourcesPatched,
+    exposed_bindings: fp.patches.exposedBindings,
     claims_windows: claimsWindows,
     platform: fp.navigator.platform == null ? null : String(fp.navigator.platform),
     webdriver: typeof fp.navigator.webdriver === "boolean" ? fp.navigator.webdriver : null,
@@ -347,6 +463,11 @@ export async function captureFingerprint(page: Page, label: string): Promise<voi
     console.log(
       `[FingerprintProbe:${label}] verdict=${summary.verdict} ` +
         `cdpRuntimeLeak=${summary.cdp_runtime_leak} ` +
+        `selfPatches=${summary.self_patch_count} ` +
+        `(encodedStreamsDeleted=${summary.encoded_streams_deleted} ` +
+        `fetchPatched=${summary.fetch_patched} ` +
+        `contributingSourcesPatched=${summary.contributing_sources_patched} ` +
+        `exposed=[${summary.exposed_bindings.join(",")}]) ` +
         `platform=${summary.platform} webdriver=${summary.webdriver} ` +
         `winFonts=${summary.win_fonts_present}/${fp.fonts.windowsProbed} ` +
         `linFonts=${summary.lin_fonts_present}/${fp.fonts.linuxProbed} ` +
