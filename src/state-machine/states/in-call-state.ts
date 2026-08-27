@@ -121,11 +121,29 @@ export class InCallState extends BaseState {
     // is speech transcribed with no diarization to name it — it surfaces as a
     // leading "Unknown" speaker run at the start of the transcript. The cleanup
     // is cosmetic and can wait; the speaker timeline cannot.
+    // Bound the observation setup: a slow Teams NetworkInterceptor can take 20s+
+    // and eat the whole SETUP_TIMEOUT, starving the HTML cleanup that follows and
+    // failing the recording outright (observed: recording_failed with the
+    // interceptor callback exposed only ~21s into the 30s budget). Cap it so a
+    // hung observation rejects into the existing catch and setup continues. A
+    // healthy bot resolves in ~1s, so the race settles instantly and the timer is
+    // cleared in `finally` — zero added latency for the common path.
+    let speakersObservationTimer: NodeJS.Timeout | undefined
     try {
-      await this.startSpeakersObservation()
+      await Promise.race([
+        this.startSpeakersObservation(),
+        new Promise<never>((_, reject) => {
+          speakersObservationTimer = setTimeout(
+            () => reject(new Error("Speakers observation setup timed out")),
+            MEETING_CONSTANTS.SPEAKERS_OBSERVATION_SETUP_TIMEOUT
+          )
+        })
+      ])
     } catch (error) {
       console.error("Failed to start speakers observation:", formatError(error))
       // Continue even if speakers observation fails
+    } finally {
+      if (speakersObservationTimer) clearTimeout(speakersObservationTimer)
     }
 
     // HTML cleanup after the speaker signal is live
