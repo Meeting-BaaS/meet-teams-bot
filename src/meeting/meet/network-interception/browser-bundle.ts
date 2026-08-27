@@ -73,7 +73,12 @@ export function browserInterceptionLogic(schema: any[]) {
       "_sendChatMessage",
       "__decodeDcrpcFrame",
       "__meetMessagesChannelReady",
-      "pako"
+      "pako",
+      // Set by audio-capture.ts's own RTCPeerConnection toString mask (a
+      // separate addInitScript with no guaranteed order vs this one, so it
+      // can't reuse this file's __nativeStr/__maskNative and keeps its own).
+      "__rtcToStringMasked",
+      "__rtcNativeStrMap"
     ]
     const __cloak = () => {
       for (const n of __CLOAK_NAMES) {

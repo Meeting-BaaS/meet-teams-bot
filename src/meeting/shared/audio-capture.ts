@@ -202,7 +202,7 @@ export function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                     const OriginalPC = window.RTCPeerConnection
                     ${enablePeriodicScanning ? "const allPeerConnections = []" : ""}
 
-                    window.RTCPeerConnection = function (...args) {
+                    const WrappedPC = function (...args) {
                         const pc = new OriginalPC(...args)
                         ${enablePeriodicScanning ? "allPeerConnections.push(pc)" : ""}
 
@@ -220,6 +220,43 @@ export function generateAudioCaptureScript(config: AudioCaptureConfig): string {
                         })
                         return pc
                     }
+                    // Preserve the prototype chain: without this, "instanceof
+                    // RTCPeerConnection" and static members (generateCertificate
+                    // etc.) break for anyone using our wrapped constructor --
+                    // network-interception's own RTCPeerConnection wrap already
+                    // does this; this wrap runs via a separate addInitScript with
+                    // no guaranteed ordering against it, so it needs its own copy.
+                    try {
+                        WrappedPC.prototype = OriginalPC.prototype
+                        Object.setPrototypeOf(WrappedPC, OriginalPC)
+                    } catch (e) { /* non-configurable on this engine */ }
+                    // Mask so Function.prototype.toString.call(RTCPeerConnection)
+                    // still reports native code. Self-contained (its own WeakMap
+                    // + Function.prototype.toString proxy, not shared with
+                    // network-interception's __maskNative) because this script
+                    // and network-interception's are two independent
+                    // addInitScript registrations with no defined relative
+                    // order -- whichever one's RTCPeerConnection wrap ends up
+                    // live must mask itself, it can't rely on the other script
+                    // having run first.
+                    try {
+                        if (!window.__rtcToStringMasked) {
+                            window.__rtcToStringMasked = true
+                            const __rtcNativeStr = new WeakMap()
+                            const __origToString = Function.prototype.toString
+                            Function.prototype.toString = new Proxy(__origToString, {
+                                apply(target, thisArg, args) {
+                                    if (__rtcNativeStr.has(thisArg)) {
+                                        return __rtcNativeStr.get(thisArg)
+                                    }
+                                    return Reflect.apply(target, thisArg, args)
+                                }
+                            })
+                            window.__rtcNativeStrMap = __rtcNativeStr
+                        }
+                        window.__rtcNativeStrMap.set(WrappedPC, "function RTCPeerConnection() { [native code] }")
+                    } catch (e) { /* toString proxy setup failed -- proceed unmasked */ }
+                    window.RTCPeerConnection = WrappedPC
 
                     ${
                       enablePeriodicScanning
