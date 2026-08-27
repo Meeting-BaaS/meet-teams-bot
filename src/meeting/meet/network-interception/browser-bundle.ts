@@ -146,6 +146,66 @@ export function browserInterceptionLogic(schema: any[]) {
       /* screen override unsupported — proceed with native (fleet-constant) values */
     }
 
+    // ===== STEALTH: realistic media device labels =====
+    // Our virtual audio devices are created as PulseAudio module-null-sink
+    // sink_name=virtual_speaker / module-virtual-source source_name=virtual_mic.
+    // Those literal names surface as MediaDeviceInfo.label via
+    // navigator.mediaDevices.enumerateDevices() — visible to any site JS,
+    // completely untouched until now, and directly on-point for an RPC
+    // literally named CreateMeetingDevice: a "virtual_mic" label is an
+    // unambiguous automation tell no fingerprint-layer fix can hide. Relabel
+    // to common real hardware strings while preserving deviceId/groupId/kind
+    // (and the prototype chain, so instanceof MediaDeviceInfo still holds) -
+    // purely cosmetic, device SELECTION by id is untouched.
+    try {
+      const md = (navigator as any).mediaDevices
+      if (md && typeof md.enumerateDevices === "function") {
+        const AUDIO_INPUT_LABELS = [
+          "Microphone (Realtek(R) Audio)",
+          "Microphone Array (Realtek High Definition Audio)",
+          "Headset Microphone (Realtek(R) Audio)"
+        ]
+        const AUDIO_OUTPUT_LABELS = [
+          "Speakers (Realtek(R) Audio)",
+          "Speakers / Headphones (Realtek(R) Audio)"
+        ]
+        const VIDEO_INPUT_LABELS = ["HD Webcam", "Integrated Camera", "USB2.0 HD UVC WebCam"]
+        const pickLabel = (kind: string): string => {
+          const list =
+            kind === "audiooutput"
+              ? AUDIO_OUTPUT_LABELS
+              : kind === "videoinput"
+                ? VIDEO_INPUT_LABELS
+                : AUDIO_INPUT_LABELS
+          return list[Math.floor(Math.random() * list.length)]
+        }
+        const originalEnumerate = md.enumerateDevices.bind(md)
+        md.enumerateDevices = async function (...args: any[]) {
+          const devices = await originalEnumerate(...args)
+          try {
+            return devices.map((d: any) => {
+              const clone = Object.create(Object.getPrototypeOf(d))
+              Object.defineProperty(clone, "deviceId", { value: d.deviceId, enumerable: true })
+              Object.defineProperty(clone, "groupId", { value: d.groupId, enumerable: true })
+              Object.defineProperty(clone, "kind", { value: d.kind, enumerable: true })
+              // Leave devices with no label (permission not yet granted) untouched
+              // -- a filled-in label before permission is itself a coherence tell.
+              Object.defineProperty(clone, "label", {
+                value: d.label ? pickLabel(d.kind) : d.label,
+                enumerable: true
+              })
+              return clone
+            })
+          } catch (_e) {
+            return devices
+          }
+        }
+        __maskNative(md.enumerateDevices, "enumerateDevices")
+      }
+    } catch (_e) {
+      /* mediaDevices unavailable or read-only — proceed with native labels */
+    }
+
     // Feature flag: Proactive datachannel creation
     // Enabled — passive listener alone may miss the channel due to timing
     const ENABLE_PROACTIVE_MEET_CHANNEL = true
