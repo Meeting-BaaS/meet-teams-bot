@@ -301,16 +301,33 @@ function summarizeFingerprint(fp: RawFingerprint): FingerprintSummary {
   }
 }
 
+// The probe runs a page.evaluate, which has no per-call timeout and can hang if
+// the renderer is wedged — precisely the state a flagged/blocked bot's page may
+// be in. Since this gates the detection-signal report, bound it: on deadline we
+// report fingerprint: null rather than losing the signal for that bot.
+const PROBE_TIMEOUT_MS = 3000
+
 /**
  * Prod telemetry entry: capture the fingerprint the detector saw and return a
  * compact summary for the detection signal's run_context. Never throws, writes
  * no files, and is NOT gated on BROWSER_DEBUG_CAPTURE — this is how we correlate
  * fingerprint tells against Meet's flag decision. Returns null if the page is
- * gone or the evaluate fails; callers must treat null as "unknown".
+ * gone, the evaluate fails, or the probe exceeds PROBE_TIMEOUT_MS; callers must
+ * treat null as "unknown".
  */
 export async function probeFingerprint(page: Page): Promise<FingerprintSummary | null> {
-  const fp = await evaluateFingerprint(page)
-  return fp ? summarizeFingerprint(fp) : null
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), PROBE_TIMEOUT_MS)
+    // Don't let a pending probe keep the process alive on shutdown.
+    timer.unref?.()
+  })
+  try {
+    const fp = await Promise.race([evaluateFingerprint(page), deadline])
+    return fp ? summarizeFingerprint(fp) : null
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 /**
