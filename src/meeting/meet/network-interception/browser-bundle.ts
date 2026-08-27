@@ -47,6 +47,52 @@ export function browserInterceptionLogic(schema: any[]) {
       return fn
     }
 
+    // ===== STEALTH: cloak our injected window globals =====
+    // The interceptor + speaker/chat bridge attach ~15 uniquely-named globals to
+    // window (onNetworkSpeakerUpdate, __networkInterceptorInitialized, …). No real
+    // browser has these, and a detector enumerating window (Object.keys / for-in)
+    // spots them instantly. Redefine each as non-enumerable so it stays reachable
+    // by name (functionality intact) but vanishes from enumeration. Runs now and
+    // deferred, to also cover Playwright's exposeFunction globals set out of band.
+    const __CLOAK_NAMES = [
+      "onNetworkSpeakerUpdate",
+      "onChatMessageReceived",
+      "meetSpeakersChanged",
+      "teamsSpeakersChanged",
+      "onTeamsChatMessage",
+      "zoomSpeakersChanged",
+      "zoomSpeakerForensics",
+      "zoomCleanerLog",
+      "zoomChatMessage",
+      "__networkInterceptorInitialized",
+      "__isNetworkInMeeting",
+      "__stopNetworkInterception",
+      "__networkInterceptorStopped",
+      "triggerNetworkBroadcast",
+      "__meetMessagesCounter",
+      "_sendChatMessage",
+      "__decodeDcrpcFrame",
+      "__meetMessagesChannelReady",
+      "pako"
+    ]
+    const __cloak = () => {
+      for (const n of __CLOAK_NAMES) {
+        try {
+          if (Object.prototype.hasOwnProperty.call(window, n)) {
+            const v = (window as any)[n]
+            Object.defineProperty(window, n, {
+              value: v,
+              enumerable: false,
+              configurable: true,
+              writable: true
+            })
+          }
+        } catch (_e) {
+          /* already non-configurable — skip */
+        }
+      }
+    }
+
     // Feature flag: Proactive datachannel creation
     // Enabled — passive listener alone may miss the channel due to timing
     const ENABLE_PROACTIVE_MEET_CHANNEL = true
@@ -1786,6 +1832,14 @@ export function browserInterceptionLogic(schema: any[]) {
     // Mask the fetch wrapper so Function.prototype.toString.call(fetch) reports
     // native code (detectors flag a non-native fetch as automation).
     __maskNative(window.fetch, "fetch")
+
+    // Hide our injected globals from window enumeration. Run now for everything
+    // set synchronously, and on short delays to catch Playwright's
+    // exposeFunction bindings + any async-registered callbacks.
+    __cloak()
+    setTimeout(__cloak, 0)
+    setTimeout(__cloak, 1000)
+    setTimeout(__cloak, 4000)
   } catch (e: any) {
     console.error("[NetworkInterceptor] Fatal Error:", {
       name: e?.name,
