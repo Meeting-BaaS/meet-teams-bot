@@ -115,11 +115,25 @@ export function getProxyTelemetry(): ProxyTelemetry {
   }
 }
 
+// Fallback candidate set for teams with NO explicit region pin and no
+// RESIDENTIAL_PROXY_COUNTRY env override. Verified in prod (2026-08-27): with
+// zero region steering, bots draw uniformly across Decodo's whole pool
+// including chronically-burned carriers, measuring ~30% flagged — 7x worse
+// than the same fixes with a multi-region candidate set for the burned-ASN
+// rotation to work within (~4%). This list is NOT "currently good networks"
+// (that goes stale by design — see the dual-window burn detection) — it's a
+// broad, stable geographic spread wide enough that the existing live
+// burned-ASN rotation has real alternatives to fall through to, the same
+// mechanism a customer's own pin already benefits from. Every unpinned team
+// gets this for free; an explicit per-bot or env pin still overrides it.
+const DEFAULT_PROXY_COUNTRIES = ["us", "ca", "au", "gb", "de", "fr", "jp", "hk"]
+
 /**
- * Country to pin the residential exit to. Per-bot region (set by the user in
- * settings) takes precedence over the RESIDENTIAL_PROXY_COUNTRY env default.
- * Returns "" for no pinning. The per-bot value is fed via GLOBAL once the
- * settings field ships; until then this resolves to the env default.
+ * Countries to pin the residential exit to, in rotation order. Per-bot region
+ * (set by the user in settings) takes precedence over the single
+ * RESIDENTIAL_PROXY_COUNTRY env default, which in turn takes precedence over
+ * DEFAULT_PROXY_COUNTRIES. Never returns [] — an unpinned team still gets a
+ * default candidate set so the burned-ASN rotation has room to work.
  */
 export function resolveProxyCountries(): string[] {
   // Per-bot set (the team's selected regions) takes precedence over the single
@@ -132,7 +146,8 @@ export function resolveProxyCountries(): string[] {
     .map((c) => c.trim().toLowerCase())
   if (valid.length > 0) return rotateByBot([...new Set(valid)])
   const envC = envVars.RESIDENTIAL_PROXY_COUNTRY
-  return /^[a-z]{2}$/i.test(envC) ? [envC.toLowerCase()] : []
+  if (/^[a-z]{2}$/i.test(envC)) return [envC.toLowerCase()]
+  return rotateByBot(DEFAULT_PROXY_COUNTRIES)
 }
 
 /**
