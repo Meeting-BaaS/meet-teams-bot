@@ -15,6 +15,38 @@ export function browserInterceptionLogic(schema: any[]) {
     // Set flag immediately to prevent race conditions
     ;(window as any).__networkInterceptorInitialized = true
 
+    // ===== STEALTH: native-toString masking =====
+    // We override window.fetch and window.RTCPeerConnection below for network
+    // diarization. Bot detectors (and our own fingerprint probe) flag these by
+    // calling Function.prototype.toString.call(fn) and checking for
+    // "[native code]" — a wrapper function returns its JS source instead, which
+    // is a hard automation tell. Route toString through a Proxy that returns a
+    // native-looking signature for our wrappers (keyed in a WeakMap) and is
+    // transparent for everything else, including toString applied to itself.
+    const __nativeStr = new WeakMap<any, string>()
+    try {
+      const __origToString = Function.prototype.toString
+      const __tsProxy = new Proxy(__origToString, {
+        apply(target, thisArg: any, args: any[]) {
+          const masked = thisArg == null ? undefined : __nativeStr.get(thisArg)
+          if (masked) return masked
+          return Reflect.apply(target, thisArg, args)
+        }
+      })
+      // biome-ignore lint/complexity/useLiteralKeys: prototype write
+      ;(Function.prototype as any).toString = __tsProxy
+    } catch (_e) {
+      /* if the environment forbids patching, masking is simply absent */
+    }
+    const __maskNative = (fn: any, name: string): any => {
+      try {
+        __nativeStr.set(fn, `function ${name}() { [native code] }`)
+      } catch (_e) {
+        /* non-object / frozen — skip */
+      }
+      return fn
+    }
+
     // Feature flag: Proactive datachannel creation
     // Enabled — passive listener alone may miss the channel due to timing
     const ENABLE_PROACTIVE_MEET_CHANNEL = true
@@ -1586,6 +1618,14 @@ export function browserInterceptionLogic(schema: any[]) {
 
         return pc
       }
+      // Preserve prototype identity (instanceof / prototype checks) and mask the
+      // wrapper's toString so it reports as native code like the original.
+      try {
+        ;(window as any).RTCPeerConnection.prototype = OriginalPC.prototype
+      } catch (_e) {
+        /* read-only prototype — leave as-is */
+      }
+      __maskNative((window as any).RTCPeerConnection, "RTCPeerConnection")
     }
     // ===== EXPOSE CHAT MESSAGE SENDING =====
     ;(window as any)._sendChatMessage = async (messageText: string): Promise<boolean> => {
@@ -1743,6 +1783,9 @@ export function browserInterceptionLogic(schema: any[]) {
       }
       return response
     }
+    // Mask the fetch wrapper so Function.prototype.toString.call(fetch) reports
+    // native code (detectors flag a non-native fetch as automation).
+    __maskNative(window.fetch, "fetch")
   } catch (e: any) {
     console.error("[NetworkInterceptor] Fatal Error:", {
       name: e?.name,
