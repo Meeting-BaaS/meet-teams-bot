@@ -16,6 +16,7 @@ import {
 } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { probeFingerprint } from "../browser/fingerprint-probe"
+import { humanClick, humanType } from "../utils/humanize"
 import { enableMeetAudioCapture } from "./meet/audio-capture"
 import { closeMeeting } from "./meet/closeMeeting"
 import { MEET_STATE_CONFIG } from "./meet-state-config"
@@ -1055,7 +1056,13 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
         const isEnabled = await locator.isEnabled().catch(() => false)
 
         if (isVisible && isEnabled) {
-          await locator.click({ timeout: 2000 })
+          // Humanized mouse first (real move → down → up at the join moment),
+          // falling back to a trusted locator click when the box can't be
+          // resolved. Same order Zoom's join uses.
+          const humanClicked = await humanClick(page, locator)
+          if (!humanClicked) {
+            await locator.click({ timeout: 2000 })
+          }
           console.log(`Successfully clicked join button using selector: ${selector}`)
           return true
         }
@@ -1192,11 +1199,15 @@ async function typeBotName(page: Page, botName: string): Promise<boolean> {
   try {
     await page.waitForSelector(INPUT, { timeout: 1000 })
 
-    // Effacer le champ de texte existant
+    // Focus + clear, then type with REAL keyboard events. humanType emits a
+    // genuine per-key keydown/press/up stream with human cadence and an
+    // occasional fat-finger correction; page.fill sets the value in one shot.
+    // Meet fingerprints the join at exactly this moment, and Zoom already runs
+    // this focus + humanType path — porting it here removes the synthetic-input
+    // tell. Falls through to the catch/retry loop on any failure.
+    await page.locator(INPUT).first().click({ timeout: 1000 }).catch(() => {})
     await page.fill(INPUT, "")
-
-    // Taper le nouveau nom
-    await page.fill(INPUT, BotNameTyped)
+    await humanType(page, BotNameTyped)
 
     // Check that the text has been properly entered
     const inputValue = await page.inputValue(INPUT)
