@@ -282,6 +282,34 @@ async function openFirefoxBrowser(proxyUrl?: string | null): Promise<{ browser: 
   }
 }
 
+// Every Chromium feature we disable, in ONE list.
+//
+// These MUST be passed as a single --disable-features switch. Chromium's
+// command line keeps one value per switch name, so a second --disable-features
+// replaces the first outright rather than adding to it.
+const DISABLED_FEATURES: readonly string[] = [
+  "AudioServiceSandbox", // virtual PulseAudio devices need the sandbox off
+  // Chrome's "Sign in to Chrome?" / sync / promo surfaces. These are native
+  // browser UI, unreachable by Playwright, and they block a Workspace join.
+  "SigninInterception", // DICE web sign-in intercept bubble
+  "IdentityConsistency", // auto-links cookie-jar identity to a Chrome profile
+  "ChromeBrowserCloudManagement",
+  "SignInPromo",
+  "ChromeWhatsNewUI",
+  "AccountConsistency",
+  "TranslateUI", // translation prompts we never want
+  "AutofillServerCommunication", // stops autofill phoning home
+  "MediaRouter", // Cast discovery we never use
+  // Trusted Types: Meet/Teams injection scripts assign raw strings to sinks.
+  "TrustedScriptTypes",
+  "TrustedHTML"
+]
+
+// Same rule for --disable-blink-features. AutomationControlled is the one that
+// matters for detection: leaving it enabled keeps navigator.webdriver true and
+// no amount of downstream spoofing hides that.
+const DISABLED_BLINK_FEATURES: readonly string[] = ["AutomationControlled", "TrustedDOMTypes"]
+
 async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
   // Resolution configuration from environment variable
   // Defaults to 720p if RESOLUTION is not set or invalid
@@ -317,7 +345,6 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     "--use-pulseaudio", // Force Chromium to use PulseAudio
     "--enable-audio-service-sandbox=false", // Disable audio service sandbox for virtual devices
     "--audio-buffer-size=8192", // ~170ms at 48kHz — absorbs CPU contention xruns
-    "--disable-features=AudioServiceSandbox", // Additional sandbox disable
     "--autoplay-policy=no-user-gesture-required", // Allow autoplay for meeting platforms
 
     // WebRTC optimizations (required for meeting audio/video capture)
@@ -338,10 +365,8 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     // IdentityConsistency = browser auto-linking cookie-jar identity to a Chrome profile
     // --disable-signin = fully disables browser sign-in at the policy level
     "--disable-signin",
-    "--disable-features=SigninInterception,IdentityConsistency,ChromeBrowserCloudManagement,SignInPromo,ChromeWhatsNewUI,AccountConsistency",
 
     // Performance and resource management optimizations
-    "--disable-blink-features=AutomationControlled",
     "--disable-background-timer-throttling",
     "--enable-features=SharedArrayBuffer",
     "--memory-pressure-off", // Disable memory pressure handling for consistent performance
@@ -349,21 +374,25 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     // --max_old_space_size argument is not a Chromium switch and is silently ignored.
     "--js-flags=--max-old-space-size=4096",
     "--disable-background-networking", // Reduce background network activity
-    "--disable-features=TranslateUI", // Disable translation features to save resources
-    "--disable-features=AutofillServerCommunication", // Disable autofill to reduce network usage
     "--disable-component-extensions-with-background-pages", // Reduce background extension overhead
     "--disable-default-apps", // Disable default Chrome apps
     "--renderer-process-limit=4", // Limit renderer processes to prevent resource exhaustion
     "--disable-ipc-flooding-protection", // Improve IPC performance for high-frequency operations
     "--aggressive-cache-discard", // Enable aggressive cache management for memory efficiency
-    "--disable-features=MediaRouter", // Disable media router for reduced overhead
 
     // Certificate and security optimizations for meeting platforms
     "--ignore-certificate-errors",
     "--allow-insecure-localhost",
-    "--disable-blink-features=TrustedDOMTypes",
-    "--disable-features=TrustedScriptTypes",
-    "--disable-features=TrustedHTML",
+
+    // Chromium keeps ONE value per switch name — a repeated --disable-features
+    // or --disable-blink-features silently discards every earlier occurrence
+    // instead of merging them. This file used to pass --disable-features seven
+    // times and --disable-blink-features twice, so only the last of each
+    // survived: everything else, INCLUDING AutomationControlled, was dropped on
+    // the floor and navigator.webdriver was left in its automation state. Both
+    // switches must stay single, comma-joined, and appear exactly once.
+    `--disable-blink-features=${DISABLED_BLINK_FEATURES.join(",")}`,
+    `--disable-features=${DISABLED_FEATURES.join(",")}`,
 
     // Additional audio debugging (remove in production)
     "--enable-logging=stderr",
