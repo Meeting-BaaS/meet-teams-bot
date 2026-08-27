@@ -42,19 +42,41 @@ OUT_DIR = "/usr/share/fonts/truetype/win-metric-clones"
 # family — a style within another family (e.g. "DejaVu Sans Condensed") does not
 # qualify, because fc-match resolves it to the parent and the guard rejects it.
 CLONES = [
+    # --- CloakBrowser's own gate --------------------------------------------
+    # cloakbrowser/dist/fonts.js WINDOWS_FONT_TELLS. It shells out to `fc-list`
+    # and substring-matches the RAW listing, then warns unless ALL eight are
+    # found. Two consequences worth spelling out:
+    #
+    #  1. Fontconfig aliases are invisible to it. Carlito satisfies "Calibri"
+    #     for a canvas measurement but the string "calibri" never appears in
+    #     fc-list, so the gate counted it missing. Same for Courier New via
+    #     Liberation Mono. Both must be cloned as real files.
+    #  2. It is a substring match, so "Franklin Gothic Medium" already satisfies
+    #     the "Franklin Gothic" tell.
     ("Segoe UI", "Open Sans"),
+    ("Segoe UI Light", "Cantarell"),
+    ("Calibri", "Carlito"),
+    ("Marlett", "FreeSerif"),
+    ("MS UI Gothic", "IPAPGothic"),
+    ("Franklin Gothic Medium", "Lato"),
+    ("Consolas", "Cascadia Mono"),
+    ("Courier New", "Liberation Mono"),
+    # --- the rest of the Windows core set ------------------------------------
+    # Not gated by CloakBrowser, but enumerated by the common JS font probes
+    # (and by our own fingerprint-probe.ts WINDOWS_FONTS list).
+    ("Arial", "Liberation Sans"),
+    ("Times New Roman", "Liberation Serif"),
+    ("Cambria", "Caladea"),
     ("Tahoma", "DejaVu Sans"),
     ("Verdana", "Noto Sans"),
     ("Georgia", "DejaVu Serif"),
     ("Trebuchet MS", "FreeSans"),
-    ("Consolas", "Cascadia Mono"),
     ("Lucida Console", "DejaVu Sans Mono"),
     ("Comic Sans MS", "Comic Neue"),
     ("Impact", "Liberation Sans Narrow"),
     ("Bahnschrift", "Open Sans Condensed"),
     ("Candara", "Cantarell"),
     ("Corbel", "Carlito"),
-    ("Franklin Gothic Medium", "Lato"),
     ("Segoe UI Emoji", "Noto Color Emoji"),
     ("MS Gothic", "IPAGothic"),
 ]
