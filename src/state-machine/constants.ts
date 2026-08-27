@@ -8,6 +8,12 @@ export const MEETING_CONSTANTS = {
 
   // Timeouts
   SETUP_TIMEOUT: 30_000, // 30 secondes
+  // Inner bound on the speakers-observation setup step so a slow Teams
+  // NetworkInterceptor can't consume the whole SETUP_TIMEOUT budget and starve
+  // HTML cleanup, failing the recording outright. On a healthy bot observation
+  // completes in ~1s so this never fires; it only caps the pathological case,
+  // where the existing catch lets setup continue and recording proceeds.
+  SPEAKERS_OBSERVATION_SETUP_TIMEOUT: 15_000, // 15 secondes
   RECORDING_TIMEOUT: 3600 * 4 * 1000, // 4 heures
   INITIAL_WAIT_TIME: 1000 * 60 * 7, // 7 minutes
   EMPTY_MEETING_CONFIRMATION_MS: 45_000, // 45 seconds before confirming no attendees
