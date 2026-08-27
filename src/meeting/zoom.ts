@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { captureFingerprint } from "../browser/fingerprint-probe"
 import { listenPage } from "../browser/page-logger"
+import { setZoomJoinHost } from "../proxy/toggle-proxy"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
@@ -115,6 +116,18 @@ export class ZoomProvider implements MeetingProviderInterface {
     const page = await browserContext.newPage()
     page.setDefaultTimeout(30_000)
     page.setDefaultNavigationTimeout(60_000)
+
+    // Tell the proxy which host is making the join decision, so that host — and
+    // only that host — is eligible for the residential exit. Usually
+    // app.zoom.us, but Zoom Events, ?tk= webinar links and pre-formed /wc/ URLs
+    // each navigate somewhere else. Everything else under zoom.us (the asset
+    // CDN, telemetry, the RWG media relays) goes direct from the pod IP.
+    try {
+      setZoomJoinHost(new URL(link).hostname)
+    } catch {
+      // Unparseable link: leave the static list to cover it. goto will fail
+      // below and report the real problem rather than a proxy-shaped one.
+    }
 
     // Pin the viewport to the exact ffmpeg capture size. The page provably
     // renders full-width (single-main-container__video-frame = 1280x720, right
