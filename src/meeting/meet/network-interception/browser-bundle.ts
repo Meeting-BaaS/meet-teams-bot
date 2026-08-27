@@ -93,6 +93,59 @@ export function browserInterceptionLogic(schema: any[]) {
       }
     }
 
+    // ===== STEALTH: screen-geometry diversity =====
+    // Every bot in the fleet reports screen=1920x1080 with a 1280x720 window,
+    // with ZERO variance (confirmed: 128/128 real signals over 5+ hours, spanning
+    // multiple launches/pods). Real users show huge diversity here; an identical
+    // monitor+window pair across an entire fleet is a strong, unexploited,
+    // fingerprint-independent tell distinct from anything UA/WebGL/font-based.
+    // Randomize the reported MONITOR size per launch (session-stable) while
+    // leaving the actual viewport (window.innerWidth/Height, used by our video
+    // capture pipeline) untouched — screen.* is informational surface only,
+    // Meet's own layout reacts to the viewport, not the monitor.
+    try {
+      const __SCREEN_PRESETS = [
+        { w: 1920, h: 1080 },
+        { w: 2560, h: 1440 },
+        { w: 1366, h: 768 },
+        { w: 1440, h: 900 },
+        { w: 1536, h: 864 },
+        { w: 1680, h: 1050 },
+        { w: 3840, h: 2160 }
+      ]
+      const curW = window.innerWidth || 1280
+      const curH = window.innerHeight || 720
+      // Only presets at least as large as the actual viewport are coherent
+      // (a real monitor can't be smaller than the window on it).
+      const viable = __SCREEN_PRESETS.filter((p) => p.w >= curW && p.h >= curH)
+      const pick = (viable.length > 0 ? viable : __SCREEN_PRESETS)[
+        Math.floor(Math.random() * (viable.length > 0 ? viable.length : __SCREEN_PRESETS.length))
+      ]
+      // Leave a taskbar-sized gap for availHeight, matching real OS behavior.
+      const avail = { w: pick.w, h: pick.h - 40 }
+      const __screenProps: Record<string, number> = {
+        width: pick.w,
+        height: pick.h,
+        availWidth: avail.w,
+        availHeight: avail.h,
+        colorDepth: 24,
+        pixelDepth: 24
+      }
+      for (const [prop, value] of Object.entries(__screenProps)) {
+        try {
+          Object.defineProperty(window.screen, prop, {
+            get: () => value,
+            configurable: true,
+            enumerable: true
+          })
+        } catch (_e) {
+          /* non-configurable on this engine — leave native value */
+        }
+      }
+    } catch (_e) {
+      /* screen override unsupported — proceed with native (fleet-constant) values */
+    }
+
     // Feature flag: Proactive datachannel creation
     // Enabled — passive listener alone may miss the channel due to timing
     const ENABLE_PROACTIVE_MEET_CHANNEL = true
@@ -402,6 +455,10 @@ export function browserInterceptionLogic(schema: any[]) {
         }
         return result
       }
+      // Mask so Function.prototype.toString.call(getContributingSources) still
+      // reports native code — same technique as fetch/RTCPeerConnection above,
+      // zero behavior change, only the toString readback is covered.
+      __maskNative(OriginalRTCRtpReceiver.prototype.getContributingSources, "getContributingSources")
       console.error("[NetworkInterceptor] ✅ RTCRtpReceiver.getContributingSources intercepted")
     }
 
