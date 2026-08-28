@@ -344,6 +344,17 @@ async function evaluateFingerprint(page: Page): Promise<RawFingerprint | null> {
               (document as unknown as { fonts?: { size?: number } }).fonts?.size ?? null
           },
           geometry: {
+            // Where the browser WINDOW actually sits on the X display. The
+            // recorder x11grabs from the display ORIGIN and crops a fixed 140px
+            // of browser chrome, so a window that is not at 0,0 records the
+            // wrong pixels. Chromium is pinned there by --window-position=0,0;
+            // Firefox/stealthfox gets no such flag and no window manager exists
+            // in the container to place it, which only became a live question
+            // once the X display grew larger than the window. Non-zero here
+            // means the capture region is wrong — check this before trusting a
+            // stealthfox recording.
+            screenX: window.screenX,
+            screenY: window.screenY,
             dpr: window.devicePixelRatio,
             screen: `${screen.width}x${screen.height}`,
             avail: `${screen.availWidth}x${screen.availHeight}`,
