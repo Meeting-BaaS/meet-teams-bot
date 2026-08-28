@@ -99,7 +99,9 @@ export async function establishBrowserSession(
           // to the global ASN list when the geo probe didn't resolve.
           const exitIsBurned = () => isBurnedExit(burned, getExitAsn(), getExitGeo()?.country ?? null)
           const ROTATIONS_PER_REGION = 3
-          // The team's selected regions, in order ([] = no pin / env default).
+          // The team's selected regions, in order. resolveProxyCountries()
+          // never returns [] -- an unselected team still gets the env default
+          // or a rotated DEFAULT_PROXY_COUNTRIES candidate set.
           // Try each region in turn; within a region, rotate the Decodo session
           // up to N times hunting a non-burned ASN. When a region's pool keeps
           // handing back burned networks, fall through to the NEXT selected

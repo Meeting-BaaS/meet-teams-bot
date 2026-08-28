@@ -115,11 +115,25 @@ export function getProxyTelemetry(): ProxyTelemetry {
   }
 }
 
+// Fallback candidate set for teams with NO explicit region pin and no
+// RESIDENTIAL_PROXY_COUNTRY env override. Verified in prod (2026-08-27): with
+// zero region steering, bots draw uniformly across Decodo's whole pool
+// including chronically-burned carriers, measuring ~30% flagged — 7x worse
+// than the same fixes with a multi-region candidate set for the burned-ASN
+// rotation to work within (~4%). This list is NOT "currently good networks"
+// (that goes stale by design — see the dual-window burn detection) — it's a
+// broad, stable geographic spread wide enough that the existing live
+// burned-ASN rotation has real alternatives to fall through to, the same
+// mechanism a customer's own pin already benefits from. Every unpinned team
+// gets this for free; an explicit per-bot or env pin still overrides it.
+const DEFAULT_PROXY_COUNTRIES = ["us", "ca", "au", "gb", "de", "fr", "jp", "hk"]
+
 /**
- * Country to pin the residential exit to. Per-bot region (set by the user in
- * settings) takes precedence over the RESIDENTIAL_PROXY_COUNTRY env default.
- * Returns "" for no pinning. The per-bot value is fed via GLOBAL once the
- * settings field ships; until then this resolves to the env default.
+ * Countries to pin the residential exit to, in rotation order. Per-bot region
+ * (set by the user in settings) takes precedence over the single
+ * RESIDENTIAL_PROXY_COUNTRY env default, which in turn takes precedence over
+ * DEFAULT_PROXY_COUNTRIES. Never returns [] — an unpinned team still gets a
+ * default candidate set so the burned-ASN rotation has room to work.
  */
 export function resolveProxyCountries(): string[] {
   // Per-bot set (the team's selected regions) takes precedence over the single
@@ -132,7 +146,8 @@ export function resolveProxyCountries(): string[] {
     .map((c) => c.trim().toLowerCase())
   if (valid.length > 0) return rotateByBot([...new Set(valid)])
   const envC = envVars.RESIDENTIAL_PROXY_COUNTRY
-  return /^[a-z]{2}$/i.test(envC) ? [envC.toLowerCase()] : []
+  if (/^[a-z]{2}$/i.test(envC)) return [envC.toLowerCase()]
+  return rotateByBot(DEFAULT_PROXY_COUNTRIES)
 }
 
 /**
@@ -245,15 +260,18 @@ export async function startToggleProxy(
   // BEFORE `-session-`, so the template must carry a `{GEO}` placeholder there
   // (e.g. `user-<u>{GEO}-session-{SESSION}`). Resolve the country from the
   // per-bot region the user picked in settings, falling back to the env
-  // default; empty → no pinning (backward compatible). Only alpha-2 letters
+  // default, then to a rotated DEFAULT_PROXY_COUNTRIES candidate set (see
+  // resolveProxyCountries) -- "no pinning" only happens via skipGeoPin, an
+  // empty per-bot/env value no longer means unpinned. Only alpha-2 letters
   // are accepted so a bad value can't corrupt the auth string.
-  const country = opts.skipGeoPin ? "" : pickProxyCountry(opts.triedCountries ?? [])
+  // Without a {GEO} placeholder, every country produces the identical
+  // upstreamUrl -- cycling countries on failure would just re-probe the same
+  // dead endpoint N times (up to len(DEFAULT_PROXY_COUNTRIES) retries, ~45s).
+  // Treat as unpinned up front so a failed probe below falls straight through
+  // to "give up", not a country-by-country retry loop that can't ever help.
+  const hasGeoPlaceholder = envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")
+  const country = opts.skipGeoPin || !hasGeoPlaceholder ? "" : pickProxyCountry(opts.triedCountries ?? [])
   const geoParam = country ? `-country-${country}` : ""
-  if (country && !envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
-    console.warn(
-      `[ToggleProxy] country=${country} requested but template has no {GEO} placeholder — proceeding without geo pinning`
-    )
-  }
   const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session).replaceAll(
     "{GEO}",
     geoParam

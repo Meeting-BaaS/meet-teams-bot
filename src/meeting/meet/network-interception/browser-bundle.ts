@@ -15,6 +15,218 @@ export function browserInterceptionLogic(schema: any[]) {
     // Set flag immediately to prevent race conditions
     ;(window as any).__networkInterceptorInitialized = true
 
+    // ===== STEALTH: native-toString masking =====
+    // We override window.fetch and window.RTCPeerConnection below for network
+    // diarization. Bot detectors (and our own fingerprint probe) flag these by
+    // calling Function.prototype.toString.call(fn) and checking for
+    // "[native code]" — a wrapper function returns its JS source instead, which
+    // is a hard automation tell. Route toString through a Proxy that returns a
+    // native-looking signature for our wrappers (keyed in a WeakMap) and is
+    // transparent for everything else, including toString applied to itself.
+    const __nativeStr = new WeakMap<any, string>()
+    try {
+      const __origToString = Function.prototype.toString
+      const __tsProxy = new Proxy(__origToString, {
+        apply(target, thisArg: any, args: any[]) {
+          const masked = thisArg == null ? undefined : __nativeStr.get(thisArg)
+          if (masked) return masked
+          return Reflect.apply(target, thisArg, args)
+        }
+      })
+      // biome-ignore lint/complexity/useLiteralKeys: prototype write
+      ;(Function.prototype as any).toString = __tsProxy
+    } catch (_e) {
+      /* if the environment forbids patching, masking is simply absent */
+    }
+    const __maskNative = (fn: any, name: string): any => {
+      try {
+        __nativeStr.set(fn, `function ${name}() { [native code] }`)
+      } catch (_e) {
+        /* non-object / frozen — skip */
+      }
+      return fn
+    }
+
+    // ===== STEALTH: cloak our injected window globals =====
+    // The interceptor + speaker/chat bridge attach ~15 uniquely-named globals to
+    // window (onNetworkSpeakerUpdate, __networkInterceptorInitialized, …). No real
+    // browser has these, and a detector enumerating window (Object.keys / for-in)
+    // spots them instantly. Redefine each as non-enumerable so it stays reachable
+    // by name (functionality intact) but vanishes from enumeration. Runs now and
+    // deferred, to also cover Playwright's exposeFunction globals set out of band.
+    const __CLOAK_NAMES = [
+      "onNetworkSpeakerUpdate",
+      "onChatMessageReceived",
+      "meetSpeakersChanged",
+      "teamsSpeakersChanged",
+      "onTeamsChatMessage",
+      "zoomSpeakersChanged",
+      "zoomSpeakerForensics",
+      "zoomCleanerLog",
+      "zoomChatMessage",
+      "__networkInterceptorInitialized",
+      "__isNetworkInMeeting",
+      "__stopNetworkInterception",
+      "__networkInterceptorStopped",
+      "triggerNetworkBroadcast",
+      "__meetMessagesCounter",
+      "_sendChatMessage",
+      "__decodeDcrpcFrame",
+      "__meetMessagesChannelReady",
+      "pako",
+      // Set by audio-capture.ts's own RTCPeerConnection toString mask (a
+      // separate addInitScript with no guaranteed order vs this one, so it
+      // can't reuse this file's __nativeStr/__maskNative and keeps its own).
+      "__rtcToStringMasked",
+      "__rtcNativeStrMap"
+    ]
+    const __cloak = () => {
+      for (const n of __CLOAK_NAMES) {
+        try {
+          if (Object.prototype.hasOwnProperty.call(window, n)) {
+            const v = (window as any)[n]
+            Object.defineProperty(window, n, {
+              value: v,
+              enumerable: false,
+              configurable: true,
+              writable: true
+            })
+          }
+        } catch (_e) {
+          /* already non-configurable — skip */
+        }
+      }
+    }
+
+    // ===== STEALTH: screen-geometry diversity =====
+    // Every bot in the fleet reports screen=1920x1080 with a 1280x720 window,
+    // with ZERO variance (confirmed: 128/128 real signals over 5+ hours, spanning
+    // multiple launches/pods). Real users show huge diversity here; an identical
+    // monitor+window pair across an entire fleet is a strong, unexploited,
+    // fingerprint-independent tell distinct from anything UA/WebGL/font-based.
+    // Randomize the reported MONITOR size per launch (session-stable) while
+    // leaving the actual viewport (window.innerWidth/Height, used by our video
+    // capture pipeline) untouched — screen.* is informational surface only,
+    // Meet's own layout reacts to the viewport, not the monitor.
+    try {
+      const __SCREEN_PRESETS = [
+        { w: 1920, h: 1080 },
+        { w: 2560, h: 1440 },
+        { w: 1366, h: 768 },
+        { w: 1440, h: 900 },
+        { w: 1536, h: 864 },
+        { w: 1680, h: 1050 },
+        { w: 3840, h: 2160 }
+      ]
+      const curW = window.innerWidth || 1280
+      const curH = window.innerHeight || 720
+      // Only presets at least as large as the actual viewport are coherent
+      // (a real monitor can't be smaller than the window on it). availHeight
+      // reserves a 40px taskbar, so require the preset to still clear
+      // innerHeight after that deduction (e.g. a bare 1920x1080 monitor would
+      // report availHeight=1040 < a 1080-tall viewport — incoherent).
+      const viable = __SCREEN_PRESETS.filter((p) => p.w >= curW && p.h - 40 >= curH)
+      const pick = (viable.length > 0 ? viable : __SCREEN_PRESETS)[
+        Math.floor(Math.random() * (viable.length > 0 ? viable.length : __SCREEN_PRESETS.length))
+      ]
+      // Leave a taskbar-sized gap for availHeight, matching real OS behavior.
+      const avail = { w: pick.w, h: pick.h - 40 }
+      const __screenProps: Record<string, number> = {
+        width: pick.w,
+        height: pick.h,
+        availWidth: avail.w,
+        availHeight: avail.h,
+        colorDepth: 24,
+        pixelDepth: 24
+      }
+      for (const [prop, value] of Object.entries(__screenProps)) {
+        try {
+          Object.defineProperty(window.screen, prop, {
+            get: () => value,
+            configurable: true,
+            enumerable: true
+          })
+        } catch (_e) {
+          /* non-configurable on this engine — leave native value */
+        }
+      }
+    } catch (_e) {
+      /* screen override unsupported — proceed with native (fleet-constant) values */
+    }
+
+    // ===== STEALTH: realistic media device labels =====
+    // Our virtual audio devices are created as PulseAudio module-null-sink
+    // sink_name=virtual_speaker / module-virtual-source source_name=virtual_mic.
+    // Those literal names surface as MediaDeviceInfo.label via
+    // navigator.mediaDevices.enumerateDevices() — visible to any site JS,
+    // completely untouched until now, and directly on-point for an RPC
+    // literally named CreateMeetingDevice: a "virtual_mic" label is an
+    // unambiguous automation tell no fingerprint-layer fix can hide. Relabel
+    // to common real hardware strings while preserving deviceId/groupId/kind
+    // (and the prototype chain, so instanceof MediaDeviceInfo still holds) -
+    // purely cosmetic, device SELECTION by id is untouched.
+    try {
+      const md = (navigator as any).mediaDevices
+      if (md && typeof md.enumerateDevices === "function") {
+        const AUDIO_INPUT_LABELS = [
+          "Microphone (Realtek(R) Audio)",
+          "Microphone Array (Realtek High Definition Audio)",
+          "Headset Microphone (Realtek(R) Audio)"
+        ]
+        const AUDIO_OUTPUT_LABELS = [
+          "Speakers (Realtek(R) Audio)",
+          "Speakers / Headphones (Realtek(R) Audio)"
+        ]
+        const VIDEO_INPUT_LABELS = ["HD Webcam", "Integrated Camera", "USB2.0 HD UVC WebCam"]
+        const pickLabel = (kind: string): string => {
+          const list =
+            kind === "audiooutput"
+              ? AUDIO_OUTPUT_LABELS
+              : kind === "videoinput"
+                ? VIDEO_INPUT_LABELS
+                : AUDIO_INPUT_LABELS
+          return list[Math.floor(Math.random() * list.length)]
+        }
+        // Cache one label per {kind, deviceId} so repeated enumerateDevices()
+        // calls within a session stay consistent -- a device's label changing
+        // between calls is itself a coherence tell no real browser exhibits.
+        const __labelCache = new Map<string, string>()
+        const stableLabel = (kind: string, deviceId: string): string => {
+          const key = `${kind}:${deviceId}`
+          let label = __labelCache.get(key)
+          if (!label) {
+            label = pickLabel(kind)
+            __labelCache.set(key, label)
+          }
+          return label
+        }
+        const originalEnumerate = md.enumerateDevices.bind(md)
+        md.enumerateDevices = async function (...args: any[]) {
+          const devices = await originalEnumerate(...args)
+          try {
+            return devices.map((d: any) => {
+              const clone = Object.create(Object.getPrototypeOf(d))
+              Object.defineProperty(clone, "deviceId", { value: d.deviceId, enumerable: true })
+              Object.defineProperty(clone, "groupId", { value: d.groupId, enumerable: true })
+              Object.defineProperty(clone, "kind", { value: d.kind, enumerable: true })
+              // Leave devices with no label (permission not yet granted) untouched
+              // -- a filled-in label before permission is itself a coherence tell.
+              Object.defineProperty(clone, "label", {
+                value: d.label ? stableLabel(d.kind, d.deviceId) : d.label,
+                enumerable: true
+              })
+              return clone
+            })
+          } catch (_e) {
+            return devices
+          }
+        }
+        __maskNative(md.enumerateDevices, "enumerateDevices")
+      }
+    } catch (_e) {
+      /* mediaDevices unavailable or read-only — proceed with native labels */
+    }
+
     // Feature flag: Proactive datachannel creation
     // Enabled — passive listener alone may miss the channel due to timing
     const ENABLE_PROACTIVE_MEET_CHANNEL = true
@@ -313,7 +525,7 @@ export function browserInterceptionLogic(schema: any[]) {
         return
       }
       const originalGetContributingSources = OriginalRTCRtpReceiver.prototype.getContributingSources
-      OriginalRTCRtpReceiver.prototype.getContributingSources = function (...args: any[]) {
+      const wrappedGetContributingSources = function (this: any, ...args: any[]) {
         const result = originalGetContributingSources.apply(this, args)
         // Mirror EVERY call, including empty results: an empty array is Meet
         // telling us the previous speaker went quiet, and skipping it would
@@ -324,6 +536,23 @@ export function browserInterceptionLogic(schema: any[]) {
         }
         return result
       }
+      // Lock the prototype method behind an accessor so nothing later -- Meet's
+      // own active-speaker instrumentation is known to poll this same method --
+      // can reassign it back to an unmasked function. Live telemetry showed a
+      // detectably-patched getContributingSources in a meaningful fraction of
+      // sessions despite the wrap+mask below running. A getter/setter (not a
+      // plain non-writable value) avoids a strict-mode throw on Meet's own page
+      // if it ever tries to reassign this itself -- the setter just no-ops.
+      Object.defineProperty(OriginalRTCRtpReceiver.prototype, "getContributingSources", {
+        get: () => wrappedGetContributingSources,
+        set: () => {},
+        configurable: false,
+        enumerable: true
+      })
+      // Mask so Function.prototype.toString.call(getContributingSources) still
+      // reports native code — same technique as fetch/RTCPeerConnection above,
+      // zero behavior change, only the toString readback is covered.
+      __maskNative(OriginalRTCRtpReceiver.prototype.getContributingSources, "getContributingSources")
       console.error("[NetworkInterceptor] ✅ RTCRtpReceiver.getContributingSources intercepted")
     }
 
@@ -1586,6 +1815,14 @@ export function browserInterceptionLogic(schema: any[]) {
 
         return pc
       }
+      // Preserve prototype identity (instanceof / prototype checks) and mask the
+      // wrapper's toString so it reports as native code like the original.
+      try {
+        ;(window as any).RTCPeerConnection.prototype = OriginalPC.prototype
+      } catch (_e) {
+        /* read-only prototype — leave as-is */
+      }
+      __maskNative((window as any).RTCPeerConnection, "RTCPeerConnection")
     }
     // ===== EXPOSE CHAT MESSAGE SENDING =====
     ;(window as any)._sendChatMessage = async (messageText: string): Promise<boolean> => {
@@ -1700,7 +1937,7 @@ export function browserInterceptionLogic(schema: any[]) {
     })
 
     const originalFetch = window.fetch
-    window.fetch = async (...args) => {
+    const wrappedFetch = async (...args: Parameters<typeof fetch>) => {
       const url = args[0] instanceof Request ? args[0].url : args[0]
       const response = await originalFetch.apply(window, args)
       try {
@@ -1743,6 +1980,33 @@ export function browserInterceptionLogic(schema: any[]) {
       }
       return response
     }
+    // Lock window.fetch behind an accessor so nothing later -- Meet's own page
+    // JS instrumenting fetch for its own telemetry, or any other script -- can
+    // replace our wrapper with an unmasked one. Live telemetry showed ~30% of
+    // sessions with a detectably-patched fetch despite this exact wrap+mask
+    // running; a plain assignment lets a later `window.fetch = ...` win
+    // silently. A getter/setter (not a plain non-writable value) is deliberate:
+    // Meet's bundled JS almost certainly runs in strict mode, where assigning
+    // to a non-writable data property throws -- an uncaught exception on
+    // Meet's own page would be a worse, more visible tell than the one this
+    // fixes. The setter here just silently swallows the attempt instead.
+    Object.defineProperty(window, "fetch", {
+      get: () => wrappedFetch,
+      set: () => {},
+      configurable: false,
+      enumerable: true
+    })
+    // Mask the fetch wrapper so Function.prototype.toString.call(fetch) reports
+    // native code (detectors flag a non-native fetch as automation).
+    __maskNative(window.fetch, "fetch")
+
+    // Hide our injected globals from window enumeration. Run now for everything
+    // set synchronously, and on short delays to catch Playwright's
+    // exposeFunction bindings + any async-registered callbacks.
+    __cloak()
+    setTimeout(__cloak, 0)
+    setTimeout(__cloak, 1000)
+    setTimeout(__cloak, 4000)
   } catch (e: any) {
     console.error("[NetworkInterceptor] Fatal Error:", {
       name: e?.name,
