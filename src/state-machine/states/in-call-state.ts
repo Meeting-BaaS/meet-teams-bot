@@ -8,6 +8,7 @@ import { HtmlCleaner } from "../../meeting/htmlCleaner"
 import { verifyMeetAudioCapture } from "../../meeting/meet/audio-capture"
 import type { NetworkPayload, NetworkUser } from "../../meeting/meet/network-interception/types"
 import { startUIBasedObserver } from "../../meeting/meet/ui-observer"
+import { setDirectMode } from "../../proxy/toggle-proxy"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { GLOBAL } from "../../singleton"
 import { SpeakerManager } from "../../speaker-manager"
@@ -168,6 +169,13 @@ export class InCallState extends BaseState {
 
     // Notify that recording has started
     Events.inCallRecording({ start_time: this.context.startTime })
+
+    // The bot is definitively INSIDE: admitted, recording, speaker observation
+    // live, entry message sent. Only now does the residential exit stop paying.
+    // Everything Zoom looked at while deciding whether to let us in went out
+    // through the residential IP exactly as it always has, so this cannot cost
+    // a join — it only stops us renting a home connection to carry meeting media.
+    setDirectMode()
   }
 
   /**

@@ -1,4 +1,20 @@
 node_modules
 node_modules/**/**
-buid
-buid/**/**
+build
+build/**/**
+
+# .env must NOT be baked into the image.
+# Two reasons, both bit us:
+#  1. Secrets. COPY . . freezes AWS keys and proxy credentials into a layer.
+#  2. Silent config drift. run_bot.sh passes --env-file at runtime, but
+#     dotenv.config() inside the container fills in any var the runtime file
+#     omits — from whatever .env happened to exist at BUILD time. A stale value
+#     baked this way once made a local A/B run measure one configuration while
+#     reporting itself as the other, and nothing in the log said so.
+.env
+.env.*
+*.env
+
+# Local test output — large, and never wanted in the image.
+recordings
+proxy-test-logs

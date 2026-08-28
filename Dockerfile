@@ -36,14 +36,36 @@ RUN apt-get update && \
     ffmpeg \
     # System monitoring
     sysstat procps \
-    # Fonts for rendering / fingerprint realism. crosextra = metric-compatible
-    # Windows clones (Carlito=Calibri, Caladea=Cambria) so a Windows-spoofed UA
-    # also exposes those font names on enumeration.
-    fonts-liberation fonts-dejavu-core \
-    fonts-freefont-ttf fonts-noto-color-emoji fonts-ipafont-gothic fonts-wqy-zenhei \
-    fonts-crosextra-carlito fonts-crosextra-caladea fontconfig \
+    # Fonts. Two jobs: render text at all, and answer the Windows font
+    # enumeration a Windows-spoofed UA has to survive. These are the SOURCES —
+    # scripts/make-windows-metric-clones.py below re-emits them under the
+    # Windows family names, because fontconfig aliases alone do NOT satisfy
+    # Chromium (see that script's docstring for the measurements).
+    fonts-liberation fonts-liberation-sans-narrow fonts-dejavu-core \
+    fonts-freefont-ttf fonts-noto-color-emoji fonts-noto-core \
+    fonts-ipafont-gothic fonts-wqy-zenhei \
+    fonts-crosextra-carlito fonts-crosextra-caladea \
+    fonts-open-sans fonts-cantarell fonts-lato fonts-comic-neue fonts-cascadia-code \
+    fontconfig \
     # Utilities
     wget curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Windows core fonts, cloned from the open faces installed above.
+#
+# The container's UA claims Windows. A real Windows Chrome exposes Segoe UI,
+# Tahoma, Consolas and friends, and any page can test for them from JS by
+# measuring text width. We exposed 5 of 20 — CloakBrowser warns about exactly
+# this at every launch ("Incomplete Windows font set ... when spoofing Windows
+# on Linux"), and it is the MIXED-OS-TELL the fingerprint probe reports.
+#
+# Verified on this base image with the bot's own Chromium: 5/20 before, 20/20
+# after. fontconfig aliases were tried first and do not work — see the script.
+COPY scripts/make-windows-metric-clones.py /tmp/make-windows-metric-clones.py
+RUN apt-get update && apt-get install -y --no-install-recommends python3-fonttools \
+    && python3 /tmp/make-windows-metric-clones.py \
+    && apt-get purge -y python3-fonttools \
+    && rm -f /tmp/make-windows-metric-clones.py \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AWS CLI v2
@@ -116,15 +138,19 @@ export PULSE_RUNTIME_PATH=/tmp/pulse\n\
 export XDG_RUNTIME_DIR=/tmp/pulse\n\
 mkdir -p $PULSE_RUNTIME_PATH\n\
 \n# Determine resolution from RESOLUTION env var (default: 720p)\n\
+\n# X11_* is the virtual MONITOR and must be a resolution real monitors have:\n\
+\n# the page reads it as screen.width/height and CloakBrowser does not spoof it.\n\
+\n# The browser WINDOW stays 1280x860 / 1920x1220 (set by browser.ts), anchored\n\
+\n# at 0,0, so the x11grab region and its 140px chrome crop are unchanged.\n\
 RESOLUTION=${RESOLUTION:-720}\n\
 if [ "$RESOLUTION" = "1080" ]; then\n\
-    X11_WIDTH=1920\n\
-    X11_HEIGHT=1220\n\
-    echo "📐 Using 1080p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
+    X11_WIDTH=2560\n\
+    X11_HEIGHT=1440\n\
+    echo "📐 Using 1080p: 1920x1220 window on a ${X11_WIDTH}x${X11_HEIGHT} display"\n\
 else\n\
-    X11_WIDTH=1280\n\
-    X11_HEIGHT=860\n\
-    echo "📐 Using 720p resolution: ${X11_WIDTH}x${X11_HEIGHT}"\n\
+    X11_WIDTH=1920\n\
+    X11_HEIGHT=1080\n\
+    echo "📐 Using 720p: 1280x860 window on a ${X11_WIDTH}x${X11_HEIGHT} display"\n\
 fi\n\
 \n# Start virtual display with enhanced cursor hiding\n\
 Xvfb :99 -screen 0 ${X11_WIDTH}x${X11_HEIGHT}x24 -ac +extension GLX +render -noreset -nocursor -nolisten tcp &\n\

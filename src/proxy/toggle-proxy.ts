@@ -10,13 +10,24 @@ import { Server } from "proxy-chain"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
 
-// Allowlist of hosts that route through the residential upstream. Everything
-// else goes direct from the pod IP. Default-direct is intentional: if Google
-// adds a new asset CDN tomorrow, it goes direct automatically and doesn't
-// surprise us with a residential bandwidth balloon. The trade-off vs a
-// deny-list is that a missing entry here costs detection rate rather than
-// money — re-check the Decodo dashboard + the [Meet] 🚨/✅ signal after
-// adjusting this list.
+// Hosts that route through the residential upstream. Everything else goes
+// direct from the pod IP.
+//
+// Default-direct is intentional: a host we forget to list goes direct
+// automatically rather than surprising us with a residential bandwidth
+// balloon. The trade-off is that a missing entry costs detection rate rather
+// than money — re-check the Decodo dashboard and the [Meet] 🚨/✅ signal after
+// adjusting either list.
+//
+// ONE FLAT LIST, not scoped per platform. An earlier version of this file split
+// it into a Meet set and a Zoom set, which quietly moved reCAPTCHA
+// (www.google.com) out of the Zoom bot's set — and reCAPTCHA is precisely what
+// Zoom's anti-bot wall is. Every Zoom bot was then walled with "automated bots
+// aren't allowed" while a bot from the old build joined the same meeting four
+// seconds earlier (prod 3de61a8a joined 77376218875 at 11:27:31; preprod
+// 5b33d261 was walled on it at 11:27:35). The two sets are disjoint by domain
+// anyway — a Meet bot never resolves app.zoom.us — so the scoping bought
+// nothing and cost joins. Keep it flat.
 //
 // Suffix matches cover the host itself AND any subdomain. Exact matches do
 // not — `google.com` exact is intentional so we don't pull `play.google.com`
@@ -25,28 +36,60 @@ const PROXY_ALLOWLIST_SUFFIXES: readonly string[] = [
   "meet.google.com", // SPA + the $rpc scoring endpoints
   "accounts.google.com", // OAuth / login flow
   "apis.google.com", // Google APIs the Meet client calls during join
-  "clients6.google.com", // Meet signaling — hangouts., feedback-pa., scone-pa.
-  // Zoom web client — one suffix covers every host the join touches:
-  // app.zoom.us (the /wc/ web client), us05web./<region>.zoom.us and
-  // zoom.us (invite hosts we rewrite from), events.zoom.us. Testing whether
-  // residential egress moves the browser-join anti-bot / RTMS wall.
-  // Bandwidth trade-off: Zoom's pre-join assets are heavier than Meet's, so
-  // this costs more Decodo bytes per join — but setDirectMode() flips the
-  // upstream off at admission, so in-call media stays off the residential link.
-  "zoom.us"
+  "clients6.google.com" // Meet signaling — hangouts., feedback-pa., scone-pa.
 ]
 
+// Zoom is exact-match only, and deliberately so.
+//
+// This used to be a single `zoom.us` SUFFIX, which enrolled three things the
+// anti-bot check never looks at: the asset CDN (source.zoom.us, *st1.zoom.us —
+// the JS + WASM decoder bundle, refetched cold on every one of the up-to-12
+// launches a Zoom bot can make from a throwaway profile), client telemetry, and
+// the RWG relays that carry ALL in-call audio and video. Measured on a local
+// run: us04st1.zoom.us alone was 15.46 MB of a bot's 16.77 MB residential
+// spend — 92% of the bill, for bytes no anti-bot check reads.
+//
+// Meet's numbers look good next to Zoom's largely by luck of architecture:
+// Google serves its assets off gstatic (never allowlisted) and its media over
+// UDP, which cannot enter a CONNECT proxy at all. Zoom hands us neither split
+// for free — its own firewall doc is a flat `*.zoom.us` wildcard — so we take
+// the split by hand.
 const PROXY_ALLOWLIST_EXACT: ReadonlySet<string> = new Set([
+  // Shared anti-bot infrastructure. reCAPTCHA scores the IP that fetches it,
+  // and it is what stands between a Zoom bot and the meeting, so it must see
+  // the residential exit on every platform. Do not move these into a branch.
   "google.com",
   "www.google.com",
-  "ip.decodo.com" // our own residential-IP probe
+  "ip.decodo.com", // our own residential-IP probe
+  // Zoom: the hosts that actually make the join decision, and nothing else.
+  "app.zoom.us", // the /wc/ web client buildZoomWebClientUrl rewrites to
+  "zoom.us",
+  "www.zoom.us",
+  "events.zoom.us" // Zoom Events links self-redirect into the web client
 ])
 
-function shouldProxy(target: string): boolean {
-  if (PROXY_ALLOWLIST_EXACT.has(target)) return true
-  return PROXY_ALLOWLIST_SUFFIXES.some(
-    (suffix) => target === suffix || target.endsWith(`.${suffix}`)
-  )
+// Host of the URL the bot actually navigates to for the join. Usually
+// app.zoom.us — buildZoomWebClientUrl rewrites canonical invites to it, vanity
+// tenants included — but ?tk= webinar links, pre-formed /wc/ URLs and
+// white-label portals each navigate somewhere else, and whichever host we
+// navigate to is by definition the one making the join decision. So it is
+// proxied whatever it turns out to be.
+let zoomJoinHost: string | null = null
+
+/** Register the join URL's host as proxy-eligible. Call before page.goto(). */
+export function setZoomJoinHost(hostname: string): void {
+  const h = hostname.trim().toLowerCase()
+  zoomJoinHost = h || null
+  if (zoomJoinHost && !PROXY_ALLOWLIST_EXACT.has(zoomJoinHost)) {
+    console.log(`[ToggleProxy] Join host ${zoomJoinHost} added to the residential set`)
+  }
+}
+
+export function shouldProxy(target: string): boolean {
+  const host = target.toLowerCase()
+  if (PROXY_ALLOWLIST_EXACT.has(host)) return true
+  if (zoomJoinHost !== null && host === zoomJoinHost) return true
+  return PROXY_ALLOWLIST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(`.${suffix}`))
 }
 
 let server: Server | null = null
@@ -186,9 +229,16 @@ function inferProxyProvider(): string {
   }
 }
 
-// Set of connectionIds that were routed through the residential upstream.
-// Used to filter stats so only Decodo-billed traffic is counted.
-const proxiedConnectionIds = new Set<number>()
+// connectionId → hostname, for connections currently routed through the
+// residential upstream. Used to filter stats so only Decodo-billed traffic is
+// counted, and to attribute those bytes to a host: the per-connection numbers
+// were always available on connectionClosed, we simply threw the hostname away
+// and kept two scalars — which is why every conversation about this cost was a
+// conversation about one opaque number.
+const proxiedConnectionIds = new Map<number, string>()
+
+// Residential bytes per host, accumulated as proxied connections close.
+const perHost = new Map<string, { tx: number; rx: number; conns: number }>()
 
 // Accumulated byte counts from closed upstream-proxied connections only.
 // trgTxBytes/trgRxBytes are the bytes over the Decodo link (what Decodo bills).
@@ -210,16 +260,27 @@ function logStats(label: string): void {
   let trgRx = stats.trgRxBytes
   let count = stats.connectionCount
 
+  // Per-host totals, seeded from closed connections. The still-open ones are
+  // folded in below and they are the ones that matter: a long-lived H2 or
+  // WebSocket tunnel is exactly the connection carrying the bytes worth finding.
+  const byHost = new Map<string, { bytes: number; conns: number }>()
+  for (const [host, h] of perHost) byHost.set(host, { bytes: h.tx + h.rx, conns: h.conns })
+
   // Add bytes from proxied connections still open at log time — long-lived
   // keep-alive/H2 tunnels carry most traffic but may not have closed yet.
   if (server) {
-    for (const id of proxiedConnectionIds) {
+    for (const [id, host] of proxiedConnectionIds) {
       const cs = server.getConnectionStats(id)
-      if (cs) {
-        trgTx += cs.trgTxBytes ?? 0
-        trgRx += cs.trgRxBytes ?? 0
-        count++
-      }
+      if (!cs) continue
+      const tx = cs.trgTxBytes ?? 0
+      const rx = cs.trgRxBytes ?? 0
+      trgTx += tx
+      trgRx += rx
+      count++
+      const e = byHost.get(host) ?? { bytes: 0, conns: 0 }
+      e.bytes += tx + rx
+      e.conns++
+      byHost.set(host, e)
     }
   }
 
@@ -233,6 +294,40 @@ function logStats(label: string): void {
       `total (Decodo billed): ${formatBytes(trgTx + trgRx)}` +
       ipSuffix
   )
+  // Per-host breakdown. Without this the total is unactionable: it cannot tell
+  // an anti-bot check we are paying for on purpose from an asset bundle or a
+  // media socket we are paying for by accident.
+  for (const [host, e] of [...byHost].sort((a, b) => b[1].bytes - a[1].bytes)) {
+    console.log(
+      `[ToggleProxy] 📊   ${host.padEnd(34)} ${formatBytes(e.bytes).padStart(11)}  (${e.conns} conn)`
+    )
+  }
+}
+
+/**
+ * Close every connection currently routed through the residential upstream.
+ *
+ * This is the only way to detach traffic from the paid link once it is
+ * flowing. prepareRequestFunction runs ONCE per connection, so flipping
+ * `useUpstream` cannot move a tunnel that is already open — it only governs
+ * the next one. Closing forces the client to reconnect, and that reconnect is
+ * evaluated fresh, by which point the flag (or a demotion) sends it direct.
+ */
+function closeProxiedConnections(reason: string): number {
+  if (!server) return 0
+  let closed = 0
+  for (const id of [...proxiedConnectionIds.keys()]) {
+    try {
+      server.closeConnection(id)
+      closed++
+    } catch {
+      // already gone — nothing to do
+    }
+  }
+  if (closed > 0) {
+    console.log(`[ToggleProxy] ✂️  Closed ${closed} residential connection(s) — ${reason}`)
+  }
+  return closed
 }
 
 export async function startToggleProxy(
@@ -288,6 +383,7 @@ export async function startToggleProxy(
   stats.trgRxBytes = 0
   stats.connectionCount = 0
   proxiedConnectionIds.clear()
+  perHost.clear()
   exitIp = null
   exitAsn = null
   exitGeo = null
@@ -315,7 +411,7 @@ export async function startToggleProxy(
           return {}
         }
         if (useUpstream) {
-          proxiedConnectionIds.add(connectionId)
+          proxiedConnectionIds.set(connectionId, target)
           console.log(`[ToggleProxy] PROXIED → ${target}`)
           return { upstreamProxyUrl: upstreamUrl, ignoreUpstreamProxyCertificate: true }
         }
@@ -331,11 +427,19 @@ export async function startToggleProxy(
     server.on(
       "connectionClosed",
       ({ connectionId, stats: cs }: { connectionId: number; stats: ConnectionStats }) => {
-        if (!proxiedConnectionIds.has(connectionId)) return
+        const host = proxiedConnectionIds.get(connectionId)
+        if (host === undefined) return
         proxiedConnectionIds.delete(connectionId)
+        const tx = cs.trgTxBytes ?? 0
+        const rx = cs.trgRxBytes ?? 0
         stats.connectionCount++
-        stats.trgTxBytes += cs.trgTxBytes ?? 0
-        stats.trgRxBytes += cs.trgRxBytes ?? 0
+        stats.trgTxBytes += tx
+        stats.trgRxBytes += rx
+        const h = perHost.get(host) ?? { tx: 0, rx: 0, conns: 0 }
+        h.tx += tx
+        h.rx += rx
+        h.conns++
+        perHost.set(host, h)
       }
     )
 
@@ -422,11 +526,26 @@ async function logExitIp(upstreamProxyUrl: string): Promise<boolean> {
 }
 
 export function setDirectMode(): void {
+  // Idempotent: a retry path and the in-call callback can both reach here,
+  // and the second call must not re-log or re-close.
+  if (!useUpstream) return
   useUpstream = false
-  // Log residential proxy usage at the moment we stop routing through the upstream.
-  // Connections that were still open at this point close shortly after, so the count
-  // here is a near-complete picture of residential bandwidth consumed during join.
+  // Log residential usage at the moment we stop routing through the upstream.
+  // NOTE this figure covers the JOIN ONLY. It is not the bot's bill — compare it
+  // against the shutdown line in stopToggleProxy() before drawing conclusions
+  // about cost per meeting.
   logStats("Residential upstream disabled (join complete)")
+  // Flipping the flag only governs connections opened from here on.
+  // prepareRequestFunction runs once per connection, so anything already
+  // tunnelled keeps its residential route until it closes on its own — and on
+  // Zoom web that includes the RWG socket carrying all in-call audio and video,
+  // which opens at the Join click and lives for the whole meeting. Closing
+  // forces a reconnect that is evaluated with useUpstream already false, i.e.
+  // direct. Zoom's client reconnects its own sockets as a matter of course (it
+  // is built for flaky home networks), so the cost of this is far below the
+  // bytes it saves. Meet is unaffected: its media is WebRTC over UDP and never
+  // enters a CONNECT proxy in the first place.
+  closeProxiedConnections("bot is in the meeting — forcing reconnect over the direct path")
   console.log("[ToggleProxy] Switched to direct mode (no upstream proxy)")
 }
 

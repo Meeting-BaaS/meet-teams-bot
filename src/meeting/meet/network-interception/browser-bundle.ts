@@ -204,19 +204,42 @@ export function browserInterceptionLogic(schema: any[]) {
         md.enumerateDevices = async function (...args: any[]) {
           const devices = await originalEnumerate(...args)
           try {
-            return devices.map((d: any) => {
-              const clone = Object.create(Object.getPrototypeOf(d))
-              Object.defineProperty(clone, "deviceId", { value: d.deviceId, enumerable: true })
-              Object.defineProperty(clone, "groupId", { value: d.groupId, enumerable: true })
-              Object.defineProperty(clone, "kind", { value: d.kind, enumerable: true })
+            // Shadow `label` as an own property on the REAL device object.
+            //
+            // Do NOT clone. Object.create(Object.getPrototypeOf(d)) produces an
+            // object that passes `instanceof MediaDeviceInfo` and reads deviceId
+            // fine -- which is exactly why the clone looked safe -- but it has no
+            // internal slot, so EVERY native method on it throws
+            // "TypeError: Illegal invocation". Verified in the bot's own Chromium:
+            //
+            //   real videoinput ctor:            InputDeviceInfo
+            //   real  getCapabilities():         OK
+            //   clone instanceof MediaDeviceInfo: true
+            //   clone getCapabilities():         TypeError: Illegal invocation
+            //   clone toJSON():                  TypeError: Illegal invocation
+            //
+            // Video inputs are InputDeviceInfo and Meet calls getCapabilities()
+            // on cameras to pick a resolution. With the clone that threw, Meet
+            // could not resolve the camera and the bot joined with no video, so
+            // the branding image never appeared. Audio was unaffected, which is
+            // why only the image broke.
+            //
+            // Defining an own `label` on the original instance shadows the
+            // prototype getter while leaving the internal slot intact, so
+            // getCapabilities(), toJSON() and getUserMedia({deviceId}) all keep
+            // working. enumerateDevices() returns fresh objects per call, so
+            // mutating them here is local to this call.
+            for (const d of devices) {
               // Leave devices with no label (permission not yet granted) untouched
               // -- a filled-in label before permission is itself a coherence tell.
-              Object.defineProperty(clone, "label", {
-                value: d.label ? stableLabel(d.kind, d.deviceId) : d.label,
-                enumerable: true
+              if (!d.label) continue
+              Object.defineProperty(d, "label", {
+                value: stableLabel(d.kind, d.deviceId),
+                enumerable: true,
+                configurable: true
               })
-              return clone
-            })
+            }
+            return devices
           } catch (_e) {
             return devices
           }

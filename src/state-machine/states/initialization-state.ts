@@ -28,10 +28,32 @@ export class InitializationState extends BaseState {
 
       // Setup branding if needed - non-bloquant
       if (GLOBAL.get().bot_image) {
+        // Warm the camera for EVERY bot_image, not just multi-image.
+        //
+        // brandingReady is only ever set true by warmUpCamera() or, much later,
+        // by startPlayback() at the end of the generate->play chain. setupBranding()
+        // below is deliberately not awaited, so on the single-image path nothing
+        // set brandingReady before the join flow reached
+        //
+        //   if (brandingReady) keep camera on   else   deactivateCamera(page)
+        //
+        // in meet.ts. Whenever image download + resize + MJPEG encode lost that
+        // race — a slow fetch, or pod contention under a burst of bots — the
+        // camera was switched OFF at the pre-join screen and nothing ever turned
+        // it back on, so the branding image never appeared even though the file
+        // generated fine seconds later. Measured on a healthy run the margin was
+        // only ~14s, so it is a coin flip under load, which is exactly how it
+        // presented: intermittent, and worse the more bots were launched at once.
+        //
+        // warmUpCamera() streams a baked placeholder to the v4l2 device and sets
+        // brandingReady synchronously; startPlayback() then switches the same
+        // VideoContext over to the real branding (it explicitly handles the
+        // already-exists case). Costs nothing when the file is missing — it warns
+        // and leaves brandingReady false, i.e. today's behaviour.
+        warmUpCamera()
         if (GLOBAL.get().bot_image.includes("|")) {
-          // Multi-image: warm up camera immediately, defer playback until
-          // the bot is in the waiting room (avoids switch gaps during join flow)
-          warmUpCamera()
+          // Multi-image only: defer playback until the bot is in the waiting room
+          // so the image switches don't land mid-join.
           deferBrandingPlayback()
         }
 
