@@ -1,6 +1,5 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import { Api } from "../api/methods"
-import { brandingReady } from "../branding"
 import { listenPage } from "../browser/page-logger"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
@@ -102,11 +101,28 @@ export class MeetProvider implements MeetingProviderInterface {
       listenPage(page)
       console.log("[Meet] Page logger set up")
 
-      // Set permissions based on streaming_input
-      if (streaming_input) {
-        await browserContext.grantPermissions(["microphone", "camera"])
+      // grantPermissions(["microphone","camera"]) is a Chromium-only API —
+      // Firefox rejects those permission names outright ("Unknown permission:
+      // camera"), which threw out of openMeetingPage and failed the join the
+      // moment STEALTHFOX_PLATFORMS was widened to include meet. stealthfox
+      // grants media through its launch prefs instead
+      // (permissions.default.camera/microphone = 1 and
+      // media.navigator.permission.disabled — see buildFirefoxLaunchConfig), so
+      // there is nothing to grant here and skipping is not a downgrade.
+      // Same guard zoom.ts already carries; kept in sync deliberately.
+      const browserName = browserContext.browser()?.browserType().name()
+      if (browserName === "chromium") {
+        try {
+          await browserContext.grantPermissions(
+            streaming_input ? ["microphone", "camera"] : ["camera"]
+          )
+        } catch (e) {
+          console.warn("[Meet] grantPermissions failed (continuing):", formatError(e))
+        }
       } else {
-        await browserContext.grantPermissions(["camera"])
+        console.log(
+          `[Meet] Skipping grantPermissions (browser=${browserName ?? "unknown"}; granted via launch prefs)`
+        )
       }
 
       // Audio track layer for network diarization
@@ -340,9 +356,27 @@ export class MeetProvider implements MeetingProviderInterface {
         await deactivateMicrophone(page)
       }
 
-      // Control camera based on whether branding was actually generated successfully
-      if (brandingReady) {
-        console.log("Camera will be used for branding, keeping it on")
+      // Key the camera on CONFIGURED INTENT, not branding readiness.
+      //
+      // setupBranding() is fire-and-forget (initialization-state.ts does not
+      // await it), and the image download runs over the residential proxy, so
+      // whether generation beats the pre-join screen is a race decided by
+      // network luck. Losing it used to call deactivateCamera() here — and
+      // nothing ever turns the camera back on, so the branding image never
+      // appeared even though the MJPEG landed on /dev/video10 seconds later.
+      //
+      // zoom.ts already fixed exactly this and says so in its own comment:
+      // "Key the decision on the configured intent, NOT branding readiness --
+      // the branding pipeline is fire-and-forget and often isn't ready yet at
+      // preview (this is exactly why the image 'usually doesn't show'
+      // locally)". This is that fix, ported to Meet.
+      //
+      // Camera-on with the warmup placeholder is strictly better than
+      // camera-off: playBranding() switches the same VideoContext over to the
+      // real image the moment it is ready, with no v4l2 gap.
+      const wantsCameraImage = !!GLOBAL.get().bot_image
+      if (wantsCameraImage) {
+        console.log("Camera will be used for branding, keeping it on (bot_image configured)")
       } else {
         await deactivateCamera(page)
       }
@@ -574,8 +608,13 @@ async function performCriticalSetupActions(
   page: Page,
   dialogObserver?: SimpleDialogObserver
 ): Promise<void> {
-  // Re-enforce camera/mic state — Google Meet resets devices during waiting room → in-call transition
-  if (brandingReady) {
+  // Re-enforce camera/mic state — Google Meet resets devices during waiting room → in-call transition.
+  // Same reasoning as the pre-join gate above: keyed on configured intent, not
+  // branding readiness. This is the second gate that could silently kill the
+  // image — passing pre-join was never enough, because Meet re-mutes devices on
+  // the waiting-room -> in-call transition and this ran with brandingReady
+  // still false.
+  if (GLOBAL.get().bot_image) {
     await ensureCameraOn(page)
   } else {
     await ensureCameraOff(page)
