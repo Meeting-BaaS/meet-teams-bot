@@ -191,6 +191,17 @@ export class SpeakerManager {
         this.uiBridgeMuteLogged = true
         console.log("[SpeakerBridge] Network path owns attribution — UI bridge muted")
       }
+      // Shadow-log the muted observation instead of discarding it. The DOM
+      // observer keeps running for the whole call and Meet's own UI shows the
+      // true active speaker, so this stream is a per-call cross-check of the
+      // network path: a real two-sided call where network:audio pinned ~all
+      // speech on one participant was only diagnosable from video frames
+      // because the (correct) UI signal had been dropped here. Attribution is
+      // unchanged — these lines are written to speaker_separation.log (same
+      // PII redaction as the committed stream, uploaded to S3 with the other
+      // logs) as JSON objects, distinguishable from the committed stream's
+      // bare arrays.
+      await this.logShadowSpeakers(observed)
       return
     }
 
@@ -390,6 +401,44 @@ export class SpeakerManager {
       if (speaker.isSpeaking === true) {
         GLOBAL.addSpeakerIfNotExists(participant)
       }
+    }
+  }
+
+  // Speaking-set key of the last shadow line, so identical consecutive
+  // observations are written once (the observer can re-emit on unrelated DOM
+  // churn; only changes are informative).
+  private lastShadowKey = ""
+
+  /**
+   * Append a muted UI-bridge observation to speaker_separation.log as a JSON
+   * OBJECT line ({"src":"ui-shadow",...}), distinguishable from the committed
+   * stream's bare-array lines. Same PiiRedactor treatment as logSpeakers; never
+   * touches attribution. See handleUiBridgeUpdate for why this stream exists.
+   */
+  private async logShadowSpeakers(speakers: SpeakerData[]): Promise<void> {
+    try {
+      const key = speakers
+        .map((s) => `${s.name}:${s.isSpeaking ? 1 : 0}`)
+        .sort()
+        .join("|")
+      if (key === this.lastShadowKey) return
+      this.lastShadowKey = key
+
+      for (const speaker of speakers) {
+        if (speaker.name) {
+          PiiRedactor.registerSpeaker(speaker.name)
+        }
+      }
+      const line = PiiRedactor.redact(
+        JSON.stringify({ src: "ui-shadow", t: Date.now(), speakers })
+      )
+      await fs.promises.appendFile(
+        PathManager.getInstance().getSpeakerLogPath(),
+        `${line}\n`
+      )
+    } catch (e) {
+      // Shadow telemetry must never affect the meeting.
+      console.error("Cannot append ui-shadow speaker log:", e)
     }
   }
 

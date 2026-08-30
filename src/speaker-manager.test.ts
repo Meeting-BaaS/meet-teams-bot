@@ -250,6 +250,42 @@ describe("SpeakerManager network updates after fallback", () => {
     expect(registeredSpeakers).toEqual(["During Fallback"])
   })
 
+  it("shadow-logs a muted UI observation without committing attribution", async () => {
+    const fs = require("node:fs")
+    const appendSpy = jest.spyOn(fs.promises, "appendFile").mockResolvedValue(undefined)
+    const manager = SpeakerManager.getInstance()
+
+    // Network owns the floor → bridge is muted.
+    ;(manager as any).networkSpeakerActive = true
+    const before = [...registeredSpeakers]
+
+    await manager.handleUiBridgeUpdate([uiSpeaker("Shadow Only", true)])
+
+    // Attribution untouched…
+    expect(registeredSpeakers).toEqual(before)
+    // …but the observation was written to the speaker log as a ui-shadow line.
+    const shadowCalls = appendSpy.mock.calls.filter(([, line]) =>
+      String(line).includes('"src":"ui-shadow"')
+    )
+    expect(shadowCalls.length).toBe(1)
+    expect(String(shadowCalls[0]![1])).toContain("Shadow Only")
+
+    // Identical consecutive observation is deduped (no second line).
+    await manager.handleUiBridgeUpdate([uiSpeaker("Shadow Only", true)])
+    expect(
+      appendSpy.mock.calls.filter(([, line]) => String(line).includes('"src":"ui-shadow"')).length
+    ).toBe(1)
+
+    // A change in the speaking set writes again.
+    await manager.handleUiBridgeUpdate([uiSpeaker("Shadow Only", false)])
+    expect(
+      appendSpy.mock.calls.filter(([, line]) => String(line).includes('"src":"ui-shadow"')).length
+    ).toBe(2)
+
+    appendSpy.mockRestore()
+    ;(manager as any).networkSpeakerActive = false
+  })
+
   it("gives a UI speaker the id the network already assigned to that name", async () => {
     const manager = SpeakerManager.getInstance()
 
