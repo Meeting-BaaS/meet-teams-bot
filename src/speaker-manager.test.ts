@@ -286,6 +286,31 @@ describe("SpeakerManager network updates after fallback", () => {
     ;(manager as any).networkSpeakerActive = false
   })
 
+  it("rebuilds single-speaker intervals from the muted observations for the finalize fallback", async () => {
+    const manager = SpeakerManager.getInstance()
+    ;(manager as any).networkSpeakerActive = true
+    const T0 = 1785941000000
+
+    const at = (name: string, isSpeaking: boolean, sec: number): SpeakerData => ({
+      name,
+      id: 0,
+      timestamp: T0 + sec * 1000,
+      isSpeaking
+    })
+
+    // X speaks 10→30, then two speaking at once (ambiguous — dropped), then Y
+    // speaks 40→(meeting end at 60).
+    await manager.handleUiBridgeUpdate([at("X", true, 10)])
+    await manager.handleUiBridgeUpdate([at("X", true, 30), at("Y", true, 30)])
+    await manager.handleUiBridgeUpdate([at("Y", true, 40)])
+
+    const segments = manager.buildUiFallbackSegments(T0, T0 + 60_000)
+    expect(segments).toEqual([
+      { speaker: "X", user_id: 0, start_time: 10, end_time: 30 },
+      { speaker: "Y", user_id: 0, start_time: 40, end_time: 60 }
+    ])
+  })
+
   it("gives a UI speaker the id the network already assigned to that name", async () => {
     const manager = SpeakerManager.getInstance()
 

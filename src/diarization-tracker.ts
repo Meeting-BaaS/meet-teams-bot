@@ -1,10 +1,11 @@
 import { createWriteStream, type WriteStream } from "node:fs"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
+import { assembleSpeakerTimeline, type TimelineSource } from "./speaker-timeline-assembler"
 import { type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
 
-interface DiarizationSegment {
+export interface DiarizationSegment {
   speaker: string
   user_id: number // Sequential user ID (0 for UI-based detection, 1+ for network-based)
   start_time: number
@@ -216,7 +217,8 @@ export class DiarizationTracker {
     lastTimestamp: number,
     meetingStartTime: number,
     resolveSpeaker?: SpeakerResolver,
-    resolveUserId?: UserIdResolver
+    resolveUserId?: UserIdResolver,
+    fallbackSources?: TimelineSource[]
   ): Promise<void> {
     if (this.isEnded) {
       return
@@ -254,24 +256,43 @@ export class DiarizationTracker {
       )
     }
 
+    // Final pass: re-assemble the artifact from every source, best source per
+    // stretch. The repaired network timeline stays authoritative wherever it
+    // produced data; the fallback sources (UI observer, transcription-system
+    // turns when one ran) only contribute inside sufficiently large holes, and
+    // the boot gap (recording start → first diarization signal) is retrofitted
+    // onto the first identified speaker. See speaker-timeline-assembler.ts.
+    const meetingEndRel = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
+    const { segments: assembled, filledBySource } = assembleSpeakerTimeline(
+      [
+        { kind: "network" as const, segments: this.allSegments.map((e) => e.segment) },
+        ...(fallbackSources ?? [])
+      ],
+      meetingEndRel
+    )
+    for (const [kind, count] of Object.entries(filledBySource)) {
+      console.log(
+        `[DiarizationTracker] Filled ${count} timeline gap segment(s) from the ${kind} fallback`
+      )
+    }
+
     await this.closeStream()
 
-    // Rewrite from the in-memory buffer, which is authoritative. Appending as we
-    // go keeps a usable file if the pod dies mid-meeting, but the append log can
-    // contain names that were still unresolved at the time they were flushed.
+    // Rewrite from the assembled timeline, which is authoritative. Appending as
+    // we go keeps a usable file if the pod dies mid-meeting, but the append log
+    // can contain names that were still unresolved at the time they were
+    // flushed, and none of the fallback contributions.
     try {
-      const body = this.allSegments.map((e) => `${JSON.stringify(e.segment)}\n`).join("")
+      const body = assembled.map((segment) => `${JSON.stringify(segment)}\n`).join("")
       await writeFile(this.filePath, body)
     } catch (error) {
       console.error(`DiarizationTracker: Failed to rewrite ${this.filePath}: ${error}`)
     }
 
-    const stillUnknown = this.allSegments.filter(
-      (e) => e.segment.speaker === UNKNOWN_SPEAKER
-    ).length
+    const stillUnknown = assembled.filter((s) => s.speaker === UNKNOWN_SPEAKER).length
     if (stillUnknown > 0) {
       console.warn(
-        `[DiarizationTracker] ${stillUnknown}/${this.allSegments.length} segment(s) remain "${UNKNOWN_SPEAKER}" — the roster never resolved those devices`
+        `[DiarizationTracker] ${stillUnknown}/${assembled.length} segment(s) remain "${UNKNOWN_SPEAKER}" — no source ever resolved those stretches`
       )
     }
     console.log(`Diarization tracking completed: ${this.filePath}`)

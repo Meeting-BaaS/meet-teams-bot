@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import { enablePrintPageLogs } from "./browser/page-logger"
-import { DiarizationTracker } from "./diarization-tracker"
+import { type DiarizationSegment, DiarizationTracker } from "./diarization-tracker"
 import type { NetworkUser } from "./meeting/meet/network-interception/types"
 import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
@@ -111,7 +111,17 @@ export class SpeakerManager {
             lastTimestamp,
             meetingStartTime,
             (deviceId) => instance.resolveDeviceForBackfill(deviceId),
-            (userId) => instance.userIdNames.get(userId)
+            (userId) => instance.userIdNames.get(userId),
+            // Fallback sources for the final re-assembly, highest trust first:
+            // UI observations shadow-buffered while the bridge was muted fill
+            // long holes the network path left. A "transcription" source (live
+            // transcription-system speaker turns) plugs in here when present.
+            [
+              {
+                kind: "ui",
+                segments: instance.buildUiFallbackSegments(meetingStartTime, lastTimestamp)
+              }
+            ]
           )
         }
       }
@@ -408,6 +418,57 @@ export class SpeakerManager {
   // observations are written once (the observer can re-emit on unrelated DOM
   // churn; only changes are informative).
   private lastShadowKey = ""
+  // In-memory copy of the muted UI-bridge observations (change-deduped, same
+  // stream as the ui-shadow log lines). Consumed at finalize to fill holes the
+  // network path left in the committed timeline. Bounded so a pathological
+  // DOM-churn meeting cannot grow it without limit.
+  private static readonly SHADOW_BUFFER_MAX = 20000
+  private shadowObservations: Array<{
+    t: number
+    speakers: Array<{ name: string; isSpeaking: boolean }>
+  }> = []
+
+  /**
+   * Rebuild a conservative speaker timeline from the muted UI observations:
+   * only stretches where the UI showed EXACTLY ONE participant speaking are
+   * emitted — ambiguity is left for the committed timeline (or nobody) to own.
+   * Times are clamped to the recording clock like every committed segment.
+   */
+  public buildUiFallbackSegments(
+    meetingStartTime: number,
+    lastTimestamp: number
+  ): DiarizationSegment[] {
+    const segments: DiarizationSegment[] = []
+    let open: { name: string; start: number } | null = null
+    const close = (at: number) => {
+      if (!open) return
+      const start = Math.max(0, (open.start - meetingStartTime) / 1000)
+      const end = Math.max(0, (at - meetingStartTime) / 1000)
+      if (end > start) {
+        segments.push({
+          speaker: open.name,
+          user_id: this.resolveUiUserId(open.name),
+          start_time: start,
+          end_time: end
+        })
+      }
+      open = null
+    }
+    for (const observation of this.shadowObservations) {
+      const speaking = observation.speakers.filter(
+        (s) => s.isSpeaking && s.name && s.name !== UNKNOWN_SPEAKER
+      )
+      if (speaking.length === 1) {
+        const name = speaking[0].name
+        if (open && open.name !== name) close(observation.t)
+        if (!open) open = { name, start: observation.t }
+      } else {
+        close(observation.t)
+      }
+    }
+    close(lastTimestamp)
+    return segments
+  }
 
   /**
    * Append a muted UI-bridge observation to speaker_separation.log as a JSON
@@ -423,6 +484,21 @@ export class SpeakerManager {
         .join("|")
       if (key === this.lastShadowKey) return
       this.lastShadowKey = key
+
+      // Buffer for the finalize-time gap fill. Timestamped with the
+      // observation's own clock when it carries one, like the committed path.
+      if (this.shadowObservations.length < SpeakerManager.SHADOW_BUFFER_MAX) {
+        const timestamps = speakers
+          .map((s) => s.timestamp)
+          .filter((t) => Number.isFinite(t) && t > 0)
+        this.shadowObservations.push({
+          t: timestamps.length > 0 ? Math.max(...timestamps) : Date.now(),
+          speakers: speakers.map((s) => ({
+            name: s.name,
+            isSpeaking: s.isSpeaking === true
+          }))
+        })
+      }
 
       for (const speaker of speakers) {
         if (speaker.name) {
