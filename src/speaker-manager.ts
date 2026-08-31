@@ -112,10 +112,8 @@ export class SpeakerManager {
             meetingStartTime,
             (deviceId) => instance.resolveDeviceForBackfill(deviceId),
             (userId) => instance.userIdNames.get(userId),
-            // Fallback sources for the final re-assembly, highest trust first:
-            // UI observations shadow-buffered while the bridge was muted fill
-            // long holes the network path left. A "transcription" source (live
-            // transcription-system speaker turns) plugs in here when present.
+            // Fallback sources for the final re-assembly, highest trust
+            // first; a "transcription" source plugs in here when present.
             [
               {
                 kind: "ui",
@@ -201,16 +199,10 @@ export class SpeakerManager {
         this.uiBridgeMuteLogged = true
         console.log("[SpeakerBridge] Network path owns attribution — UI bridge muted")
       }
-      // Shadow-log the muted observation instead of discarding it. The DOM
-      // observer keeps running for the whole call and Meet's own UI shows the
-      // true active speaker, so this stream is a per-call cross-check of the
-      // network path: a real two-sided call where network:audio pinned ~all
-      // speech on one participant was only diagnosable from video frames
-      // because the (correct) UI signal had been dropped here. Attribution is
-      // unchanged — these lines are written to speaker_separation.log (same
-      // PII redaction as the committed stream, uploaded to S3 with the other
-      // logs) as JSON objects, distinguishable from the committed stream's
-      // bare arrays.
+      // Shadow-log instead of discarding: the DOM observer runs all call and
+      // is a per-call cross-check of the network path (a prod collapse where
+      // the UI had the right answer was only diagnosable from video frames).
+      // Attribution unchanged; lines go to speaker_separation.log redacted.
       await this.logShadowSpeakers(observed)
       return
     }
@@ -418,26 +410,20 @@ export class SpeakerManager {
   // observations are written once (the observer can re-emit on unrelated DOM
   // churn; only changes are informative).
   private lastShadowKey = ""
-  // In-memory copy of the muted UI-bridge observations (change-deduped, same
-  // stream as the ui-shadow log lines). Consumed at finalize to fill holes the
-  // network path left in the committed timeline. Bounded so a pathological
-  // DOM-churn meeting cannot grow it without limit.
+  // In-memory copy of the muted UI observations (change-deduped, same stream
+  // as the ui-shadow log lines), consumed at finalize to fill timeline holes.
   private static readonly SHADOW_BUFFER_MAX = 20000
   private shadowObservations: Array<{
     t: number
     speakers: Array<{ name: string; isSpeaking: boolean }>
   }> = []
-  // True once the buffer refused an observation. From that point the buffered
-  // stream no longer reflects the meeting, so the fallback timeline must end
-  // at the last retained observation — closing an open interval at meeting end
-  // would attribute the whole unobserved tail to a stale participant.
+  // True once the buffer refused an observation; the fallback timeline must
+  // then end at the last retained one, not attribute the unobserved tail.
   private shadowBufferTruncated = false
 
   /**
-   * Rebuild a conservative speaker timeline from the muted UI observations:
-   * only stretches where the UI showed EXACTLY ONE participant speaking are
-   * emitted — ambiguity is left for the committed timeline (or nobody) to own.
-   * Times are clamped to the recording clock like every committed segment.
+   * Conservative timeline from the muted UI observations: only stretches with
+   * EXACTLY ONE participant speaking are emitted — ambiguity is dropped.
    */
   public buildUiFallbackSegments(
     meetingStartTime: number,
@@ -471,9 +457,8 @@ export class SpeakerManager {
         close(observation.t)
       }
     }
-    // A truncated buffer stopped reflecting the meeting at its last retained
-    // observation — close there, never at meeting end, or the whole unobserved
-    // tail would be attributed to whoever happened to be speaking last.
+    // A truncated buffer stops reflecting the meeting — close there, not at
+    // meeting end.
     const lastObserved =
       this.shadowObservations[this.shadowObservations.length - 1]?.t ?? lastTimestamp
     close(this.shadowBufferTruncated ? lastObserved : lastTimestamp)
@@ -481,10 +466,9 @@ export class SpeakerManager {
   }
 
   /**
-   * Append a muted UI-bridge observation to speaker_separation.log as a JSON
-   * OBJECT line ({"src":"ui-shadow",...}), distinguishable from the committed
-   * stream's bare-array lines. Same PiiRedactor treatment as logSpeakers; never
-   * touches attribution. See handleUiBridgeUpdate for why this stream exists.
+   * Append a muted UI observation to speaker_separation.log as a JSON OBJECT
+   * line ({"src":"ui-shadow",...}) — the committed stream uses bare arrays.
+   * Same PiiRedactor treatment; never touches attribution.
    */
   private async logShadowSpeakers(speakers: SpeakerData[]): Promise<void> {
     try {
@@ -495,11 +479,8 @@ export class SpeakerManager {
       if (key === this.lastShadowKey) return
       this.lastShadowKey = key
 
-      // Buffer for the finalize-time gap fill. Timestamped with the
-      // observation's own clock when it carries one, like the committed path.
-      // The bot is silenced exactly as on the committed path — Meet can falsely
-      // light the recording bot as the sole speaker, and a fallback built from
-      // the raw state would hand customer speech to the bot.
+      // Buffer for the finalize-time gap fill, bot silenced like the committed
+      // path (Meet can falsely light the bot as sole speaker).
       if (this.shadowObservations.length < SpeakerManager.SHADOW_BUFFER_MAX) {
         const params = GLOBAL.get()
         const silenced = silenceBotSpeaker(

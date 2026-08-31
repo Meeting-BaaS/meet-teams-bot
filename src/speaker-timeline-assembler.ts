@@ -2,24 +2,12 @@ import type { DiarizationSegment } from "./diarization-tracker"
 import { UNKNOWN_SPEAKER } from "./types"
 
 /**
- * Final speaker-timeline assembly: one pure function that re-assembles the
- * diarization artifact from every source we have, taking the best source for
- * each stretch of the meeting.
- *
- * Sources, in trust order:
- *  - "network"       — WebRTC interception (CSRC/dcrpc/roster). Carries device
- *                      ids, survives DOM changes: authoritative wherever it
- *                      produced data.
- *  - "ui"            — the platform's own UI active-speaker indicator,
- *                      shadow-buffered for the whole call. Fills holes the
- *                      network path left.
- *  - "transcription" — speaker turns from the live transcription system, when
- *                      one ran. Last resort for stretches neither of the
- *                      above covered.
- *
- * A lower-trust source NEVER overwrites a higher-trust one: it only
- * contributes the parts of its segments that fall inside a sufficiently large
- * hole of everything assembled before it.
+ * Final speaker-timeline assembly: re-assembles the diarization artifact from
+ * every source, best source per stretch. Trust order: network (WebRTC
+ * interception — authoritative wherever it produced data) > ui (the platform's
+ * own active-speaker indicator, shadow-buffered whole-call) > transcription
+ * (live transcription-system turns, when one ran). A lower-trust source never
+ * overwrites a higher-trust one — it only fills sufficiently large holes.
  */
 
 export type TimelineSourceKind = "network" | "ui" | "transcription"
@@ -29,16 +17,13 @@ export interface TimelineSource {
   segments: DiarizationSegment[]
 }
 
-// A hole in the assembled timeline must be at least this long before a
-// lower-trust source is consulted — shorter holes are ordinary turn-taking
-// silence.
+// Minimum hole size before a lower-trust source is consulted — anything
+// shorter is ordinary turn-taking silence.
 export const GAP_FILL_MIN_SECONDS = 10
-// A clipped contribution must keep at least this much of itself to be worth
-// emitting.
+// Minimum length a clipped contribution must keep to be emitted.
 export const MIN_SEGMENT_SECONDS = 1
-// How far back the first segment may be stretched to cover the boot gap
-// (recording start → first diarization signal). Beyond this something else is
-// broken, and claiming the whole leading window would mislabel real speech.
+// Cap on stretching the first segment back over the boot gap; a first segment
+// later than this means something else broke.
 export const LEADING_RETROFIT_MAX_SECONDS = 300
 
 /** Positive-length segments, chronological. */
@@ -102,9 +87,8 @@ function clipIntoGaps(
 
 /**
  * Stretch the earliest NAMED segment back to 0 so speech recorded before any
- * diarization source was live (the boot gap — typically the "thanks for
- * letting the bot in" greeting, observed in prod as a leading "Unknown" run of
- * 1-4 utterances) inherits the first identified speaker.
+ * diarization source was live (the boot-gap greeting, the prod leading-
+ * "Unknown" class) inherits the first identified speaker.
  */
 function retrofitLeadingGap(segments: DiarizationSegment[]): DiarizationSegment[] {
   let firstNamed: DiarizationSegment | null = null
@@ -124,12 +108,10 @@ function retrofitLeadingGap(segments: DiarizationSegment[]): DiarizationSegment[
 }
 
 /**
- * Remove the parts of Unknown segments that named coverage overlaps. Runs
- * last: the retrofit (and a named fallback filling a stretch the network only
- * knew as Unknown) can leave a named segment on top of an Unknown one, and
- * downstream mapping picks by overlap — an Unknown left in place would still
- * win the very words the repair exists to name. Uncovered Unknown remainders
- * are kept: they still mark real speech nothing ever named.
+ * Clip Unknown segments down to what named coverage does not overlap.
+ * Downstream mapping picks by overlap, so an Unknown left under a named
+ * segment would still win the words the repair names. Uncovered remainders
+ * are kept — they mark real speech nothing ever named.
  */
 function suppressCoveredUnknowns(segments: DiarizationSegment[]): DiarizationSegment[] {
   const namedCoverage = coverageOf(segments.filter((s) => s.speaker !== UNKNOWN_SPEAKER))
@@ -174,15 +156,12 @@ export function assembleSpeakerTimeline(
 
   for (const [index, source] of sources.entries()) {
     if (index === 0) {
-      // The primary source is taken as-is (Unknowns included — the repair
-      // passes upstream had their chance to name them, and downstream mapping
-      // still uses their spans).
+      // Primary source taken as-is, Unknowns included.
       assembled = normalize(source.segments)
       continue
     }
-    // Holes are measured against NAMED coverage only: a stretch the network
-    // could only call "Unknown" is exactly one a named fallback observation
-    // should win. The covered Unknown is clipped away at the end.
+    // Holes are measured against NAMED coverage only — a named fallback wins
+    // a stretch the network could only call "Unknown" (clipped away at the end).
     const clipped = clipIntoGaps(
       normalize(source.segments),
       gapsIn(coverageOf(assembled.filter((s) => s.speaker !== UNKNOWN_SPEAKER)), meetingEnd)

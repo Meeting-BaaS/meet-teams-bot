@@ -256,12 +256,9 @@ export class DiarizationTracker {
       )
     }
 
-    // Final pass: re-assemble the artifact from every source, best source per
-    // stretch. The repaired network timeline stays authoritative wherever it
-    // produced data; the fallback sources (UI observer, transcription-system
-    // turns when one ran) only contribute inside sufficiently large holes, and
-    // the boot gap (recording start → first diarization signal) is retrofitted
-    // onto the first identified speaker. See speaker-timeline-assembler.ts.
+    // Final pass: re-assemble the artifact best-source-per-stretch (repaired
+    // network authoritative; fallbacks fill large holes; boot gap retrofitted
+    // onto the first identified speaker). See speaker-timeline-assembler.ts.
     const meetingEndRel = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
     const { segments: assembled, filledBySource } = assembleSpeakerTimeline(
       [
@@ -278,10 +275,8 @@ export class DiarizationTracker {
 
     await this.closeStream()
 
-    // Rewrite from the assembled timeline, which is authoritative. Appending as
-    // we go keeps a usable file if the pod dies mid-meeting, but the append log
-    // can contain names that were still unresolved at the time they were
-    // flushed, and none of the fallback contributions.
+    // Rewrite from the assembled timeline — the append log can hold unresolved
+    // names and none of the fallback contributions.
     try {
       const body = assembled.map((segment) => `${JSON.stringify(segment)}\n`).join("")
       await writeFile(this.filePath, body)
