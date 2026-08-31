@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import { enablePrintPageLogs } from "./browser/page-logger"
-import { DiarizationTracker } from "./diarization-tracker"
+import { type DiarizationSegment, DiarizationTracker } from "./diarization-tracker"
 import type { NetworkUser } from "./meeting/meet/network-interception/types"
 import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
@@ -111,7 +111,15 @@ export class SpeakerManager {
             lastTimestamp,
             meetingStartTime,
             (deviceId) => instance.resolveDeviceForBackfill(deviceId),
-            (userId) => instance.userIdNames.get(userId)
+            (userId) => instance.userIdNames.get(userId),
+            // Fallback sources for the final re-assembly, highest trust
+            // first; a "transcription" source plugs in here when present.
+            [
+              {
+                kind: "ui",
+                segments: instance.buildUiFallbackSegments(meetingStartTime, lastTimestamp)
+              }
+            ]
           )
         }
       }
@@ -191,6 +199,11 @@ export class SpeakerManager {
         this.uiBridgeMuteLogged = true
         console.log("[SpeakerBridge] Network path owns attribution — UI bridge muted")
       }
+      // Shadow-log instead of discarding: the DOM observer runs all call and
+      // is a per-call cross-check of the network path (a prod collapse where
+      // the UI had the right answer was only diagnosable from video frames).
+      // Attribution unchanged; lines go to speaker_separation.log redacted.
+      await this.logShadowSpeakers(observed)
       return
     }
 
@@ -390,6 +403,131 @@ export class SpeakerManager {
       if (speaker.isSpeaking === true) {
         GLOBAL.addSpeakerIfNotExists(participant)
       }
+    }
+  }
+
+  // Speaking-set key of the last shadow line, so identical consecutive
+  // observations are written once (the observer can re-emit on unrelated DOM
+  // churn; only changes are informative).
+  private lastShadowKey = ""
+  // In-memory copy of the muted UI observations (change-deduped, same stream
+  // as the ui-shadow log lines), consumed at finalize to fill timeline holes.
+  private static readonly SHADOW_BUFFER_MAX = 20000
+  private shadowObservations: Array<{
+    t: number
+    speakers: Array<{ name: string; isSpeaking: boolean }>
+  }> = []
+  // True once the buffer refused an observation; the fallback timeline must
+  // then end at the last retained one, not attribute the unobserved tail.
+  private shadowBufferTruncated = false
+  // A single observation cannot vouch for an unbounded stretch: the observer
+  // can stall, and change-dedupe means no further observation ever arrives.
+  private static readonly SHADOW_OPEN_MAX_MS = 120_000
+
+  /**
+   * Conservative timeline from the muted UI observations: only stretches with
+   * EXACTLY ONE participant speaking are emitted — ambiguity is dropped.
+   */
+  public buildUiFallbackSegments(
+    meetingStartTime: number,
+    lastTimestamp: number
+  ): DiarizationSegment[] {
+    const segments: DiarizationSegment[] = []
+    let open: { name: string; start: number } | null = null
+    const close = (at: number) => {
+      if (!open) return
+      const start = Math.max(0, (open.start - meetingStartTime) / 1000)
+      const end = Math.max(0, (at - meetingStartTime) / 1000)
+      if (end > start) {
+        segments.push({
+          speaker: open.name,
+          user_id: this.resolveUiUserId(open.name),
+          start_time: start,
+          end_time: end
+        })
+      }
+      open = null
+    }
+    for (const observation of this.shadowObservations) {
+      const speaking = observation.speakers.filter(
+        (s) => s.isSpeaking && s.name && s.name !== UNKNOWN_SPEAKER
+      )
+      if (speaking.length === 1) {
+        const name = speaking[0].name
+        if (open && open.name !== name) close(observation.t)
+        if (!open) open = { name, start: observation.t }
+      } else {
+        close(observation.t)
+      }
+    }
+    // A truncated buffer stops reflecting the meeting — close there, not at
+    // meeting end — and never extend an open interval more than
+    // SHADOW_OPEN_MAX_MS past the observation that opened it.
+    const lastObserved = this.shadowObservations[this.shadowObservations.length - 1]?.t
+    const boundary = this.shadowBufferTruncated && lastObserved ? lastObserved : lastTimestamp
+    close(
+      lastObserved === undefined
+        ? boundary
+        : Math.min(boundary, lastObserved + SpeakerManager.SHADOW_OPEN_MAX_MS)
+    )
+    return segments
+  }
+
+  /**
+   * Append a muted UI observation to speaker_separation.log as a JSON OBJECT
+   * line ({"src":"ui-shadow",...}) — the committed stream uses bare arrays.
+   * Same PiiRedactor treatment; never touches attribution.
+   */
+  private async logShadowSpeakers(speakers: SpeakerData[]): Promise<void> {
+    try {
+      const key = speakers
+        .map((s) => `${s.name}:${s.isSpeaking ? 1 : 0}`)
+        .sort()
+        .join("|")
+      if (key === this.lastShadowKey) return
+      this.lastShadowKey = key
+
+      // Buffer for the finalize-time gap fill, bot silenced like the committed
+      // path (Meet can falsely light the bot as sole speaker).
+      if (this.shadowObservations.length < SpeakerManager.SHADOW_BUFFER_MAX) {
+        const params = GLOBAL.get()
+        const silenced = silenceBotSpeaker(
+          speakers,
+          params.bot_name,
+          Boolean(params.streaming_input)
+        )
+        const timestamps = speakers
+          .map((s) => s.timestamp)
+          .filter((t) => Number.isFinite(t) && t > 0)
+        this.shadowObservations.push({
+          t: timestamps.length > 0 ? Math.max(...timestamps) : Date.now(),
+          speakers: silenced.map((s) => ({
+            name: s.name,
+            isSpeaking: s.isSpeaking === true
+          }))
+        })
+      } else if (!this.shadowBufferTruncated) {
+        this.shadowBufferTruncated = true
+        console.warn(
+          "[SpeakerBridge] ui-shadow buffer full — later observations are not buffered; the fallback timeline stops at the last retained one"
+        )
+      }
+
+      for (const speaker of speakers) {
+        if (speaker.name) {
+          PiiRedactor.registerSpeaker(speaker.name)
+        }
+      }
+      const line = PiiRedactor.redact(
+        JSON.stringify({ src: "ui-shadow", t: Date.now(), speakers })
+      )
+      await fs.promises.appendFile(
+        PathManager.getInstance().getSpeakerLogPath(),
+        `${line}\n`
+      )
+    } catch (e) {
+      // Shadow telemetry must never affect the meeting.
+      console.error("Cannot append ui-shadow speaker log:", e)
     }
   }
 

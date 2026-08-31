@@ -276,3 +276,52 @@ describe("DiarizationTracker recording-clock clamp", () => {
     expect(segments.every((s) => s.end_time > s.start_time)).toBe(true)
   })
 })
+
+describe("DiarizationTracker final re-assembly", () => {
+  it("fills the leading hole from a UI fallback source and writes a chronological file", async () => {
+    const tracker = freshTracker()
+
+    // The committed timeline is contiguous from its FIRST event (every update
+    // closes the previous segment at the new event's time), so the only
+    // structural hole a live meeting produces is the leading one: network's
+    // first event here lands at 90s, leaving 0→90 uncovered. The muted UI
+    // observer saw Jonny speaking at 40→80 inside that window.
+    tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 90), MEETING_START)
+
+    await tracker.end(MEETING_START + 100_000, MEETING_START, undefined, undefined, [
+      {
+        kind: "ui",
+        segments: [{ speaker: "Jonny", user_id: 0, start_time: 40, end_time: 80 }]
+      }
+    ])
+
+    const segments = readSegments()
+    const jonny = segments.find((s) => s.speaker === "Jonny")
+    // Filled from UI, then the boot-gap retrofit stretched the earliest named
+    // segment (Jonny's) back to 0.
+    expect(jonny).toEqual({ speaker: "Jonny", user_id: 0, start_time: 0, end_time: 80 })
+    expect(segments.find((s) => s.speaker === "Amr El Shimy")).toEqual({
+      speaker: "Amr El Shimy",
+      user_id: 0,
+      start_time: 90,
+      end_time: 100
+    })
+    // Chronological artifact.
+    const starts = segments.map((s) => s.start_time)
+    expect(starts).toEqual([...starts].sort((a, b) => a - b))
+  })
+
+  it("keeps the whole meeting attributable when network never produced a segment", async () => {
+    const tracker = freshTracker()
+
+    await tracker.end(MEETING_START + 60_000, MEETING_START, undefined, undefined, [
+      {
+        kind: "ui",
+        segments: [{ speaker: "Jonny", user_id: 0, start_time: 5, end_time: 40 }]
+      }
+    ])
+
+    const segments = readSegments()
+    expect(segments).toEqual([{ speaker: "Jonny", user_id: 0, start_time: 0, end_time: 40 }])
+  })
+})
