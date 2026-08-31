@@ -124,6 +124,44 @@ function retrofitLeadingGap(segments: DiarizationSegment[]): DiarizationSegment[
 }
 
 /**
+ * Remove the parts of Unknown segments that named coverage overlaps. Runs
+ * last: the retrofit (and a named fallback filling a stretch the network only
+ * knew as Unknown) can leave a named segment on top of an Unknown one, and
+ * downstream mapping picks by overlap — an Unknown left in place would still
+ * win the very words the repair exists to name. Uncovered Unknown remainders
+ * are kept: they still mark real speech nothing ever named.
+ */
+function suppressCoveredUnknowns(segments: DiarizationSegment[]): DiarizationSegment[] {
+  const namedCoverage = coverageOf(segments.filter((s) => s.speaker !== UNKNOWN_SPEAKER))
+  const out: DiarizationSegment[] = []
+  for (const segment of segments) {
+    if (segment.speaker !== UNKNOWN_SPEAKER) {
+      out.push(segment)
+      continue
+    }
+    let pieces: Array<[number, number]> = [[segment.start_time, segment.end_time]]
+    for (const [coverStart, coverEnd] of namedCoverage) {
+      const next: Array<[number, number]> = []
+      for (const [pieceStart, pieceEnd] of pieces) {
+        if (coverEnd <= pieceStart || coverStart >= pieceEnd) {
+          next.push([pieceStart, pieceEnd])
+          continue
+        }
+        if (coverStart > pieceStart) next.push([pieceStart, coverStart])
+        if (coverEnd < pieceEnd) next.push([coverEnd, pieceEnd])
+      }
+      pieces = next
+    }
+    for (const [pieceStart, pieceEnd] of pieces) {
+      if (pieceEnd - pieceStart >= MIN_SEGMENT_SECONDS) {
+        out.push({ ...segment, start_time: pieceStart, end_time: pieceEnd })
+      }
+    }
+  }
+  return normalize(out)
+}
+
+/**
  * Assemble the final timeline. `sources` must be ordered highest-trust first;
  * each source contributes only where everything before it left a hole.
  */
@@ -142,9 +180,12 @@ export function assembleSpeakerTimeline(
       assembled = normalize(source.segments)
       continue
     }
+    // Holes are measured against NAMED coverage only: a stretch the network
+    // could only call "Unknown" is exactly one a named fallback observation
+    // should win. The covered Unknown is clipped away at the end.
     const clipped = clipIntoGaps(
       normalize(source.segments),
-      gapsIn(coverageOf(assembled), meetingEnd)
+      gapsIn(coverageOf(assembled.filter((s) => s.speaker !== UNKNOWN_SPEAKER)), meetingEnd)
     )
     if (clipped.length > 0) {
       filledBySource[source.kind] = clipped.length
@@ -152,5 +193,8 @@ export function assembleSpeakerTimeline(
     }
   }
 
-  return { segments: retrofitLeadingGap(assembled), filledBySource }
+  return {
+    segments: suppressCoveredUnknowns(retrofitLeadingGap(assembled)),
+    filledBySource
+  }
 }

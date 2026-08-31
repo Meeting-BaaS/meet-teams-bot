@@ -311,6 +311,46 @@ describe("SpeakerManager network updates after fallback", () => {
     ])
   })
 
+  it("silences the recording bot in the shadow buffer like the committed path", async () => {
+    const manager = SpeakerManager.getInstance()
+    ;(manager as any).networkSpeakerActive = true
+    const T0 = 1785941000000
+
+    // Meet falsely lights the bot as the sole speaker for 30s.
+    await manager.handleUiBridgeUpdate([
+      { name: "SPEAKER SEP Test", id: 0, timestamp: T0 + 5_000, isSpeaking: true }
+    ])
+    await manager.handleUiBridgeUpdate([
+      { name: "SPEAKER SEP Test", id: 0, timestamp: T0 + 35_000, isSpeaking: false }
+    ])
+
+    // No customer speech may be attributed to the bot by the fallback.
+    expect(manager.buildUiFallbackSegments(T0, T0 + 60_000)).toEqual([])
+  })
+
+  it("ends the fallback timeline at the last retained observation once the buffer truncates", async () => {
+    const manager = SpeakerManager.getInstance()
+    ;(manager as any).networkSpeakerActive = true
+    const T0 = 1785941000000
+
+    await manager.handleUiBridgeUpdate([
+      { name: "X", id: 0, timestamp: T0 + 10_000, isSpeaking: true }
+    ])
+    // Simulate a full buffer: the next (different) observation is refused.
+    const buffer = (manager as any).shadowObservations as unknown[]
+    const retained = buffer[buffer.length - 1]
+    while (buffer.length < 20000) buffer.push(retained)
+    await manager.handleUiBridgeUpdate([
+      { name: "Y", id: 0, timestamp: T0 + 20_000, isSpeaking: true }
+    ])
+    expect((manager as any).shadowBufferTruncated).toBe(true)
+
+    // X's open interval must close at the last retained observation (10s),
+    // not at meeting end (60s) — the unobserved tail belongs to nobody.
+    const segments = manager.buildUiFallbackSegments(T0, T0 + 60_000)
+    expect(segments).toEqual([])
+  })
+
   it("gives a UI speaker the id the network already assigned to that name", async () => {
     const manager = SpeakerManager.getInstance()
 

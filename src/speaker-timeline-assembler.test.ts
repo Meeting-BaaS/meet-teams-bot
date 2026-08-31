@@ -105,7 +105,7 @@ describe("assembleSpeakerTimeline", () => {
     expect(segments[0].start_time).toBe(lateStart)
   })
 
-  it("retrofits onto the first NAMED segment, skipping a leading Unknown", () => {
+  it("retrofits onto the first NAMED segment and clips the Unknown it now covers", () => {
     const { segments } = assembleSpeakerTimeline(
       [
         {
@@ -115,10 +115,45 @@ describe("assembleSpeakerTimeline", () => {
       ],
       100
     )
-    const amr = segments.find((s) => s.speaker === "Amr")
-    expect(amr?.start_time).toBe(0)
-    const unknown = segments.find((s) => s.speaker === "Unknown")
-    expect(unknown).toEqual(seg("Unknown", 5, 20, 0))
+    // The retrofit stretches Amr over the Unknown; leaving the Unknown in
+    // place would still win the opening words downstream (overlap pick).
+    expect(segments).toEqual([seg("Amr", 0, 100)])
+  })
+
+  it("lets a named fallback win a stretch the network only knew as Unknown", () => {
+    const { segments, filledBySource } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "network",
+          segments: [seg("Amr", 0, 100), seg("Unknown", 100, 160, 0), seg("Amr", 160, 200)]
+        },
+        { kind: "ui", segments: [seg("Jonny", 110, 150, 0)] }
+      ],
+      200
+    )
+    expect(filledBySource.ui).toBe(1)
+    expect(segments.find((s) => s.speaker === "Jonny")).toEqual(seg("Jonny", 110, 150, 0))
+    // The Unknown keeps only its uncovered remainders — Jonny's span is
+    // Unknown-free.
+    for (const s of segments.filter((x) => x.speaker === "Unknown")) {
+      expect(s.end_time <= 110 || s.start_time >= 150).toBe(true)
+    }
+  })
+
+  it("keeps the uncovered remainder of a partially covered Unknown", () => {
+    const { segments } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "network",
+          // Named coverage [0..50] overlaps the Unknown's head only.
+          segments: [seg("Amr", 0, 50), seg("Unknown", 40, 90, 0), seg("Amr", 320, 400)]
+        }
+      ],
+      400
+    )
+    // First named segment starts at 0 → no retrofit. Unknown survives as its
+    // uncovered tail.
+    expect(segments.find((s) => s.speaker === "Unknown")).toEqual(seg("Unknown", 50, 90, 0))
   })
 
   it("handles an empty network timeline: the UI source fills the whole meeting", () => {

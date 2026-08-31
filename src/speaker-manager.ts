@@ -427,6 +427,11 @@ export class SpeakerManager {
     t: number
     speakers: Array<{ name: string; isSpeaking: boolean }>
   }> = []
+  // True once the buffer refused an observation. From that point the buffered
+  // stream no longer reflects the meeting, so the fallback timeline must end
+  // at the last retained observation — closing an open interval at meeting end
+  // would attribute the whole unobserved tail to a stale participant.
+  private shadowBufferTruncated = false
 
   /**
    * Rebuild a conservative speaker timeline from the muted UI observations:
@@ -466,7 +471,12 @@ export class SpeakerManager {
         close(observation.t)
       }
     }
-    close(lastTimestamp)
+    // A truncated buffer stopped reflecting the meeting at its last retained
+    // observation — close there, never at meeting end, or the whole unobserved
+    // tail would be attributed to whoever happened to be speaking last.
+    const lastObserved =
+      this.shadowObservations[this.shadowObservations.length - 1]?.t ?? lastTimestamp
+    close(this.shadowBufferTruncated ? lastObserved : lastTimestamp)
     return segments
   }
 
@@ -487,17 +497,31 @@ export class SpeakerManager {
 
       // Buffer for the finalize-time gap fill. Timestamped with the
       // observation's own clock when it carries one, like the committed path.
+      // The bot is silenced exactly as on the committed path — Meet can falsely
+      // light the recording bot as the sole speaker, and a fallback built from
+      // the raw state would hand customer speech to the bot.
       if (this.shadowObservations.length < SpeakerManager.SHADOW_BUFFER_MAX) {
+        const params = GLOBAL.get()
+        const silenced = silenceBotSpeaker(
+          speakers,
+          params.bot_name,
+          Boolean(params.streaming_input)
+        )
         const timestamps = speakers
           .map((s) => s.timestamp)
           .filter((t) => Number.isFinite(t) && t > 0)
         this.shadowObservations.push({
           t: timestamps.length > 0 ? Math.max(...timestamps) : Date.now(),
-          speakers: speakers.map((s) => ({
+          speakers: silenced.map((s) => ({
             name: s.name,
             isSpeaking: s.isSpeaking === true
           }))
         })
+      } else if (!this.shadowBufferTruncated) {
+        this.shadowBufferTruncated = true
+        console.warn(
+          "[SpeakerBridge] ui-shadow buffer full — later observations are not buffered; the fallback timeline stops at the last retained one"
+        )
       }
 
       for (const speaker of speakers) {
