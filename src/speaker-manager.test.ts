@@ -351,6 +351,21 @@ describe("SpeakerManager network updates after fallback", () => {
     expect(segments).toEqual([])
   })
 
+  it("caps the trailing extension of an interval the observer never closed", async () => {
+    const manager = SpeakerManager.getInstance()
+    ;(manager as any).networkSpeakerActive = true
+    const T0 = 1785941000000
+
+    // One observation, then the observer stalls: change-dedupe means no close
+    // ever arrives. The interval must not stretch to meeting end (10min).
+    await manager.handleUiBridgeUpdate([
+      { name: "X", id: 0, timestamp: T0 + 10_000, isSpeaking: true }
+    ])
+
+    const segments = manager.buildUiFallbackSegments(T0, T0 + 600_000)
+    expect(segments).toEqual([{ speaker: "X", user_id: 0, start_time: 10, end_time: 130 }])
+  })
+
   it("gives a UI speaker the id the network already assigned to that name", async () => {
     const manager = SpeakerManager.getInstance()
 

@@ -420,6 +420,9 @@ export class SpeakerManager {
   // True once the buffer refused an observation; the fallback timeline must
   // then end at the last retained one, not attribute the unobserved tail.
   private shadowBufferTruncated = false
+  // A single observation cannot vouch for an unbounded stretch: the observer
+  // can stall, and change-dedupe means no further observation ever arrives.
+  private static readonly SHADOW_OPEN_MAX_MS = 120_000
 
   /**
    * Conservative timeline from the muted UI observations: only stretches with
@@ -458,10 +461,15 @@ export class SpeakerManager {
       }
     }
     // A truncated buffer stops reflecting the meeting — close there, not at
-    // meeting end.
-    const lastObserved =
-      this.shadowObservations[this.shadowObservations.length - 1]?.t ?? lastTimestamp
-    close(this.shadowBufferTruncated ? lastObserved : lastTimestamp)
+    // meeting end — and never extend an open interval more than
+    // SHADOW_OPEN_MAX_MS past the observation that opened it.
+    const lastObserved = this.shadowObservations[this.shadowObservations.length - 1]?.t
+    const boundary = this.shadowBufferTruncated && lastObserved ? lastObserved : lastTimestamp
+    close(
+      lastObserved === undefined
+        ? boundary
+        : Math.min(boundary, lastObserved + SpeakerManager.SHADOW_OPEN_MAX_MS)
+    )
     return segments
   }
 
