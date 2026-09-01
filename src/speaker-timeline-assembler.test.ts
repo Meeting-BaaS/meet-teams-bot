@@ -168,3 +168,21 @@ describe("assembleSpeakerTimeline", () => {
     expect(segments).toEqual([seg("Jonny", 0, 60, 0)])
   })
 })
+
+describe("assembleSpeakerTimeline retrofit reporting", () => {
+  it("reports the original start the retrofit stretched from", () => {
+    const { retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [{ kind: "network", segments: [seg("Stefano", 144, 300)] }],
+      300
+    )
+    expect(retrofittedFromSeconds).toBe(144)
+  })
+
+  it("reports nothing when no retrofit happened", () => {
+    const { retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [{ kind: "network", segments: [seg("Amr", 0, 60)] }],
+      60
+    )
+    expect(retrofittedFromSeconds).toBeUndefined()
+  })
+})

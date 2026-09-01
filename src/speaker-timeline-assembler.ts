@@ -90,7 +90,10 @@ function clipIntoGaps(
  * diarization source was live (the boot-gap greeting, the prod leading-
  * "Unknown" class) inherits the first identified speaker.
  */
-function retrofitLeadingGap(segments: DiarizationSegment[]): DiarizationSegment[] {
+function retrofitLeadingGap(segments: DiarizationSegment[]): {
+  segments: DiarizationSegment[]
+  retrofittedFromSeconds?: number
+} {
   let firstNamed: DiarizationSegment | null = null
   for (const s of segments) {
     if (s.speaker === UNKNOWN_SPEAKER) continue
@@ -101,10 +104,13 @@ function retrofitLeadingGap(segments: DiarizationSegment[]): DiarizationSegment[
     firstNamed.start_time <= 0 ||
     firstNamed.start_time > LEADING_RETROFIT_MAX_SECONDS
   ) {
-    return segments
+    return { segments }
   }
   const target = firstNamed
-  return segments.map((s) => (s === target ? { ...s, start_time: 0 } : s))
+  return {
+    segments: segments.map((s) => (s === target ? { ...s, start_time: 0 } : s)),
+    retrofittedFromSeconds: target.start_time
+  }
 }
 
 /**
@@ -150,7 +156,11 @@ function suppressCoveredUnknowns(segments: DiarizationSegment[]): DiarizationSeg
 export function assembleSpeakerTimeline(
   sources: TimelineSource[],
   meetingEnd: number
-): { segments: DiarizationSegment[]; filledBySource: Partial<Record<TimelineSourceKind, number>> } {
+): {
+  segments: DiarizationSegment[]
+  filledBySource: Partial<Record<TimelineSourceKind, number>>
+  retrofittedFromSeconds?: number
+} {
   let assembled: DiarizationSegment[] = []
   const filledBySource: Partial<Record<TimelineSourceKind, number>> = {}
 
@@ -172,8 +182,10 @@ export function assembleSpeakerTimeline(
     }
   }
 
+  const { segments, retrofittedFromSeconds } = retrofitLeadingGap(assembled)
   return {
-    segments: suppressCoveredUnknowns(retrofitLeadingGap(assembled)),
-    filledBySource
+    segments: suppressCoveredUnknowns(segments),
+    filledBySource,
+    retrofittedFromSeconds
   }
 }

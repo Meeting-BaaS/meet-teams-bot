@@ -260,7 +260,8 @@ export class DiarizationTracker {
     // network authoritative; fallbacks fill large holes; boot gap retrofitted
     // onto the first identified speaker). See speaker-timeline-assembler.ts.
     const meetingEndRel = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
-    const { segments: assembled, filledBySource } = assembleSpeakerTimeline(
+    const { segments: assembled, filledBySource, retrofittedFromSeconds } =
+      assembleSpeakerTimeline(
       [
         { kind: "network" as const, segments: this.allSegments.map((e) => e.segment) },
         ...(fallbackSources ?? [])
@@ -270,6 +271,12 @@ export class DiarizationTracker {
     for (const [kind, count] of Object.entries(filledBySource)) {
       console.log(
         `[DiarizationTracker] Filled ${count} timeline gap segment(s) from the ${kind} fallback`
+      )
+    }
+    if (retrofittedFromSeconds !== undefined) {
+      // Greppable across bot logs to track the boot gap in production.
+      console.log(
+        `[DiarizationTracker] Boot-gap retrofit: first segment stretched to 0s from +${retrofittedFromSeconds.toFixed(1)}s`
       )
     }
 
