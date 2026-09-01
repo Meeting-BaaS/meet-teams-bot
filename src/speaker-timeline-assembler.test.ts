@@ -186,3 +186,25 @@ describe("assembleSpeakerTimeline retrofit reporting", () => {
     expect(retrofittedFromSeconds).toBeUndefined()
   })
 })
+
+describe("assembleSpeakerTimeline bot exclusion", () => {
+  it("never stretches the bot's own segment over the boot gap", () => {
+    // Prod bot 7ff21856: the bot's join announcement was the first diarized
+    // segment and the retrofit stretched IT to 0 instead of a human's.
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "network",
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+        }
+      ],
+      100,
+      { botName: "MeetingBaaS's Notetaker" }
+    )
+    expect(retrofittedFromSeconds).toBe(30)
+    expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
+    expect(segments.find((s) => s.speaker === "MeetingBaaS's Notetaker")).toEqual(
+      seg("MeetingBaaS's Notetaker", 7, 14)
+    )
+  })
+})

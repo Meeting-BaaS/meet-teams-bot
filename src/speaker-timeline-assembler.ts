@@ -90,13 +90,19 @@ function clipIntoGaps(
  * diarization source was live (the boot-gap greeting, the prod leading-
  * "Unknown" class) inherits the first identified speaker.
  */
-function retrofitLeadingGap(segments: DiarizationSegment[]): {
+function retrofitLeadingGap(
+  segments: DiarizationSegment[],
+  excludeSpeaker?: string
+): {
   segments: DiarizationSegment[]
   retrofittedFromSeconds?: number
 } {
   let firstNamed: DiarizationSegment | null = null
   for (const s of segments) {
     if (s.speaker === UNKNOWN_SPEAKER) continue
+    // Never stretch the recording bot's own segment (its join announcement can
+    // be the first thing diarized) — the boot gap belongs to a human.
+    if (excludeSpeaker && s.speaker === excludeSpeaker) continue
     if (!firstNamed || s.start_time < firstNamed.start_time) firstNamed = s
   }
   if (
@@ -155,7 +161,8 @@ function suppressCoveredUnknowns(segments: DiarizationSegment[]): DiarizationSeg
  */
 export function assembleSpeakerTimeline(
   sources: TimelineSource[],
-  meetingEnd: number
+  meetingEnd: number,
+  options?: { botName?: string }
 ): {
   segments: DiarizationSegment[]
   filledBySource: Partial<Record<TimelineSourceKind, number>>
@@ -182,7 +189,10 @@ export function assembleSpeakerTimeline(
     }
   }
 
-  const { segments, retrofittedFromSeconds } = retrofitLeadingGap(assembled)
+  const { segments, retrofittedFromSeconds } = retrofitLeadingGap(
+    assembled,
+    options?.botName
+  )
   return {
     segments: suppressCoveredUnknowns(segments),
     filledBySource,

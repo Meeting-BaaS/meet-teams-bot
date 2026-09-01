@@ -119,7 +119,8 @@ export class SpeakerManager {
                 kind: "ui",
                 segments: instance.buildUiFallbackSegments(meetingStartTime, lastTimestamp)
               }
-            ]
+            ],
+            GLOBAL.get().bot_name
           )
         }
       }

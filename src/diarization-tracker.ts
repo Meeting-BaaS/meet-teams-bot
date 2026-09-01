@@ -218,7 +218,8 @@ export class DiarizationTracker {
     meetingStartTime: number,
     resolveSpeaker?: SpeakerResolver,
     resolveUserId?: UserIdResolver,
-    fallbackSources?: TimelineSource[]
+    fallbackSources?: TimelineSource[],
+    botName?: string
   ): Promise<void> {
     if (this.isEnded) {
       return
@@ -266,7 +267,8 @@ export class DiarizationTracker {
         { kind: "network" as const, segments: this.allSegments.map((e) => e.segment) },
         ...(fallbackSources ?? [])
       ],
-      meetingEndRel
+      meetingEndRel,
+      { botName }
     )
     for (const [kind, count] of Object.entries(filledBySource)) {
       console.log(
