@@ -59,6 +59,14 @@ export type SpeakerData = {
    * speech to another.
    */
   deviceId?: string
+  /**
+   * True when the observation is the recording bot itself, detected from the
+   * platform's own self marker (Meet: the "(You)" tag on the People-panel
+   * row). Name-independent: an SSO-logged-in bot DISPLAYS the Google
+   * account's name, not bot_name, so name matching alone misses it and the
+   * bot ends up registered as a speaker (prod: 12 bots/30d incl. 2 customers).
+   */
+  isSelf?: boolean
 }
 export type MeetingProvider = output<typeof MeetingPlatformSchema>
 

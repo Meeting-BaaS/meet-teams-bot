@@ -42,6 +42,12 @@ export class SpeakerManager {
   // seconds after they first speak — Meet's UI indicator fires much earlier.
   private networkSpeakerActive = false
   private uiBridgeMuteLogged = false
+  // Canonical self identity, learned from the platform's own self marker (the
+  // "(You)" row carries both the DISPLAYED name and the device id). An SSO
+  // bot displays the login account's name, not bot_name, so this is the only
+  // identity that catches it on every path — the network path has no isSelf.
+  private selfDisplayedName?: string
+  private selfDeviceId?: string
   // Diagnostic-only arbitration evidence. Never changes speaker ownership.
   private readonly attributionShadow = new SpeakerAttributionShadowTracker()
 
@@ -119,7 +125,11 @@ export class SpeakerManager {
                 kind: "ui",
                 segments: instance.buildUiFallbackSegments(meetingStartTime, lastTimestamp)
               }
-            ]
+            ],
+            [GLOBAL.get().bot_name, instance.selfDisplayedName].filter(
+              (n): n is string => Boolean(n)
+            ),
+            instance.selfDeviceId
           )
         }
       }
@@ -174,6 +184,7 @@ export class SpeakerManager {
    * automatically and the same observer becomes the primary source.
    */
   public async handleUiBridgeUpdate(observed: SpeakerData[]): Promise<void> {
+    this.learnSelfIdentity(observed)
     const timestamps = observed
       .map((speaker) => speaker.timestamp)
       .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0)
@@ -232,6 +243,41 @@ export class SpeakerManager {
     return 0
   }
 
+  /** Remember the bot's displayed name + device once the self marker shows it. */
+  private learnSelfIdentity(observed: SpeakerData[]): void {
+    for (const speaker of observed) {
+      if (speaker.isSelf === true) {
+        if (speaker.name && !this.selfDisplayedName) {
+          this.selfDisplayedName = speaker.name
+          console.log("[SpeakerManager] Self identity learned from the platform's self marker")
+        }
+        if (speaker.deviceId && !this.selfDeviceId) this.selfDeviceId = speaker.deviceId
+      }
+    }
+  }
+
+  /**
+   * Silence the bot under its LEARNED identity (displayed name / own device),
+   * which silenceBotSpeaker's bot_name matching cannot catch for SSO logins.
+   * The network path never carries isSelf, so this is the only guard there.
+   */
+  /** Whether an observation matches the LEARNED self identity. */
+  private isLearnedSelf(name: string | undefined, deviceId: string | undefined): boolean {
+    return Boolean(
+      (this.selfDeviceId && deviceId === this.selfDeviceId) ||
+        (this.selfDisplayedName && name === this.selfDisplayedName)
+    )
+  }
+
+  private silenceSelf(speakers: SpeakerData[], botCanSpeak: boolean): SpeakerData[] {
+    if (botCanSpeak || (!this.selfDisplayedName && !this.selfDeviceId)) return speakers
+    return speakers.map((speaker) =>
+      speaker.isSpeaking && this.isLearnedSelf(speaker.name, speaker.deviceId)
+        ? { ...speaker, isSpeaking: false }
+        : speaker
+    )
+  }
+
   public async handleSpeakerUpdate(
     observed: SpeakerData[],
     source: string
@@ -249,7 +295,11 @@ export class SpeakerManager {
       // silenceBotSpeaker for what happens to a meeting when it does. A bot that
       // streams audio in does speak, and keeps its turns.
       const params = GLOBAL.get()
-      const speakers = silenceBotSpeaker(observed, params.bot_name, Boolean(params.streaming_input))
+      const botCanSpeak = Boolean(params.streaming_input)
+      const speakers = this.silenceSelf(
+        silenceBotSpeaker(observed, params.bot_name, botCanSpeak),
+        botCanSpeak
+      )
 
       // Remember every user id we ever resolved to a real name, so finalize can
       // repair Unknown segments by user id when the device-keyed repair can't
@@ -334,8 +384,14 @@ export class SpeakerManager {
         // a bot added once stays in the final payload no matter what the
         // diarization path does with it afterwards. A bot streaming audio in is
         // a real speaker and passes through untouched.
+        // The learned identity (displayed name / own device from the "(You)"
+        // marker) catches the SSO case bot_name matching cannot — this registry
+        // is append-only, so the decision has to be right here.
         const isSpeaking =
-          user.isSpeaking === true && (botCanSpeak || !isBotName(stableName, botName))
+          user.isSpeaking === true &&
+          (botCanSpeak ||
+            (!isBotName(stableName, botName) &&
+              !this.isLearnedSelf(stableName, user.deviceId)))
 
         // Add speakers who are currently speaking
         if (isSpeaking) {
@@ -491,10 +547,10 @@ export class SpeakerManager {
       // path (Meet can falsely light the bot as sole speaker).
       if (this.shadowObservations.length < SpeakerManager.SHADOW_BUFFER_MAX) {
         const params = GLOBAL.get()
-        const silenced = silenceBotSpeaker(
-          speakers,
-          params.bot_name,
-          Boolean(params.streaming_input)
+        const botCanSpeak = Boolean(params.streaming_input)
+        const silenced = this.silenceSelf(
+          silenceBotSpeaker(speakers, params.bot_name, botCanSpeak),
+          botCanSpeak
         )
         const timestamps = speakers
           .map((s) => s.timestamp)

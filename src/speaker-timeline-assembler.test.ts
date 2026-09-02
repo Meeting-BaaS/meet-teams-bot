@@ -90,10 +90,10 @@ describe("assembleSpeakerTimeline", () => {
     // Prod case 8db02fee: first utterance ("Grazie.") at 6.1s, first
     // diarization segment much later — the greeting surfaced as Unknown.
     const { segments } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Stefano", 144, 300), seg("Elisa", 300, 400)] }],
+      [{ kind: "network", segments: [seg("Opener", 144, 300), seg("Guest", 300, 400)] }],
       400
     )
-    expect(segments[0]).toEqual(seg("Stefano", 0, 300))
+    expect(segments[0]).toEqual(seg("Opener", 0, 300))
   })
 
   it("does not retrofit past the cap — a first segment that late means something broke", () => {
@@ -166,5 +166,63 @@ describe("assembleSpeakerTimeline", () => {
     )
     expect(filledBySource.ui).toBe(1)
     expect(segments).toEqual([seg("Jonny", 0, 60, 0)])
+  })
+})
+
+describe("assembleSpeakerTimeline retrofit reporting", () => {
+  it("reports the original start the retrofit stretched from", () => {
+    const { retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [{ kind: "network", segments: [seg("Opener", 144, 300)] }],
+      300
+    )
+    expect(retrofittedFromSeconds).toBe(144)
+  })
+
+  it("reports nothing when no retrofit happened", () => {
+    const { retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [{ kind: "network", segments: [seg("Amr", 0, 60)] }],
+      60
+    )
+    expect(retrofittedFromSeconds).toBeUndefined()
+  })
+})
+
+describe("assembleSpeakerTimeline bot exclusion", () => {
+  it("never stretches the bot's own segment over the boot gap", () => {
+    // Prod bot 7ff21856: the bot's join announcement was the first diarized
+    // segment and the retrofit stretched IT to 0 instead of a human's.
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "network",
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+        }
+      ],
+      100,
+      { botNames: ["MeetingBaaS's Notetaker"] }
+    )
+    expect(retrofittedFromSeconds).toBe(30)
+    expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
+    expect(segments.find((s) => s.speaker === "MeetingBaaS's Notetaker")).toEqual(
+      seg("MeetingBaaS's Notetaker", 7, 14)
+    )
+  })
+})
+
+describe("assembleSpeakerTimeline multi-name bot exclusion", () => {
+  it("excludes the learned displayed name even when it differs from bot_name", () => {
+    // SSO: configured "Amr's Notetaker", displayed "MeetingBaaS's Notetaker".
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "network",
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+        }
+      ],
+      100,
+      { botNames: ["Amr's Notetaker", "MeetingBaaS's Notetaker"] }
+    )
+    expect(retrofittedFromSeconds).toBe(30)
+    expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
   })
 })

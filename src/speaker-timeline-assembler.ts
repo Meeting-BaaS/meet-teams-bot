@@ -90,10 +90,21 @@ function clipIntoGaps(
  * diarization source was live (the boot-gap greeting, the prod leading-
  * "Unknown" class) inherits the first identified speaker.
  */
-function retrofitLeadingGap(segments: DiarizationSegment[]): DiarizationSegment[] {
+function retrofitLeadingGap(
+  segments: DiarizationSegment[],
+  excludeSpeakers?: string[]
+): {
+  segments: DiarizationSegment[]
+  retrofittedFromSeconds?: number
+} {
   let firstNamed: DiarizationSegment | null = null
   for (const s of segments) {
     if (s.speaker === UNKNOWN_SPEAKER) continue
+    // Never stretch the recording bot's own segment (its join announcement can
+    // be the first thing diarized) — the boot gap belongs to a human. Both the
+    // configured bot_name and the LEARNED displayed name (SSO: the account's
+    // name, which bot_name matching misses) are excluded.
+    if (excludeSpeakers?.includes(s.speaker)) continue
     if (!firstNamed || s.start_time < firstNamed.start_time) firstNamed = s
   }
   if (
@@ -101,10 +112,13 @@ function retrofitLeadingGap(segments: DiarizationSegment[]): DiarizationSegment[
     firstNamed.start_time <= 0 ||
     firstNamed.start_time > LEADING_RETROFIT_MAX_SECONDS
   ) {
-    return segments
+    return { segments }
   }
   const target = firstNamed
-  return segments.map((s) => (s === target ? { ...s, start_time: 0 } : s))
+  return {
+    segments: segments.map((s) => (s === target ? { ...s, start_time: 0 } : s)),
+    retrofittedFromSeconds: target.start_time
+  }
 }
 
 /**
@@ -149,8 +163,13 @@ function suppressCoveredUnknowns(segments: DiarizationSegment[]): DiarizationSeg
  */
 export function assembleSpeakerTimeline(
   sources: TimelineSource[],
-  meetingEnd: number
-): { segments: DiarizationSegment[]; filledBySource: Partial<Record<TimelineSourceKind, number>> } {
+  meetingEnd: number,
+  options?: { botNames?: string[] }
+): {
+  segments: DiarizationSegment[]
+  filledBySource: Partial<Record<TimelineSourceKind, number>>
+  retrofittedFromSeconds?: number
+} {
   let assembled: DiarizationSegment[] = []
   const filledBySource: Partial<Record<TimelineSourceKind, number>> = {}
 
@@ -172,8 +191,13 @@ export function assembleSpeakerTimeline(
     }
   }
 
+  const { segments, retrofittedFromSeconds } = retrofitLeadingGap(
+    assembled,
+    options?.botNames
+  )
   return {
-    segments: suppressCoveredUnknowns(retrofitLeadingGap(assembled)),
-    filledBySource
+    segments: suppressCoveredUnknowns(segments),
+    filledBySource,
+    retrofittedFromSeconds
   }
 }

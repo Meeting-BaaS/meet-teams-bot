@@ -70,7 +70,11 @@ export class MeetSpeakersObserver {
         console.log("[Meet-Browser] Setting up observation - EXACT EXTENSION LOGIC")
 
         // EXACT SAME VARIABLES AS EXTENSION
-        const CUR_SPEAKERS = new Map<string, boolean>()
+        // Value is a composite of speaking state + identity metadata: the
+        // "(You)" marker and data-participant-id can render AFTER the first
+        // observation with no speaking change, and the callback must still
+        // fire so the self identity is learned immediately.
+        const CUR_SPEAKERS = new Map<string, string>()
         let checkSpeakersTimeout: NodeJS.Timeout | null = null
         let lastMutationTime = Date.now()
         let MUTATION_OBSERVER: MutationObserver | null = null
@@ -206,6 +210,8 @@ export class MeetSpeakersObserver {
                 isPresenting: boolean
                 isInMergedAudio: boolean
                 cohortId: string | null
+                deviceId?: string
+                isSelf?: boolean
               }
             >()
 
@@ -285,12 +291,35 @@ export class MeetSpeakersObserver {
                 const uniqueKey = isMergedAudio && cohortId ? `Merged audio_${cohortId}` : ariaLabel
 
                 if (!uniqueParticipants.has(uniqueKey)) {
+                  // Stable device identity when the panel exposes it
+                  // (data-participant-id = "spaces/<space>/devices/<n>", the
+                  // same id the network path logs). Carried so the UI stream
+                  // is JOINABLE with the committed stream by identity instead
+                  // of by display-name string, which differs between the
+                  // roster and the tile for the same human.
+                  const idHolder = item.hasAttribute("data-participant-id")
+                    ? item
+                    : (item.querySelector("[data-participant-id]") ??
+                      item.closest("[data-participant-id]"))
+                  const deviceId =
+                    idHolder?.getAttribute("data-participant-id") ?? undefined
+                  // Meet tags the bot's own row with a "(You)" span. This is
+                  // the only NAME-INDEPENDENT self signal: an SSO-logged-in
+                  // bot displays the Google account's name, not bot_name, so
+                  // name matching cannot identify it. (Bot browsers run an
+                  // English UI, so the literal is stable for us.)
+                  const isSelf = Array.from(item.querySelectorAll("span")).some(
+                    (el) => el.textContent?.trim() === "(You)"
+                  )
+                  if (isSelf) signalsSeen.add("self-marker")
                   uniqueParticipants.set(uniqueKey, {
                     name: ariaLabel,
                     isSpeaking: false,
                     isPresenting: false,
                     isInMergedAudio: isMergedAudio,
-                    cohortId: isMergedAudio ? cohortId : null
+                    cohortId: isMergedAudio ? cohortId : null,
+                    deviceId,
+                    isSelf
                   })
                 }
 
@@ -378,7 +407,9 @@ export class MeetSpeakersObserver {
               name: participant.name,
               id: 0,
               timestamp,
-              isSpeaking: participant.isSpeaking
+              isSpeaking: participant.isSpeaking,
+              deviceId: participant.deviceId,
+              isSelf: participant.isSelf
             }))
 
             console.log(
@@ -424,7 +455,10 @@ export class MeetSpeakersObserver {
             // currentSpeakersList = currentSpeakersList.filter((speaker) => speaker.name !== botName)
 
             const new_speakers = new Map(
-              currentSpeakersList.map((elem) => [elem.name, elem.isSpeaking])
+              currentSpeakersList.map((elem) => [
+                elem.name,
+                JSON.stringify([elem.isSpeaking, elem.deviceId ?? null, elem.isSelf === true])
+              ])
             )
 
             // Send data only when a speakers change state is detected
@@ -509,7 +543,10 @@ export class MeetSpeakersObserver {
               // )
               CUR_SPEAKERS.clear()
               allSpeakers.forEach((elem) => {
-                CUR_SPEAKERS.set(elem.name, elem.isSpeaking)
+                CUR_SPEAKERS.set(
+                  elem.name,
+                  JSON.stringify([elem.isSpeaking, elem.deviceId ?? null, elem.isSelf === true])
+                )
               })
             }
 
