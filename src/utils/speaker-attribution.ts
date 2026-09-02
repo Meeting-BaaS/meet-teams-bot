@@ -30,10 +30,16 @@ export function silenceBotSpeaker(
   botName: string | undefined,
   botCanSpeak: boolean
 ): SpeakerData[] {
-  if (botCanSpeak || !botName?.trim()) return speakers
+  if (botCanSpeak) return speakers
+  if (!botName?.trim() && !speakers.some((speaker) => speaker.isSelf === true)) {
+    return speakers
+  }
 
+  // isSelf comes from the platform's own self marker and is name-independent —
+  // it catches the SSO case where the bot displays the login account's name
+  // instead of bot_name and name matching misses it entirely.
   return speakers.map((speaker) =>
-    speaker.isSpeaking && isBotName(speaker.name, botName)
+    speaker.isSpeaking && (speaker.isSelf === true || isBotName(speaker.name, botName))
       ? { ...speaker, isSpeaking: false }
       : speaker
   )

@@ -72,3 +72,24 @@ describe("silenceBotSpeaker", () => {
     expect(result[0].isSpeaking).toBe(false)
   })
 })
+
+describe("silenceBotSpeaker self marker", () => {
+  it("silences a self-marked speaker whose displayed name is not bot_name", () => {
+    // SSO login: the bot displays the Google account's name.
+    const result = silenceBotSpeaker(
+      [{ name: "MeetingBaaS's Notetaker", id: 0, timestamp: 1, isSpeaking: true, isSelf: true }],
+      "Amr's Notetaker",
+      false
+    )
+    expect(result[0].isSpeaking).toBe(false)
+  })
+
+  it("keeps a self-marked voice agent speaking", () => {
+    const result = silenceBotSpeaker(
+      [{ name: "Voice Agent", id: 0, timestamp: 1, isSpeaking: true, isSelf: true }],
+      "Voice Agent",
+      true
+    )
+    expect(result[0].isSpeaking).toBe(true)
+  })
+})

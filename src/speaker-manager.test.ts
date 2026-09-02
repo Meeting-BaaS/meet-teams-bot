@@ -366,6 +366,38 @@ describe("SpeakerManager network updates after fallback", () => {
     expect(segments).toEqual([{ speaker: "X", user_id: 0, start_time: 10, end_time: 130 }])
   })
 
+  it("silences a self-marked speaker even when its displayed name is not bot_name (SSO ghost)", async () => {
+    const manager = SpeakerManager.getInstance()
+    const T0 = 1785941000000
+
+    // SSO case: the bot displays the Google account's name, not bot_name
+    // ("Amr's Notetaker" configured, "MeetingBaaS's Notetaker" displayed).
+    // Unmuted bridge, Meet falsely lights the bot's tile at join.
+    await manager.handleUiBridgeUpdate([
+      {
+        name: "MeetingBaaS's Notetaker",
+        id: 0,
+        timestamp: T0 + 2_000,
+        isSpeaking: true,
+        isSelf: true
+      }
+    ])
+    expect(registeredSpeakers).toEqual([])
+
+    // Muted path: the shadow buffer must silence it too.
+    ;(manager as any).networkSpeakerActive = true
+    await manager.handleUiBridgeUpdate([
+      {
+        name: "MeetingBaaS's Notetaker",
+        id: 0,
+        timestamp: T0 + 10_000,
+        isSpeaking: true,
+        isSelf: true
+      }
+    ])
+    expect(manager.buildUiFallbackSegments(T0, T0 + 60_000)).toEqual([])
+  })
+
   it("gives a UI speaker the id the network already assigned to that name", async () => {
     const manager = SpeakerManager.getInstance()
 

@@ -207,6 +207,7 @@ export class MeetSpeakersObserver {
                 isInMergedAudio: boolean
                 cohortId: string | null
                 deviceId?: string
+                isSelf?: boolean
               }
             >()
 
@@ -298,13 +299,23 @@ export class MeetSpeakersObserver {
                       item.closest("[data-participant-id]"))
                   const deviceId =
                     idHolder?.getAttribute("data-participant-id") ?? undefined
+                  // Meet tags the bot's own row with a "(You)" span. This is
+                  // the only NAME-INDEPENDENT self signal: an SSO-logged-in
+                  // bot displays the Google account's name, not bot_name, so
+                  // name matching cannot identify it. (Bot browsers run an
+                  // English UI, so the literal is stable for us.)
+                  const isSelf = Array.from(item.querySelectorAll("span")).some(
+                    (el) => el.textContent?.trim() === "(You)"
+                  )
+                  if (isSelf) signalsSeen.add("self-marker")
                   uniqueParticipants.set(uniqueKey, {
                     name: ariaLabel,
                     isSpeaking: false,
                     isPresenting: false,
                     isInMergedAudio: isMergedAudio,
                     cohortId: isMergedAudio ? cohortId : null,
-                    deviceId
+                    deviceId,
+                    isSelf
                   })
                 }
 
@@ -393,7 +404,8 @@ export class MeetSpeakersObserver {
               id: 0,
               timestamp,
               isSpeaking: participant.isSpeaking,
-              deviceId: participant.deviceId
+              deviceId: participant.deviceId,
+              isSelf: participant.isSelf
             }))
 
             console.log(
