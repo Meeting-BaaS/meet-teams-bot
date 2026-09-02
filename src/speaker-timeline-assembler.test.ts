@@ -199,12 +199,30 @@ describe("assembleSpeakerTimeline bot exclusion", () => {
         }
       ],
       100,
-      { botName: "MeetingBaaS's Notetaker" }
+      { botNames: ["MeetingBaaS's Notetaker"] }
     )
     expect(retrofittedFromSeconds).toBe(30)
     expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
     expect(segments.find((s) => s.speaker === "MeetingBaaS's Notetaker")).toEqual(
       seg("MeetingBaaS's Notetaker", 7, 14)
     )
+  })
+})
+
+describe("assembleSpeakerTimeline multi-name bot exclusion", () => {
+  it("excludes the learned displayed name even when it differs from bot_name", () => {
+    // SSO: configured "Amr's Notetaker", displayed "MeetingBaaS's Notetaker".
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "network",
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+        }
+      ],
+      100,
+      { botNames: ["Amr's Notetaker", "MeetingBaaS's Notetaker"] }
+    )
+    expect(retrofittedFromSeconds).toBe(30)
+    expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
   })
 })

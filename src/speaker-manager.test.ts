@@ -428,3 +428,57 @@ describe("SpeakerManager network updates after fallback", () => {
     expect(captured[1].id).toBe(0)
   })
 })
+
+describe("SpeakerManager learned self identity (SSO)", () => {
+  beforeEach(() => {
+    registeredSpeakers.length = 0
+    registeredParticipants.length = 0
+    params = { bot_name: "SPEAKER SEP Test", streaming_input: undefined }
+    networkInterceptionFailed = false
+    diarizationFallbackTriggered = false
+    rearmedNetworkDiarization = false
+    ;(SpeakerManager as unknown as { instance: SpeakerManager | null }).instance = null
+    jest.spyOn(console, "table").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it("silences the bot's NETWORK events once the UI self marker taught its identity", async () => {
+    const manager = SpeakerManager.getInstance()
+    const T0 = 1785941000000
+
+    // UI observer sees the self row: displayed name + device id, neither
+    // matching bot_name ("SPEAKER SEP Test").
+    await manager.handleUiBridgeUpdate([
+      {
+        name: "MeetingBaaS's Notetaker",
+        id: 0,
+        timestamp: T0 + 2_000,
+        isSpeaking: false,
+        isSelf: true,
+        deviceId: "spaces/x/devices/325"
+      }
+    ])
+
+    // Network path then reports the bot's own device as speaking (no isSelf
+    // on network events). Must be silenced by the learned identity.
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("MeetingBaaS's Notetaker", true, "spaces/x/devices/325")],
+      T0 + 5_000
+    )
+    expect(registeredSpeakers).toEqual([])
+
+    // Learned displayed name alone (different device) is silenced too.
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("MeetingBaaS's Notetaker", true, "spaces/x/devices/999")],
+      T0 + 6_000
+    )
+    expect(registeredSpeakers).toEqual([])
+
+    // Humans unaffected.
+    await manager.handleNetworkSpeakerUpdate([networkUser("Amr El Shimy", true, "d1")], T0 + 7_000)
+    expect(registeredSpeakers).toEqual(["Amr El Shimy"])
+  })
+})

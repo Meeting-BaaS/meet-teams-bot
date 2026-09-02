@@ -219,7 +219,8 @@ export class DiarizationTracker {
     resolveSpeaker?: SpeakerResolver,
     resolveUserId?: UserIdResolver,
     fallbackSources?: TimelineSource[],
-    botName?: string
+    botNames?: string[],
+    selfDeviceId?: string
   ): Promise<void> {
     if (this.isEnded) {
       return
@@ -264,11 +265,19 @@ export class DiarizationTracker {
     const { segments: assembled, filledBySource, retrofittedFromSeconds } =
       assembleSpeakerTimeline(
       [
-        { kind: "network" as const, segments: this.allSegments.map((e) => e.segment) },
+        {
+          kind: "network" as const,
+          // The bot's own device never belongs in the timeline — an SSO bot's
+          // segments carry the account's displayed name, which no bot_name
+          // exclusion can catch; the device id is canonical.
+          segments: this.allSegments
+            .filter((e) => !selfDeviceId || e.deviceId !== selfDeviceId)
+            .map((e) => e.segment)
+        },
         ...(fallbackSources ?? [])
       ],
       meetingEndRel,
-      { botName }
+      { botNames }
     )
     for (const [kind, count] of Object.entries(filledBySource)) {
       console.log(
