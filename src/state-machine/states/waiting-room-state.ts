@@ -175,6 +175,10 @@ export class WaitingRoomState extends BaseState {
           // TimeoutWaitingToStart and stops.
           MeetingEndReason.ExitingMeetingBeforeRecord,
           MeetingEndReason.BotNotAccepted,
+          // Passcode failures are deterministic for this join URL; another
+          // browser, IP, or region cannot repair missing/invalid credentials.
+          MeetingEndReason.ZoomPasscodeRequired,
+          MeetingEndReason.ZoomInvalidPasscode,
           // Registration-required webinar: the join URL server-side-redirects to
           // zoom.us/webinar/register/ for every pod/IP — retrying can never help.
           MeetingEndReason.ZoomWebinarRegistrationRequired

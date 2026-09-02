@@ -46,6 +46,7 @@ export enum MeetingEndReason {
   // SDK. Maps to the api-server's ZOOM_ANONYMOUS_JOIN_NOT_ALLOWED error code.
   ZoomAnonymousJoinNotAllowed = "zoomAnonymousJoinNotAllowed",
   ZoomPasscodeRequired = "zoomPasscodeRequired",
+  ZoomInvalidPasscode = "zoomInvalidPasscode",
   // The /wc/<id>/join URL server-side-redirected to zoom.us/webinar/register/… :
   // the webinar requires per-registrant registration (name+email → personal tk=
   // link), so an anonymous join can never succeed from any pod/IP. Terminal.
@@ -104,6 +105,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "This Zoom meeting rejected the recording bot because it joined anonymously — the host's account blocks anonymous/automated browser joins. We recommend recording it via Zoom RTMS (or the native SDK with a user-authorized credential)."
     case MeetingEndReason.ZoomPasscodeRequired:
       return "Zoom meeting requires a passcode that was not supplied in the meeting URL (?pwd=)."
+    case MeetingEndReason.ZoomInvalidPasscode:
+      return "Zoom rejected the passcode supplied in the meeting URL. Use a join link containing the current passcode."
     case MeetingEndReason.ZoomWebinarRegistrationRequired:
       return "This Zoom webinar requires registration: Zoom redirected the join URL to its registration page, so the bot cannot join anonymously. Register the bot first and use the personalized join link (tk=) from the confirmation, or disable required registration for the webinar."
     case MeetingEndReason.TeamsLoginFailedInvalidCredentials:

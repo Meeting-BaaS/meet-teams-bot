@@ -19,6 +19,7 @@ describe("Zoom join failure evidence", () => {
     MeetingEndReason.LoginRequired,
     MeetingEndReason.InvalidMeetingUrl,
     MeetingEndReason.ZoomPasscodeRequired,
+    MeetingEndReason.ZoomInvalidPasscode,
     MeetingEndReason.ZoomWebinarRegistrationRequired
   ])("keeps a later deterministic outcome %s", (latestReason) => {
     expect(resolveZoomJoinFailureReason(wall, latestReason)).toBe(latestReason)
