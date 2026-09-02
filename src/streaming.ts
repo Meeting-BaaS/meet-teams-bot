@@ -60,6 +60,13 @@ export class Streaming {
   private lastWsNotReadyLogTime = 0
   private readonly WS_NOT_READY_LOG_INTERVAL_MS: number = 10000 // Log at most every 10 seconds
 
+  // Input WebSocket reconnection with exponential backoff (mirrors the output
+  // socket. Without it, a dropped input connection (e.g. the client's app
+  // restarting) is never re-established while the output socket recovers.)
+  private isInputReconnecting = false
+  private inputReconnectAttempts = 0
+  private inputReconnectTimeoutId: NodeJS.Timeout | null = null
+
   // Fixed-size output buffer (accumulates Int16 into consistent chunks)
   private static readonly OUTPUT_CHUNK_MS = 100 // 100ms chunks
   private outputBuffer: Int16Array | null = null
@@ -391,20 +398,83 @@ export class Streaming {
    */
   private setupExternalInputWS(): void {
     try {
+      console.log(`[Streaming] Connecting to external input WebSocket: ${this.inputUrl}`)
       this.input_ws = new WebSocket(this.inputUrl!)
 
       this.input_ws.on("open", () => {
         console.log("[Streaming] External input WebSocket connected")
+        // Reset reconnection state on successful connection
+        this.isInputReconnecting = false
+        this.inputReconnectAttempts = 0
       })
 
       this.input_ws.on("error", (err: Error) => {
         console.error("[Streaming] External input WebSocket error:", formatError(err))
+        this.scheduleInputReconnect()
+      })
+
+      this.input_ws.on("close", () => {
+        console.log("[Streaming] External input WebSocket closed")
+        if (this.isInitialized) {
+          this.scheduleInputReconnect()
+        }
       })
 
       this.play_incoming_audio_chunks(this.input_ws)
     } catch (error) {
       console.error("[Streaming] Failed to setup external input WebSocket:", formatError(error))
+      this.scheduleInputReconnect()
     }
+  }
+
+  /**
+   * Schedule input WebSocket reconnection with exponential backoff.
+   * Mirrors the output-socket reconnect so a dropped input connection is
+   * re-established (e.g. after the client's app restarts). Max delay is
+   * 1 minute between attempts.
+   */
+  private scheduleInputReconnect(): void {
+    if (!this.isInitialized || !this.inputUrl) return
+    if (this.isInputReconnecting) return
+
+    if (
+      this.input_ws &&
+      (this.input_ws.readyState === WebSocket.OPEN ||
+        this.input_ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return
+    }
+
+    this.isInputReconnecting = true
+    this.inputReconnectAttempts++
+
+    const delay = Math.min(
+      this.INITIAL_RECONNECT_DELAY_MS * 2 ** (this.inputReconnectAttempts - 1),
+      this.MAX_RECONNECT_DELAY_MS
+    )
+
+    console.log(
+      `[Streaming] Scheduling input WebSocket reconnection attempt ${this.inputReconnectAttempts} in ${(delay / 1000).toFixed(1)}s`
+    )
+
+    if (this.inputReconnectTimeoutId) {
+      clearTimeout(this.inputReconnectTimeoutId)
+    }
+
+    this.inputReconnectTimeoutId = setTimeout(() => {
+      this.inputReconnectTimeoutId = null
+
+      if (!this.isInitialized || !this.inputUrl) {
+        this.isInputReconnecting = false
+        return
+      }
+
+      console.log(
+        `[Streaming] Attempting input WebSocket reconnection (attempt ${this.inputReconnectAttempts})...`
+      )
+      this.isInputReconnecting = false
+      this.setupExternalInputWS()
+    }, delay)
   }
 
   /**
@@ -526,6 +596,13 @@ export class Streaming {
     this.isReconnecting = false
     this.reconnectAttempts = 0
 
+    if (this.inputReconnectTimeoutId) {
+      clearTimeout(this.inputReconnectTimeoutId)
+      this.inputReconnectTimeoutId = null
+    }
+    this.isInputReconnecting = false
+    this.inputReconnectAttempts = 0
+
     try {
       if (this.output_ws) {
         if (
@@ -646,6 +723,13 @@ export class Streaming {
           console.error("[Streaming] Error processing external audio chunk:", formatError(error))
         }
       }
+    })
+
+    // The connection is gone (clean close or after an error). End the stream
+    // so the 'end' handler in play_incoming_audio_chunks closes the FFmpeg
+    // stdin and the old process exits instead of lingering across reconnects.
+    input_ws.on("close", () => {
+      stream.push(null)
     })
 
     return stream
