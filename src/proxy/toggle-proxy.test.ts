@@ -1,4 +1,9 @@
-import { resolveProxyCountriesForAttempt, setZoomJoinHost, shouldProxy } from "./toggle-proxy"
+import {
+  resolveGeoAwareProxyTemplate,
+  resolveProxyCountriesForAttempt,
+  setZoomJoinHost,
+  shouldProxy
+} from "./toggle-proxy"
 
 // Keep country rotation deterministic. Allowlist tests remain platform-agnostic.
 jest.mock("../singleton", () => ({
@@ -10,6 +15,43 @@ jest.mock("../singleton", () => ({
 beforeEach(() => setZoomJoinHost("app.zoom.us"))
 
 describe("residential proxy host selection", () => {
+  describe("legacy Decodo geo templates", () => {
+    it("adds the geo slot before the session marker", () => {
+      expect(
+        resolveGeoAwareProxyTemplate(
+          "https://user-zone-session-{SESSION}:secret@isp.decodo.com:10000"
+        )
+      ).toBe("https://user-zone{GEO}-session-{SESSION}:secret@isp.decodo.com:10000")
+    })
+
+    it("preserves an explicit geo slot", () => {
+      const template =
+        "https://user-zone{GEO}-session-{SESSION}:secret@isp.decodo.com:10000"
+      expect(resolveGeoAwareProxyTemplate(template)).toBe(template)
+    })
+
+    it("does not rewrite unknown providers or username shapes", () => {
+      expect(
+        resolveGeoAwareProxyTemplate(
+          "https://user-zone-session-{SESSION}:secret@proxy.example.com:10000"
+        )
+      ).toBe("https://user-zone-session-{SESSION}:secret@proxy.example.com:10000")
+      expect(resolveGeoAwareProxyTemplate("https://user:secret@isp.decodo.com:10000")).toBe(
+        "https://user:secret@isp.decodo.com:10000"
+      )
+      expect(
+        resolveGeoAwareProxyTemplate(
+          "https://user:secret-session-{SESSION}@isp.decodo.com:10000"
+        )
+      ).toBe("https://user:secret-session-{SESSION}@isp.decodo.com:10000")
+      expect(
+        resolveGeoAwareProxyTemplate(
+          "https://user-zone-session-{SESSION}:secret@evildecodo.com:10000"
+        )
+      ).toBe("https://user-zone-session-{SESSION}:secret@evildecodo.com:10000")
+    })
+  })
+
   it("advances the bot-stable country order for each join attempt", () => {
     const initial = resolveProxyCountriesForAttempt(0)
 
