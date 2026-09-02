@@ -90,10 +90,10 @@ describe("assembleSpeakerTimeline", () => {
     // Prod case 8db02fee: first utterance ("Grazie.") at 6.1s, first
     // diarization segment much later — the greeting surfaced as Unknown.
     const { segments } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Stefano", 144, 300), seg("Elisa", 300, 400)] }],
+      [{ kind: "network", segments: [seg("Opener", 144, 300), seg("Guest", 300, 400)] }],
       400
     )
-    expect(segments[0]).toEqual(seg("Stefano", 0, 300))
+    expect(segments[0]).toEqual(seg("Opener", 0, 300))
   })
 
   it("does not retrofit past the cap — a first segment that late means something broke", () => {
@@ -172,7 +172,7 @@ describe("assembleSpeakerTimeline", () => {
 describe("assembleSpeakerTimeline retrofit reporting", () => {
   it("reports the original start the retrofit stretched from", () => {
     const { retrofittedFromSeconds } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Stefano", 144, 300)] }],
+      [{ kind: "network", segments: [seg("Opener", 144, 300)] }],
       300
     )
     expect(retrofittedFromSeconds).toBe(144)
