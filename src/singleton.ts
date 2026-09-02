@@ -102,6 +102,17 @@ class Global {
     return this.meetingParams
   }
 
+  /**
+   * True when get() will not throw.
+   *
+   * Exists for logging paths that run on shutdown, where params may never have
+   * been set because the bot failed before initialization. A log line is not
+   * worth an exception — see logStats() in proxy/toggle-proxy.ts.
+   */
+  public hasParams(): boolean {
+    return this.meetingParams !== null
+  }
+
   public isServerless(): boolean {
     if (this.meetingParams === null) {
       throw new Error("Meeting params are not set")

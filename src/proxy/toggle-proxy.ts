@@ -293,12 +293,32 @@ function logStats(label: string): void {
 
   // trgTx + trgRx = bytes over the Decodo residential link — matches dashboard billing
   const ipSuffix = exitIp ? ` | exit IP: ${exitIp}` : ""
+
+  // Two fields exist purely so the Decodo cost dashboard can be correct, and
+  // both were added after the dashboard was found to be wrong:
+  //
+  // platform — the shutdown line previously carried no platform, so "which
+  // platform is burning residential bandwidth" could only be answered by
+  // joining this line to the sqs-consumer's "Launching bot <uuid> for
+  // platform: <p>" line on the pod name. That join loses every bot whose
+  // launch fell outside the dashboard's time window (measured: ~50% of rows
+  // over a 20-minute window), and it does not scale — the per-pod series count
+  // blows past Loki's instant-query series limit past about three hours.
+  //
+  // billedBytes — the human-readable total goes through formatBytes, which
+  // switches between B, KB and MB. Any query that regexes for a fixed unit
+  // silently drops the other two: the old panel matched ` MB` only and
+  // therefore ignored 1,236 of 4,527 sessions in a 24-hour window. A raw
+  // integer has no unit to get wrong.
+  const platform = GLOBAL.hasParams() ? GLOBAL.get().meeting_platform : "unknown"
   console.log(
     `[ToggleProxy] 📊 ${label} | ` +
+      `platform: ${platform} | ` +
       `proxied connections: ${count} | ` +
       `→ Decodo: ${formatBytes(trgTx)} | ` +
       `← Decodo: ${formatBytes(trgRx)} | ` +
-      `total (Decodo billed): ${formatBytes(trgTx + trgRx)}` +
+      `total (Decodo billed): ${formatBytes(trgTx + trgRx)} | ` +
+      `billedBytes: ${trgTx + trgRx}` +
       ipSuffix
   )
   // Per-host breakdown. Without this the total is unactionable: it cannot tell
