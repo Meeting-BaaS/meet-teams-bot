@@ -725,6 +725,13 @@ export class Streaming {
       }
     })
 
+    // The connection is gone (clean close or after an error). End the stream
+    // so the 'end' handler in play_incoming_audio_chunks closes the FFmpeg
+    // stdin and the old process exits instead of lingering across reconnects.
+    input_ws.on("close", () => {
+      stream.push(null)
+    })
+
     return stream
   }
 
