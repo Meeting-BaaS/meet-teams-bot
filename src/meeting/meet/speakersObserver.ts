@@ -206,6 +206,7 @@ export class MeetSpeakersObserver {
                 isPresenting: boolean
                 isInMergedAudio: boolean
                 cohortId: string | null
+                deviceId?: string
               }
             >()
 
@@ -285,12 +286,25 @@ export class MeetSpeakersObserver {
                 const uniqueKey = isMergedAudio && cohortId ? `Merged audio_${cohortId}` : ariaLabel
 
                 if (!uniqueParticipants.has(uniqueKey)) {
+                  // Stable device identity when the panel exposes it
+                  // (data-participant-id = "spaces/<space>/devices/<n>", the
+                  // same id the network path logs). Carried so the UI stream
+                  // is JOINABLE with the committed stream by identity instead
+                  // of by display-name string, which differs between the
+                  // roster and the tile for the same human.
+                  const idHolder = item.hasAttribute("data-participant-id")
+                    ? item
+                    : (item.querySelector("[data-participant-id]") ??
+                      item.closest("[data-participant-id]"))
+                  const deviceId =
+                    idHolder?.getAttribute("data-participant-id") ?? undefined
                   uniqueParticipants.set(uniqueKey, {
                     name: ariaLabel,
                     isSpeaking: false,
                     isPresenting: false,
                     isInMergedAudio: isMergedAudio,
-                    cohortId: isMergedAudio ? cohortId : null
+                    cohortId: isMergedAudio ? cohortId : null,
+                    deviceId
                   })
                 }
 
@@ -378,7 +392,8 @@ export class MeetSpeakersObserver {
               name: participant.name,
               id: 0,
               timestamp,
-              isSpeaking: participant.isSpeaking
+              isSpeaking: participant.isSpeaking,
+              deviceId: participant.deviceId
             }))
 
             console.log(
