@@ -70,7 +70,11 @@ export class MeetSpeakersObserver {
         console.log("[Meet-Browser] Setting up observation - EXACT EXTENSION LOGIC")
 
         // EXACT SAME VARIABLES AS EXTENSION
-        const CUR_SPEAKERS = new Map<string, boolean>()
+        // Value is a composite of speaking state + identity metadata: the
+        // "(You)" marker and data-participant-id can render AFTER the first
+        // observation with no speaking change, and the callback must still
+        // fire so the self identity is learned immediately.
+        const CUR_SPEAKERS = new Map<string, string>()
         let checkSpeakersTimeout: NodeJS.Timeout | null = null
         let lastMutationTime = Date.now()
         let MUTATION_OBSERVER: MutationObserver | null = null
@@ -451,7 +455,10 @@ export class MeetSpeakersObserver {
             // currentSpeakersList = currentSpeakersList.filter((speaker) => speaker.name !== botName)
 
             const new_speakers = new Map(
-              currentSpeakersList.map((elem) => [elem.name, elem.isSpeaking])
+              currentSpeakersList.map((elem) => [
+                elem.name,
+                JSON.stringify([elem.isSpeaking, elem.deviceId ?? null, elem.isSelf === true])
+              ])
             )
 
             // Send data only when a speakers change state is detected
@@ -536,7 +543,10 @@ export class MeetSpeakersObserver {
               // )
               CUR_SPEAKERS.clear()
               allSpeakers.forEach((elem) => {
-                CUR_SPEAKERS.set(elem.name, elem.isSpeaking)
+                CUR_SPEAKERS.set(
+                  elem.name,
+                  JSON.stringify([elem.isSpeaking, elem.deviceId ?? null, elem.isSelf === true])
+                )
               })
             }
 
