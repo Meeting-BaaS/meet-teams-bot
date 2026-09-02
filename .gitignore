@@ -47,3 +47,6 @@ buildInfo.json
 # node_modules can be a symlink in worktrees; ignore the bare name too (the
 # trailing-slash pattern above only matches real directories).
 node_modules
+
+# Local Zoom run config (bot.config.json is the tracked template)
+bot.config.zoom.json
