@@ -9,6 +9,7 @@ import type { ConnectionStats } from "proxy-chain"
 import { Server } from "proxy-chain"
 import { envVars } from "../config/env-vars"
 import { GLOBAL } from "../singleton"
+import { rotateCountriesForAttempt } from "./country-rotation"
 
 // Hosts that route through the residential upstream. Everything else goes
 // direct from the pod IP.
@@ -193,6 +194,11 @@ export function resolveProxyCountries(): string[] {
   return rotateByBot(DEFAULT_PROXY_COUNTRIES)
 }
 
+/** Bot-stable country order, advanced for this specific join attempt. */
+export function resolveProxyCountriesForAttempt(countryOffset = 0): string[] {
+  return rotateCountriesForAttempt(resolveProxyCountries(), countryOffset)
+}
+
 /**
  * Spread a multi-region pin across the team's selected regions instead of
  * funneling every bot through the first entry. When a customer batch-launches
@@ -215,8 +221,9 @@ function rotateByBot(countries: string[]): string[] {
 }
 
 /** First selected region not yet tried this attempt, or "" if none remain. */
-function pickProxyCountry(exclude: readonly string[]): string {
-  return resolveProxyCountries().find((c) => !exclude.includes(c)) ?? ""
+function pickProxyCountry(exclude: readonly string[], countryOffset = 0): string {
+  const countries = resolveProxyCountriesForAttempt(countryOffset)
+  return countries.find((c) => !exclude.includes(c)) ?? ""
 }
 
 function inferProxyProvider(): string {
@@ -334,10 +341,9 @@ export async function startToggleProxy(
   sessionId: string,
   retryCount = 0,
   sessionSuffix = "",
-  // Internal recursion state (not passed by external callers): skipGeoPin drops
-  // pinning entirely; triedCountries are the selected regions already attempted
-  // this join, so an outage falls through to the next selected region.
-  opts: { skipGeoPin?: boolean; triedCountries?: string[] } = {}
+  // countryOffset selects a different first region for each Zoom join attempt.
+  // skipGeoPin and triedCountries carry internal regional-outage recursion state.
+  opts: { skipGeoPin?: boolean; triedCountries?: string[]; countryOffset?: number } = {}
 ): Promise<string | null> {
   if (!envVars.RESIDENTIAL_PROXY_TEMPLATE) {
     currentSessionId = null
@@ -365,7 +371,10 @@ export async function startToggleProxy(
   // Treat as unpinned up front so a failed probe below falls straight through
   // to "give up", not a country-by-country retry loop that can't ever help.
   const hasGeoPlaceholder = envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")
-  const country = opts.skipGeoPin || !hasGeoPlaceholder ? "" : pickProxyCountry(opts.triedCountries ?? [])
+  const country =
+    opts.skipGeoPin || !hasGeoPlaceholder
+      ? ""
+      : pickProxyCountry(opts.triedCountries ?? [], opts.countryOffset)
   const geoParam = country ? `-country-${country}` : ""
   const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session).replaceAll(
     "{GEO}",
@@ -460,12 +469,15 @@ export async function startToggleProxy(
       // Terminates: each step either adds to triedCountries or sets skipGeoPin.
       if (country) {
         const tried = [...(opts.triedCountries ?? []), country]
-        const nextCountry = pickProxyCountry(tried)
+        const nextCountry = pickProxyCountry(tried, opts.countryOffset)
         if (nextCountry) {
           console.warn(
             `[ToggleProxy] region ${country} exit unreachable — trying next selected region ${nextCountry}`
           )
-          return startToggleProxy(sessionId, retryCount, sessionSuffix, { triedCountries: tried })
+          return startToggleProxy(sessionId, retryCount, sessionSuffix, {
+            triedCountries: tried,
+            countryOffset: opts.countryOffset
+          })
         }
         console.warn(
           "[ToggleProxy] all selected regions unreachable — retrying without a region pin"

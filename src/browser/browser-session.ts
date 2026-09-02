@@ -1,6 +1,7 @@
 import { execFile } from "child_process"
 import type { BrowserContext } from "@playwright/test"
 import { fetchBurnedAsns, isBurnedExit } from "../api/methods"
+import { getZoomJoinAttemptIndex } from "../proxy/country-rotation"
 import {
   getExitAsn,
   getExitGeo,
@@ -10,7 +11,7 @@ import {
 } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
-import { MAX_RETRY_COUNT } from "../config/retry-config"
+import { IN_PROCESS_RETRY_MAX, MAX_RETRY_COUNT } from "../config/retry-config"
 import { formatError } from "../utils/Logger"
 import { openBrowser } from "./browser"
 
@@ -55,10 +56,14 @@ type BrowserSession = { proxyUrl?: string; browserContext?: BrowserContext }
  */
 export async function establishBrowserSession(
   session: BrowserSession,
-  opts: { sessionSuffix?: string } = {}
+  opts: { sessionSuffix?: string; inProcessAttempt?: number } = {}
 ): Promise<void> {
   const platform = GLOBAL.get().meeting_platform
   const retryCount = GLOBAL.getRetryCount()
+  const countryOffset =
+    platform === "zoom"
+      ? getZoomJoinAttemptIndex(retryCount, opts.inProcessAttempt ?? 0, IN_PROCESS_RETRY_MAX + 1)
+      : 0
 
   if (!session.proxyUrl && (platform === "meet" || platform === "zoom")) {
     // On the last retry, Meet used to run WITHOUT a proxy — but a datacenter/pod
@@ -81,7 +86,8 @@ export async function establishBrowserSession(
       const proxyUrl = await startToggleProxy(
         GLOBAL.get().bot_uuid,
         retryCount,
-        opts.sessionSuffix
+        opts.sessionSuffix,
+        { countryOffset }
       )
       if (proxyUrl) session.proxyUrl = proxyUrl
 

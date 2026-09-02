@@ -287,9 +287,12 @@ export class WaitingRoomState extends BaseState {
         // doesn't leak into the next join or the final wasRecordingSuccessful check.
         GLOBAL.resetErrorState()
         // Recycle browser + proxy onto a new Decodo session id (suffix "x<n>") →
-        // a different residential exit IP for the next launch.
+        // the next configured region and a different residential exit IP.
         await teardownBrowserSession(this.context)
-        await establishBrowserSession(this.context, { sessionSuffix: `x${attempt + 1}` })
+        await establishBrowserSession(this.context, {
+          sessionSuffix: `x${attempt + 1}`,
+          inProcessAttempt: attempt + 1
+        })
       }
     }
   }

@@ -1,8 +1,6 @@
-import { setZoomJoinHost, shouldProxy } from "./toggle-proxy"
+import { resolveProxyCountriesForAttempt, setZoomJoinHost, shouldProxy } from "./toggle-proxy"
 
-// toggle-proxy pulls in the singleton for the geo/rotation helpers. Nothing
-// under test reads it — the allowlist is a flat constant, not platform-scoped —
-// but the import has to resolve.
+// Keep country rotation deterministic. Allowlist tests remain platform-agnostic.
 jest.mock("../singleton", () => ({
   GLOBAL: { get: () => ({ bot_uuid: "test-bot", proxy_countries: [] }) }
 }))
@@ -12,6 +10,13 @@ jest.mock("../singleton", () => ({
 beforeEach(() => setZoomJoinHost("app.zoom.us"))
 
 describe("residential proxy host selection", () => {
+  it("advances the bot-stable country order for each join attempt", () => {
+    const initial = resolveProxyCountriesForAttempt(0)
+
+    expect(resolveProxyCountriesForAttempt(1)).toEqual([...initial.slice(1), initial[0]])
+    expect(resolveProxyCountriesForAttempt(initial.length)).toEqual(initial)
+  })
+
   describe("zoom", () => {
     it("proxies the hosts that make the join decision", () => {
       expect(shouldProxy("app.zoom.us")).toBe(true)
