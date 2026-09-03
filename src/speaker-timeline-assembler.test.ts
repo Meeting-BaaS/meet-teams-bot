@@ -243,11 +243,12 @@ describe("assembleSpeakerTimeline retrofit cap", () => {
 
 describe("assembleSpeakerTimeline retrofit cap boundary", () => {
   it("retrofits a first segment opening exactly at the cap", () => {
-    const { retrofittedFromSeconds } = assembleSpeakerTimeline(
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
       [{ kind: "network", segments: [seg("Opener", LEADING_RETROFIT_MAX_SECONDS, 60)] }],
       60
     )
     expect(retrofittedFromSeconds).toBe(LEADING_RETROFIT_MAX_SECONDS)
+    expect(segments[0]?.start_time).toBe(0)
   })
 
   it("does not retrofit a first segment opening just past the cap", () => {
