@@ -161,6 +161,17 @@ class Global {
     console.log(`🔴 End reason set to: ${this.endReason}`)
   }
 
+  /**
+   * Replace an existing error even when its reason is normally protected from
+   * cleanup-time overrides. Use only when stronger evidence resolves the final
+   * failure reason; ordinary callers must keep using setError().
+   */
+  public replaceError(reason: MeetingEndReason, message?: string): void {
+    this.endReason = null
+    this.errorMessage = null
+    this.setError(reason, message)
+  }
+
   public setEndReason(reason: MeetingEndReason): void {
     console.log(`🔵 Setting global end reason: ${reason}`)
     this.endReason = reason

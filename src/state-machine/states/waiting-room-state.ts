@@ -6,6 +6,7 @@ import {
 } from "../../browser/browser-session"
 import { IN_PROCESS_RETRY_MAX } from "../../config/retry-config"
 import { Events } from "../../events"
+import { resolveZoomJoinFailureReason } from "../../meeting/zoom-join-failure"
 import { ScreenRecorderManager } from "../../recording/ScreenRecorder"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import { GLOBAL } from "../../singleton"
@@ -174,6 +175,10 @@ export class WaitingRoomState extends BaseState {
           // TimeoutWaitingToStart and stops.
           MeetingEndReason.ExitingMeetingBeforeRecord,
           MeetingEndReason.BotNotAccepted,
+          // Passcode failures are deterministic for this join URL; another
+          // browser, IP, or region cannot repair missing/invalid credentials.
+          MeetingEndReason.ZoomPasscodeRequired,
+          MeetingEndReason.ZoomInvalidPasscode,
           // Registration-required webinar: the join URL server-side-redirects to
           // zoom.us/webinar/register/ for every pod/IP — retrying can never help.
           MeetingEndReason.ZoomWebinarRegistrationRequired
@@ -225,6 +230,19 @@ export class WaitingRoomState extends BaseState {
   private async joinWithInProcessRetry(meetingLink: string): Promise<void> {
     const isZoom = GLOBAL.get().meeting_platform === "zoom"
     const maxInProc = isZoom ? IN_PROCESS_RETRY_MAX : 0
+    let confirmedBotWall: MeetingEndReason.ZoomAnonymousJoinNotAllowed | null = null
+
+    const restoreConfirmedBotWall = (): void => {
+      const latestReason = GLOBAL.getEndReason()
+      const resolvedReason = resolveZoomJoinFailureReason(confirmedBotWall, latestReason)
+      if (resolvedReason === confirmedBotWall && resolvedReason !== latestReason) {
+        console.warn(
+          `[Zoom] Preserving confirmed ${resolvedReason} over later ${latestReason ?? "unknown"} failure`
+        )
+        GLOBAL.replaceError(resolvedReason)
+        GLOBAL.setShouldRetry(true)
+      }
+    }
 
     for (let attempt = 0; ; attempt++) {
       try {
@@ -273,12 +291,18 @@ export class WaitingRoomState extends BaseState {
         return
       } catch (error) {
         const reason = GLOBAL.getEndReason()
+        if (reason === MeetingEndReason.ZoomAnonymousJoinNotAllowed) {
+          confirmedBotWall = reason
+        }
         // Only the IP-reputation wall is worth an in-process relaunch; every other
         // reason (invalid URL, host denial, passcode, timeout) is not IP-keyed and
         // must fall through to the outer catch → SQS requeue / terminal failure.
         const canInProcessRetry =
           attempt < maxInProc && reason === MeetingEndReason.ZoomAnonymousJoinNotAllowed
-        if (!canInProcessRetry) throw error
+        if (!canInProcessRetry) {
+          restoreConfirmedBotWall()
+          throw error
+        }
 
         console.log(
           `[Zoom] Anti-bot wall (${reason}) — in-process retry ${attempt + 1}/${maxInProc} on a fresh exit IP`
@@ -288,11 +312,16 @@ export class WaitingRoomState extends BaseState {
         GLOBAL.resetErrorState()
         // Recycle browser + proxy onto a new Decodo session id (suffix "x<n>") →
         // the next configured region and a different residential exit IP.
-        await teardownBrowserSession(this.context)
-        await establishBrowserSession(this.context, {
-          sessionSuffix: `x${attempt + 1}`,
-          inProcessAttempt: attempt + 1
-        })
+        try {
+          await teardownBrowserSession(this.context)
+          await establishBrowserSession(this.context, {
+            sessionSuffix: `x${attempt + 1}`,
+            inProcessAttempt: attempt + 1
+          })
+        } catch (relaunchError) {
+          restoreConfirmedBotWall()
+          throw relaunchError
+        }
       }
     }
   }

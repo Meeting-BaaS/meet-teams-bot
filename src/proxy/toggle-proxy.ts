@@ -200,6 +200,38 @@ export function resolveProxyCountriesForAttempt(countryOffset = 0): string[] {
 }
 
 /**
+ * Older Decodo templates predate per-bot geo selection and only expose the
+ * session marker. Upgrade that known username shape in memory so deployed
+ * secrets keep working without silently disabling country rotation.
+ */
+export function resolveGeoAwareProxyTemplate(template: string): string {
+  if (!template || template.includes("{GEO}")) return template
+
+  try {
+    const hostname = new URL(template).hostname.toLowerCase()
+    if (hostname !== "decodo.com" && !hostname.endsWith(".decodo.com")) return template
+  } catch {
+    return template
+  }
+
+  const sessionMarker = "-session-{SESSION}"
+  const markerIndex = template.indexOf(sessionMarker)
+  const credentialsStart = template.indexOf("://") + 3
+  const passwordSeparator = template.indexOf(":", credentialsStart)
+  const credentialsEnd = template.lastIndexOf("@")
+  if (
+    markerIndex < credentialsStart ||
+    passwordSeparator < credentialsStart ||
+    credentialsEnd < passwordSeparator ||
+    markerIndex >= passwordSeparator
+  ) {
+    return template
+  }
+
+  return `${template.slice(0, markerIndex)}{GEO}${template.slice(markerIndex)}`
+}
+
+/**
  * Spread a multi-region pin across the team's selected regions instead of
  * funneling every bot through the first entry. When a customer batch-launches
  * hundreds of bots, all starting on regions[0] concentrates them on one
@@ -358,29 +390,27 @@ export async function startToggleProxy(
   const session = `${sessionId.replace(/-/g, "")}${retryCount}${sessionSuffix}`
 
   // Optional geo pinning. Decodo username params are dash-appended and go
-  // BEFORE `-session-`, so the template must carry a `{GEO}` placeholder there
+  // BEFORE `-session-`, so the template carries a `{GEO}` placeholder there
   // (e.g. `user-<u>{GEO}-session-{SESSION}`). Resolve the country from the
   // per-bot region the user picked in settings, falling back to the env
   // default, then to a rotated DEFAULT_PROXY_COUNTRIES candidate set (see
   // resolveProxyCountries) -- "no pinning" only happens via skipGeoPin, an
   // empty per-bot/env value no longer means unpinned. Only alpha-2 letters
   // are accepted so a bad value can't corrupt the auth string.
-  // Without a {GEO} placeholder, every country produces the identical
-  // upstreamUrl -- cycling countries on failure would just re-probe the same
-  // dead endpoint N times (up to len(DEFAULT_PROXY_COUNTRIES) retries, ~45s).
-  // Treat as unpinned up front so a failed probe below falls straight through
-  // to "give up", not a country-by-country retry loop that can't ever help.
-  const hasGeoPlaceholder = envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")
+  // Legacy Decodo templates that only have `-session-{SESSION}` are upgraded in
+  // memory. Unknown provider/template shapes remain unpinned rather than being
+  // rewritten speculatively.
+  const proxyTemplate = resolveGeoAwareProxyTemplate(envVars.RESIDENTIAL_PROXY_TEMPLATE)
+  const hasGeoPlaceholder = proxyTemplate.includes("{GEO}")
   const country =
     opts.skipGeoPin || !hasGeoPlaceholder
       ? ""
       : pickProxyCountry(opts.triedCountries ?? [], opts.countryOffset)
   const geoParam = country ? `-country-${country}` : ""
-  const upstreamUrl = envVars.RESIDENTIAL_PROXY_TEMPLATE.replaceAll("{SESSION}", session).replaceAll(
-    "{GEO}",
-    geoParam
-  )
-  if (country && envVars.RESIDENTIAL_PROXY_TEMPLATE.includes("{GEO}")) {
+  const upstreamUrl = proxyTemplate
+    .replaceAll("{SESSION}", session)
+    .replaceAll("{GEO}", geoParam)
+  if (country && hasGeoPlaceholder) {
     console.log(`[ToggleProxy] 🌍 Pinning residential exit to country: ${country}`)
   }
   currentSessionId = session

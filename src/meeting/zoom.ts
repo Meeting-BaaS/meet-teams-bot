@@ -5,7 +5,7 @@ import { listenPage } from "../browser/page-logger"
 import { setZoomJoinHost } from "../proxy/toggle-proxy"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
-import { MeetingEndReason } from "../state-machine/types"
+import { getErrorMessageFromCode, MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import {
   buildZoomWebClientUrl,
@@ -17,6 +17,12 @@ import { formatError } from "../utils/Logger"
 import { createStateDetector } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { getZoomEntryMessageSentAt } from "./zoom/entry-message-timing"
+import {
+  classifyZoomPasscodeFailure,
+  type ZoomPasscodeDomState,
+  type ZoomPasscodeFailureReason,
+  ZOOM_INVALID_PASSCODE_PATTERN
+} from "./zoom-passcode"
 import { ZOOM_STATE_CONFIG } from "./zoom-state-config"
 
 // Zoom Web Client selectors (verified against the live DOM). Two client variants
@@ -34,7 +40,7 @@ const LEAVE_BUTTON = 'button[aria-label="Leave"]'
 const LEAVE_CONFIRM = "button.leave-meeting-options__btn--danger"
 const PERMISSION_DISMISS = 'button:has-text("Continue without microphone and camera")'
 const PASSCODE_INPUT =
-  'input[placeholder*="passcode" i], input[placeholder*="password" i], input[type="password"]'
+  '#input-for-pwd, #input-for-passcode, #inputpasscode, #inputpwd, input[placeholder*="passcode" i], input[placeholder*="password" i], input[type="password"]'
 
 // Post-Join anti-bot wall phrases — scanned case-insensitively against body text.
 //
@@ -350,18 +356,27 @@ export class ZoomProvider implements MeetingProviderInterface {
       throw new Error("[Zoom] Pre-join name input never appeared")
     }
 
-    // Passcode: usually auto-applied from ?pwd= in the URL. If a passcode field
-    // is still visible, fill from the cached value, else fail fast (Join would
-    // stay disabled forever).
-    const passField = page.locator(PASSCODE_INPUT).first()
-    if (await passField.isVisible({ timeout: 1000 }).catch(() => false)) {
-      if (this.passcode) {
-        await passField.fill(this.passcode)
-        console.log("[Zoom] Filled passcode field")
-      } else {
-        GLOBAL.setError(MeetingEndReason.ZoomPasscodeRequired)
-        throw new Error("[Zoom] zoom_passcode_required: passcode field present, none supplied")
-      }
+    // A visible CAPTCHA takes priority over a coexisting passcode field: it is
+    // IP-reputation-driven and may clear on a regional retry.
+    const initialWall = await this.detectBotWall(page)
+    if (initialWall) {
+      GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
+      throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${initialWall}`)
+    }
+
+    // Zoom can render its passcode form while Firefox reports the input as not
+    // visible/actionable. Read raw DOM state instead of using isVisible(), then
+    // force-fill a supplied passcode or fail immediately when it is missing.
+    let passcodeState = await this.readPasscodeState(page)
+    this.throwIfPasscodeBlocked(passcodeState)
+    if (passcodeState.present && this.passcode && !passcodeState.value) {
+      await page.locator(PASSCODE_INPUT).first().fill(this.passcode, {
+        force: true,
+        timeout: 3000
+      })
+      console.log("[Zoom] Filled passcode field")
+      passcodeState = await this.readPasscodeState(page)
+      this.throwIfPasscodeBlocked(passcodeState)
     }
 
     // Name entry via REAL keyboard events. A synthetic setter/input event does
@@ -385,7 +400,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     }
 
     // Wait for Join to enable (React enables within ~1-2s of valid name).
-    await page
+    const joinEnabled = await page
       .waitForFunction(
         (sel: string) => {
           const btn = document.querySelector(sel) as HTMLButtonElement | null
@@ -394,7 +409,12 @@ export class ZoomProvider implements MeetingProviderInterface {
         JOIN_BUTTON,
         { timeout: 8000 }
       )
-      .catch(() => console.warn("[Zoom] Join still disabled after wait; attempting click anyway"))
+      .then(() => true)
+      .catch(() => false)
+    if (!joinEnabled) {
+      this.throwIfPasscodeBlocked(await this.readPasscodeState(page))
+      console.warn("[Zoom] Join still disabled after wait; attempting click anyway")
+    }
 
     // Mic: a recorder bot only RECEIVES audio, so mute it. But a bot with
     // streaming_input speaks INTO the meeting (its audio is pumped to the
@@ -473,7 +493,9 @@ export class ZoomProvider implements MeetingProviderInterface {
     console.log("[Zoom] Clicking Join (humanized mouse)...")
     let clicked = await humanClick(page, page.locator(JOIN_BUTTON).first())
     if (clicked) {
-      console.log("[Zoom] Join clicked (humanized mouse)")
+      // Mouse dispatch is not proof Zoom accepted a click: disabled buttons still
+      // receive pointer input. Admission/passcode state below confirms progress.
+      console.log("[Zoom] Join mouse input dispatched (humanized)")
     } else {
       try {
         await page.locator(JOIN_BUTTON).first().click({ force: true, timeout: 5000 })
@@ -493,7 +515,7 @@ export class ZoomProvider implements MeetingProviderInterface {
         }, JOIN_BUTTON)
         .catch(() => false)
     }
-    console.log("[Zoom] Join clicked — waiting for admission...")
+    console.log("[Zoom] Join input dispatched — waiting for admission...")
     await sleep(3000)
 
     await this.waitForAdmission(page, cancelCheck)
@@ -696,7 +718,6 @@ export class ZoomProvider implements MeetingProviderInterface {
       // at the modal until timeout.
       await this.dismissDisclaimer(page)
 
-      // Terminal anti-bot wall — can stream in a beat after Join. Non-retryable.
       // Anti-bot wall — can stream in a beat after Join. Retried on a fresh
       // exit IP (see main.ts handleFailedRecording), since the wall is
       // IP-reputation-driven rather than deterministic for this meeting.
@@ -705,6 +726,10 @@ export class ZoomProvider implements MeetingProviderInterface {
         GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
         throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
       }
+
+      // Missing/invalid passcodes leave the browser on the pre-join form. Check
+      // every poll because Zoom can show the rejection only after Join input.
+      this.throwIfPasscodeBlocked(await this.readPasscodeState(page))
 
       // Rejected / meeting ended.
       const denied = await zoomStateDetector.isDenied(page)
@@ -799,6 +824,52 @@ export class ZoomProvider implements MeetingProviderInterface {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Read Zoom's passcode form directly from DOM. Playwright visibility is not
+   * reliable for these Firefox-rendered controls; body.innerText supplies the
+   * visible rejection even when aria-describedby is missing.
+   */
+  private async readPasscodeState(page: Page): Promise<ZoomPasscodeDomState> {
+    return page
+      .evaluate(({ selector, invalidPattern }): ZoomPasscodeDomState => {
+        const field = document.querySelector(selector) as HTMLInputElement | null
+        if (!field) {
+          return { present: false, value: "", invalid: false, errorText: "" }
+        }
+
+        const describedText = (field.getAttribute("aria-describedby") || "")
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((id) => document.getElementById(id)?.textContent || "")
+          .join(" ")
+        const directError =
+          document.querySelector("#error-for-pwd, #error-for-passcode")?.textContent || ""
+        const bodyText = document.body?.innerText || ""
+        const explicitError =
+          bodyText.match(new RegExp(invalidPattern, "i"))?.[0] || ""
+
+        return {
+          present: true,
+          value: field.value || "",
+          invalid: field.getAttribute("aria-invalid") === "true",
+          errorText: [describedText, directError, explicitError].filter(Boolean).join(" ")
+        }
+      }, { selector: PASSCODE_INPUT, invalidPattern: ZOOM_INVALID_PASSCODE_PATTERN })
+      .catch(() => ({ present: false, value: "", invalid: false, errorText: "" }))
+  }
+
+  /** Route deterministic passcode failures through centralized end-reason handling. */
+  private throwIfPasscodeBlocked(state: ZoomPasscodeDomState): void {
+    const reason = classifyZoomPasscodeFailure(state, this.passcode)
+    if (!reason) return
+    this.throwPasscodeFailure(reason)
+  }
+
+  private throwPasscodeFailure(reason: ZoomPasscodeFailureReason): never {
+    GLOBAL.setError(reason)
+    throw new Error(`[Zoom] ${getErrorMessageFromCode(reason)}`)
   }
 
   /**
