@@ -32,11 +32,5 @@ export function classifyZoomPasscodeFailure(
     return MeetingEndReason.ZoomInvalidPasscode
   }
 
-  // aria-invalid is useful when Zoom omits/link-breaks its helper text. Do not
-  // treat an empty field as invalid: it may still be waiting for our force-fill.
-  if (state.invalid && state.value.trim()) {
-    return MeetingEndReason.ZoomInvalidPasscode
-  }
-
   return null
 }

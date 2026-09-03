@@ -239,7 +239,7 @@ export class WaitingRoomState extends BaseState {
         console.warn(
           `[Zoom] Preserving confirmed ${resolvedReason} over later ${latestReason ?? "unknown"} failure`
         )
-        GLOBAL.setError(resolvedReason)
+        GLOBAL.replaceError(resolvedReason)
         GLOBAL.setShouldRetry(true)
       }
     }

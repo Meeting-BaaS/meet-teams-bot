@@ -35,16 +35,19 @@ describe("Zoom passcode failure classification", () => {
     }
   )
 
-  it("uses aria-invalid when Zoom omits helper text", () => {
-    expect(
-      classifyZoomPasscodeFailure(state({ value: "redacted", invalid: true }), "redacted")
-    ).toBe(MeetingEndReason.ZoomInvalidPasscode)
-  })
-
-  it("allows a supplied passcode to be filled before classifying it", () => {
+  it("does not trust retained aria-invalid without explicit rejection text", () => {
     expect(
       classifyZoomPasscodeFailure(
-        state({ invalid: true, errorText: "Meeting passcode is required" }),
+        state({ value: "redacted", invalid: true, errorText: "Meeting passcode is required" }),
+        "redacted"
+      )
+    ).toBeNull()
+  })
+
+  it("allows a supplied passcode to be filled before validation clears", () => {
+    expect(
+      classifyZoomPasscodeFailure(
+        state({ value: "redacted", invalid: true }),
         "redacted"
       )
     ).toBeNull()
