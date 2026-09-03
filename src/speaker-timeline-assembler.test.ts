@@ -77,8 +77,8 @@ describe("assembleSpeakerTimeline", () => {
   it("never lets a fallback contribute an Unknown segment", () => {
     const { segments } = assembleSpeakerTimeline(
       [
-        { kind: "network", segments: [seg("Amr", 100, 200)] },
-        { kind: "ui", segments: [seg("Unknown", 0, 90, 0)] }
+        { kind: "network", segments: [seg("Amr", 15, 200)] },
+        { kind: "ui", segments: [seg("Unknown", 0, 12, 0)] }
       ],
       200
     )
@@ -110,7 +110,7 @@ describe("assembleSpeakerTimeline", () => {
       [
         {
           kind: "network",
-          segments: [seg("Unknown", 5, 20, 0), seg("Amr", 30, 100)]
+          segments: [seg("Unknown", 5, 15, 0), seg("Amr", 18, 100)]
         }
       ],
       100
@@ -195,13 +195,13 @@ describe("assembleSpeakerTimeline bot exclusion", () => {
       [
         {
           kind: "network",
-          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 18, 100)]
         }
       ],
       100,
       { botNames: ["MeetingBaaS's Notetaker"] }
     )
-    expect(retrofittedFromSeconds).toBe(30)
+    expect(retrofittedFromSeconds).toBe(18)
     expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
     expect(segments.find((s) => s.speaker === "MeetingBaaS's Notetaker")).toEqual(
       seg("MeetingBaaS's Notetaker", 7, 14)
@@ -216,13 +216,13 @@ describe("assembleSpeakerTimeline multi-name bot exclusion", () => {
       [
         {
           kind: "network",
-          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 18, 100)]
         }
       ],
       100,
       { botNames: ["Amr's Notetaker", "MeetingBaaS's Notetaker"] }
     )
-    expect(retrofittedFromSeconds).toBe(30)
+    expect(retrofittedFromSeconds).toBe(18)
     expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
   })
 })

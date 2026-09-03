@@ -285,13 +285,13 @@ describe("DiarizationTracker final re-assembly", () => {
     // closes the previous segment at the new event's time), so the only
     // structural hole a live meeting produces is the leading one: network's
     // first event here lands at 90s, leaving 0→90 uncovered. The muted UI
-    // observer saw Jonny speaking at 40→80 inside that window.
+    // observer saw Jonny speaking at 12→80 inside that window.
     tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 90), MEETING_START)
 
     await tracker.end(MEETING_START + 100_000, MEETING_START, undefined, undefined, [
       {
         kind: "ui",
-        segments: [{ speaker: "Jonny", user_id: 0, start_time: 40, end_time: 80 }]
+        segments: [{ speaker: "Jonny", user_id: 0, start_time: 12, end_time: 80 }]
       }
     ])
 
