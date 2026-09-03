@@ -35,3 +35,24 @@ describe("SimpleDialogObserver dismissal budget", () => {
     warn.mockRestore()
   })
 })
+
+describe("SimpleDialogObserver closure confirmation", () => {
+  class Probe2 extends SimpleDialogObserver {
+    confirm(visible: boolean) {
+      return this.confirmDismissed(
+        { isVisible: async () => visible },
+        { VISIBLE_TIMEOUT: 10, CLICK_TIMEOUT: 10, PAGE_TIMEOUT: 250 }
+      )
+    }
+  }
+
+  it("treats a dialog that stays visible after the action as not dismissed", async () => {
+    const probe = new Probe2({} as MeetingContext)
+    await expect(probe.confirm(true)).resolves.toBe(false)
+  })
+
+  it("confirms a dialog that actually went away", async () => {
+    const probe = new Probe2({} as MeetingContext)
+    await expect(probe.confirm(false)).resolves.toBe(true)
+  })
+})

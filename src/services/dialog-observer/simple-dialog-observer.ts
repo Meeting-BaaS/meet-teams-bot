@@ -149,6 +149,30 @@ export class SimpleDialogObserver {
     return this.abandonedPatterns.has(patternName)
   }
 
+  /**
+   * True once the dialog is no longer visible. Polls briefly (the dismissal
+   * animation takes a moment); a dialog still visible after that is a failed
+   * dismissal whatever the click reported.
+   */
+  protected async confirmDismissed(
+    modal: Pick<Locator, "isVisible">,
+    timeouts: DismissTimeouts
+  ): Promise<boolean> {
+    const deadline = Date.now() + Math.max(timeouts.PAGE_TIMEOUT, 500)
+    while (Date.now() < deadline) {
+      try {
+        if (!(await modal.isVisible({ timeout: timeouts.VISIBLE_TIMEOUT }))) {
+          return true
+        }
+      } catch {
+        // Detached/closed = gone.
+        return true
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    return false
+  }
+
   /** Record a failed dismissal; abandon the pattern once the budget is spent. */
   protected recordDismissFailure(patternName: string): void {
     const attempts = (this.dismissAttempts.get(patternName) ?? 0) + 1
@@ -380,6 +404,14 @@ export class SimpleDialogObserver {
               `[SimpleDialogObserver] Button click failed for ${pattern.name}, trying Escape key`
             )
             dismissed = await this.tryDismissWithEscape(page)
+          }
+
+          // A click or Escape "succeeding" only means the action ran, not that
+          // the dialog went away: Meet ignores Escape on its persistent toasts.
+          // Confirm closure, or the budget never advances and the pattern
+          // keeps starving the others.
+          if (dismissed) {
+            dismissed = await this.confirmDismissed(modal, timeouts)
           }
 
           if (dismissed) {
