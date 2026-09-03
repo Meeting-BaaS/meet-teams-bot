@@ -77,8 +77,8 @@ describe("assembleSpeakerTimeline", () => {
   it("never lets a fallback contribute an Unknown segment", () => {
     const { segments } = assembleSpeakerTimeline(
       [
-        { kind: "network", segments: [seg("Amr", 100, 200)] },
-        { kind: "ui", segments: [seg("Unknown", 0, 90, 0)] }
+        { kind: "network", segments: [seg("Amr", 15, 200)] },
+        { kind: "ui", segments: [seg("Unknown", 0, 12, 0)] }
       ],
       200
     )
@@ -90,7 +90,7 @@ describe("assembleSpeakerTimeline", () => {
     // Prod case 8db02fee: first utterance ("Grazie.") at 6.1s, first
     // diarization segment much later — the greeting surfaced as Unknown.
     const { segments } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Opener", 144, 300), seg("Guest", 300, 400)] }],
+      [{ kind: "network", segments: [seg("Opener", 14, 300), seg("Guest", 300, 400)] }],
       400
     )
     expect(segments[0]).toEqual(seg("Opener", 0, 300))
@@ -110,7 +110,7 @@ describe("assembleSpeakerTimeline", () => {
       [
         {
           kind: "network",
-          segments: [seg("Unknown", 5, 20, 0), seg("Amr", 30, 100)]
+          segments: [seg("Unknown", 5, 15, 0), seg("Amr", 18, 100)]
         }
       ],
       100
@@ -172,10 +172,10 @@ describe("assembleSpeakerTimeline", () => {
 describe("assembleSpeakerTimeline retrofit reporting", () => {
   it("reports the original start the retrofit stretched from", () => {
     const { retrofittedFromSeconds } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Opener", 144, 300)] }],
+      [{ kind: "network", segments: [seg("Opener", 14, 300)] }],
       300
     )
-    expect(retrofittedFromSeconds).toBe(144)
+    expect(retrofittedFromSeconds).toBe(14)
   })
 
   it("reports nothing when no retrofit happened", () => {
@@ -195,13 +195,13 @@ describe("assembleSpeakerTimeline bot exclusion", () => {
       [
         {
           kind: "network",
-          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 18, 100)]
         }
       ],
       100,
       { botNames: ["MeetingBaaS's Notetaker"] }
     )
-    expect(retrofittedFromSeconds).toBe(30)
+    expect(retrofittedFromSeconds).toBe(18)
     expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
     expect(segments.find((s) => s.speaker === "MeetingBaaS's Notetaker")).toEqual(
       seg("MeetingBaaS's Notetaker", 7, 14)
@@ -216,13 +216,48 @@ describe("assembleSpeakerTimeline multi-name bot exclusion", () => {
       [
         {
           kind: "network",
-          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 30, 100)]
+          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 18, 100)]
         }
       ],
       100,
       { botNames: ["Amr's Notetaker", "MeetingBaaS's Notetaker"] }
     )
-    expect(retrofittedFromSeconds).toBe(30)
+    expect(retrofittedFromSeconds).toBe(18)
     expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
+  })
+})
+
+
+describe("assembleSpeakerTimeline retrofit cap", () => {
+  it("does not stretch a first segment that opens later than the greeting window", () => {
+    // Prod bot 013722ff: the guest's lone ~1s segment at +146.6s was stretched
+    // to 0s, inflating his talk-time to 147s and masking a collapse downstream.
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [{ kind: "network", segments: [seg("Guest", 146.6, 147.6), seg("Host", 147.6, 2400)] }],
+      2400
+    )
+    expect(retrofittedFromSeconds).toBeUndefined()
+    expect(segments[0]).toEqual(seg("Guest", 146.6, 147.6))
+  })
+})
+
+describe("assembleSpeakerTimeline retrofit cap boundary", () => {
+  it("retrofits a first segment opening exactly at the cap", () => {
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [{ kind: "network", segments: [seg("Opener", LEADING_RETROFIT_MAX_SECONDS, 60)] }],
+      60
+    )
+    expect(retrofittedFromSeconds).toBe(LEADING_RETROFIT_MAX_SECONDS)
+    expect(segments[0]?.start_time).toBe(0)
+  })
+
+  it("does not retrofit a first segment opening just past the cap", () => {
+    const start = LEADING_RETROFIT_MAX_SECONDS + 0.1
+    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+      [{ kind: "network", segments: [seg("Opener", start, 60)] }],
+      60
+    )
+    expect(retrofittedFromSeconds).toBeUndefined()
+    expect(segments[0]?.start_time).toBe(start)
   })
 })

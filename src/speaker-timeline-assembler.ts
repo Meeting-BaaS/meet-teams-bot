@@ -22,9 +22,13 @@ export interface TimelineSource {
 export const GAP_FILL_MIN_SECONDS = 10
 // Minimum length a clipped contribution must keep to be emitted.
 export const MIN_SEGMENT_SECONDS = 1
-// Cap on stretching the first segment back over the boot gap; a first segment
-// later than this means something else broke.
-export const LEADING_RETROFIT_MAX_SECONDS = 300
+// Cap on stretching the first segment back over the boot gap. The gap this
+// exists for is the join greeting (prod: median 3.5s, all observed cases
+// <=21s). A larger stretch inflates a barely-heard participant's talk-time
+// (prod: 1s -> 147s) past the reconciliation's "effective speaker" floor and
+// masked a real collapse; longer leading gaps are the reconciliation's job
+// (label-only backfill), never the timeline's.
+export const LEADING_RETROFIT_MAX_SECONDS = 20
 
 /** Positive-length segments, chronological. */
 function normalize(segments: DiarizationSegment[]): DiarizationSegment[] {
