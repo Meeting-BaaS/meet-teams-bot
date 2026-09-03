@@ -84,7 +84,11 @@ const MEET_MODAL_PATTERNS: ModalPattern[] = [
     name: "camera_permission",
     selector:
       'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
-    buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now"],
+    // "Close": Meet's persistent "Camera not found" toast (role="dialog",
+    // data-is-persistent="true") matches this pattern and only offers an
+    // icon button with aria-label="Close". It is also baked into the
+    // recording until dismissed.
+    buttonTexts: ["Allow", "Block", "Got it", "OK", "Join now", "Close"],
     exitByEscape: true
   },
   // Generic dismiss modals (fallback)
@@ -124,6 +128,62 @@ export class SimpleDialogObserver {
    * so it doesn't race with intentional Playwright interactions on dialogs we opened.
    */
   private static _paused = false
+
+  /**
+   * Per-pattern dismissal budget. A persistent, undismissable element that
+   * matches a pattern (prod: Meet's "Camera not found" toast — role="dialog",
+   * data-is-persistent="true" — matched camera_permission every 5 s for a whole
+   * 41-min call) otherwise costs a DOM snapshot upload + CDP click attempts per
+   * cycle (171 snapshots ≈ 500 MB for one bot) AND, because the loop returns on
+   * the first match, starves every other pattern for the rest of the meeting.
+   * After MAX_DISMISS_ATTEMPTS failures the pattern is abandoned for this call.
+   */
+  protected static readonly MAX_DISMISS_ATTEMPTS = 3
+  protected dismissAttempts = new Map<string, number>()
+  protected abandonedPatterns = new Set<string>()
+  /** One "before dismiss" snapshot per pattern per call is all forensics needs. */
+  protected snapshottedPatterns = new Set<string>()
+
+  /** True when a pattern has exhausted its budget and must be skipped. */
+  protected isAbandoned(patternName: string): boolean {
+    return this.abandonedPatterns.has(patternName)
+  }
+
+  /**
+   * True once the dialog is no longer visible. Polls briefly (the dismissal
+   * animation takes a moment); a dialog still visible after that is a failed
+   * dismissal whatever the click reported.
+   */
+  protected async confirmDismissed(
+    modal: Pick<Locator, "isVisible">,
+    timeouts: DismissTimeouts
+  ): Promise<boolean> {
+    const deadline = Date.now() + Math.max(timeouts.PAGE_TIMEOUT, 500)
+    while (Date.now() < deadline) {
+      try {
+        if (!(await modal.isVisible({ timeout: timeouts.VISIBLE_TIMEOUT }))) {
+          return true
+        }
+      } catch {
+        // Detached/closed = gone.
+        return true
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    return false
+  }
+
+  /** Record a failed dismissal; abandon the pattern once the budget is spent. */
+  protected recordDismissFailure(patternName: string): void {
+    const attempts = (this.dismissAttempts.get(patternName) ?? 0) + 1
+    this.dismissAttempts.set(patternName, attempts)
+    if (attempts >= SimpleDialogObserver.MAX_DISMISS_ATTEMPTS) {
+      this.abandonedPatterns.add(patternName)
+      console.warn(
+        `[SimpleDialogObserver] Giving up on ${patternName} after ${attempts} failed dismiss attempts — skipping it for the rest of the call`
+      )
+    }
+  }
 
   /**
    * Instance flag to prevent overlapping observer cycles.
@@ -305,6 +365,9 @@ export class SimpleDialogObserver {
 
     try {
       for (const pattern of modalPatterns) {
+        if (this.isAbandoned(pattern.name)) {
+          continue
+        }
         try {
           // .first(): Zoom's consent modal selector (div:has-text(...)) matches
           // several nested ancestor divs, so a bare locator throws Playwright's
@@ -322,12 +385,15 @@ export class SimpleDialogObserver {
 
           console.info(`[SimpleDialogObserver] Found modal: ${pattern.name}`)
 
-          // Capture DOM state before attempting to dismiss modal
-          const htmlSnapshot = HtmlSnapshotService.getInstance()
-          await htmlSnapshot.captureSnapshot(
-            page,
-            `dialog_observer_before_dismiss_attempt_${pattern.name}`
-          )
+          // Capture DOM state before the FIRST dismiss attempt of this pattern.
+          if (!this.snapshottedPatterns.has(pattern.name)) {
+            this.snapshottedPatterns.add(pattern.name)
+            const htmlSnapshot = HtmlSnapshotService.getInstance()
+            await htmlSnapshot.captureSnapshot(
+              page,
+              `dialog_observer_before_dismiss_attempt_${pattern.name}`
+            )
+          }
 
           // Try to dismiss the modal by clicking appropriate buttons
           let dismissed = await this.tryDismissModal(modal, pattern.buttonTexts, timeouts)
@@ -340,7 +406,16 @@ export class SimpleDialogObserver {
             dismissed = await this.tryDismissWithEscape(page)
           }
 
+          // A click or Escape "succeeding" only means the action ran, not that
+          // the dialog went away: Meet ignores Escape on its persistent toasts.
+          // Confirm closure, or the budget never advances and the pattern
+          // keeps starving the others.
           if (dismissed) {
+            dismissed = await this.confirmDismissed(modal, timeouts)
+          }
+
+          if (dismissed) {
+            this.dismissAttempts.delete(pattern.name)
             await page.waitForTimeout(timeouts.PAGE_TIMEOUT)
             return {
               found: true,
@@ -350,6 +425,7 @@ export class SimpleDialogObserver {
             }
           }
 
+          this.recordDismissFailure(pattern.name)
           return {
             found: true,
             dismissed: false,
