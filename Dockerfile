@@ -89,6 +89,41 @@ ENV CLOAKBROWSER_CACHE_DIR=/opt/cloakbrowser
 ENV CLOAKBROWSER_AUTO_UPDATE=false
 RUN npx cloakbrowser install
 
+ARG CHROME_VERSION=121.0.6167.85
+# Chrome for Testing — a stock, unpatched Chrome pinned to one exact build, used
+# by the USE_CHROME / CHROME_PLATFORMS backend in src/browser/browser.ts.
+#
+# It is a THIRD browser next to CloakBrowser and stealthfox, not a replacement:
+# inert until a platform is listed in CHROME_PLATFORMS, so the default image
+# behaves exactly as before. It is also OLDER than everything else here
+# (CloakBrowser is on Chromium 146, Playwright 1.55.1 bundles ~140) — that is the
+# point of the A/B, but it means it carries none of CloakBrowser's fingerprint
+# patches and presents plainly as Linux Chrome. Do not point Meet at it and
+# expect the stealth behaviour.
+#
+# @puppeteer/browsers rather than the raw chrome-for-testing zip: it resolves the
+# per-platform archive, verifies the download and lays the tree out at
+# <path>/chrome/linux-<version>/chrome-linux64/chrome. Pinned to the v2 major so
+# a tool release can't silently change that layout.
+#
+# `playwright install-deps chromium` first: the Chrome for Testing archive ships
+# no shared libraries, and the hand-written dependency list above is missing
+# several it links against (libcups2t64, libpango, libcairo). The `--version`
+# check at the end is what proves both the version AND that every .so resolved —
+# a missing library fails there at build time instead of at a bot's first join.
+RUN npx playwright install-deps chromium \
+    && npx --yes @puppeteer/browsers@2 install "chrome@${CHROME_VERSION}" --path /opt/chrome \
+    && CFT_BIN="$(find /opt/chrome -type f -executable -name chrome | head -1)" \
+    && test -n "$CFT_BIN" \
+    && ln -sf "$CFT_BIN" /usr/bin/chrome-for-testing \
+    && /usr/bin/chrome-for-testing --version \
+    && /usr/bin/chrome-for-testing --version | grep -qF "${CHROME_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+# Symlink, not the versioned path: Chrome resolves its own resource bundle from
+# /proc/self/exe (the real file), so the indirection is safe, and bumping
+# CHROME_VERSION then needs no matching change in env-vars.ts or the helm chart.
+ENV CHROME_BINARY_PATH=/usr/bin/chrome-for-testing
+
 # Firefox shared-lib deps (gtk3, libX*, dbus, …) — REQUIRED: the stealthfox
 # patched binary links against these. We deliberately do NOT run
 # `playwright install firefox`: stealthfox is self-contained and loaded via
