@@ -18,6 +18,10 @@ export const envVars = cleanEnv(process.env, {
   }),
   API_SERVER_BASEURL: str({ default: "http://localhost:3001" }),
   SERVERLESS: bool({ default: false }),
+  // NOT the browser the bot launches. This is the Playwright-Chromium symlink
+  // the image creates; nothing in src/ reads it (the helm charts still set it).
+  // The Chrome for Testing backend uses CHROME_BINARY_PATH below — wire new work
+  // to that one.
   CHROME_PATH: str({ default: "/usr/bin/google-chrome" }),
   AWS_S3_LOGS_BUCKET: str({ default: "meeting-baas-logs" }),
   AWS_S3_ARTIFACTS_BUCKET: str({ default: "meeting-baas-artifacts" }),
@@ -83,6 +87,20 @@ export const envVars = cleanEnv(process.env, {
   // at /opt/stealthfox/<tag>/firefox by scripts/fetch-stealthfox.sh. Empty =
   // stealthfox disabled (falls back to CloakBrowser).
   STEALTHFOX_BINARY_PATH: str({ default: "" }),
+  // FORCE the baked stock Chrome for ALL platforms (A/B override). Normally
+  // leave false and let CHROME_PLATFORMS scope it per platform. Either way needs
+  // CHROME_BINARY_PATH. Loses CloakBrowser's fingerprint patches and humanized
+  // input — this is the plain browser, on purpose.
+  USE_CHROME: bool({ default: false }),
+  // Which platforms launch the baked stock Chrome — comma-separated
+  // (e.g. "teams", "meet,teams", or "all"). EMPTY by default, so the image
+  // behaves exactly as before until someone opts a platform in. stealthfox wins
+  // when a platform appears in both lists (see openBrowser).
+  CHROME_PLATFORMS: str({ default: "" }),
+  // Absolute path to the baked Chrome for Testing binary. The Docker image sets
+  // this to the /usr/bin/chrome-for-testing symlink; empty = backend disabled,
+  // so a local checkout without the binary is unaffected.
+  CHROME_BINARY_PATH: str({ default: "" }),
   // Zoom web only: how many times to relaunch the browser on a FRESH proxy exit
   // IP inside the SAME warm pod before falling back to the SQS requeue (fresh
   // pod). The anti-bot wall keys on the exit IP, so an in-pod relaunch on a new

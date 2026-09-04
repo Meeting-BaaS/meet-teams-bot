@@ -23,6 +23,18 @@ export async function openBrowser(proxyUrl?: string | null): Promise<{ browser: 
     return openStealthfoxBrowser(proxyUrl)
   }
 
+  // Baked stock Chrome (Chrome for Testing, pinned in the Dockerfile). Checked
+  // BEFORE the USE_FIREFOX A/B: CHROME_PLATFORMS names a specific platform,
+  // USE_FIREFOX is a blunt global toggle, and a platform someone deliberately
+  // opted into the Chrome A/B must not be silently redirected to Firefox.
+  // Same no-fallback contract as stealthfox, for the same reason: an A/B that
+  // quietly ran on the other browser is worse than one that refuses to start.
+  if (shouldUseChrome(platform)) {
+    assertChromeUsable(platform)
+    console.log(`[Browser] stock Chrome enabled (platform=${platform}) - baked Chrome for Testing`)
+    return openChromeBrowser(proxyUrl)
+  }
+
   // Stock Playwright Firefox A/B path (fingerprint- vs IP-block testing).
   if (envVars.USE_FIREFOX) {
     console.log("[Browser] Firefox mode enabled - using Firefox instead of CloakBrowser")
@@ -78,6 +90,47 @@ function assertStealthfoxUsable(platform: string): void {
       `stealthfox is required for ${platform} but this image is ${process.arch}; the binary is x86-64 only. ` +
         "Build and run the container as amd64 — run_bot.sh does this by default, " +
         "or pass --platform linux/amd64 to docker build/run."
+    )
+  }
+}
+
+// Whether this platform is CONFIGURED for the baked stock Chrome. Policy only,
+// mirroring shouldUseStealthfox: USE_CHROME=true forces it everywhere, otherwise
+// it's the CHROME_PLATFORMS allowlist ("all" = every platform). Empty by
+// default, so this backend is inert until someone opts a platform in.
+//
+// stealthfox is checked first in openBrowser, so a platform listed in BOTH
+// STEALTHFOX_PLATFORMS and CHROME_PLATFORMS runs stealthfox.
+function shouldUseChrome(platform: string): boolean {
+  if (envVars.USE_CHROME) return true
+  const allow = envVars.CHROME_PLATFORMS.split(",")
+    .map((p) => p.trim().toLowerCase())
+    .filter(Boolean)
+  return allow.includes("all") || allow.includes(platform.toLowerCase())
+}
+
+/**
+ * Fail fast when a platform is configured for stock Chrome but the binary isn't
+ * in the image.
+ *
+ * Same reasoning as assertStealthfoxUsable: falling back to CloakBrowser would
+ * turn "the A/B image wasn't deployed" into an A/B that silently measured the
+ * control arm and reported itself as the variant. Nothing in the logs would say
+ * so. Refuse to start instead.
+ */
+function assertChromeUsable(platform: string): void {
+  const binary = envVars.CHROME_BINARY_PATH
+  if (!binary) {
+    throw new Error(
+      `stock Chrome is required for ${platform} but CHROME_BINARY_PATH is empty. ` +
+        "It is baked into the image at /usr/bin/chrome-for-testing — rebuild/redeploy " +
+        "with that image, or drop this platform from CHROME_PLATFORMS if that is intended."
+    )
+  }
+  if (!existsSync(binary)) {
+    throw new Error(
+      `stock Chrome is required for ${platform} but no binary exists at ${binary}. ` +
+        "This image predates the Chrome for Testing layer — rebuild it."
     )
   }
 }
@@ -310,7 +363,28 @@ const DISABLED_FEATURES: readonly string[] = [
 // no amount of downstream spoofing hides that.
 const DISABLED_BLINK_FEATURES: readonly string[] = ["AutomationControlled", "TrustedDOMTypes"]
 
-async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
+/**
+ * Shared Chromium launch geometry + args: ONE source of truth for both Chromium
+ * backends, CloakBrowser (default) and the baked stock Chrome A/B. Both are
+ * Playwright-driven Chromium, so a flag that matters for the recording geometry,
+ * PulseAudio or detection has to apply to both — otherwise the A/B compares the
+ * browser AND the flags at the same time and neither result means anything.
+ *
+ * `extraDisabledFeatures` exists because Chromium keeps ONE value per switch
+ * name and Playwright emits its own `--disable-features=` before ours: on the
+ * stock-Chrome path ours would otherwise silently discard Playwright's entire
+ * list (HttpsUpgrades, PaintHolding, ThirdPartyStoragePartitioning, …).
+ * CloakBrowser manages its own defaults, so it passes none.
+ */
+function buildChromiumLaunchConfig(
+  proxyUrl?: string | null,
+  opts: { extraDisabledFeatures?: readonly string[] } = {}
+): {
+  width: number
+  height: number
+  timezoneId: string | undefined
+  args: string[]
+} {
   // Resolution configuration from environment variable
   // Defaults to 720p if RESOLUTION is not set or invalid
   const resolution = envVars.RESOLUTION
@@ -327,6 +401,12 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
   // UTC clock on a non-UTC egress IP is the stronger bot tell anyway.
   const timezoneId = getExitGeo()?.timezone ?? undefined
   if (timezoneId) console.log(`[Browser] Aligning timezone with exit IP: ${timezoneId}`)
+
+  // De-duplicated union. Order is irrelevant to Chromium; a repeated name is not,
+  // hence the Set.
+  const disabledFeatures = [
+    ...new Set([...DISABLED_FEATURES, ...(opts.extraDisabledFeatures ?? [])])
+  ]
 
   const sharedArgs = [
     // Browser WINDOW geometry. It no longer matches the Xvfb display, and that
@@ -403,7 +483,7 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     // the floor and navigator.webdriver was left in its automation state. Both
     // switches must stay single, comma-joined, and appear exactly once.
     `--disable-blink-features=${DISABLED_BLINK_FEATURES.join(",")}`,
-    `--disable-features=${DISABLED_FEATURES.join(",")}`,
+    `--disable-features=${disabledFeatures.join(",")}`,
 
     // Additional audio debugging (remove in production)
     "--enable-logging=stderr",
@@ -467,6 +547,19 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     envVars.ENVIRON === "local" || process.platform === "darwin"
       ? ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"]
       : []
+
+  return {
+    width,
+    height,
+    timezoneId,
+    args: [...sharedArgs, ...gpuArgs, ...localMediaArgs]
+  }
+}
+
+async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
+  const platform = GLOBAL.get().meeting_platform
+  const { width, height, timezoneId, args } = buildChromiumLaunchConfig(proxyUrl)
+
   try {
     console.log(`Launching CloakBrowser persistent context (${platform})...`)
 
@@ -480,7 +573,7 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
       ...(timezoneId ? { timezoneId } : {}),
       humanize: true,
       ...(proxyUrl ? { proxy: proxyUrl } : {}),
-      args: [...sharedArgs, ...gpuArgs, ...localMediaArgs],
+      args,
       contextOptions: {
         permissions: ["microphone", "camera"],
         ignoreHTTPSErrors: true,
@@ -499,6 +592,91 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     return { browser: context as unknown as BrowserContext }
   } catch (error) {
     console.error("Failed to open browser:", formatError(error))
+    throw error
+  }
+}
+
+// Playwright's own Chromium `--disable-features` list (playwright-core 1.55.1,
+// server/chromium/chromiumSwitches.js). Duplicated here rather than imported:
+// it lives behind playwright-core's internal `lib/server/**` path, which is not
+// a public export and does move between releases. @playwright/test is pinned to
+// an exact version in package.json, so the copy drifts only when someone bumps
+// it deliberately — re-check this list when they do.
+//
+// Only the stock-Chrome path needs it. See buildChromiumLaunchConfig: our single
+// --disable-features switch replaces Playwright's outright, so without folding
+// these back in, launching plain Chrome would quietly re-enable the dozen
+// behaviours Playwright turns off to keep automation deterministic.
+const PLAYWRIGHT_DEFAULT_DISABLED_FEATURES: readonly string[] = [
+  "AcceptCHFrame",
+  "AutoDeElevate",
+  "AvoidUnnecessaryBeforeUnloadCheckSync",
+  "DestroyProfileOnBrowserClose",
+  "DialMediaRouteProvider",
+  "GlobalMediaControls",
+  "HttpsUpgrades",
+  "LensOverlay",
+  "MediaRouter",
+  "PaintHolding",
+  "ThirdPartyStoragePartitioning",
+  "Translate"
+]
+
+/**
+ * Stock Chrome for Testing, pinned and baked into the image (CHROME_VERSION in
+ * the Dockerfile). The A/B control against CloakBrowser: same Playwright driver,
+ * same args, same geometry — only the binary differs.
+ *
+ * What it deliberately does NOT get, because it does not exist outside
+ * CloakBrowser: the source-level fingerprint patches, the Windows persona (this
+ * browser reports itself as Linux Chrome, honestly), and the humanized pointer
+ * paths. The Windows metric-clone fonts baked into the image are inert here —
+ * they only ever mattered because the UA claimed Windows.
+ *
+ * `--enable-automation` is stripped rather than merely counteracted: Playwright
+ * adds it to every Chromium launch, and it both raises the "controlled by
+ * automated software" infobar (which the x11grab crop does not account for, so
+ * it lands in the recording) and re-asserts the automation state that
+ * --disable-blink-features=AutomationControlled exists to clear. CloakBrowser
+ * strips the same switch internally (IGNORE_DEFAULT_ARGS in its config).
+ */
+async function openChromeBrowser(proxyUrl?: string | null): Promise<{ browser: BrowserContext }> {
+  const platform = GLOBAL.get().meeting_platform
+  const binaryPath = envVars.CHROME_BINARY_PATH
+  const { width, height, timezoneId, args } = buildChromiumLaunchConfig(proxyUrl, {
+    extraDisabledFeatures: PLAYWRIGHT_DEFAULT_DISABLED_FEATURES
+  })
+
+  try {
+    console.log(`Launching Chrome persistent context (${platform}, binary: ${binaryPath})...`)
+
+    const context = await chromium.launchPersistentContext("", {
+      headless: false,
+      executablePath: binaryPath,
+      viewport: { width, height },
+      locale: "en-US",
+      ...(timezoneId ? { timezoneId } : {}),
+      ...(proxyUrl ? { proxy: { server: proxyUrl } } : {}),
+      args,
+      ignoreDefaultArgs: ["--enable-automation"],
+      // Chromium grants these from the context, unlike Firefox (which needs the
+      // permissions.default.* prefs) — same list CloakBrowser gets via
+      // contextOptions.
+      permissions: ["microphone", "camera"],
+      ignoreHTTPSErrors: true,
+      acceptDownloads: true,
+      bypassCSP: true
+    })
+
+    // Same tsx/esbuild __name polyfill as the CloakBrowser path — see there.
+    await context.addInitScript(
+      "globalThis.__name = globalThis.__name || function (f) { return f }"
+    )
+
+    console.log(`✅ Chrome launched (${platform})`)
+    return { browser: context }
+  } catch (error) {
+    console.error("Failed to open Chrome browser:", formatError(error))
     throw error
   }
 }
