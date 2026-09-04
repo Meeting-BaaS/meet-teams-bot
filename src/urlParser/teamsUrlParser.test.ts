@@ -143,4 +143,49 @@ describe("Teams URL Parser", () => {
       expect(result.password).toBe("")
     })
   })
+
+  // Teams is recognized by URL shape, not by a hostname list: sovereign and
+  // national partner clouds (teams.sovcloud.fr) and the unified Microsoft 365
+  // domain run the same client on their own origin, and every rewrite has to
+  // stay on that origin.
+  describe("Other Teams clouds", () => {
+    test.each([
+      "https://teams.sovcloud.fr/meet/1234567890",
+      "https://teams.cloud.microsoft/meet/1234567890",
+      "https://teams.some-future-cloud.example/meet/1234567890"
+    ])("passes a short join code through unchanged: %s", (url) => {
+      const result = parseMeetingUrlFromJoinInfos(url)
+      expect(result.meetingId).toBe(url)
+    })
+
+    test("rewrites a deep link onto its OWN origin, not teams.microsoft.com", () => {
+      const url =
+        "https://teams.sovcloud.fr/l/meetup-join/19:meeting_123@thread.v2/0?context=%7B%22Tid%22%3A%22abc%22%7D"
+      const result = parseMeetingUrlFromJoinInfos(url)
+
+      expect(result.meetingId.startsWith("https://teams.sovcloud.fr/v2/?meetingjoin=true#/")).toBe(
+        true
+      )
+      expect(result.meetingId).not.toContain("teams.microsoft.com")
+      expect(result.meetingId.endsWith("&anon=true")).toBe(true)
+    })
+
+    test("keeps the passcode from the query string", () => {
+      const result = parseMeetingUrlFromJoinInfos("https://teams.sovcloud.fr/meet/123?p=secret")
+      expect(result.password).toBe("secret")
+    })
+
+    test("accepts a deep link on a host that does not say teams at all", () => {
+      const url = "https://meetings.example.gov/l/meetup-join/19:meeting_9@thread.v2/0"
+      expect(parseMeetingUrlFromJoinInfos(url).meetingId).toBe(url)
+    })
+  })
+
+  describe("SafeLinks-wrapped URLs", () => {
+    test("unwraps the Outlook rewrite before parsing", () => {
+      const inner = "https://teams.sovcloud.fr/meet/1234567890"
+      const wrapped = `https://eur01.safelinks.protection.outlook.com/?url=${encodeURIComponent(inner)}&data=05%7C01`
+      expect(parseMeetingUrlFromJoinInfos(wrapped).meetingId).toBe(inner)
+    })
+  })
 })
