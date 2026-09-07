@@ -28,11 +28,16 @@ class MockWebSocket {
 
   url: string
   readyState = MockWebSocket.CONNECTING
+  sent: unknown[] = []
   private handlers: Record<string, Array<(...args: unknown[]) => void>> = {}
 
   constructor(url: string) {
     this.url = url
     mockWsInstances.push(this)
+  }
+
+  send(data: unknown) {
+    this.sent.push(data)
   }
 
   on(event: string, handler: (...args: unknown[]) => void) {
@@ -78,6 +83,19 @@ jest.mock("./utils/PathManager", () => ({
 }))
 jest.mock("./utils/S3Uploader", () => ({ S3Uploader: class {} }))
 
+const mockSpawn = jest.fn(() => {
+  const makeStream = () => ({ on: () => {} })
+  return {
+    stdin: makeStream(),
+    stdout: makeStream(),
+    stderr: makeStream(),
+    on: () => {},
+    kill: () => {}
+  }
+})
+
+jest.mock("node:child_process", () => ({ spawn: mockSpawn }))
+
 import { Streaming } from "./streaming"
 
 function createStreaming(input = "ws://in/input", output?: string) {
@@ -99,6 +117,7 @@ describe("Streaming input WebSocket", () => {
     mockWsInstances.length = 0
     mockStdin.writes = 0
     mockStdin.ended = false
+    mockSpawn.mockClear()
   })
 
   afterEach(() => {
@@ -167,5 +186,59 @@ describe("Streaming input WebSocket", () => {
     await streaming.stop()
     jest.advanceTimersByTime(120_000)
     expect(mockWsInstances).toHaveLength(1)
+  })
+})
+
+describe("Streaming handshake start_time", () => {
+  beforeEach(() => {
+    jest.useFakeTimers({ doNotFake: ["nextTick", "setImmediate"] })
+    mockWsInstances.length = 0
+    mockStdin.writes = 0
+    mockStdin.ended = false
+    mockSpawn.mockClear()
+  })
+
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
+  function createOutputStreaming() {
+    return new Streaming(undefined, "ws://out/output", 24000, "bot-123")
+  }
+
+  function handshakeOf(ws: MockWebSocket): Record<string, unknown> {
+    const text = ws.sent.find((m): m is string => typeof m === "string")
+    expect(text).toBeDefined()
+    return JSON.parse(text!)
+  }
+
+  it("sends start_time null before audio capture starts", () => {
+    createOutputStreaming()
+    const ws = mockWsInstances[0]!
+    ws.open()
+    const handshake = handshakeOf(ws)
+    expect(handshake.start_time).toBeNull()
+    expect(handshake.bot_id).toBe("bot-123")
+    expect(handshake.sample_rate).toBe(24000)
+  })
+
+  it("sends the capture start time in handshakes after capture starts", () => {
+    const streaming = createOutputStreaming()
+    const ws0 = mockWsInstances[0]!
+    ws0.open()
+
+    streaming.startAudioCapture()
+    expect(mockSpawn).toHaveBeenCalledTimes(1)
+
+    // Simulate a reconnect: close the output socket, wait for backoff.
+    ws0.close()
+    jest.advanceTimersByTime(1000)
+    expect(mockWsInstances).toHaveLength(2)
+
+    const ws1 = mockWsInstances[1]!
+    ws1.open()
+    const handshake = handshakeOf(ws1)
+    expect(typeof handshake.start_time).toBe("number")
+    expect((handshake.start_time as number) > 0).toBe(true)
   })
 })

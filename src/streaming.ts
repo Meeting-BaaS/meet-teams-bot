@@ -74,6 +74,8 @@ export class Streaming {
 
   // Dedicated FFmpeg process for audio capture
   private ffmpegProcess: ChildProcess | null = null
+  // Epoch milliseconds when the audio capture started (set in startAudioCapture, cleared in stopAudioCapture). Exposed in the handshake as start_time.
+  private captureStartTime: number | null = null
   private audioRemainder: Buffer = Buffer.alloc(0)
 
   // Inbound (injection) byte remainder: incoming ws audio messages are raw
@@ -179,6 +181,8 @@ export class Streaming {
       stdio: ["pipe", "pipe", "pipe"]
     })
 
+    this.captureStartTime = Date.now()
+
     // stdin is piped but unused; still guard it so a stray EPIPE on teardown
     // can't escalate to an uncaughtException (see media_context.ts).
     this.ffmpegProcess.stdin?.on("error", (err) => {
@@ -244,6 +248,7 @@ export class Streaming {
       this.ffmpegProcess.kill("SIGTERM")
       this.ffmpegProcess = null
     }
+    this.captureStartTime = null
     this.audioRemainder = Buffer.alloc(0)
   }
 
@@ -360,7 +365,8 @@ export class Streaming {
             protocol_version: 1,
             bot_id: this.botId,
             offset: 0.0,
-            sample_rate: this.sample_rate
+            sample_rate: this.sample_rate,
+            start_time: this.captureStartTime
           }
           console.log(`[Streaming] Sending handshake to ${this.outputUrl}: ${JSON.stringify(handshake)}`)
           this.output_ws.send(JSON.stringify(handshake))
