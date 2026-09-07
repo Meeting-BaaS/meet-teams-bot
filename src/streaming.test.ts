@@ -83,11 +83,20 @@ jest.mock("./utils/PathManager", () => ({
 }))
 jest.mock("./utils/S3Uploader", () => ({ S3Uploader: class {} }))
 
+const mockAudioDataHandlers: Array<(data: Buffer) => void> = []
+
 const mockSpawn = jest.fn(() => {
   const makeStream = () => ({ on: () => {} })
+  const stdout = {
+    on: (event: string, handler: (data: Buffer) => void) => {
+      if (event === "data") {
+        mockAudioDataHandlers.push(handler)
+      }
+    }
+  }
   return {
     stdin: makeStream(),
-    stdout: makeStream(),
+    stdout,
     stderr: makeStream(),
     on: () => {},
     kill: () => {}
@@ -118,6 +127,7 @@ describe("Streaming input WebSocket", () => {
     mockStdin.writes = 0
     mockStdin.ended = false
     mockSpawn.mockClear()
+    mockAudioDataHandlers.length = 0
   })
 
   afterEach(() => {
@@ -196,6 +206,7 @@ describe("Streaming handshake start_time", () => {
     mockStdin.writes = 0
     mockStdin.ended = false
     mockSpawn.mockClear()
+    mockAudioDataHandlers.length = 0
   })
 
   afterEach(() => {
@@ -238,6 +249,20 @@ describe("Streaming handshake start_time", () => {
     const updated = JSON.parse(handshakes[1]!)
     expect(typeof updated.start_time).toBe("number")
     expect((updated.start_time as number) > 0).toBe(true)
+
+    // Emit one complete 100ms chunk (2400 samples at 24kHz) through the
+    // mocked FFmpeg stdout and verify the updated handshake was delivered
+    // before the first binary PCM message.
+    const samples = new Float32Array(2400)
+    for (const handler of mockAudioDataHandlers) {
+      handler(Buffer.from(samples.buffer))
+    }
+    expect(mockAudioDataHandlers.length).toBeGreaterThan(0)
+
+    const binaryIndex = ws.sent.findIndex((m) => typeof m !== "string")
+    expect(binaryIndex).toBeGreaterThan(0)
+    expect(ws.sent.indexOf(handshakes[1]!)).toBeLessThan(binaryIndex)
+    expect((ws.sent[binaryIndex] as ArrayBuffer).byteLength).toBe(4800)
   })
 
   it("sends the capture start time in handshakes after capture starts", () => {
