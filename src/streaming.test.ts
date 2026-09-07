@@ -222,6 +222,24 @@ describe("Streaming handshake start_time", () => {
     expect(handshake.sample_rate).toBe(24000)
   })
 
+  it("notifies an already-open socket when capture starts", () => {
+    const streaming = createOutputStreaming()
+    const ws = mockWsInstances[0]!
+    ws.open()
+    expect(handshakeOf(ws).start_time).toBeNull()
+
+    // Capture starts while the initial socket is still open. The bot must
+    // deliver the real capture start time before any audio flows.
+    streaming.startAudioCapture()
+    expect(mockSpawn).toHaveBeenCalledTimes(1)
+
+    const handshakes = ws.sent.filter((m): m is string => typeof m === "string")
+    expect(handshakes).toHaveLength(2)
+    const updated = JSON.parse(handshakes[1]!)
+    expect(typeof updated.start_time).toBe("number")
+    expect((updated.start_time as number) > 0).toBe(true)
+  })
+
   it("sends the capture start time in handshakes after capture starts", () => {
     const streaming = createOutputStreaming()
     const ws0 = mockWsInstances[0]!
