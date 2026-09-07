@@ -74,6 +74,8 @@ export class Streaming {
 
   // Dedicated FFmpeg process for audio capture
   private ffmpegProcess: ChildProcess | null = null
+  // Epoch milliseconds when the audio capture started (set in startAudioCapture, cleared in stopAudioCapture). Exposed in the handshake as start_time.
+  private captureStartTime: number | null = null
   private audioRemainder: Buffer = Buffer.alloc(0)
 
   // Inbound (injection) byte remainder: incoming ws audio messages are raw
@@ -175,17 +177,24 @@ export class Streaming {
 
     console.log(`[Streaming] Starting dedicated audio FFmpeg: ${args.join(" ")}`)
 
-    this.ffmpegProcess = spawn("ffmpeg", args, {
+    const proc = spawn("ffmpeg", args, {
       stdio: ["pipe", "pipe", "pipe"]
     })
+    this.ffmpegProcess = proc
+
+    this.captureStartTime = Date.now()
+
+    // Notify an already-connected output socket about the capture start time
+    // so it arrives before the first PCM chunk (no reconnect required).
+    this.sendHandshake()
 
     // stdin is piped but unused; still guard it so a stray EPIPE on teardown
     // can't escalate to an uncaughtException (see media_context.ts).
-    this.ffmpegProcess.stdin?.on("error", (err) => {
+    proc.stdin?.on("error", (err) => {
       console.warn(`[Streaming] ffmpeg stdin error (ignored): ${err}`)
     })
 
-    this.ffmpegProcess.stderr?.on("data", (data: Buffer) => {
+    proc.stderr?.on("data", (data: Buffer) => {
       const output = data.toString().trim()
       // FFmpeg outputs diagnostic info to stderr; only log non-progress lines
       if (output && !output.match(/^size=\s*\d+/)) {
@@ -193,18 +202,26 @@ export class Streaming {
       }
     })
 
-    this.ffmpegProcess.on("exit", (code) => {
+    // Guard with an identity check so a stale process teardown can't clear
+    // the state of a newer capture.
+    proc.on("exit", (code) => {
       console.log(`[Streaming] Audio FFmpeg exited with code ${code}`)
-      this.ffmpegProcess = null
+      if (this.ffmpegProcess === proc) {
+        this.ffmpegProcess = null
+        this.captureStartTime = null
+      }
     })
 
-    this.ffmpegProcess.on("error", (err) => {
+    proc.on("error", (err) => {
       console.error("[Streaming] Audio FFmpeg error:", formatError(err))
-      this.ffmpegProcess = null
+      if (this.ffmpegProcess === proc) {
+        this.ffmpegProcess = null
+        this.captureStartTime = null
+      }
     })
 
     // Handle stdout: Float32 PCM data with byte alignment
-    this.ffmpegProcess.stdout?.on("data", (data: Buffer) => {
+    proc.stdout?.on("data", (data: Buffer) => {
       if (this.isPaused) return
 
       // Handle chunk boundaries: Float32 frames can split across data events
@@ -244,7 +261,28 @@ export class Streaming {
       this.ffmpegProcess.kill("SIGTERM")
       this.ffmpegProcess = null
     }
+    this.captureStartTime = null
     this.audioRemainder = Buffer.alloc(0)
+  }
+
+  /**
+   * Send the output handshake JSON to a connected output WebSocket.
+   * Sent on connection open and again when audio capture starts so
+   * consumers receive the real capture start time before the first audio chunk.
+   */
+  private sendHandshake(): void {
+    if (!this.output_ws || this.output_ws.readyState !== 1) {
+      return
+    }
+    const handshake = {
+      protocol_version: 1,
+      bot_id: this.botId,
+      offset: 0.0,
+      sample_rate: this.sample_rate,
+      start_time: this.captureStartTime
+    }
+    console.log(`[Streaming] Sending handshake to ${this.outputUrl}: ${JSON.stringify(handshake)}`)
+    this.output_ws.send(JSON.stringify(handshake))
   }
 
   /**
@@ -356,14 +394,7 @@ export class Streaming {
         this.reconnectAttempts = 0
 
         if (this.output_ws) {
-          const handshake = {
-            protocol_version: 1,
-            bot_id: this.botId,
-            offset: 0.0,
-            sample_rate: this.sample_rate
-          }
-          console.log(`[Streaming] Sending handshake to ${this.outputUrl}: ${JSON.stringify(handshake)}`)
-          this.output_ws.send(JSON.stringify(handshake))
+          this.sendHandshake()
 
           // Initialize debug audio file if enabled
           if (this.debugAudioEnabled) {
