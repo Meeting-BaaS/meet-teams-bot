@@ -182,6 +182,11 @@ export class WaitingRoomState extends BaseState {
           // Registration-required webinar: the join URL server-side-redirects to
           // zoom.us/webinar/register/ for every pod/IP — retrying can never help.
           MeetingEndReason.ZoomWebinarRegistrationRequired
+          // ZoomLoadingStalled is deliberately NOT here. Zoom's client failing to
+          // come up is transient, and the bot has already spent its in-page
+          // reloads by the time the reason is set — a fresh pod is the right next
+          // step. Adding it would silently recreate the bug where a detected
+          // stall set shouldRetry(true) and had it overwritten right here.
         ]
         if (!endReason || !ZOOM_TERMINAL.includes(endReason)) {
           console.log(
@@ -297,6 +302,12 @@ export class WaitingRoomState extends BaseState {
         // Only the IP-reputation wall is worth an in-process relaunch; every other
         // reason (invalid URL, host denial, passcode, timeout) is not IP-keyed and
         // must fall through to the outer catch → SQS requeue / terminal failure.
+        //
+        // ZoomLoadingStalled explicitly included in "every other reason": a stall
+        // is a transport/renderer problem in the page, not a burned exit IP, and
+        // it has already been given its in-page reloads. Relaunching the browser
+        // onto a new residential IP would spend the wall's budget on a problem a
+        // new IP does not fix.
         const canInProcessRetry =
           attempt < maxInProc && reason === MeetingEndReason.ZoomAnonymousJoinNotAllowed
         if (!canInProcessRetry) {

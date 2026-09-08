@@ -8,6 +8,7 @@ describe("Zoom join failure evidence", () => {
     MeetingEndReason.CannotJoinMeeting,
     MeetingEndReason.TimeoutWaitingToStart,
     MeetingEndReason.ExitingMeetingBeforeRecord,
+    MeetingEndReason.ZoomLoadingStalled,
     MeetingEndReason.ProxyUnavailable,
     MeetingEndReason.Internal,
     null

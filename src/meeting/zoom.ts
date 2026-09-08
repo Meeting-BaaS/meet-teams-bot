@@ -23,6 +23,12 @@ import {
   type ZoomPasscodeFailureReason,
   ZOOM_INVALID_PASSCODE_PATTERN
 } from "./zoom-passcode"
+import {
+  createZoomLoadProbe,
+  MAX_STALL_RELOADS,
+  type ZoomLoadProbeSelectors,
+  ZoomLoadingStallTracker
+} from "./zoom-loading-stall"
 import { ZOOM_STATE_CONFIG } from "./zoom-state-config"
 
 // Zoom Web Client selectors (verified against the live DOM). Two client variants
@@ -37,6 +43,18 @@ const JOIN_BUTTON = "button.preview-join-button, #joinBtn"
 const PREVIEW_MUTE = "#preview-audio-control-button"
 const PREVIEW_VIDEO = "#preview-video-control-button"
 const LEAVE_BUTTON = 'button[aria-label="Leave"]'
+
+// What the loading-stall probe treats as proof the client is up. Built from the
+// selectors above and the shared state config so there is exactly one place a
+// Zoom DOM change has to be made.
+const LOAD_PROBE_SELECTORS: ZoomLoadProbeSelectors = {
+  prejoin: NAME_INPUT,
+  meetingUi: ZOOM_STATE_CONFIG.inMeetingPattern.selectors.join(",")
+}
+
+// How often the load probe re-reads the page. Fast enough that a card mounting
+// between polls costs ~1s, cheap enough to run for the whole admission wait.
+const LOAD_POLL_MS = 1_000
 const LEAVE_CONFIRM = "button.leave-meeting-options__btn--danger"
 const PERMISSION_DISMISS = 'button:has-text("Continue without microphone and camera")'
 const PASSCODE_INPUT =
@@ -329,10 +347,17 @@ export class ZoomProvider implements MeetingProviderInterface {
       throw new Error("Bot stopped before joining Zoom meeting")
     }
 
-    // Wait for the pre-join name input.
-    try {
-      await page.waitForSelector(NAME_INPUT, { timeout: 30_000 })
-    } catch {
+    // Wait for the pre-join name input: patient while Zoom is still coming up,
+    // reloading when it freezes (see waitForPrejoinCard).
+    const prejoin = await this.waitForPrejoinCard(page, cancelCheck)
+    if (prejoin !== "ready") {
+      // The client never came up at all. Its own reason, so it is neither
+      // confused with a refusal nor retried like the IP-keyed wall.
+      if (prejoin === "stalled") {
+        GLOBAL.setError(MeetingEndReason.ZoomLoadingStalled)
+        throw new Error("[Zoom] zoom_loading_stalled: pre-join card never rendered")
+      }
+
       // Registration-required webinar: Zoom server-side-redirects /wc/<id>/join
       // to its registration page, so no name input can ever render — from any
       // pod or IP. Deterministic (bots ca8d3a00 / a32de694 burned 6 pods each
@@ -698,14 +723,81 @@ export class ZoomProvider implements MeetingProviderInterface {
     return sawBlockingModal ? "blocked" : "absent"
   }
 
+  /**
+   * Wait for the pre-join card, giving Zoom as long as it needs while the client
+   * is still visibly loading and reloading the page when it freezes.
+   *
+   * Replaces a flat 30s waitForSelector that was wrong in both directions: it
+   * abandoned joins where Zoom was merely slow (it can take minutes), and it
+   * reported the ones that never loaded as a plain CannotJoinMeeting —
+   * indistinguishable from a genuine refusal, and retried the same way.
+   *
+   * "unrecognised" means the page finished loading into something we don't know:
+   * handed straight back so the caller's registration / wall / denial checks
+   * still own that decision.
+   */
+  private async waitForPrejoinCard(
+    page: Page,
+    cancelCheck: () => boolean
+  ): Promise<"ready" | "stalled" | "unrecognised"> {
+    const tracker = new ZoomLoadingStallTracker("pre-join")
+    const probe = createZoomLoadProbe(page, LOAD_PROBE_SELECTORS)
+
+    while (true) {
+      // This loop can now run for minutes, so it has to honour a stop request
+      // the way waitForAdmission does — otherwise an API stop sits unanswered
+      // until the whole load phase gives up.
+      if (cancelCheck()) {
+        if (!GLOBAL.getEndReason()) {
+          GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
+        }
+        throw new Error("Bot stopped while waiting for the Zoom pre-join card")
+      }
+
+      const action = tracker.observe(await probe(), Date.now())
+
+      switch (action.type) {
+        case "ready":
+          return "ready"
+
+        case "reload":
+          console.warn(
+            `[Zoom] Pre-join page frozen for ${Math.round(action.stalledForMs / 1000)}s — reloading (${action.attempt}/${MAX_STALL_RELOADS})`
+          )
+          // A reload that itself times out is not fatal: the next poll re-reads
+          // the page and the tracker decides again on what it actually finds.
+          await page
+            .reload({ waitUntil: "domcontentloaded", timeout: 60_000 })
+            .catch((e) => console.warn("[Zoom] Stall reload failed:", formatError(e)))
+          break
+
+        case "giveUp":
+          console.warn(`[Zoom] Giving up on pre-join load — ${action.detail}`)
+          return action.stalled ? "stalled" : "unrecognised"
+
+        default:
+          break
+      }
+
+      await sleep(LOAD_POLL_MS)
+    }
+  }
+
   private async waitForAdmission(page: Page, cancelCheck: () => boolean): Promise<void> {
     const timeoutMs = (GLOBAL.get().waiting_room_timeout ?? 600) * 1000
     const start = Date.now()
-    // A real connect resolves in a few seconds; if Zoom sits on the "Joining
-    // Meeting…" spinner far longer, the join is wedged. Bail out RETRYABLE so a
-    // fresh pod/IP tries again instead of silently recording the spinner.
-    const JOINING_STUCK_MS = 90_000
-    let joiningSince: number | null = null
+    // Watches the client for the whole admission wait: a connect that never
+    // resolves is a load stall, not a host who never admitted us, and the two
+    // need opposite responses (requeue vs. give up quietly).
+    //
+    // No reloads in this phase, deliberately. Past the Join click a reload
+    // throws the join away and lands back on the pre-join card, which this loop
+    // would read as "loaded" and then wait out to the 600s TimeoutWaitingToStart
+    // — a TERMINAL reason, so the bot would not even retry. A reload cannot
+    // recover a join anyway, so a stall here goes straight to the requeue, where
+    // a fresh pod re-runs the join properly.
+    const loadTracker = new ZoomLoadingStallTracker("admission", { maxReloads: 0 })
+    const probe = createZoomLoadProbe(page, LOAD_PROBE_SELECTORS)
 
     while (Date.now() - start < timeoutMs) {
       if (cancelCheck()) {
@@ -741,29 +833,31 @@ export class ZoomProvider implements MeetingProviderInterface {
         throw new Error(`[Zoom] Rejected during admission: ${reason}`)
       }
 
-      // "Joining Meeting…" / connecting spinner. Zoom mounts an (empty)
-      // #video-share-layout video-player behind it, which the in-meeting detector
-      // would false-positive as "admitted" — so the bot starts recording the
-      // spinner. Treat the spinner as NOT admitted: keep waiting, and if it never
-      // resolves, bail out retryable rather than record a frozen page.
-      if (await this.isJoiningSpinner(page)) {
-        joiningSince ??= Date.now()
-        const stuckFor = Date.now() - joiningSince
-        if (stuckFor > JOINING_STUCK_MS) {
-          console.warn(
-            `[Zoom] Stuck on "Joining Meeting…" spinner for ${Math.round(stuckFor / 1000)}s — bailing out retryable`
-          )
-          GLOBAL.setShouldRetry(true)
-          GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
-          throw new Error("[Zoom] Stuck on Joining Meeting spinner")
-        }
+      // Is the client even up? This has to run BEFORE the admission checks
+      // below: Zoom mounts an empty #video-share-layout video-player behind the
+      // "Joining Meeting…" overlay, and the in-meeting detector would read that
+      // as admitted and start recording the spinner.
+      //
+      // The old version of this check bailed out with TimeoutWaitingToStart,
+      // which waiting-room-state lists as TERMINAL — so the setShouldRetry(true)
+      // beside it was immediately overwritten and a detected stall never
+      // actually retried. ZoomLoadingStalled is retryable by construction, and
+      // the retry decision now lives in exactly one place (ZOOM_TERMINAL).
+      const loadAction = loadTracker.observe(await probe(), Date.now())
+      if (loadAction.type === "giveUp" && loadAction.stalled) {
+        console.warn(`[Zoom] ${loadAction.detail}`)
+        GLOBAL.setError(MeetingEndReason.ZoomLoadingStalled)
+        throw new Error(`[Zoom] zoom_loading_stalled: ${loadAction.detail}`)
+      }
+      if (loadAction.type === "wait") {
         console.log(
-          `[Zoom] "Joining Meeting…" spinner (${Math.round(stuckFor / 1000)}s) — not admitted yet`
+          `[Zoom] Client still loading — not admitted yet (${Math.round((Date.now() - start) / 1000)}s)`
         )
         await sleep(2000)
         continue
       }
-      joiningSince = null
+      // "ready", or a page that loaded into something we don't recognise: the
+      // waiting-room / in-meeting / denial checks below own it from here.
 
       // Waiting room first (see method doc).
       const waiting = await zoomStateDetector.isWaitingRoom(page)
@@ -870,26 +964,6 @@ export class ZoomProvider implements MeetingProviderInterface {
   private throwPasscodeFailure(reason: ZoomPasscodeFailureReason): never {
     GLOBAL.setError(reason)
     throw new Error(`[Zoom] ${getErrorMessageFromCode(reason)}`)
-  }
-
-  /**
-   * True while Zoom shows the post-Join "Joining Meeting…" / connecting spinner.
-   * Distinct from the waiting-room copy ("please wait, the host will let you in"),
-   * so it won't shadow a genuine waiting room.
-   */
-  private async isJoiningSpinner(page: Page): Promise<boolean> {
-    try {
-      return await page.evaluate(() => {
-        const t = (document.body?.innerText || "").toLowerCase()
-        return (
-          t.includes("joining meeting") ||
-          t.includes("joining the meeting") ||
-          t.includes("connecting to the meeting")
-        )
-      })
-    } catch {
-      return false
-    }
   }
 
   async findEndMeeting(page: Page, _opts?: { ignoreAloneSignals?: boolean }): Promise<boolean> {

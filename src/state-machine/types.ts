@@ -51,6 +51,12 @@ export enum MeetingEndReason {
   // the webinar requires per-registrant registration (name+email → personal tk=
   // link), so an anonymous join can never succeed from any pod/IP. Terminal.
   ZoomWebinarRegistrationRequired = "zoomWebinarRegistrationRequired",
+  // The Zoom web client never finished coming up — frozen on a spinner, a blank
+  // #zmmtg-root, or a navigation that resolved but never rendered. Distinct from
+  // both CannotJoinMeeting (which lumped it in with real refusals) and from the
+  // anti-bot wall: nothing is rejecting the bot, the page simply did not load, so
+  // the useful response is a reload and then a fresh pod — not a new exit IP.
+  ZoomLoadingStalled = "zoomLoadingStalled",
   // Authenticated Teams bot (username/password) — failure modes the api-server distinguishes.
   // Invalid/Captcha/Mfa flip the teams_login to invalid (per-account); Timeout is transient.
   TeamsLoginFailedInvalidCredentials = "teamsLoginFailedInvalidCredentials",
@@ -109,6 +115,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "Zoom rejected the passcode supplied in the meeting URL. Use a join link containing the current passcode."
     case MeetingEndReason.ZoomWebinarRegistrationRequired:
       return "This Zoom webinar requires registration: Zoom redirected the join URL to its registration page, so the bot cannot join anonymously. Register the bot first and use the personalized join link (tk=) from the confirmation, or disable required registration for the webinar."
+    case MeetingEndReason.ZoomLoadingStalled:
+      return "The Zoom web client did not finish loading — it stayed on a loading/connecting screen without progressing. This is usually transient on Zoom's side; the bot reloaded and retried before giving up."
     case MeetingEndReason.TeamsLoginFailedInvalidCredentials:
       return "Microsoft rejected the account email/password. Update the teams_login credentials."
     case MeetingEndReason.TeamsLoginFailedCaptcha:
