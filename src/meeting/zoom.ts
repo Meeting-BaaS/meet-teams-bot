@@ -24,8 +24,8 @@ import {
   ZOOM_INVALID_PASSCODE_PATTERN
 } from "./zoom-passcode"
 import {
+  createZoomLoadProbe,
   MAX_STALL_RELOADS,
-  readZoomLoadSnapshot,
   type ZoomLoadProbeSelectors,
   ZoomLoadingStallTracker
 } from "./zoom-loading-stall"
@@ -349,7 +349,7 @@ export class ZoomProvider implements MeetingProviderInterface {
 
     // Wait for the pre-join name input: patient while Zoom is still coming up,
     // reloading when it freezes (see waitForPrejoinCard).
-    const prejoin = await this.waitForPrejoinCard(page)
+    const prejoin = await this.waitForPrejoinCard(page, cancelCheck)
     if (prejoin !== "ready") {
       // The client never came up at all. Its own reason, so it is neither
       // confused with a refusal nor retried like the IP-keyed wall.
@@ -736,14 +736,25 @@ export class ZoomProvider implements MeetingProviderInterface {
    * handed straight back so the caller's registration / wall / denial checks
    * still own that decision.
    */
-  private async waitForPrejoinCard(page: Page): Promise<"ready" | "stalled" | "unrecognised"> {
+  private async waitForPrejoinCard(
+    page: Page,
+    cancelCheck: () => boolean
+  ): Promise<"ready" | "stalled" | "unrecognised"> {
     const tracker = new ZoomLoadingStallTracker("pre-join")
+    const probe = createZoomLoadProbe(page, LOAD_PROBE_SELECTORS)
 
     while (true) {
-      const action = tracker.observe(
-        await readZoomLoadSnapshot(page, LOAD_PROBE_SELECTORS),
-        Date.now()
-      )
+      // This loop can now run for minutes, so it has to honour a stop request
+      // the way waitForAdmission does — otherwise an API stop sits unanswered
+      // until the whole load phase gives up.
+      if (cancelCheck()) {
+        if (!GLOBAL.getEndReason()) {
+          GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
+        }
+        throw new Error("Bot stopped while waiting for the Zoom pre-join card")
+      }
+
+      const action = tracker.observe(await probe(), Date.now())
 
       switch (action.type) {
         case "ready":
@@ -777,8 +788,16 @@ export class ZoomProvider implements MeetingProviderInterface {
     const start = Date.now()
     // Watches the client for the whole admission wait: a connect that never
     // resolves is a load stall, not a host who never admitted us, and the two
-    // need opposite responses (reload/requeue vs. give up quietly).
-    const loadTracker = new ZoomLoadingStallTracker("admission")
+    // need opposite responses (requeue vs. give up quietly).
+    //
+    // No reloads in this phase, deliberately. Past the Join click a reload
+    // throws the join away and lands back on the pre-join card, which this loop
+    // would read as "loaded" and then wait out to the 600s TimeoutWaitingToStart
+    // — a TERMINAL reason, so the bot would not even retry. A reload cannot
+    // recover a join anyway, so a stall here goes straight to the requeue, where
+    // a fresh pod re-runs the join properly.
+    const loadTracker = new ZoomLoadingStallTracker("admission", { maxReloads: 0 })
+    const probe = createZoomLoadProbe(page, LOAD_PROBE_SELECTORS)
 
     while (Date.now() - start < timeoutMs) {
       if (cancelCheck()) {
@@ -824,20 +843,7 @@ export class ZoomProvider implements MeetingProviderInterface {
       // beside it was immediately overwritten and a detected stall never
       // actually retried. ZoomLoadingStalled is retryable by construction, and
       // the retry decision now lives in exactly one place (ZOOM_TERMINAL).
-      const loadAction = loadTracker.observe(
-        await readZoomLoadSnapshot(page, LOAD_PROBE_SELECTORS),
-        Date.now()
-      )
-      if (loadAction.type === "reload") {
-        console.warn(
-          `[Zoom] Client frozen mid-admission for ${Math.round(loadAction.stalledForMs / 1000)}s — reloading (${loadAction.attempt}/${MAX_STALL_RELOADS})`
-        )
-        await page
-          .reload({ waitUntil: "domcontentloaded", timeout: 60_000 })
-          .catch((e) => console.warn("[Zoom] Stall reload failed:", formatError(e)))
-        await sleep(LOAD_POLL_MS)
-        continue
-      }
+      const loadAction = loadTracker.observe(await probe(), Date.now())
       if (loadAction.type === "giveUp" && loadAction.stalled) {
         console.warn(`[Zoom] ${loadAction.detail}`)
         GLOBAL.setError(MeetingEndReason.ZoomLoadingStalled)

@@ -1,7 +1,10 @@
+import type { Page } from "@playwright/test"
 import {
   BLANK_STALL_AFTER_MS,
   classifyZoomLoadState,
+  createZoomLoadProbe,
   LOAD_PHASE_HARD_CAP_MS,
+  loadFingerprint,
   STALL_AFTER_MS,
   ZoomLoadingStallTracker,
   type ZoomLoadSnapshot
@@ -176,11 +179,94 @@ describe("ZoomLoadingStallTracker", () => {
     expect(tracker.reloadCount).toBe(0)
   })
 
+  // The admission phase runs with no reload budget: past the Join click a reload
+  // lands back on the pre-join card, which the caller reads as "loaded" and then
+  // waits out to a TERMINAL TimeoutWaitingToStart. A stall there must go straight
+  // to the requeue instead.
+  it("gives up without reloading when no reload budget is allowed", () => {
+    const tracker = new ZoomLoadingStallTracker("admission", { maxReloads: 0 })
+    const loading = snap({ readyState: "loading", text: "Joining Meeting..." })
+
+    expect(tracker.observe(loading, 0).type).toBe("wait")
+    expect(tracker.observe(loading, STALL_AFTER_MS)).toMatchObject({
+      type: "giveUp",
+      stalled: true
+    })
+    expect(tracker.reloadCount).toBe(0)
+  })
+
+  // A flip through "unknown" and back must not be measured as one long freeze,
+  // or the page spends a reload it never earned.
+  it("starts a fresh stall window after passing through an unknown state", () => {
+    const tracker = new ZoomLoadingStallTracker("pre-join", { unknownGraceMs: 60_000 })
+    const loading = snap({ readyState: "loading", text: "Loading..." })
+    const unknown = snap({ text: "some page we do not recognise" })
+
+    expect(tracker.observe(loading, 0).type).toBe("wait")
+    expect(tracker.observe(unknown, 10_000).type).toBe("wait")
+    // Same loading frame as at t=0: without the reset this reads as a 30s freeze.
+    expect(tracker.observe(loading, 30_000).type).toBe("wait")
+    expect(tracker.reloadCount).toBe(0)
+  })
+
   it("stops counting toward the unknown grace once the client comes up", () => {
     const tracker = new ZoomLoadingStallTracker("pre-join", { unknownGraceMs: 5_000 })
     tracker.observe(snap({ text: "something odd" }), 0)
     expect(tracker.observe(snap({ prejoinReady: true }), 1_000).type).toBe("ready")
     // The odd frame reappears: the grace starts over rather than firing at once.
     expect(tracker.observe(snap({ text: "something odd" }), 4_000).type).toBe("wait")
+  })
+})
+
+describe("createZoomLoadProbe", () => {
+  const selectors = { prejoin: "#input-for-name", meetingUi: "button" }
+
+  const hungPage = () => {
+    const evaluate = jest.fn(() => new Promise<never>(() => {}))
+    return { page: { evaluate } as unknown as Page, evaluate }
+  }
+
+  // page.evaluate has no timeout in Playwright, and a renderer whose main thread
+  // is wedged is exactly the page this module exists to catch. Unbounded, the
+  // poll loop blocks before the tracker can ever order a reload or hit the cap.
+  it("returns an unresponsive snapshot instead of hanging on a wedged renderer", async () => {
+    const { page } = hungPage()
+    const probe = createZoomLoadProbe(page, selectors, 20)
+
+    const snapshot = await probe()
+
+    expect(snapshot).toMatchObject({ readyState: "loading", url: "", elementCount: 0 })
+  })
+
+  // Otherwise a frozen page queues a fresh pending evaluation every poll, for as
+  // long as it stays frozen.
+  it("does not queue another evaluation behind one that never came back", async () => {
+    const { page, evaluate } = hungPage()
+    const probe = createZoomLoadProbe(page, selectors, 20)
+
+    await probe()
+    await probe()
+    await probe()
+
+    expect(evaluate).toHaveBeenCalledTimes(1)
+  })
+
+  // The unresponsive snapshot has to be identical every time, or the tracker
+  // reads a page that cannot answer at all as one that keeps changing.
+  it("reports an unchanging snapshot so the stall clock actually runs", async () => {
+    const { page } = hungPage()
+    const probe = createZoomLoadProbe(page, selectors, 20)
+
+    const first = loadFingerprint(await probe())
+    const second = loadFingerprint(await probe())
+
+    expect(second).toBe(first)
+  })
+
+  it("passes the page's real snapshot straight through when it answers", async () => {
+    const answered = snap({ prejoinReady: true, elementCount: 900 })
+    const page = { evaluate: jest.fn(async () => answered) } as unknown as Page
+
+    expect(await createZoomLoadProbe(page, selectors, 20)()).toEqual(answered)
   })
 })

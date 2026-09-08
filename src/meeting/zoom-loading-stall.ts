@@ -227,6 +227,11 @@ export class ZoomLoadingStallTracker {
 
     if (state === "unknown") {
       this.unknownSince ??= now
+      // Drop the change fingerprint so the next loading observation starts a
+      // fresh stall window. Without this a loading -> unknown -> loading flip
+      // that happens to keep an identical fingerprint would be measured as one
+      // long freeze and spend a reload it never earned.
+      this.lastFingerprint = null
       const unknownFor = now - this.unknownSince
       if (unknownFor >= this.unknownGraceMs) {
         return {
@@ -299,10 +304,75 @@ export interface ZoomLoadProbeSelectors {
   meetingUi: string
 }
 
+/** Ceiling on one probe. `page.evaluate` has no timeout of its own, so a
+ *  renderer whose main thread is wedged never returns from it — and that is the
+ *  exact page this module exists to catch. Without a bound the polling loop
+ *  blocks forever *before* the tracker can order a reload or hit the hard cap. */
+export const PROBE_TIMEOUT_MS = 5_000
+
+/** What we report when the page will not answer: a frozen, unchanging snapshot.
+ *  Not flagged as an empty root — an evaluate can also fail because a navigation
+ *  is committing, and calling that a white page would cut the patience short on
+ *  a page that is about to come up fine. Being constant is the point: the
+ *  fingerprint never moves, so the stall clock runs and the tracker acts. */
+function unresponsiveSnapshot(): ZoomLoadSnapshot {
+  return {
+    readyState: "loading",
+    url: "",
+    text: "",
+    elementCount: 0,
+    appRootEmpty: false,
+    loadingIndicator: false,
+    prejoinReady: false,
+    meetingUiReady: false
+  }
+}
+
+/**
+ * A probe bound in time and limited to one outstanding evaluation.
+ *
+ * Both guards matter. The timeout stops a wedged renderer from hanging the
+ * caller; the in-flight check stops a probe being queued behind one that is
+ * never coming back, which would otherwise pile up a new pending evaluation
+ * every poll for as long as the page stays frozen.
+ */
+export function createZoomLoadProbe(
+  page: Page,
+  selectors: ZoomLoadProbeSelectors,
+  timeoutMs: number = PROBE_TIMEOUT_MS
+): () => Promise<ZoomLoadSnapshot> {
+  let inFlight = false
+
+  return async function probe(): Promise<ZoomLoadSnapshot> {
+    // An earlier probe that still has not come back is itself the answer: the
+    // page is not responding.
+    if (inFlight) return unresponsiveSnapshot()
+
+    inFlight = true
+    const evaluation = readZoomLoadSnapshot(page, selectors).finally(() => {
+      inFlight = false
+    })
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        evaluation,
+        new Promise<ZoomLoadSnapshot>((resolve) => {
+          timer = setTimeout(() => resolve(unresponsiveSnapshot()), timeoutMs)
+        })
+      ])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+}
+
 /**
  * Read the indicators off a live page. Deliberately defensive: this runs against
  * a page that may be mid-navigation or already torn down, and a throw here would
  * surface as a join failure rather than the stall it is describing.
+ *
+ * Unbounded on its own — callers should go through `createZoomLoadProbe`.
  */
 export async function readZoomLoadSnapshot(
   page: Page,
@@ -359,21 +429,9 @@ export async function readZoomLoadSnapshot(
       { prejoin: selectors.prejoin, meetingUi: selectors.meetingUi }
     )
   } catch {
-    // An unreadable page is exactly the frozen case this module exists for.
-    // Report it as blank so the tracker's clock keeps running, instead of the
-    // caller treating the error as a hard join failure.
-    return {
-      readyState: "loading",
-      url: "",
-      text: "",
-      // Not reported as an empty root: an evaluate can also throw simply because
-      // a navigation is committing, and calling that a white page would cut the
-      // patience short on a page that is about to come up fine.
-      elementCount: 0,
-      appRootEmpty: false,
-      loadingIndicator: false,
-      prejoinReady: false,
-      meetingUiReady: false
-    }
+    // An unreadable page is exactly the frozen case this module exists for, so
+    // report the unresponsive snapshot and let the tracker's clock run, instead
+    // of the caller treating the error as a hard join failure.
+    return unresponsiveSnapshot()
   }
 }
