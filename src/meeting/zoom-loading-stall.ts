@@ -372,9 +372,12 @@ export function createZoomLoadProbe(
  * a page that may be mid-navigation or already torn down, and a throw here would
  * surface as a join failure rather than the stall it is describing.
  *
- * Unbounded on its own — callers should go through `createZoomLoadProbe`.
+ * Unbounded on its own, and deliberately not exported: `page.evaluate` has no
+ * timeout, so the only way out of this module is through `createZoomLoadProbe`,
+ * which adds one. Leaving a raw reader on the public surface would let a future
+ * caller reintroduce the hang this file exists to detect.
  */
-export async function readZoomLoadSnapshot(
+async function readZoomLoadSnapshot(
   page: Page,
   selectors: ZoomLoadProbeSelectors
 ): Promise<ZoomLoadSnapshot> {
