@@ -1,3 +1,20 @@
+import { GLOBAL } from "../singleton"
+import { MeetingEndReason } from "../state-machine/types"
+
+// A bot may legitimately start late: a pod cold start, a queue backlog, an SQS
+// requeue after a failed join. It may never start SO late that the meeting it
+// was sent to cannot still be running. max_recording_duration is exactly that
+// bound — the longest window this bot was ever going to record — so past it the
+// meeting is over by construction and joining can only sit in an empty room
+// until the waiting-room timeout, on a billed pod. Floored so a very short
+// recording cap does not reject an ordinary cold start.
+const MIN_LATENESS_ALLOWANCE_SEC = 15 * 60
+
+function latenessAllowanceSec(): number {
+  const cap = GLOBAL.get().max_recording_duration
+  return Math.max(typeof cap === "number" && cap > 0 ? cap : 0, MIN_LATENESS_ALLOWANCE_SEC)
+}
+
 /**
  * Handles timing control for precise meeting join times.
  * If start_time is provided, waits until that exact time before joining.
@@ -50,8 +67,22 @@ export async function handleTimingControl(
     console.log("Timing control: Bot is now ready to join at scheduled time")
     return startTime
   }
+  const lateBy = currentTime - startTime
+  const allowance = latenessAllowanceSec()
+  if (lateBy > allowance) {
+    // Do not join. Reaching here means something requeued a bot long after its
+    // meeting could still have been running (see the watchdog note in main.ts).
+    console.error(
+      `Bot is late by ${lateBy}s, past its ${allowance}s allowance — the meeting cannot still be running. Not joining.`
+    )
+    GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+    GLOBAL.setShouldRetry(false)
+    throw new Error(
+      `Refusing to join ${lateBy}s after the scheduled start (allowance ${allowance}s)`
+    )
+  }
   console.log(
-    `Bot is late by ${currentTime - startTime} seconds. Joining immediately (scheduled: ${startTime}, current: ${currentTime})`
+    `Bot is late by ${lateBy} seconds. Joining immediately (scheduled: ${startTime}, current: ${currentTime})`
   )
   return startTime
 }
