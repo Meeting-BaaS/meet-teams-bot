@@ -262,8 +262,12 @@ export class DiarizationTracker {
     // network authoritative; fallbacks fill large holes; boot gap retrofitted
     // onto the first identified speaker). See speaker-timeline-assembler.ts.
     const meetingEndRel = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
-    const { segments: assembled, filledBySource, retrofittedFromSeconds } =
-      assembleSpeakerTimeline(
+    const {
+      segments: assembled,
+      filledBySource,
+      retrofittedFromSeconds,
+      sourceDissonance
+    } = assembleSpeakerTimeline(
       [
         {
           kind: "network" as const,
@@ -279,6 +283,15 @@ export class DiarizationTracker {
       meetingEndRel,
       { botNames }
     )
+    if (sourceDissonance) {
+      // Loud on purpose: it means an interceptor regressed and was silently
+      // wrong for a whole call. Counts and ratios only — names are PII.
+      console.error(
+        `[DiarizationTracker] ⚠️ Source dissonance (${sourceDissonance.reason}): promoted ${sourceDissonance.promotedSource} over ${sourceDissonance.demotedSource}; ` +
+          `effective speakers ${sourceDissonance.demotedSource}=${sourceDissonance.primaryEffectiveSpeakers} ${sourceDissonance.promotedSource}=${sourceDissonance.challengerEffectiveSpeakers}, ` +
+          `dominance=${sourceDissonance.primaryDominance}, other-speaker seconds ${sourceDissonance.primaryOtherSeconds} -> ${sourceDissonance.challengerOtherSeconds}`
+      )
+    }
     for (const [kind, count] of Object.entries(filledBySource)) {
       console.log(
         `[DiarizationTracker] Filled ${count} timeline gap segment(s) from the ${kind} fallback`
