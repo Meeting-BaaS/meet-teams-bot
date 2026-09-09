@@ -9,10 +9,21 @@
 /** biome-ignore-all lint/suspicious/noExplicitAny: browser-side bundle over untyped Teams/WebRTC internals. */
 
 // Type-only: erased, so the stringified bundle stays self-contained.
+import type { RosterScopeResolver, TeamsInterceptorScope } from "./meeting-scope"
 import type { SpeakerSetResolver, SpeakerTimelineRung } from "./speaker-timeline"
 
-/** @param resolveSpeakingSet - Passed in, not imported: this is stringified into the page. */
-export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetResolver) {
+/**
+ * @param resolveSpeakingSet - Passed in, not imported: this is stringified into the page.
+ * @param resolveRosterScope - Likewise. Keeps the roster-scoping decision in one
+ *   tested place (meeting-scope.ts) instead of a second copy inlined here.
+ * @param meetingScope - Which conversation this bot joined, and whether it signed in.
+ *   Serialized in by the injector for the same reason.
+ */
+export function teamsBrowserInterceptionLogic(
+  resolveSpeakingSet: SpeakerSetResolver,
+  resolveRosterScope: RosterScopeResolver,
+  meetingScope: TeamsInterceptorScope
+) {
   try {
     if ((window as any).__teamsNetworkInterceptorInitialized === true) {
       console.warn("[Teams NetworkInterceptor] ⚠️ Already initialized, skipping duplicate")
@@ -182,9 +193,96 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
       captionUnmatched: 0,
       captionsEnabled: false,
       // Caption interval overruling a live dsh — 0 on single-signal sessions.
-      rungCaptionOverDsh: 0
+      rungCaptionOverDsh: 0,
+      // Roster scoping. rosterScopeRejected > 0 means this session was offered a
+      // roster belonging to another meeting — the concurrent-signed-in-session
+      // leak. unplaceable counts payloads carrying no conversation id (what strict
+      // mode would additionally drop); unknown counts payloads seen before this
+      // bot's own conversation could be identified at all.
+      ownConversationKnown: false,
+      rosterScopeRejected: 0,
+      rosterScopeAggregate: 0,
+      rosterScopeUnplaceable: 0,
+      rosterScopeUnknown: 0,
+      // True if strict scoping was backed off to keep a signed-in session's roster
+      // from starving — the signal that this meeting's roster traffic is unscoped.
+      rosterScopeStrictRelaxed: false
     }
     const diag = (window as any).__teamsNetDiag
+
+    // ===== MEETING SCOPE =====
+    // Only merge roster payloads that belong to the meeting this bot joined.
+    // An anonymous bot's page only ever knows one meeting, so this is a no-op for
+    // it. A signed-in bot's page is a full Teams client for the M365 account and
+    // also fetches state for OTHER calls that account is in — which is how
+    // concurrent sessions on one teams_login mixed their rosters. The decision
+    // itself lives in meeting-scope.ts and is passed in (this function is
+    // stringified into the page and cannot import at runtime).
+    const scope: TeamsInterceptorScope = meetingScope || {
+      conversationId: null,
+      isAuthenticated: false
+    }
+    let ownConversation: string | null = scope.conversationId
+    diag.ownConversationKnown = Boolean(ownConversation)
+
+    // Signed-in bots require positive proof that a roster payload belongs to this
+    // meeting. The one risk in that is a session whose roster traffic carries no
+    // conversation id anywhere, which would leave the bot knowing nobody — so this
+    // self-corrects instead of hiding behind config: if strict scoping has dropped
+    // unplaceable payloads and the roster is STILL empty, it stops being strict.
+    // A relaxed session is back to dropping only proven-foreign payloads, which is
+    // strictly better than the pre-fix behaviour it falls back to.
+    const STRICT_ESCAPE_AFTER = 5
+    let strict = scope.isAuthenticated
+    let unplaceableWhileEmpty = 0
+
+    /**
+     * Latch the joined conversation off the live call, for join URLs that carry no
+     * thread id (short /meet/<code> links resolve it only after joining). Stored raw
+     * — resolveRosterScope extracts the id.
+     */
+    function learnOwnConversation(): void {
+      if (ownConversation) return
+      try {
+        const call = getActiveCall()
+        const raw = call?.threadId || call?.conversationId || call?.threadKey || call?.id
+        if (typeof raw !== "string" || !raw) return
+        ownConversation = raw
+        diag.ownConversationKnown = true
+        debug("🔒 meeting scope learned from active call", raw)
+      } catch {
+        // Teams internals unavailable — stay permissive.
+      }
+    }
+
+    /** Whether a roster payload may be merged into this bot's participant map. */
+    function isInMeetingScope(url: string | undefined, body: string | undefined): boolean {
+      learnOwnConversation()
+      const verdict = resolveRosterScope({
+        own: ownConversation,
+        url,
+        body,
+        isAuthenticated: scope.isAuthenticated,
+        strict
+      })
+      if (verdict.reason === "own-unknown") diag.rosterScopeUnknown++
+      else if (verdict.reason === "aggregate") diag.rosterScopeAggregate++
+      else if (verdict.reason === "unplaceable") {
+        diag.rosterScopeUnplaceable++
+        if (!verdict.accept && participantsByDeviceId.size === 0) {
+          unplaceableWhileEmpty++
+          if (unplaceableWhileEmpty >= STRICT_ESCAPE_AFTER) {
+            strict = false
+            diag.rosterScopeStrictRelaxed = true
+            console.warn(
+              `${LOG} ⚠️ roster still empty after dropping ${unplaceableWhileEmpty} unscoped payloads — relaxing to proven-foreign-only`
+            )
+          }
+        }
+      }
+      if (!verdict.accept) diag.rosterScopeRejected++
+      return verdict.accept
+    }
 
     // ===== TEAMS INTERNAL CALLING SDK (best-effort) =====
 
@@ -319,6 +417,12 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
     function handleRosterUpdate(eventDataObject: any): void {
       try {
         const decodedBody = decodeWebSocketBody(eventDataObject.body)
+        // The trouter socket is per-USER, not per-call: an account in two meetings
+        // receives roster deltas for both over this one socket.
+        if (!isInMeetingScope(eventDataObject?.url, JSON.stringify(decodedBody))) {
+          debug("🔒 rejected out-of-scope roster frame", eventDataObject?.url)
+          return
+        }
         const rawParticipants = Object.values<any>(decodedBody.participants || {})
         applyParticipants(rawParticipants)
       } catch (error) {
@@ -347,6 +451,10 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
     function tryHttpRoster(url: string, text: string): void {
       try {
         if (!text || text.indexOf("displayName") === -1) return
+        if (!isInMeetingScope(url, text)) {
+          debug("🔒 rejected out-of-scope roster payload", url)
+          return
+        }
         const body = JSON.parse(text)
         // The HTTP snapshot nests the roster as { roster: { participants: {mri: {...}} } };
         // other endpoints use top-level participants / value. Handle all as object-or-array.

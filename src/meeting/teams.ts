@@ -420,7 +420,7 @@ export class TeamsProvider implements MeetingProviderInterface {
 
     try {
       const { setupTeamsNetworkInterceptionScripts } = await import("./teams/network-interception")
-      const success = await setupTeamsNetworkInterceptionScripts(page)
+      const success = await setupTeamsNetworkInterceptionScripts(page, link)
       if (!success) {
         console.warn("[Teams] ⚠️ Failed to setup network interception scripts")
       }
