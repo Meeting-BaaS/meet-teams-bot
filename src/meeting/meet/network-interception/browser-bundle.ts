@@ -670,7 +670,18 @@ export function browserInterceptionLogic(schema: any[]) {
       return audioData.some((v) => Math.abs(v) > 0.001)
     }
 
-    // Find users with audio levels from contributing sources
+    // Find users with audio levels from contributing sources.
+    //
+    // Ranks every AUDIBLE source, including ones whose SSRC has no device
+    // mapping yet. Filtering unresolved sources out before the sort silently
+    // handed the turn to the loudest source we happened to be able to name:
+    // a participant whose SSRC never resolved was invisible, so the other
+    // participant won every sample — over an open mic that clears the level
+    // threshold all call, that is one speaker for the whole meeting, broadcast
+    // once (the callers dedupe on change) and never corrected. Prod: a 30
+    // minute Meet with three roster entries came back 100% attributed to one
+    // person. Callers must therefore handle `user` being null — see
+    // speakingDeviceOf.
     function getUsersWithAudio(contributingSources: any[], userManager: any): any[] {
       return contributingSources
         .map((source) => ({
@@ -679,8 +690,18 @@ export function browserInterceptionLogic(schema: any[]) {
           timestamp: source.timestamp,
           user: getUserByStreamId(userManager, source.source.toString())
         }))
-        .filter((x) => x.user && x.audioLevel > 0.05)
+        .filter((x) => x.audioLevel > 0.05)
         .sort((a, b) => b.audioLevel - a.audioLevel)
+    }
+
+    // Device id to attribute an audio entry to. An unresolved SSRC keeps its
+    // own identity (the SSRC itself, matching how the dcrpc path keys speakers
+    // it cannot name) so turn boundaries survive as "Unknown" instead of being
+    // merged into whoever happened to be nameable. Finalize treats an Unknown
+    // stretch as a hole and lets the UI observer name it.
+    function speakingDeviceOf(entry: any): string | null {
+      if (!entry) return null
+      return entry.user ? entry.user.deviceId : String(entry.ssrc)
     }
 
     // Build user state list with speaking status
@@ -755,6 +776,22 @@ export function browserInterceptionLogic(schema: any[]) {
       const allUsers = getAllUsers(userManager)
       const filteredUsers = filterActiveUsers(allUsers)
       const users = buildUserStateList(filteredUsers, speakingDeviceId, audioLevel)
+
+      // The speaker is audible but not in the roster (an SSRC no collections
+      // record mapped, or a user filterActiveUsers dropped). Emit it as its own
+      // Unknown participant rather than sending an all-silent update that would
+      // leave the previous speaker holding the turn. Mirrors broadcastDcrpcSpeakers.
+      if (speakingDeviceId && !users.some((u: any) => u.deviceId === speakingDeviceId)) {
+        users.push({
+          deviceId: speakingDeviceId,
+          name: "Unknown",
+          isCurrentUser: false,
+          isSpeaking: true,
+          status: 1,
+          isHost: false,
+          audioLevel
+        })
+      }
 
       // Calls the Node-side callback exposed via Playwright"s exposeFunction (see network-interception/index.ts)
       // This crosses the browser/Node boundary → triggers NetworkSpeakerLogger.handleNetworkPayload
@@ -972,8 +1009,8 @@ export function browserInterceptionLogic(schema: any[]) {
                     // DEBUG: Log speaker detection only when speaker changes (reduces noise significantly)
                     // The speaker change log below will handle the important state changes
 
-                    if (loudestSpeaker?.user) {
-                      const currentSpeakerId = loudestSpeaker.user.deviceId
+                    const currentSpeakerId = speakingDeviceOf(loudestSpeaker)
+                    if (currentSpeakerId) {
                       // Only broadcast if speaker changed
                       if (currentSpeakerId !== lastBroadcastedSpeakerId) {
                         console.error(
@@ -1317,8 +1354,8 @@ export function browserInterceptionLogic(schema: any[]) {
 
         const usersWithAudioLevels = getUsersWithAudio(freshSources, userManager)
         const loudestSpeaker = usersWithAudioLevels[0]
-        if (loudestSpeaker?.user) {
-          const currentSpeakerId = loudestSpeaker.user.deviceId
+        const currentSpeakerId = speakingDeviceOf(loudestSpeaker)
+        if (currentSpeakerId) {
           if (currentSpeakerId !== lastBroadcastedSpeakerId) {
             console.error(
               `[NetworkInterceptor] 🎤 Speaker changed (csrc sample): ${lastBroadcastedSpeakerId || "none"} → ${currentSpeakerId} (audioLevel: ${loudestSpeaker.audioLevel})`
