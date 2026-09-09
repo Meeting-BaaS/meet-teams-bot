@@ -2,7 +2,7 @@ import type { BrowserContext, Page } from "@playwright/test"
 import { envVars } from "../config/env-vars"
 import { captureFingerprint } from "../browser/fingerprint-probe"
 import { listenPage } from "../browser/page-logger"
-import { setZoomJoinHost } from "../proxy/toggle-proxy"
+import { getProxyTelemetry, setZoomJoinHost } from "../proxy/toggle-proxy"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
 import { getErrorMessageFromCode, MeetingEndReason } from "../state-machine/types"
@@ -43,6 +43,16 @@ const JOIN_BUTTON = "button.preview-join-button, #joinBtn"
 const PREVIEW_MUTE = "#preview-audio-control-button"
 const PREVIEW_VIDEO = "#preview-video-control-button"
 const LEAVE_BUTTON = 'button[aria-label="Leave"]'
+
+// Which of Zoom's anti-bot walls fired. The end reason collapses all four into
+// zoomAnonymousJoinNotAllowed, which cannot answer the one question that decides
+// what to fix: a wall that fires BEFORE the display name is typed is pure IP /
+// fingerprint reputation and no naming change can touch it.
+type ZoomWallPhase =
+  | "pre_name" // rendered on the pre-join page, before any name was entered
+  | "no_name_input" // the name field never appeared at all
+  | "post_name" // appeared only after the name was typed, before Join
+  | "admission" // streamed in after the Join click, during the admission wait
 
 // What the loading-stall probe treats as proof the client is up. Built from the
 // selectors above and the shared state config so there is exactly one place a
@@ -373,10 +383,7 @@ export class ZoomProvider implements MeetingProviderInterface {
       }
       // The wall can render here instead of a name field — check before failing.
       const wall = await this.detectBotWall(page)
-      if (wall) {
-        GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
-        throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
-      }
+      if (wall) this.failBotWall("no_name_input", wall)
       GLOBAL.setError(MeetingEndReason.CannotJoinMeeting)
       throw new Error("[Zoom] Pre-join name input never appeared")
     }
@@ -384,10 +391,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     // A visible CAPTCHA takes priority over a coexisting passcode field: it is
     // IP-reputation-driven and may clear on a regional retry.
     const initialWall = await this.detectBotWall(page)
-    if (initialWall) {
-      GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
-      throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${initialWall}`)
-    }
+    if (initialWall) this.failBotWall("pre_name", initialWall)
 
     // Zoom can render its passcode form while Firefox reports the input as not
     // visible/actionable. Read raw DOM state instead of using isVisible(), then
@@ -419,10 +423,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     // classic client, or the sign-in / anti-bot wall). These cannot be cleared
     // by automation — fail fast rather than holding the browser.
     const wall = await this.detectBotWall(page)
-    if (wall) {
-      GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
-      throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
-    }
+    if (wall) this.failBotWall("post_name", wall)
 
     // Wait for Join to enable (React enables within ~1-2s of valid name).
     const joinEnabled = await page
@@ -814,10 +815,7 @@ export class ZoomProvider implements MeetingProviderInterface {
       // exit IP (see main.ts handleFailedRecording), since the wall is
       // IP-reputation-driven rather than deterministic for this meeting.
       const wall = await this.detectBotWall(page)
-      if (wall) {
-        GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
-        throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
-      }
+      if (wall) this.failBotWall("admission", wall)
 
       // Missing/invalid passcodes leave the browser on the pre-join form. Check
       // every poll because Zoom can show the rejection only after Join input.
@@ -864,6 +862,17 @@ export class ZoomProvider implements MeetingProviderInterface {
       if (!waiting.matched) {
         const inMeeting = await zoomStateDetector.isInMeeting(page)
         if (inMeeting.matched) {
+          {
+            // The wall lines above are useless without a denominator: a network
+            // that is never used cannot be told from one that never fails. Emit
+            // the same exit identity on a clean admission.
+            const t = getProxyTelemetry()
+            console.log(
+              `[Zoom] ✅ admitted proxy=${t.enabled ? "on" : "off"} ` +
+                `exit_cc=${t.exit_country ?? "none"} exit_asn=${t.exit_asn ?? "none"} ` +
+                `session=${t.session_id ?? "none"} sqs_retry=${GLOBAL.getRetryCount()}`
+            )
+          }
           console.log("[Zoom] Admitted — Leave button visible")
           return
         }
@@ -875,6 +884,27 @@ export class ZoomProvider implements MeetingProviderInterface {
 
     GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
     throw new Error(`[Zoom] Not admitted within ${timeoutMs}ms`)
+  }
+
+  /**
+   * Single exit for every Zoom anti-bot wall.
+   *
+   * Zoom, unlike Meet, reports no structured detection signal anywhere, so the
+   * only record of WHY a bot was walled is this line. It carries the exit
+   * identity that was in force (country + ASN, never the IP — that is redacted
+   * downstream) and which wall fired, which is what makes a per-network flag
+   * rate computable from logs alone.
+   */
+  private failBotWall(phase: ZoomWallPhase, wall: string): never {
+    const t = getProxyTelemetry()
+    console.error(
+      `[Zoom] 🚨 bot wall phase=${phase} wall="${wall}" ` +
+        `proxy=${t.enabled ? "on" : "off"} exit_cc=${t.exit_country ?? "none"} ` +
+        `exit_asn=${t.exit_asn ?? "none"} session=${t.session_id ?? "none"} ` +
+        `proxy_off_reason=${t.disabled_reason ?? "none"} sqs_retry=${GLOBAL.getRetryCount()}`
+    )
+    GLOBAL.setError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
+    throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
   }
 
   private async detectBotWall(page: Page): Promise<string | null> {
