@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { exit } from "node:process"
 import { ZodError } from "zod"
 import { Api } from "./api/methods"
@@ -28,6 +29,31 @@ import {
 const BOT_LIKE_NAME_RE =
   /note ?taker|recorder|recording|transcri|\bbots?\b|\bai\b|assistant|\bnotes?\b/i
 
+/**
+ * SIGTERM does not always mean "the cluster is taking this pod away".
+ *
+ * The supervisor that launched this process (apps/sqs-consumer) also runs a
+ * watchdog that SIGTERMs a bot which has outlived its recording window — a floor
+ * of REDIS_SESSION_EXPIRATION_SEC, five hours by default. That is the OPPOSITE
+ * of an eviction: the bot is wedged, the meeting it was sent to ended hours ago,
+ * and requeuing relaunches it into a dead meeting. Measured in prod, this
+ * produced relaunches of the same bot_uuid at exactly 18000s and 36000s after
+ * the first, each burning a pod, a video-device slot and a proxy session.
+ *
+ * The supervisor drops a sentinel file before it kills, and names it in
+ * WATCHDOG_KILL_SENTINEL. Absent env var or absent file → an eviction, and the
+ * requeue below is correct. Present → salvage the artifacts, never requeue.
+ */
+function killedByWatchdog(): boolean {
+  const sentinel = process.env["WATCHDOG_KILL_SENTINEL"]
+  if (!sentinel) return false
+  try {
+    return existsSync(sentinel)
+  } catch {
+    return false
+  }
+}
+
 // On SIGTERM (k8s eviction), requeue the meeting to a fresh pod so it isn't lost.
 // The shared GLOBAL.claimRecovery() token is taken ONLY right before a requeue, so
 // at most one requeue happens; a non-requeuing path must never take it (that would
@@ -39,7 +65,15 @@ process.on("SIGTERM", async () => {
     console.log("[SIGTERM] Recovery already owned by a requeuing handler — standing down")
     return
   }
-  console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
+  const watchdogKill = killedByWatchdog()
+  if (watchdogKill) {
+    console.error(
+      "[SIGTERM] Watchdog kill — this bot outlived its recording window; salvaging artifacts, NOT requeuing"
+    )
+    GLOBAL.setShouldRetry(false)
+  } else {
+    console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
+  }
   try {
     if (!GLOBAL.isServerless()) await uploadLogsToS3()
   } catch (e) {
@@ -49,6 +83,8 @@ process.on("SIGTERM", async () => {
     if (GLOBAL.hasRecordingFinalized()) {
       // Merged recording exists — preserve for S3/EFS salvage, don't requeue (no claim).
       console.log("[SIGTERM] Recording finalized — preserving artifacts (not requeuing)")
+    } else if (watchdogKill) {
+      console.log("[SIGTERM] Watchdog kill — artifacts preserved, requeue deliberately skipped")
     } else if (!GLOBAL.isServerless()) {
       GLOBAL.setShouldRetry(true)
       if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
