@@ -2,7 +2,13 @@ import { envVars } from "./config/env-vars"
 import { MetricsCollector } from "./services/metrics-collector"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
-import type { ArtifactKey, MeetingParams, Participant, RecordingMode } from "./types"
+import {
+  type ArtifactKey,
+  type MeetingParams,
+  type Participant,
+  type RecordingMode,
+  UNKNOWN_SPEAKER
+} from "./types"
 import { disguiseBotName, shouldDisguiseBotName } from "./utils/bot-name-disguise"
 import { PiiRedactor } from "./utils/PiiRedactor"
 
@@ -95,9 +101,7 @@ class Global {
       // sent us (entry_message, extra), so redact that form too. Never log
       // either string — the point of registering them is that they don't appear.
       PiiRedactor.registerBotName(meetingParams.bot_name)
-      console.log(
-        `[BotName] display name disguised for the ${meetingParams.meeting_platform} join`
-      )
+      console.log(`[BotName] display name disguised for the ${meetingParams.meeting_platform} join`)
     }
 
     console.log(`🤖 Bot ${meetingParams.bot_uuid} initialized with validated parameters`)
@@ -380,10 +384,7 @@ class Global {
   }
 
   public addParticipantIfNotExists(participant: Participant): void {
-    // TODO: Use id instead of name
-    if (!this.participants.some((p) => p.name === participant.name)) {
-      this.participants.push(participant)
-    }
+    Global.registerIdentity(this.participants, participant)
   }
 
   public getParticipants(): Participant[] {
@@ -395,10 +396,58 @@ class Global {
   }
 
   public addSpeakerIfNotExists(speaker: Participant): void {
-    // TODO: Use id instead of name
-    if (!this.speakers.some((s) => s.name === speaker.name)) {
-      this.speakers.push(speaker)
+    Global.registerIdentity(this.speakers, speaker)
+  }
+
+  /**
+   * Add `incoming` to a participant/speaker registry, or reconcile it with the
+   * row already representing that person.
+   *
+   * Identity is the network device id when we have one, and the resolved name
+   * only as a fallback. Collapsing by name is deliberate for people we can NAME —
+   * one human joining from two endpoints would otherwise surface as a phantom
+   * extra speaker — but "Unknown" is not a name. It is the placeholder every
+   * interceptor falls back to before a roster resolves, so it is shared by
+   * everyone still unidentified; keying on it merged all of them into a single
+   * row, and the registry being append-only made that permanent. A meeting with
+   * several speakers then came back reporting one.
+   *
+   * Reconciling also retires the placeholder: when a device's real name finally
+   * arrives, its existing row is renamed in place (or dropped, if that person is
+   * already listed from another device) instead of leaving a stale "Unknown"
+   * beside the resolved entry.
+   */
+  private static registerIdentity(registry: Participant[], incoming: Participant): void {
+    const device = incoming.participantId
+    const isNamed = Boolean(incoming.name) && incoming.name !== UNKNOWN_SPEAKER
+
+    if (device) {
+      const known = registry.find((p) => p.participantId === device)
+      if (known) {
+        if (!isNamed || known.name === incoming.name) return
+        // The name just resolved. If this person is already listed from another
+        // device, drop the placeholder rather than creating a duplicate.
+        if (registry.some((p) => p !== known && p.name === incoming.name)) {
+          registry.splice(registry.indexOf(known), 1)
+          return
+        }
+        known.name = incoming.name
+        known.id = incoming.id
+        known.displayName = incoming.displayName
+        known.profilePicture = incoming.profilePicture
+        known.isNetworkDetected = incoming.isNetworkDetected
+        return
+      }
     }
+
+    // Same person, different endpoint — only ever collapsed on a real name.
+    if (isNamed && registry.some((p) => p.name === incoming.name)) return
+
+    // An unidentified participant with no device id is indistinguishable from any
+    // other; keep the single placeholder row rather than growing one per callback.
+    if (!isNamed && !device && registry.some((p) => p.name === incoming.name)) return
+
+    registry.push(incoming)
   }
 
   public getSpeakers(): Participant[] {
