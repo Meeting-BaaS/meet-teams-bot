@@ -35,6 +35,84 @@ export function zoomBrowserInterceptionLogic() {
     ;(window as any).__zoomNetworkInterceptorInitialized = true
     ;(window as any).__zoomNetworkInterceptorStopped = false
 
+    // ===== STEALTH: native-toString masking =====
+    // This bundle runs via addInitScript, so it is in place before Zoom's own
+    // client boots — which is exactly when Zoom decides whether we are a bot.
+    // Everything it replaces (WebSocket, Worker, RTCPeerConnection) is a global
+    // a page can interrogate for free: Function.prototype.toString.call(WebSocket)
+    // on a wrapper returns its JS source instead of "[native code]", and the
+    // wrapper's own .name/.length differ from the native constructor's. Route
+    // toString through a Proxy that reports a native signature for our wrappers
+    // (keyed in a WeakMap) and is transparent for everything else. Ported from
+    // the Meet bundle, which has carried this since its own detection work.
+    const __nativeStr = new WeakMap<any, string>()
+    try {
+      const __origToString = Function.prototype.toString
+      const __tsProxy = new Proxy(__origToString, {
+        apply(target, thisArg: any, args: any[]) {
+          const masked = thisArg == null ? undefined : __nativeStr.get(thisArg)
+          if (masked) return masked
+          return Reflect.apply(target, thisArg, args)
+        }
+      })
+      ;(Function.prototype as any).toString = __tsProxy
+    } catch (_e) {
+      /* environment forbids patching — masking is simply absent */
+    }
+
+    // Make a wrapper indistinguishable from the constructor it replaces: same
+    // reported source, same .name, same .length. Reading them off the original
+    // rather than hardcoding keeps it correct across engines.
+    const __disguise = (wrapper: any, original: any): any => {
+      try {
+        __nativeStr.set(wrapper, `function ${original.name}() { [native code] }`)
+        Object.defineProperty(wrapper, "name", { value: original.name, configurable: true })
+        Object.defineProperty(wrapper, "length", { value: original.length, configurable: true })
+      } catch (_e) {
+        /* frozen or non-configurable — skip */
+      }
+      return wrapper
+    }
+
+    // ===== STEALTH: cloak our injected window globals =====
+    // No real browser has a __zoomSpeakerQueue. A detector that enumerates window
+    // finds every one of these on the first frame. Redefining them as
+    // non-enumerable keeps them reachable by name (nothing breaks) and removes
+    // them from Object.keys / for-in. Re-run deferred as well, because the
+    // exposeFunction bridges below are installed out of band by Playwright.
+    const __CLOAK_NAMES = [
+      "__zoomNetworkInterceptorMain",
+      "__zoomNetworkInterceptorInitialized",
+      "__zoomNetworkInterceptorStopped",
+      "__zoomSpeakerQueue",
+      "__zoomStopNetworkInterception",
+      "__zoomNetDiag",
+      "zoomSpeakersChanged",
+      "zoomSpeakerForensics",
+      "zoomCleanerLog",
+      "zoomChatMessage",
+      "zoomChatCleanup",
+      "zoomObserverCleanup",
+      "zoomHtmlCleanerInterval"
+    ]
+    const __cloak = () => {
+      for (const n of __CLOAK_NAMES) {
+        try {
+          if (Object.prototype.hasOwnProperty.call(window, n)) {
+            const v = (window as any)[n]
+            Object.defineProperty(window, n, {
+              value: v,
+              enumerable: false,
+              configurable: true,
+              writable: true
+            })
+          }
+        } catch (_e) {
+          /* already non-configurable — skip */
+        }
+      }
+    }
+
     // "[NetworkInterceptor]" prefix so page-logger surfaces warn/error by
     // default (no LOG_LEVEL=debug needed); "[Zoom]" distinguishes from Meet/Teams.
     const LOG = "[NetworkInterceptor][Zoom]"
@@ -761,6 +839,7 @@ export function zoomBrowserInterceptionLogic() {
       ProxiedWebSocket.OPEN = OriginalWebSocket.OPEN
       ProxiedWebSocket.CLOSING = OriginalWebSocket.CLOSING
       ProxiedWebSocket.CLOSED = OriginalWebSocket.CLOSED
+      __disguise(ProxiedWebSocket, OriginalWebSocket)
       ;(window as any).WebSocket = ProxiedWebSocket
     }
 
@@ -783,6 +862,7 @@ export function zoomBrowserInterceptionLogic() {
           return worker
         } as any
         ProxiedWorker.prototype = OriginalWorker.prototype
+        __disguise(ProxiedWorker, OriginalWorker)
         ;(window as any).Worker = ProxiedWorker
       }
     }
@@ -825,11 +905,17 @@ export function zoomBrowserInterceptionLogic() {
           ProxiedRTCPeerConnection.generateCertificate = (...a: any[]) =>
             OriginalRTCPeerConnection.generateCertificate(...a)
         }
+        __disguise(ProxiedRTCPeerConnection, OriginalRTCPeerConnection)
         ;(window as any).RTCPeerConnection = ProxiedRTCPeerConnection
       }
     }
 
     const pollInterval = setInterval(pollReceivers, 100)
+    __cloak()
+    setTimeout(__cloak, 0)
+    setTimeout(__cloak, 1000)
+    setTimeout(__cloak, 4000)
+
     ;(window as any).__zoomStopNetworkInterception = () => {
       ;(window as any).__zoomNetworkInterceptorStopped = true
       try {
