@@ -427,12 +427,55 @@ export function browserInterceptionLogic(schema: any[]) {
         })
     }
 
+    // ===== CONFERENCE SCOPE =====
+    // Every Meet device id is `spaces/<space>/devices/<n>`, so a roster payload
+    // states which conference it describes. The bot's tab is only ever in one, and
+    // the fetch hook that feeds updateUsers matches broadly (any URL containing
+    // "meet/"), so pin the space the first roster establishes and refuse users from
+    // any other one. This is the Meet counterpart of the Teams roster scoping: a
+    // signed-in bot must never merge a participant from a conference it did not
+    // join. Proven-foreign only — a device id whose space cannot be parsed still
+    // merges exactly as before, so this can never starve a roster.
+    let ownSpace: string | null = null
+    let foreignSpaceUsers = 0
+
+    function spaceOf(deviceId: unknown): string | null {
+      if (typeof deviceId !== "string") return null
+      const match = deviceId.match(/^spaces\/([^/]+)\//)
+      return match ? match[1] : null
+    }
+
     function updateUsers(userManager: any, users: any[]) {
-      users
-        .filter((u) => u?.deviceId)
-        .forEach((user) => {
-          userManager.allUsersMap.set(user.deviceId, user)
-        })
+      const rostered = users.filter((u) => u?.deviceId)
+
+      if (!ownSpace) {
+        // The space most of this first roster belongs to. A majority rather than
+        // the first entry, so one stray record cannot pin the wrong conference.
+        const counts = new Map<string, number>()
+        for (const user of rostered) {
+          const space = spaceOf(user.deviceId)
+          if (space) counts.set(space, (counts.get(space) ?? 0) + 1)
+        }
+        let best = 0
+        for (const [space, count] of counts) {
+          if (count > best) {
+            best = count
+            ownSpace = space
+          }
+        }
+      }
+
+      for (const user of rostered) {
+        const space = spaceOf(user.deviceId)
+        if (ownSpace && space && space !== ownSpace) {
+          foreignSpaceUsers++
+          console.warn(
+            `[NetworkInterceptor] 🔒 dropped a user from another conference (${foreignSpaceUsers} so far)`
+          )
+          continue
+        }
+        userManager.allUsersMap.set(user.deviceId, user)
+      }
     }
 
     function getAllUsers(userManager: any) {
