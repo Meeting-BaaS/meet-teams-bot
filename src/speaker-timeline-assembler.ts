@@ -7,7 +7,9 @@ import { UNKNOWN_SPEAKER } from "./types"
  * interception — authoritative wherever it produced data) > ui (the platform's
  * own active-speaker indicator, shadow-buffered whole-call) > transcription
  * (live transcription-system turns, when one ran). A lower-trust source never
- * overwrites a higher-trust one — it only fills sufficiently large holes.
+ * overwrites a higher-trust one — it only fills sufficiently large holes —
+ * unless the sources provide strong evidence that the network timeline
+ * collapsed to one participant (see detectSourceDissonance).
  */
 
 export type TimelineSourceKind = "network" | "ui" | "transcription"
@@ -29,6 +31,19 @@ export const MIN_SEGMENT_SECONDS = 1
 // masked a real collapse; longer leading gaps are the reconciliation's job
 // (label-only backfill), never the timeline's.
 export const LEADING_RETROFIT_MAX_SECONDS = 20
+// A UI-only identity must own this much unambiguous speaking time before it can
+// count as evidence that a one-speaker network timeline collapsed. This filters
+// transient active-tile mistakes and matches the downstream reconciliation's
+// effective-speaker floor.
+export const SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS = 15
+
+export interface SpeakerSourceDissonance {
+  reason: "network_single_speaker_ui_multi_speaker"
+  demotedSource: "network"
+  promotedSource: "ui"
+  networkEffectiveSpeakers: number
+  uiEffectiveSpeakers: number
+}
 
 /** Positive-length segments, chronological. */
 function normalize(segments: DiarizationSegment[]): DiarizationSegment[] {
@@ -50,6 +65,66 @@ function coverageOf(segments: DiarizationSegment[]): Array<[number, number]> {
     }
   }
   return merged
+}
+
+/** Named, non-bot speaking duration by normalized identity. */
+function speakerDurations(
+  segments: DiarizationSegment[],
+  excludeSpeakers: string[] = []
+): Map<string, number> {
+  const excluded = new Set(
+    [UNKNOWN_SPEAKER, ...excludeSpeakers].map((name) => name.trim().toLowerCase())
+  )
+  const bySpeaker = new Map<string, DiarizationSegment[]>()
+  for (const segment of normalize(segments)) {
+    const key = segment.speaker?.trim().toLowerCase()
+    if (!key || excluded.has(key)) continue
+    const existing = bySpeaker.get(key) ?? []
+    existing.push(segment)
+    bySpeaker.set(key, existing)
+  }
+
+  const durations = new Map<string, number>()
+  for (const [speaker, speakerSegments] of bySpeaker) {
+    const duration = coverageOf(speakerSegments).reduce((sum, [start, end]) => sum + end - start, 0)
+    durations.set(speaker, duration)
+  }
+  return durations
+}
+
+/**
+ * Detect the production failure where the network path continuously attributes
+ * a call to one real participant while the muted UI observer repeatedly sees
+ * two real participants taking turns. The shared identity is important: it
+ * corroborates that both sources describe the same roster rather than two
+ * incompatible naming schemes.
+ */
+function detectSourceDissonance(
+  sources: TimelineSource[],
+  botNames: string[] = []
+): SpeakerSourceDissonance | undefined {
+  const network = sources.find((source) => source.kind === "network")
+  const ui = sources.find((source) => source.kind === "ui")
+  if (!network || !ui) return undefined
+
+  const effectiveNetwork = [...speakerDurations(network.segments, botNames)].filter(
+    ([, seconds]) => seconds >= SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
+  )
+  const effectiveUi = [...speakerDurations(ui.segments, botNames)].filter(
+    ([, seconds]) => seconds >= SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
+  )
+  if (effectiveNetwork.length !== 1 || effectiveUi.length < 2) return undefined
+
+  const [networkSpeaker] = effectiveNetwork[0]
+  if (!effectiveUi.some(([uiSpeaker]) => uiSpeaker === networkSpeaker)) return undefined
+
+  return {
+    reason: "network_single_speaker_ui_multi_speaker",
+    demotedSource: "network",
+    promotedSource: "ui",
+    networkEffectiveSpeakers: effectiveNetwork.length,
+    uiEffectiveSpeakers: effectiveUi.length
+  }
 }
 
 /** Holes of at least GAP_FILL_MIN_SECONDS in [0, meetingEnd] left by coverage. */
@@ -173,11 +248,22 @@ export function assembleSpeakerTimeline(
   segments: DiarizationSegment[]
   filledBySource: Partial<Record<TimelineSourceKind, number>>
   retrofittedFromSeconds?: number
+  sourceDissonance?: SpeakerSourceDissonance
 } {
   let assembled: DiarizationSegment[] = []
   const filledBySource: Partial<Record<TimelineSourceKind, number>> = {}
+  const sourceDissonance = detectSourceDissonance(sources, options?.botNames)
+  const promotedUi = sourceDissonance
+    ? sources.find((source) => source.kind === sourceDissonance.promotedSource)
+    : undefined
+  // On corroborated collapse, let unambiguous UI turns win. Network still fills
+  // any large UI holes, so promoting a sparse UI timeline does not discard the
+  // rest of the call.
+  const orderedSources = promotedUi
+    ? [promotedUi, ...sources.filter((source) => source !== promotedUi)]
+    : sources
 
-  for (const [index, source] of sources.entries()) {
+  for (const [index, source] of orderedSources.entries()) {
     if (index === 0) {
       // Primary source taken as-is, Unknowns included.
       assembled = normalize(source.segments)
@@ -202,6 +288,7 @@ export function assembleSpeakerTimeline(
   return {
     segments: suppressCoveredUnknowns(segments),
     filledBySource,
-    retrofittedFromSeconds
+    retrofittedFromSeconds,
+    sourceDissonance
   }
 }
