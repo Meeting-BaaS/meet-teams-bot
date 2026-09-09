@@ -79,6 +79,14 @@ export const envVars = cleanEnv(process.env, {
   // meet/teams later is a one-value change. Only takes effect when
   // STEALTHFOX_BINARY_PATH is set, so local/dev without the binary is unaffected.
   STEALTHFOX_PLATFORMS: str({ default: "zoom" }),
+  // Which platforms disguise a bot-sounding display name by swapping one letter
+  // of each offending token for a Cyrillic look-alike — comma-separated
+  // ("zoom", "zoom,meet", "all"). Empty (the default) leaves every name exactly
+  // as the customer typed it. Deploy-level, so it can be A/B'd from a configmap
+  // against the phase= field on the Zoom wall log line: a wall with
+  // phase=pre_name fired before the name was ever typed, and no naming change
+  // can move it.
+  HOMOGLYPH_NAME_PLATFORMS: str({ default: "" }),
   // Absolute path to the stealthfox Firefox binary. Baked into the Docker image
   // at /opt/stealthfox/<tag>/firefox by scripts/fetch-stealthfox.sh. Empty =
   // stealthfox disabled (falls back to CloakBrowser).

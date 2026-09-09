@@ -16,6 +16,7 @@ import {
   uploadLogsToS3,
   uploadScreenshotsToS3
 } from "./utils/Logger"
+import { isBotLikeName, skeletonizeBotName } from "./utils/bot-name-disguise"
 import { BotMessageSchema } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
 import { getMaxRetryCount } from "./config/retry-config"
@@ -24,10 +25,6 @@ import {
   requeueToSQS,
   shouldAttemptRetry
 } from "./utils/retry-handler"
-
-// Bot-like display-name tokens; log-only hint when a Zoom join is rejected.
-const BOT_LIKE_NAME_RE =
-  /note ?taker|recorder|recording|transcri|\bbots?\b|\bai\b|assistant|\bnotes?\b/i
 
 /**
  * SIGTERM does not always mean "the cluster is taking this pod away".
@@ -203,7 +200,10 @@ async function handleFailedRecording(): Promise<void> {
   if (
     (endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed ||
       endReason === MeetingEndReason.BotNotAccepted) &&
-    BOT_LIKE_NAME_RE.test(botName)
+    // Skeletonise first: with HOMOGLYPH_NAME_PLATFORMS on, the name reaching
+    // here already has a Cyrillic letter in the very token we are looking for,
+    // and a raw match would silently stop firing exactly when it matters most.
+    isBotLikeName(skeletonizeBotName(botName))
   ) {
     console.warn(
       `[Hint] Bot display name "${botName}" contains a bot-indicating keyword; some Zoom hosts auto-reject such names — a more human name may get admitted.`

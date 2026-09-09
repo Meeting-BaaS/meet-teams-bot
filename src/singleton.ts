@@ -3,6 +3,7 @@ import { MetricsCollector } from "./services/metrics-collector"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
 import type { ArtifactKey, MeetingParams, Participant, RecordingMode } from "./types"
+import { disguiseBotName, shouldDisguiseBotName } from "./utils/bot-name-disguise"
 import { PiiRedactor } from "./utils/PiiRedactor"
 
 class Global {
@@ -68,9 +69,18 @@ class Global {
       throw new Error("Missing required parameter: bot_uuid")
     }
 
+    // Disguise a bot-sounding display name here and nowhere else. Everything
+    // downstream — the join form, the roster, the tile cleaner, the speaker
+    // registry, the chat dedup — then reads one consistent string, which is the
+    // whole reason this cannot live at the typing site. See bot-name-disguise.ts.
+    const disguisedName = shouldDisguiseBotName(meetingParams.meeting_platform ?? "")
+      ? disguiseBotName(meetingParams.bot_name, meetingParams.bot_uuid)
+      : meetingParams.bot_name
+
     // Normalize the recording mode before setting
     const normalizedParams = {
       ...meetingParams,
+      bot_name: disguisedName,
       recording_mode: this.normalizeRecordingMode(meetingParams.recording_mode)
     }
 
@@ -80,6 +90,15 @@ class Global {
     // params are available: bot names often contain end-user names and
     // must be masked as <BOT_NAME> in every log line.
     PiiRedactor.registerBotName(normalizedParams.bot_name)
+    if (disguisedName !== meetingParams.bot_name) {
+      // The customer's own spelling still reaches the logs through anything they
+      // sent us (entry_message, extra), so redact that form too. Never log
+      // either string — the point of registering them is that they don't appear.
+      PiiRedactor.registerBotName(meetingParams.bot_name)
+      console.log(
+        `[BotName] display name disguised for the ${meetingParams.meeting_platform} join`
+      )
+    }
 
     console.log(`🤖 Bot ${meetingParams.bot_uuid} initialized with validated parameters`)
   }
