@@ -2,7 +2,8 @@ import type { DiarizationSegment } from "./diarization-tracker"
 import {
   assembleSpeakerTimeline,
   GAP_FILL_MIN_SECONDS,
-  LEADING_RETROFIT_MAX_SECONDS
+  LEADING_RETROFIT_MAX_SECONDS,
+  SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
 } from "./speaker-timeline-assembler"
 
 function seg(
@@ -26,6 +27,83 @@ describe("assembleSpeakerTimeline", () => {
     )
     expect(segments).toEqual(network)
     expect(filledBySource.ui).toBeUndefined()
+  })
+
+  it("promotes corroborated multi-speaker UI evidence when the network timeline collapsed", () => {
+    // Prod shape: network continuously attributed both people to Stefano, while
+    // the muted UI observer independently saw Stefano and Emanuele taking turns.
+    const network = [seg("Stefano", 0, 1400, 2)]
+    const ui = [seg("Stefano", 0, 640, 2), seg("Emanuele", 640, 1350, 3)]
+    const { segments, filledBySource, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: ui }
+      ],
+      1400
+    )
+
+    expect(sourceDissonance).toEqual({
+      reason: "network_single_speaker_ui_multi_speaker",
+      demotedSource: "network",
+      promotedSource: "ui",
+      networkEffectiveSpeakers: 1,
+      uiEffectiveSpeakers: 2
+    })
+    expect(segments).toEqual([...ui, seg("Stefano", 1350, 1400, 2)])
+    expect(filledBySource.network).toBe(1)
+  })
+
+  it("does not promote a transient second UI speaker", () => {
+    const network = [seg("Stefano", 0, 120)]
+    const ui = [
+      seg("Stefano", 0, 100),
+      seg("Emanuele", 100, 100 + SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS - 0.1)
+    ]
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: ui }
+      ],
+      120
+    )
+
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual(network)
+  })
+
+  it("does not count the recording bot as multi-speaker UI evidence", () => {
+    const network = [seg("Stefano", 0, 120)]
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        {
+          kind: "ui",
+          segments: [seg("Stefano", 0, 60), seg("MeetingBaaS Notetaker", 60, 120)]
+        }
+      ],
+      120,
+      { botNames: ["MeetingBaaS Notetaker"] }
+    )
+
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual(network)
+  })
+
+  it("requires a shared identity before treating different source names as collapse evidence", () => {
+    const network = [seg("Network Identity", 0, 120)]
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        {
+          kind: "ui",
+          segments: [seg("Alice", 0, 60), seg("Bob", 60, 120)]
+        }
+      ],
+      120
+    )
+
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual(network)
   })
 
   it("fills a mid-call hole from the UI source, clipped to the hole", () => {
