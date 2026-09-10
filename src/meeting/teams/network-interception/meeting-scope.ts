@@ -104,7 +104,10 @@ export function resolveRosterScope(input: {
   }
 
   const ownIds = idsIn(input.own)
-  if (ownIds.length !== 1) return { accept: true, reason: "own-unknown" }
+  if (ownIds.length !== 1) {
+    // Signed-in and strict: held until our meeting is known (the caller quarantines it).
+    return { accept: !(input.isAuthenticated && input.strict), reason: "own-unknown" }
+  }
   const ownId = ownIds[0]
 
   const seen: string[] = []
@@ -121,10 +124,59 @@ export function resolveRosterScope(input: {
 
   if (seen.indexOf(ownId) === -1) return { accept: false, reason: "foreign" }
 
-  if (seen.length > 1 && input.isAuthenticated && input.strict) {
-    // Our participants also arrive call-scoped; `strict` lets a starved session relax.
+  if (seen.length > 1 && input.isAuthenticated) {
+    // Never merged wholesale, relaxed or not; the caller extracts our own part.
     return { accept: false, reason: "aggregate" }
   }
 
   return { accept: true, reason: "match" }
 }
+
+// Deepest roster sub-object naming ONLY our conversation, or null.
+// SELF-CONTAINED: stringified into the page.
+export function extractOwnRoster(body: unknown, own: string | null): unknown {
+  const CONVERSATION = /19:[^@"'\\/\s]+@thread\.[a-z0-9]+/gi
+  const idsIn = (text: string): string[] => {
+    let decoded = text
+    try {
+      decoded = decodeURIComponent(text)
+    } catch {
+      // Malformed percent-encoding — the raw pass still applies.
+    }
+    const found: string[] = []
+    for (const candidate of decoded === text ? [text] : [text, decoded]) {
+      for (const match of candidate.match(CONVERSATION) || []) {
+        const lower = match.toLowerCase()
+        if (found.indexOf(lower) === -1) found.push(lower)
+      }
+    }
+    return found
+  }
+
+  if (!own) return null
+  const ownIds = idsIn(own)
+  if (ownIds.length !== 1) return null
+  const ownId = ownIds[0]
+
+  const isOwnRoster = (node: Record<string, unknown>): boolean => {
+    if (!("participants" in node) && !("roster" in node)) return false
+    try {
+      const ids = idsIn(JSON.stringify(node))
+      return ids.length === 1 && ids[0] === ownId
+    } catch {
+      return false
+    }
+  }
+
+  const visit = (node: unknown, depth: number): unknown => {
+    if (!node || typeof node !== "object" || depth > 8) return null
+    for (const child of Object.values(node as Record<string, unknown>)) {
+      const found = visit(child, depth + 1)
+      if (found) return found
+    }
+    return !Array.isArray(node) && isOwnRoster(node as Record<string, unknown>) ? node : null
+  }
+  return visit(body, 0)
+}
+
+export type OwnRosterExtractor = typeof extractOwnRoster

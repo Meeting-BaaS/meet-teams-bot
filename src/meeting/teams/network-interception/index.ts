@@ -5,7 +5,12 @@ import path from "node:path"
 import type { Page } from "@playwright/test"
 import { GLOBAL } from "../../../singleton"
 import { teamsBrowserInterceptionLogic } from "./browser-bundle"
-import { deriveMeetingScope, resolveRosterScope, type TeamsInterceptorScope } from "./meeting-scope"
+import {
+  deriveMeetingScope,
+  extractOwnRoster,
+  resolveRosterScope,
+  type TeamsInterceptorScope
+} from "./meeting-scope"
 import { resolveSpeakingSet } from "./speaker-timeline"
 
 export type { NetworkPayload, NetworkUser } from "./types"
@@ -63,7 +68,7 @@ export async function setupTeamsNetworkInterceptionScripts(
                     console.error("[Teams NetworkInterceptor] pako dependency not loaded");
                 }
                 // As source: the stringified bundle cannot import it.
-                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()}, ${resolveRosterScope.toString()}, ${JSON.stringify(scope)});
+                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()}, ${resolveRosterScope.toString()}, ${extractOwnRoster.toString()}, ${JSON.stringify(scope)});
             } catch (e) {
                 console.error("[Teams NetworkInterceptor] Initialization error:", e);
             }

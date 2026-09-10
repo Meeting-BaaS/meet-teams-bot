@@ -1,4 +1,9 @@
-import { deriveMeetingScope, findConversationIds, resolveRosterScope } from "./meeting-scope"
+import {
+  deriveMeetingScope,
+  extractOwnRoster,
+  findConversationIds,
+  resolveRosterScope
+} from "./meeting-scope"
 
 const OURS = "19:meeting_ndc4mjy5ndqtnwe2os00@thread.v2"
 const THEIRS = "19:meeting_zjjkzwrmnzytytc2os00@thread.v2"
@@ -113,11 +118,11 @@ describe("resolveRosterScope", () => {
     })
   })
 
-  it("accepts the aggregate once strict scoping has relaxed", () => {
+  it("never merges an aggregate wholesale, even once relaxed", () => {
     const body = JSON.stringify({ calls: [{ threadId: OURS }, { threadId: THEIRS }] })
     expect(resolveRosterScope({ own: OURS, body, ...signedInRelaxed })).toEqual({
-      accept: true,
-      reason: "match"
+      accept: false,
+      reason: "aggregate"
     })
   })
 
@@ -158,10 +163,22 @@ describe("resolveRosterScope", () => {
     ).toBe(true)
   })
 
-  it("accepts everything until our own conversation is identified", () => {
+  it("holds a signed-in roster until our own conversation is identified", () => {
     expect(
       resolveRosterScope({ own: null, url: `/conversations/${THEIRS}/roster`, ...signedIn })
-    ).toEqual({ accept: true, reason: "own-unknown" })
+    ).toEqual({ accept: false, reason: "own-unknown" })
+  })
+
+  it("keeps accepting unscoped rosters for anonymous or relaxed sessions", () => {
+    const input = { own: null, url: `/conversations/${THEIRS}/roster` }
+    expect(resolveRosterScope({ ...input, ...anon })).toEqual({
+      accept: true,
+      reason: "own-unknown"
+    })
+    expect(resolveRosterScope({ ...input, ...signedInRelaxed })).toEqual({
+      accept: true,
+      reason: "own-unknown"
+    })
   })
 
   it("extracts our conversation from a raw call threadId", () => {
@@ -185,5 +202,31 @@ describe("resolveRosterScope", () => {
     expect(
       rebuilt({ own: OURS, url: `/c/${THEIRS}`, isAuthenticated: true, strict: false })
     ).toEqual({ accept: false, reason: "foreign" })
+  })
+})
+
+describe("extractOwnRoster", () => {
+  it("pulls our meeting's roster out of an account-scoped aggregate", () => {
+    const ours = { threadId: OURS, participants: { "8:orgid:a": { displayName: "A" } } }
+    const body = {
+      calls: [ours, { threadId: THEIRS, participants: { "8:orgid:b": { displayName: "B" } } }]
+    }
+    expect(extractOwnRoster(body, OURS)).toBe(ours)
+  })
+
+  it("refuses a roster that also names another meeting", () => {
+    const body = { calls: [{ threadId: OURS, participants: { x: { threadId: THEIRS } } }] }
+    expect(extractOwnRoster(body, OURS)).toBeNull()
+  })
+
+  it("returns nothing until our own conversation is known", () => {
+    expect(extractOwnRoster({ calls: [{ threadId: OURS, participants: {} }] }, null)).toBeNull()
+  })
+
+  it("is self-contained, so it survives being stringified into the page", () => {
+    // biome-ignore lint/security/noGlobalEval: asserting the stringify contract
+    const rebuilt = eval(`(${extractOwnRoster.toString()})`) as typeof extractOwnRoster
+    const ours = { threadId: OURS, participants: {} }
+    expect(rebuilt({ calls: [ours, { threadId: THEIRS, participants: {} }] }, OURS)).toEqual(ours)
   })
 })

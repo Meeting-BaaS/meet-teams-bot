@@ -1,13 +1,9 @@
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 
-// Past max_recording_duration the meeting is over; the floor still allows a cold start.
-const MIN_LATENESS_ALLOWANCE_SEC = 15 * 60
-
-function latenessAllowanceSec(): number {
-  const cap = GLOBAL.get().max_recording_duration
-  return Math.max(typeof cap === "number" && cap > 0 ? cap : 0, MIN_LATENESS_ALLOWANCE_SEC)
-}
+// No meeting-end time reaches the bot, so lateness can't prove a meeting ended (the waiting
+// room timeout handles that). This only stops a relaunch past the longest meeting we record.
+export const JOIN_DEADLINE_AFTER_START_SEC = 12 * 60 * 60
 
 /**
  * Handles timing control for precise meeting join times.
@@ -62,15 +58,14 @@ export async function handleTimingControl(
     return startTime
   }
   const lateBy = currentTime - startTime
-  const allowance = latenessAllowanceSec()
-  if (lateBy > allowance) {
+  if (lateBy > JOIN_DEADLINE_AFTER_START_SEC) {
     console.error(
-      `Bot is late by ${lateBy}s, past its ${allowance}s allowance — the meeting cannot still be running. Not joining.`
+      `Bot is late by ${lateBy}s, past the ${JOIN_DEADLINE_AFTER_START_SEC}s join deadline. Not joining.`
     )
     GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
     GLOBAL.setShouldRetry(false)
     throw new Error(
-      `Refusing to join ${lateBy}s after the scheduled start (allowance ${allowance}s)`
+      `Refusing to join ${lateBy}s after the scheduled start (deadline ${JOIN_DEADLINE_AFTER_START_SEC}s)`
     )
   }
   console.log(
