@@ -526,8 +526,11 @@ export function teamsBrowserInterceptionLogic(
         participantsToArray(body.participants?.value) ||
         participantsToArray(body.participants)
       if (explicit?.length) return explicit
-      const generic = participantsToArray(body.value) || (Array.isArray(body) ? body : null)
-      return generic?.some(looksLikeParticipant) ? generic : null
+      for (const candidate of [body.roster, body.value, Array.isArray(body) ? body : null]) {
+        const list = participantsToArray(candidate)
+        if (list?.some(looksLikeParticipant)) return list
+      }
+      return null
     }
 
     function looksLikeParticipant(pp: any): boolean {

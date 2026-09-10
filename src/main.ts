@@ -78,8 +78,12 @@ process.on("SIGTERM", async () => {
           "Bot was stopped after outliving its recording window"
         )
       }
-      GLOBAL.claimRecovery()
-      await handleFailedRecording()
+      if (GLOBAL.claimRecovery()) {
+        GLOBAL.setShouldRetry(false)
+        await handleFailedRecording({ terminal: true })
+      } else {
+        console.log("[SIGTERM] Recovery claimed concurrently — that handler reports the outcome")
+      }
     } else if (!GLOBAL.isServerless()) {
       GLOBAL.setShouldRetry(true)
       if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
@@ -179,7 +183,7 @@ async function handleSuccessfulRecording(): Promise<void> {
 /**
  * Handle failed recording
  */
-async function handleFailedRecording(): Promise<void> {
+async function handleFailedRecording(opts: { terminal?: boolean } = {}): Promise<void> {
   console.error("Recording did not complete successfully")
 
   const endReason = GLOBAL.getEndReason()
@@ -214,12 +218,12 @@ async function handleFailedRecording(): Promise<void> {
 
   // The Zoom anti-bot wall is probabilistic (keys on exit-IP reputation), so mark
   // it retryable — each requeue lands a fresh exit IP, cycling past burned ones.
-  if (endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed) {
+  if (!opts.terminal && endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed) {
     console.log("[Retry] Zoom anti-bot wall — marking retryable to cycle exit IP")
     GLOBAL.setShouldRetry(true)
   }
 
-  const shouldRetry = shouldAttemptRetry(currentRetryCount)
+  const shouldRetry = !opts.terminal && shouldAttemptRetry(currentRetryCount)
 
   if (shouldRetry) {
     console.log(
