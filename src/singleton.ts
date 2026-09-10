@@ -433,8 +433,12 @@ class Global {
         }
         known.name = incoming.name
         known.id = incoming.id
-        known.displayName = incoming.displayName
-        known.profilePicture = incoming.profilePicture
+        // Only overwrite optional metadata the incoming row actually carries:
+        // the update that resolves a name often comes from a speaking event
+        // that has no avatar or display name on it, and blindly assigning
+        // would erase what the roster already told us about this device.
+        known.displayName = incoming.displayName ?? known.displayName
+        known.profilePicture = incoming.profilePicture ?? known.profilePicture
         known.isNetworkDetected = incoming.isNetworkDetected
         return
       }

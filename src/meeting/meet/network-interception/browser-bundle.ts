@@ -437,6 +437,10 @@ export function browserInterceptionLogic(schema: any[]) {
     // join. Proven-foreign only — a device id whose space cannot be parsed still
     // merges exactly as before, so this can never starve a roster.
     let ownSpace: string | null = null
+    // True once ownSpace came from the bot's OWN device record. A majority pin is
+    // a guess made before that record arrives; this one cannot be wrong, so it
+    // supersedes the guess and is never reconsidered.
+    let ownSpaceIsAuthoritative = false
     let foreignSpaceUsers = 0
 
     function spaceOf(deviceId: unknown): string | null {
@@ -445,22 +449,59 @@ export function browserInterceptionLogic(schema: any[]) {
       return match ? match[1] : null
     }
 
+    function isSelfRecord(user: any): boolean {
+      return user?.isCurrentUserString === "true" || user?.isCurrentUserString === "1"
+    }
+
     function updateUsers(userManager: any, users: any[]) {
       const rostered = users.filter((u) => u?.deviceId)
 
-      if (!ownSpace) {
-        // The space most of this first roster belongs to. A majority rather than
-        // the first entry, so one stray record cannot pin the wrong conference.
-        const counts = new Map<string, number>()
+      if (!ownSpaceIsAuthoritative) {
+        let selfSpace: string | null = null
         for (const user of rostered) {
+          if (!isSelfRecord(user)) continue
           const space = spaceOf(user.deviceId)
-          if (space) counts.set(space, (counts.get(space) ?? 0) + 1)
+          if (space) {
+            selfSpace = space
+            break
+          }
         }
-        let best = 0
-        for (const [space, count] of counts) {
-          if (count > best) {
-            best = count
-            ownSpace = space
+
+        if (selfSpace) {
+          if (ownSpace && ownSpace !== selfSpace) {
+            // The provisional pin named the wrong conference. Users admitted
+            // under it are already in the map, so re-pinning alone would leave
+            // the foreign ones merged — drop them as we correct the pin.
+            let purged = 0
+            for (const deviceId of [...userManager.allUsersMap.keys()]) {
+              const space = spaceOf(deviceId)
+              if (space && space !== selfSpace) {
+                userManager.allUsersMap.delete(deviceId)
+                purged++
+              }
+            }
+            console.warn(
+              `[NetworkInterceptor] 🔒 re-pinned the conference from the bot's own device (dropped ${purged} user(s) admitted under the provisional pin)`
+            )
+          }
+          ownSpace = selfSpace
+          ownSpaceIsAuthoritative = true
+        } else if (!ownSpace) {
+          // No self record yet. Fall back to the space most of this roster
+          // belongs to — a majority rather than the first entry, so one stray
+          // record cannot pin the wrong conference — and let the self record
+          // correct it if this guess turns out wrong.
+          const counts = new Map<string, number>()
+          for (const user of rostered) {
+            const space = spaceOf(user.deviceId)
+            if (space) counts.set(space, (counts.get(space) ?? 0) + 1)
+          }
+          let best = 0
+          for (const [space, count] of counts) {
+            if (count > best) {
+              best = count
+              ownSpace = space
+            }
           }
         }
       }

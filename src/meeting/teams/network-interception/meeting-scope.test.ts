@@ -115,6 +115,26 @@ describe("resolveRosterScope", () => {
     })
   })
 
+  it("accepts the aggregate once strict scoping has relaxed", () => {
+    // The escape hatch exists because "our participants also arrive on a
+    // call-scoped payload" is an observation, not a guarantee. A session that
+    // only ever delivers aggregates would otherwise starve to an empty roster
+    // with no way back.
+    const body = JSON.stringify({ calls: [{ threadId: OURS }, { threadId: THEIRS }] })
+    expect(resolveRosterScope({ own: OURS, body, ...signedInRelaxed })).toEqual({
+      accept: true,
+      reason: "match"
+    })
+  })
+
+  it("still rejects a proven-foreign payload after relaxing", () => {
+    // Relaxing must not reopen the leak: an aggregate at least proves it
+    // contains our conversation, a purely foreign payload does not.
+    expect(
+      resolveRosterScope({ own: OURS, url: `/csa/conversations/${THEIRS}/roster`, ...signedInRelaxed })
+    ).toEqual({ accept: false, reason: "foreign" })
+  })
+
   it("keeps anonymous behaviour unchanged for that same aggregate", () => {
     // An anonymous bot's page never sees another meeting, so nothing is taken away
     // from the path that had no incident.

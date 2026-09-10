@@ -180,9 +180,17 @@ export function resolveRosterScope(input: {
 
   if (seen.indexOf(ownId) === -1) return { accept: false, reason: "foreign" }
 
-  if (seen.length > 1 && input.isAuthenticated) {
+  if (seen.length > 1 && input.isAuthenticated && input.strict) {
     // Our own participants still arrive on the call-scoped snapshot and the
     // socket deltas, so dropping the aggregate costs nothing it carried.
+    //
+    // Gated on `strict` for the same reason the unplaceable drop is: that
+    // premise is an observation, not a guarantee. If a session ever delivers
+    // its roster ONLY on aggregate payloads, rejecting them unconditionally
+    // would starve the roster to empty with no way back — precisely the
+    // degraded outcome this scoping exists to prevent. The caller counts
+    // aggregate rejections toward the same starvation escape hatch, so a
+    // session like that relaxes instead of reporting no participants.
     return { accept: false, reason: "aggregate" }
   }
 

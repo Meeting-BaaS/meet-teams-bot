@@ -234,19 +234,43 @@ export function teamsBrowserInterceptionLogic(
     // strictly better than the pre-fix behaviour it falls back to.
     const STRICT_ESCAPE_AFTER = 5
     let strict = scope.isAuthenticated
-    let unplaceableWhileEmpty = 0
+    let droppedWhileEmpty = 0
 
     /**
      * Latch the joined conversation off the live call, for join URLs that carry no
      * thread id (short /meet/<code> links resolve it only after joining). Stored raw
      * — resolveRosterScope extracts the id.
      */
+    /**
+     * Whether `raw` actually names a conversation.
+     *
+     * getActiveCall() can expose a call GUID (`call.id`) before any thread id is
+     * available. Latching that would pin a value resolveRosterScope reads as
+     * "own-unknown" — which accepts EVERYTHING — for the rest of the meeting,
+     * and learnOwnConversation's own `if (ownConversation) return` guard means
+     * no later threadId could ever replace it. The diagnostic would report the
+     * scope as known while the scoping did nothing.
+     *
+     * Probing the injected resolver keeps the id grammar in the one tested
+     * place (meeting-scope.ts) rather than re-inlining the regex here.
+     */
+    function namesAConversation(raw: string): boolean {
+      return (
+        resolveRosterScope({
+          own: raw,
+          isAuthenticated: false,
+          strict: false
+        }).reason !== "own-unknown"
+      )
+    }
+
     function learnOwnConversation(): void {
       if (ownConversation) return
       try {
         const call = getActiveCall()
         const raw = call?.threadId || call?.conversationId || call?.threadKey || call?.id
         if (typeof raw !== "string" || !raw) return
+        if (!namesAConversation(raw)) return
         ownConversation = raw
         diag.ownConversationKnown = true
         debug("🔒 meeting scope learned from active call", raw)
@@ -265,20 +289,28 @@ export function teamsBrowserInterceptionLogic(
         isAuthenticated: scope.isAuthenticated,
         strict
       })
-      if (verdict.reason === "own-unknown") diag.rosterScopeUnknown++
-      else if (verdict.reason === "aggregate") diag.rosterScopeAggregate++
-      else if (verdict.reason === "unplaceable") {
-        diag.rosterScopeUnplaceable++
-        if (!verdict.accept && participantsByDeviceId.size === 0) {
-          unplaceableWhileEmpty++
-          if (unplaceableWhileEmpty >= STRICT_ESCAPE_AFTER) {
-            strict = false
-            diag.rosterScopeStrictRelaxed = true
-            console.warn(
-              `${LOG} ⚠️ roster still empty after dropping ${unplaceableWhileEmpty} unscoped payloads — relaxing to proven-foreign-only`
-            )
-          }
+      // Both strict-only rejections feed the same starvation escape hatch: a
+      // roster that is still empty after repeated drops means strict scoping is
+      // rejecting the only payloads this session carries participants on.
+      const countTowardStrictEscape = () => {
+        if (verdict.accept || participantsByDeviceId.size > 0) return
+        droppedWhileEmpty++
+        if (droppedWhileEmpty >= STRICT_ESCAPE_AFTER) {
+          strict = false
+          diag.rosterScopeStrictRelaxed = true
+          console.warn(
+            `${LOG} ⚠️ roster still empty after dropping ${droppedWhileEmpty} strictly-scoped payloads — relaxing to proven-foreign-only`
+          )
         }
+      }
+
+      if (verdict.reason === "own-unknown") diag.rosterScopeUnknown++
+      else if (verdict.reason === "aggregate") {
+        diag.rosterScopeAggregate++
+        countTowardStrictEscape()
+      } else if (verdict.reason === "unplaceable") {
+        diag.rosterScopeUnplaceable++
+        countTowardStrictEscape()
       }
       if (!verdict.accept) diag.rosterScopeRejected++
       return verdict.accept

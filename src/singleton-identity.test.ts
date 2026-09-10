@@ -40,6 +40,29 @@ describe("participant/speaker identity registry", () => {
     expect(GLOBAL.getParticipants()).toHaveLength(1)
   })
 
+  it("keeps roster metadata a later naming update does not carry", () => {
+    // The update that resolves a name is often a speaking event with no avatar
+    // or display name on it; assigning those blindly erased what the roster had
+    // already told us about the device.
+    GLOBAL.addParticipantIfNotExists(
+      p({ participantId: "d1", displayName: "Bobby", profilePicture: "https://cdn/x.png" })
+    )
+    GLOBAL.addParticipantIfNotExists(p({ name: "Bob", id: 2, participantId: "d1" }))
+    expect(GLOBAL.getParticipants()[0]).toMatchObject({
+      name: "Bob",
+      displayName: "Bobby",
+      profilePicture: "https://cdn/x.png"
+    })
+  })
+
+  it("still lets a naming update replace metadata it does carry", () => {
+    GLOBAL.addParticipantIfNotExists(p({ participantId: "d1", displayName: "old" }))
+    GLOBAL.addParticipantIfNotExists(
+      p({ name: "Bob", id: 2, participantId: "d1", displayName: "new" })
+    )
+    expect(GLOBAL.getParticipants()[0].displayName).toBe("new")
+  })
+
   it("renames a placeholder in place once the roster resolves", () => {
     GLOBAL.addParticipantIfNotExists(p({ participantId: "d1" }))
     GLOBAL.addParticipantIfNotExists(p({ name: "Bob", id: 2, participantId: "d1" }))
