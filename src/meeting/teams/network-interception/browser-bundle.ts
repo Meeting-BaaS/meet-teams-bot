@@ -9,13 +9,18 @@
 /** biome-ignore-all lint/suspicious/noExplicitAny: browser-side bundle over untyped Teams/WebRTC internals. */
 
 // Type-only: erased, so the stringified bundle stays self-contained.
-import type { RosterScopeResolver, TeamsInterceptorScope } from "./meeting-scope"
+import type {
+  OwnRosterExtractor,
+  RosterScopeResolver,
+  TeamsInterceptorScope
+} from "./meeting-scope"
 import type { SpeakerSetResolver, SpeakerTimelineRung } from "./speaker-timeline"
 
 /** Arguments are passed in, not imported: this function is stringified into the page. */
 export function teamsBrowserInterceptionLogic(
   resolveSpeakingSet: SpeakerSetResolver,
   resolveRosterScope: RosterScopeResolver,
+  extractOwnRoster: OwnRosterExtractor,
   meetingScope: TeamsInterceptorScope
 ) {
   try {
@@ -194,7 +199,10 @@ export function teamsBrowserInterceptionLogic(
       rosterScopeAggregate: 0,
       rosterScopeUnplaceable: 0,
       rosterScopeUnknown: 0,
-      rosterScopeStrictRelaxed: false
+      rosterScopeStrictRelaxed: false,
+      rosterQuarantined: 0,
+      rosterVerifiedAdmitted: 0,
+      rosterAggregateExtracted: 0
     }
     const diag = (window as any).__teamsNetDiag
 
@@ -234,13 +242,27 @@ export function teamsBrowserInterceptionLogic(
         ownConversation = raw
         diag.ownConversationKnown = true
         debug("🔒 meeting scope learned from active call", raw)
+        setTimeout(drainQuarantine, 0)
       } catch {
         // Teams internals unavailable — stay permissive.
       }
     }
 
-    /** Whether a roster payload may be merged into this bot's participant map. */
-    function isInMeetingScope(url: string | undefined, body: string | undefined): boolean {
+    // Held until our meeting is known, then replayed through admission.
+    const QUARANTINE_MAX = 100
+    const quarantine: Array<() => void> = []
+
+    function drainQuarantine(): void {
+      for (const replay of quarantine.splice(0)) {
+        try {
+          replay()
+        } catch {
+          // One bad payload must not block the rest.
+        }
+      }
+    }
+
+    function rosterVerdict(url: string | undefined, body: string | undefined) {
       learnOwnConversation()
       const verdict = resolveRosterScope({
         own: ownConversation,
@@ -249,29 +271,89 @@ export function teamsBrowserInterceptionLogic(
         isAuthenticated: scope.isAuthenticated,
         strict
       })
-      // Strict-only rejections count toward the starvation escape.
-      const countTowardStrictEscape = () => {
-        if (verdict.accept || participantsByDeviceId.size > 0) return
-        droppedWhileEmpty++
-        if (droppedWhileEmpty >= STRICT_ESCAPE_AFTER) {
-          strict = false
-          diag.rosterScopeStrictRelaxed = true
-          console.warn(
-            `${LOG} ⚠️ roster still empty after dropping ${droppedWhileEmpty} strictly-scoped payloads — relaxing to proven-foreign-only`
-          )
-        }
-      }
-
       if (verdict.reason === "own-unknown") diag.rosterScopeUnknown++
-      else if (verdict.reason === "aggregate") {
-        diag.rosterScopeAggregate++
-        countTowardStrictEscape()
-      } else if (verdict.reason === "unplaceable") {
-        diag.rosterScopeUnplaceable++
-        countTowardStrictEscape()
-      }
+      else if (verdict.reason === "aggregate") diag.rosterScopeAggregate++
+      else if (verdict.reason === "unplaceable") diag.rosterScopeUnplaceable++
       if (!verdict.accept) diag.rosterScopeRejected++
-      return verdict.accept
+      return verdict
+    }
+
+    function hasOtherParticipants(): boolean {
+      for (const record of participantsByDeviceId.values()) {
+        if (!record.isCurrentUser) return true
+      }
+      return false
+    }
+
+    // Last resort, only while nobody but the bot has been recovered.
+    function countTowardStrictEscape(): void {
+      if (!strict || hasOtherParticipants()) return
+      droppedWhileEmpty++
+      if (droppedWhileEmpty < STRICT_ESCAPE_AFTER) return
+      strict = false
+      diag.rosterScopeStrictRelaxed = true
+      console.warn(
+        `${LOG} ⚠️ no participant besides the bot after dropping ${droppedWhileEmpty} roster payloads — relaxing to proven-foreign-only`
+      )
+      setTimeout(drainQuarantine, 0)
+    }
+
+    // The calling SDK's participants are scoped to the active call.
+    function activeCallParticipantIds(): Set<string> | null {
+      try {
+        const list = getActiveCall()?.participants
+        if (!list || typeof list.forEach !== "function") return null
+        const ids = new Set<string>()
+        list.forEach((participant: any) => {
+          if (typeof participant?.id === "string" && participant.id) {
+            ids.add(participant.id.toLowerCase())
+          }
+        })
+        return ids
+      } catch {
+        return null
+      }
+    }
+
+    function applyVerifiedParticipants(raw: any[]): number {
+      const ids = activeCallParticipantIds()
+      if (!ids || ids.size === 0) return 0
+      const verified = raw.filter((participant) => {
+        const id = rosterId(participant)
+        return typeof id === "string" && ids.has(id.toLowerCase())
+      })
+      if (verified.length === 0) return 0
+      diag.rosterVerifiedAdmitted += verified.length
+      applyParticipants(verified)
+      return verified.length
+    }
+
+    function admitRoster(
+      url: string | undefined,
+      text: string,
+      body: any,
+      raw: any[],
+      replay: () => void
+    ): void {
+      const verdict = rosterVerdict(url, text)
+      if (verdict.accept) {
+        applyParticipants(raw)
+        return
+      }
+      if (verdict.reason === "foreign") return
+
+      if (verdict.reason === "aggregate") {
+        const own = rosterArrayOf(extractOwnRoster(body, ownConversation))
+        if (own) {
+          diag.rosterAggregateExtracted++
+          applyParticipants(own)
+          return
+        }
+      } else if (verdict.reason === "own-unknown" && quarantine.length < QUARANTINE_MAX) {
+        diag.rosterQuarantined++
+        quarantine.push(replay)
+      }
+      if (applyVerifiedParticipants(raw) === 0) countTowardStrictEscape()
     }
 
     // ===== TEAMS INTERNAL CALLING SDK (best-effort) =====
@@ -407,13 +489,12 @@ export function teamsBrowserInterceptionLogic(
     function handleRosterUpdate(eventDataObject: any): void {
       try {
         const decodedBody = decodeWebSocketBody(eventDataObject.body)
+        const raw = Object.values<any>(decodedBody?.participants || {})
+        if (raw.length === 0) return
         // The trouter socket is per user, so it carries other meetings' deltas too.
-        if (!isInMeetingScope(eventDataObject?.url, JSON.stringify(decodedBody))) {
-          debug("🔒 rejected out-of-scope roster frame", eventDataObject?.url)
-          return
-        }
-        const rawParticipants = Object.values<any>(decodedBody.participants || {})
-        applyParticipants(rawParticipants)
+        admitRoster(eventDataObject?.url, JSON.stringify(decodedBody), decodedBody, raw, () =>
+          handleRosterUpdate(eventDataObject)
+        )
       } catch (error) {
         console.error(`${LOG} ❌ Error handling roster update:`, error)
       }
@@ -437,26 +518,37 @@ export function teamsBrowserInterceptionLogic(
       return null
     }
 
+    // A generic list only counts as a roster if its entries look like call participants.
+    function rosterArrayOf(body: any): any[] | null {
+      if (!body || typeof body !== "object") return null
+      const explicit =
+        participantsToArray(body.roster?.participants) ||
+        participantsToArray(body.participants?.value) ||
+        participantsToArray(body.participants)
+      if (explicit?.length) return explicit
+      const generic = participantsToArray(body.value) || (Array.isArray(body) ? body : null)
+      return generic?.some(looksLikeParticipant) ? generic : null
+    }
+
+    function looksLikeParticipant(pp: any): boolean {
+      return (
+        !!pp &&
+        typeof pp === "object" &&
+        !!rosterId(pp) &&
+        !!rosterName(pp) &&
+        (pp.details != null || pp.endpoints != null || pp.state != null || pp.meetingRole != null)
+      )
+    }
+
     function tryHttpRoster(url: string, text: string): void {
       try {
         if (!text || text.indexOf("displayName") === -1) return
-        if (!isInMeetingScope(url, text)) {
-          debug("🔒 rejected out-of-scope roster payload", url)
-          return
-        }
         const body = JSON.parse(text)
-        // The HTTP snapshot nests the roster as { roster: { participants: {mri: {...}} } };
-        // other endpoints use top-level participants / value. Handle all as object-or-array.
-        const raw =
-          participantsToArray(body?.roster?.participants) ||
-          participantsToArray(body?.participants) ||
-          participantsToArray(body?.value) ||
-          participantsToArray(body?.participants?.value) ||
-          (Array.isArray(body) ? body : null)
-        if (raw && raw.length) {
-          diag.httpRosterHits++
-          applyParticipants(raw)
-        }
+        // Only a real roster is scope-checked, so unrelated responses never reach the escape.
+        const raw = rosterArrayOf(body)
+        if (!raw) return
+        diag.httpRosterHits++
+        admitRoster(url, text, body, raw, () => tryHttpRoster(url, text))
       } catch {
         // not JSON — ignore
       }
@@ -916,6 +1008,7 @@ export function teamsBrowserInterceptionLogic(
 
     function pollReceivers(): void {
       if ((window as any).__teamsNetworkInterceptorStopped) return
+      learnOwnConversation()
 
       const speakingParticipantIds = new Set<string>()
       let mappedCsrcThisPoll = false

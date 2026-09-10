@@ -25,6 +25,7 @@ import {
   requeueToSQS,
   shouldAttemptRetry
 } from "./utils/retry-handler"
+import { NORMAL_END_REASONS } from "./state-machine/constants"
 
 // sqs-consumer's watchdog drops WATCHDOG_KILL_SENTINEL before SIGTERMing a bot that
 // outlived its recording window; requeuing it would relaunch into a dead meeting.
@@ -69,6 +70,16 @@ process.on("SIGTERM", async () => {
       console.log("[SIGTERM] Recording finalized — preserving artifacts (not requeuing)")
     } else if (watchdogKill) {
       console.log("[SIGTERM] Watchdog kill — artifacts preserved, requeue deliberately skipped")
+      // Report it as terminal, or the backend never learns the bot ended.
+      const endReason = GLOBAL.getEndReason()
+      if (!endReason || NORMAL_END_REASONS.includes(endReason)) {
+        GLOBAL.setError(
+          MeetingEndReason.Internal,
+          "Bot was stopped after outliving its recording window"
+        )
+      }
+      GLOBAL.claimRecovery()
+      await handleFailedRecording()
     } else if (!GLOBAL.isServerless()) {
       GLOBAL.setShouldRetry(true)
       if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
