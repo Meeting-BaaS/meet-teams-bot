@@ -22,11 +22,7 @@ declare global {
   }
 }
 
-/**
- * The meeting this bot is joining, for roster scoping. `joinUrl` is the link the
- * bot is about to navigate to — deep links carry the conversation id, everything
- * else is resolved in-page from the live call.
- */
+/** Roster scope for the meeting at `joinUrl`; links without a thread id resolve in-page. */
 export function buildTeamsInterceptorScope(joinUrl: string): TeamsInterceptorScope {
   return {
     ...deriveMeetingScope(joinUrl),

@@ -75,10 +75,7 @@ class Global {
       throw new Error("Missing required parameter: bot_uuid")
     }
 
-    // Disguise a bot-sounding display name here and nowhere else. Everything
-    // downstream — the join form, the roster, the tile cleaner, the speaker
-    // registry, the chat dedup — then reads one consistent string, which is the
-    // whole reason this cannot live at the typing site. See bot-name-disguise.ts.
+    // Disguise once here so every downstream name comparison sees the same string.
     const disguisedName = shouldDisguiseBotName(meetingParams.meeting_platform ?? "")
       ? disguiseBotName(meetingParams.bot_name, meetingParams.bot_uuid)
       : meetingParams.bot_name
@@ -97,9 +94,7 @@ class Global {
     // must be masked as <BOT_NAME> in every log line.
     PiiRedactor.registerBotName(normalizedParams.bot_name)
     if (disguisedName !== meetingParams.bot_name) {
-      // The customer's own spelling still reaches the logs through anything they
-      // sent us (entry_message, extra), so redact that form too. Never log
-      // either string — the point of registering them is that they don't appear.
+      // The original spelling can still reach logs via entry_message or extra.
       PiiRedactor.registerBotName(meetingParams.bot_name)
       console.log(`[BotName] display name disguised for the ${meetingParams.meeting_platform} join`)
     }
@@ -400,22 +395,8 @@ class Global {
   }
 
   /**
-   * Add `incoming` to a participant/speaker registry, or reconcile it with the
-   * row already representing that person.
-   *
-   * Identity is the network device id when we have one, and the resolved name
-   * only as a fallback. Collapsing by name is deliberate for people we can NAME —
-   * one human joining from two endpoints would otherwise surface as a phantom
-   * extra speaker — but "Unknown" is not a name. It is the placeholder every
-   * interceptor falls back to before a roster resolves, so it is shared by
-   * everyone still unidentified; keying on it merged all of them into a single
-   * row, and the registry being append-only made that permanent. A meeting with
-   * several speakers then came back reporting one.
-   *
-   * Reconciling also retires the placeholder: when a device's real name finally
-   * arrives, its existing row is renamed in place (or dropped, if that person is
-   * already listed from another device) instead of leaving a stale "Unknown"
-   * beside the resolved entry.
+   * Add `incoming` keyed by device id, else by name ("Unknown" never counts as a
+   * name). A device's placeholder row is renamed in place once its name resolves.
    */
   private static registerIdentity(registry: Participant[], incoming: Participant): void {
     const device = incoming.participantId
@@ -425,18 +406,14 @@ class Global {
       const known = registry.find((p) => p.participantId === device)
       if (known) {
         if (!isNamed || known.name === incoming.name) return
-        // The name just resolved. If this person is already listed from another
-        // device, drop the placeholder rather than creating a duplicate.
+        // Already listed from another device: drop the placeholder.
         if (registry.some((p) => p !== known && p.name === incoming.name)) {
           registry.splice(registry.indexOf(known), 1)
           return
         }
         known.name = incoming.name
         known.id = incoming.id
-        // Only overwrite optional metadata the incoming row actually carries:
-        // the update that resolves a name often comes from a speaking event
-        // that has no avatar or display name on it, and blindly assigning
-        // would erase what the roster already told us about this device.
+        // Keep roster metadata the naming update doesn't carry.
         known.displayName = incoming.displayName ?? known.displayName
         known.profilePicture = incoming.profilePicture ?? known.profilePicture
         known.isNetworkDetected = incoming.isNetworkDetected
@@ -447,8 +424,7 @@ class Global {
     // Same person, different endpoint — only ever collapsed on a real name.
     if (isNamed && registry.some((p) => p.name === incoming.name)) return
 
-    // An unidentified participant with no device id is indistinguishable from any
-    // other; keep the single placeholder row rather than growing one per callback.
+    // One placeholder row for unidentified participants without a device id.
     if (!isNamed && !device && registry.some((p) => p.name === incoming.name)) return
 
     registry.push(incoming)

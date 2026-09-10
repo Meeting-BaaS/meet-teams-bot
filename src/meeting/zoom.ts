@@ -44,15 +44,8 @@ const PREVIEW_MUTE = "#preview-audio-control-button"
 const PREVIEW_VIDEO = "#preview-video-control-button"
 const LEAVE_BUTTON = 'button[aria-label="Leave"]'
 
-// Which of Zoom's anti-bot walls fired. The end reason collapses all four into
-// zoomAnonymousJoinNotAllowed, which cannot answer the one question that decides
-// what to fix: a wall that fires BEFORE the display name is typed is pure IP /
-// fingerprint reputation and no naming change can touch it.
-type ZoomWallPhase =
-  | "pre_name" // rendered on the pre-join page, before any name was entered
-  | "no_name_input" // the name field never appeared at all
-  | "post_name" // appeared only after the name was typed, before Join
-  | "admission" // streamed in after the Join click, during the admission wait
+// Which Zoom anti-bot wall fired; a pre_name wall is IP/fingerprint, not the name.
+type ZoomWallPhase = "pre_name" | "no_name_input" | "post_name" | "admission"
 
 // What the loading-stall probe treats as proof the client is up. Built from the
 // selectors above and the shared state config so there is exactly one place a
@@ -863,9 +856,7 @@ export class ZoomProvider implements MeetingProviderInterface {
         const inMeeting = await zoomStateDetector.isInMeeting(page)
         if (inMeeting.matched) {
           {
-            // The wall lines above are useless without a denominator: a network
-            // that is never used cannot be told from one that never fails. Emit
-            // the same exit identity on a clean admission.
+            // Denominator for the wall log lines: the exit identity on a clean admission.
             const t = getProxyTelemetry()
             console.log(
               `[Zoom] ✅ admitted proxy=${t.enabled ? "on" : "off"} ` +
@@ -886,15 +877,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     throw new Error(`[Zoom] Not admitted within ${timeoutMs}ms`)
   }
 
-  /**
-   * Single exit for every Zoom anti-bot wall.
-   *
-   * Zoom, unlike Meet, reports no structured detection signal anywhere, so the
-   * only record of WHY a bot was walled is this line. It carries the exit
-   * identity that was in force (country + ASN, never the IP — that is redacted
-   * downstream) and which wall fired, which is what makes a per-network flag
-   * rate computable from logs alone.
-   */
+  /** Single exit for every Zoom anti-bot wall; logs the phase and exit network (never the IP). */
   private failBotWall(phase: ZoomWallPhase, wall: string): never {
     const t = getProxyTelemetry()
     console.error(

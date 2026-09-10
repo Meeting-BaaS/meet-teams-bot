@@ -428,18 +428,9 @@ export function browserInterceptionLogic(schema: any[]) {
     }
 
     // ===== CONFERENCE SCOPE =====
-    // Every Meet device id is `spaces/<space>/devices/<n>`, so a roster payload
-    // states which conference it describes. The bot's tab is only ever in one, and
-    // the fetch hook that feeds updateUsers matches broadly (any URL containing
-    // "meet/"), so pin the space the first roster establishes and refuse users from
-    // any other one. This is the Meet counterpart of the Teams roster scoping: a
-    // signed-in bot must never merge a participant from a conference it did not
-    // join. Proven-foreign only — a device id whose space cannot be parsed still
-    // merges exactly as before, so this can never starve a roster.
+    // Device ids are `spaces/<space>/devices/<n>`: pin our space, drop users from any other.
     let ownSpace: string | null = null
-    // True once ownSpace came from the bot's OWN device record. A majority pin is
-    // a guess made before that record arrives; this one cannot be wrong, so it
-    // supersedes the guess and is never reconsidered.
+    // Set once ownSpace comes from the bot's own device record, not a majority guess.
     let ownSpaceIsAuthoritative = false
     let foreignSpaceUsers = 0
 
@@ -469,9 +460,7 @@ export function browserInterceptionLogic(schema: any[]) {
 
         if (selfSpace) {
           if (ownSpace && ownSpace !== selfSpace) {
-            // The provisional pin named the wrong conference. Users admitted
-            // under it are already in the map, so re-pinning alone would leave
-            // the foreign ones merged — drop them as we correct the pin.
+            // The provisional pin was wrong; purge users admitted under it.
             let purged = 0
             for (const deviceId of [...userManager.allUsersMap.keys()]) {
               const space = spaceOf(deviceId)
@@ -487,10 +476,7 @@ export function browserInterceptionLogic(schema: any[]) {
           ownSpace = selfSpace
           ownSpaceIsAuthoritative = true
         } else if (!ownSpace) {
-          // No self record yet. Fall back to the space most of this roster
-          // belongs to — a majority rather than the first entry, so one stray
-          // record cannot pin the wrong conference — and let the self record
-          // correct it if this guess turns out wrong.
+          // No self record yet: provisionally pin the majority space.
           const counts = new Map<string, number>()
           for (const user of rostered) {
             const space = spaceOf(user.deviceId)
@@ -711,18 +697,8 @@ export function browserInterceptionLogic(schema: any[]) {
       return audioData.some((v) => Math.abs(v) > 0.001)
     }
 
-    // Find users with audio levels from contributing sources.
-    //
-    // Ranks every AUDIBLE source, including ones whose SSRC has no device
-    // mapping yet. Filtering unresolved sources out before the sort silently
-    // handed the turn to the loudest source we happened to be able to name:
-    // a participant whose SSRC never resolved was invisible, so the other
-    // participant won every sample — over an open mic that clears the level
-    // threshold all call, that is one speaker for the whole meeting, broadcast
-    // once (the callers dedupe on change) and never corrected. Prod: a 30
-    // minute Meet with three roster entries came back 100% attributed to one
-    // person. Callers must therefore handle `user` being null — see
-    // speakingDeviceOf.
+    // Rank every audible source, including unresolved SSRCs (`user` null), so an
+    // unnameable speaker can't hand every turn to the nameable one.
     function getUsersWithAudio(contributingSources: any[], userManager: any): any[] {
       return contributingSources
         .map((source) => ({
@@ -735,11 +711,7 @@ export function browserInterceptionLogic(schema: any[]) {
         .sort((a, b) => b.audioLevel - a.audioLevel)
     }
 
-    // Device id to attribute an audio entry to. An unresolved SSRC keeps its
-    // own identity (the SSRC itself, matching how the dcrpc path keys speakers
-    // it cannot name) so turn boundaries survive as "Unknown" instead of being
-    // merged into whoever happened to be nameable. Finalize treats an Unknown
-    // stretch as a hole and lets the UI observer name it.
+    // An unresolved SSRC is keyed by the SSRC itself, surfacing as its own "Unknown".
     function speakingDeviceOf(entry: any): string | null {
       if (!entry) return null
       return entry.user ? entry.user.deviceId : String(entry.ssrc)
@@ -818,10 +790,7 @@ export function browserInterceptionLogic(schema: any[]) {
       const filteredUsers = filterActiveUsers(allUsers)
       const users = buildUserStateList(filteredUsers, speakingDeviceId, audioLevel)
 
-      // The speaker is audible but not in the roster (an SSRC no collections
-      // record mapped, or a user filterActiveUsers dropped). Emit it as its own
-      // Unknown participant rather than sending an all-silent update that would
-      // leave the previous speaker holding the turn. Mirrors broadcastDcrpcSpeakers.
+      // Audible but not rostered: emit as Unknown so the last speaker doesn't keep the turn.
       if (speakingDeviceId && !users.some((u: any) => u.deviceId === speakingDeviceId)) {
         users.push({
           deviceId: speakingDeviceId,

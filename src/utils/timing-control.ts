@@ -1,13 +1,7 @@
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
 
-// A bot may legitimately start late: a pod cold start, a queue backlog, an SQS
-// requeue after a failed join. It may never start SO late that the meeting it
-// was sent to cannot still be running. max_recording_duration is exactly that
-// bound — the longest window this bot was ever going to record — so past it the
-// meeting is over by construction and joining can only sit in an empty room
-// until the waiting-room timeout, on a billed pod. Floored so a very short
-// recording cap does not reject an ordinary cold start.
+// Past max_recording_duration the meeting is over; the floor still allows a cold start.
 const MIN_LATENESS_ALLOWANCE_SEC = 15 * 60
 
 function latenessAllowanceSec(): number {
@@ -70,8 +64,6 @@ export async function handleTimingControl(
   const lateBy = currentTime - startTime
   const allowance = latenessAllowanceSec()
   if (lateBy > allowance) {
-    // Do not join. Reaching here means something requeued a bot long after its
-    // meeting could still have been running (see the watchdog note in main.ts).
     console.error(
       `Bot is late by ${lateBy}s, past its ${allowance}s allowance — the meeting cannot still be running. Not joining.`
     )

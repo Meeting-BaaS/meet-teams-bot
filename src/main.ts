@@ -26,21 +26,8 @@ import {
   shouldAttemptRetry
 } from "./utils/retry-handler"
 
-/**
- * SIGTERM does not always mean "the cluster is taking this pod away".
- *
- * The supervisor that launched this process (apps/sqs-consumer) also runs a
- * watchdog that SIGTERMs a bot which has outlived its recording window — a floor
- * of REDIS_SESSION_EXPIRATION_SEC, five hours by default. That is the OPPOSITE
- * of an eviction: the bot is wedged, the meeting it was sent to ended hours ago,
- * and requeuing relaunches it into a dead meeting. Measured in prod, this
- * produced relaunches of the same bot_uuid at exactly 18000s and 36000s after
- * the first, each burning a pod, a video-device slot and a proxy session.
- *
- * The supervisor drops a sentinel file before it kills, and names it in
- * WATCHDOG_KILL_SENTINEL. Absent env var or absent file → an eviction, and the
- * requeue below is correct. Present → salvage the artifacts, never requeue.
- */
+// sqs-consumer's watchdog drops WATCHDOG_KILL_SENTINEL before SIGTERMing a bot that
+// outlived its recording window; requeuing it would relaunch into a dead meeting.
 function killedByWatchdog(): boolean {
   const sentinel = process.env["WATCHDOG_KILL_SENTINEL"]
   if (!sentinel) return false
@@ -200,9 +187,7 @@ async function handleFailedRecording(): Promise<void> {
   if (
     (endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed ||
       endReason === MeetingEndReason.BotNotAccepted) &&
-    // Skeletonise first: with HOMOGLYPH_NAME_PLATFORMS on, the name reaching
-    // here already has a Cyrillic letter in the very token we are looking for,
-    // and a raw match would silently stop firing exactly when it matters most.
+    // Undo the homoglyph disguise before matching.
     isBotLikeName(skeletonizeBotName(botName))
   ) {
     console.warn(

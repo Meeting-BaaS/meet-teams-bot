@@ -264,10 +264,7 @@ describe("assembleSpeakerTimeline retrofit cap boundary", () => {
 })
 
 describe("assembleSpeakerTimeline source dissonance", () => {
-  // Prod bot 22e3adba: a 30-minute Meet whose interceptor never resolved the
-  // second participant's SSRC pinned the whole call on the first. The muted UI
-  // observer had both people right all along, but a collapsed primary leaves no
-  // holes, so nothing it saw could reach the artifact.
+  // Prod bot 22e3adba: network pinned a two-person call on one speaker.
   const network = [seg("Stefano", 0, 1400, 2)]
   const ui = [seg("Stefano", 0, 640, 2), seg("Emanuele", 640, 1350, 3)]
 
@@ -328,7 +325,6 @@ describe("assembleSpeakerTimeline source dissonance", () => {
   })
 
   it("requires a shared identity before treating disagreement as collapse", () => {
-    // Two incompatible naming schemes are not evidence of anything.
     const { segments, sourceDissonance } = assembleSpeakerTimeline(
       [
         { kind: "network", segments: [seg("Network Identity", 0, 120)] },
@@ -341,9 +337,7 @@ describe("assembleSpeakerTimeline source dissonance", () => {
   })
 
   it("catches a PARTIAL collapse, where the primary found slivers of the second speaker", () => {
-    // Prod bot acf4eecf: 5,271 speaking samples against 31. The second speaker
-    // is present in the primary and can clear the effective-speaker floor, so a
-    // rule keyed on "exactly one effective speaker" misses this entirely.
+    // Prod bot acf4eecf: 5,271 speaking samples against 31.
     const { sourceDissonance } = assembleSpeakerTimeline(
       [
         { kind: "network", segments: [seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)] },
@@ -360,8 +354,6 @@ describe("assembleSpeakerTimeline source dissonance", () => {
   })
 
   it("leaves a lopsided but CORRECT call alone when both sources agree", () => {
-    // One person really did hold the floor. Dominance alone would fire here;
-    // the disagreement factor is what keeps it quiet.
     const { segments, sourceDissonance } = assembleSpeakerTimeline(
       [
         { kind: "network", segments: [seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)] },
@@ -374,8 +366,6 @@ describe("assembleSpeakerTimeline source dissonance", () => {
   })
 
   it("demotes the collapsed primary BELOW every source it has not disproven", () => {
-    // Network is known wrong about identity, so transcription — untested, but
-    // not disproven — gets the tail gap ahead of it.
     const { filledBySource, sourceDissonance } = assembleSpeakerTimeline(
       [
         { kind: "network", segments: network },

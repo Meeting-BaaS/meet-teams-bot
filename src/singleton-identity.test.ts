@@ -2,11 +2,7 @@ import { GLOBAL } from "./singleton"
 import type { Participant } from "./types"
 import { UNKNOWN_SPEAKER } from "./types"
 
-/**
- * Regression cover for the collapse that made a multi-speaker meeting report one
- * speaker: the registries deduped on name, and "Unknown" is the placeholder every
- * interceptor shares before a roster resolves.
- */
+// The registries used to dedupe on name, collapsing every "Unknown" into one row.
 describe("participant/speaker identity registry", () => {
   const p = (over: Partial<Participant>): Participant => ({
     name: UNKNOWN_SPEAKER,
@@ -16,7 +12,6 @@ describe("participant/speaker identity registry", () => {
   })
 
   beforeEach(() => {
-    // The registries are append-only for the life of a bot; reset between cases.
     GLOBAL.getParticipants().length = 0
     GLOBAL.getSpeakers().length = 0
   })
@@ -41,9 +36,6 @@ describe("participant/speaker identity registry", () => {
   })
 
   it("keeps roster metadata a later naming update does not carry", () => {
-    // The update that resolves a name is often a speaking event with no avatar
-    // or display name on it; assigning those blindly erased what the roster had
-    // already told us about the device.
     GLOBAL.addParticipantIfNotExists(
       p({ participantId: "d1", displayName: "Bobby", profilePicture: "https://cdn/x.png" })
     )

@@ -36,15 +36,7 @@ export function zoomBrowserInterceptionLogic() {
     ;(window as any).__zoomNetworkInterceptorStopped = false
 
     // ===== STEALTH: native-toString masking =====
-    // This bundle runs via addInitScript, so it is in place before Zoom's own
-    // client boots — which is exactly when Zoom decides whether we are a bot.
-    // Everything it replaces (WebSocket, Worker, RTCPeerConnection) is a global
-    // a page can interrogate for free: Function.prototype.toString.call(WebSocket)
-    // on a wrapper returns its JS source instead of "[native code]", and the
-    // wrapper's own .name/.length differ from the native constructor's. Route
-    // toString through a Proxy that reports a native signature for our wrappers
-    // (keyed in a WeakMap) and is transparent for everything else. Ported from
-    // the Meet bundle, which has carried this since its own detection work.
+    // Our wrapped globals must report "[native code]" to Function.prototype.toString.
     const __nativeStr = new WeakMap<any, string>()
     try {
       const __origToString = Function.prototype.toString
@@ -60,9 +52,7 @@ export function zoomBrowserInterceptionLogic() {
       /* environment forbids patching — masking is simply absent */
     }
 
-    // Make a wrapper indistinguishable from the constructor it replaces: same
-    // reported source, same .name, same .length. Reading them off the original
-    // rather than hardcoding keeps it correct across engines.
+    // Copy the original's native signature, .name and .length onto a wrapper.
     const __disguise = (wrapper: any, original: any): any => {
       try {
         __nativeStr.set(wrapper, `function ${original.name}() { [native code] }`)
@@ -75,11 +65,7 @@ export function zoomBrowserInterceptionLogic() {
     }
 
     // ===== STEALTH: cloak our injected window globals =====
-    // No real browser has a __zoomSpeakerQueue. A detector that enumerates window
-    // finds every one of these on the first frame. Redefining them as
-    // non-enumerable keeps them reachable by name (nothing breaks) and removes
-    // them from Object.keys / for-in. Re-run deferred as well, because the
-    // exposeFunction bridges below are installed out of band by Playwright.
+    // Non-enumerable; re-run later because Playwright installs its bridges out of band.
     const __CLOAK_NAMES = [
       "__zoomNetworkInterceptorMain",
       "__zoomNetworkInterceptorInitialized",

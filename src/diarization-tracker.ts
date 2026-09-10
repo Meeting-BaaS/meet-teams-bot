@@ -284,8 +284,7 @@ export class DiarizationTracker {
       { botNames }
     )
     if (sourceDissonance) {
-      // Loud on purpose: it means an interceptor regressed and was silently
-      // wrong for a whole call. Counts and ratios only — names are PII.
+      // An interceptor was wrong for the whole call. Counts only: names are PII.
       console.error(
         `[DiarizationTracker] ⚠️ Source dissonance (${sourceDissonance.reason}): promoted ${sourceDissonance.promotedSource} over ${sourceDissonance.demotedSource}; ` +
           `effective speakers ${sourceDissonance.demotedSource}=${sourceDissonance.primaryEffectiveSpeakers} ${sourceDissonance.promotedSource}=${sourceDissonance.challengerEffectiveSpeakers}, ` +

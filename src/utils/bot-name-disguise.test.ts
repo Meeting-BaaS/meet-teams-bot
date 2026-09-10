@@ -20,8 +20,6 @@ describe("bot name disguise", () => {
     expect(out).toHaveLength("Notetaker".length)
   })
 
-  // A wholly mixed-script name is what the Unicode confusables check is built to
-  // catch, and it is a stronger bot signal than the word it hides.
   it("substitutes exactly one character per offending token", () => {
     const original = "Acme Notetaker"
     const out = disguiseBotName(original, SEED)
@@ -57,9 +55,6 @@ describe("bot name disguise", () => {
     }
   })
 
-  // Fullwidth and mathematical look-alikes fold straight back to ASCII, so a
-  // server that normalises before matching would see through them. Cyrillic does
-  // not decompose — this is the property the whole approach rests on.
   it("survives NFC and NFKC normalisation", () => {
     const out = disguiseBotName("Notetaker", SEED)
     expect(out.normalize("NFC")).toBe(out)
@@ -74,8 +69,6 @@ describe("bot name disguise", () => {
   })
 
   it("does not mangle a token with no honest look-alike", () => {
-    // "bot" is matched, and every letter of it has a twin, so this asserts the
-    // guard rather than the happy path: a token of untwinned letters is skipped.
     expect(disguiseBotName("Notetaker", SEED)).not.toContain("?")
   })
 })

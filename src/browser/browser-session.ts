@@ -25,9 +25,7 @@ const LAUNCH_TIMEOUT_MS = 60_000
 // so ~750ms is plenty; pkill -9 below is instant, keeping the fast retry fast.
 const BROWSER_CLOSE_TIMEOUT_MS = 750
 
-// Exit ASN the previous browser session in THIS pod left through. Only read on a
-// Zoom in-process retry, whose entire purpose is to escape an IP-keyed wall — a
-// relaunch that lands on the same network has bought nothing.
+// Exit ASN of this pod's previous Zoom session, to spot a retry on the same network.
 let lastZoomExitAsn: number | null = null
 
 /**
@@ -96,13 +94,7 @@ export async function establishBrowserSession(
       )
       if (proxyUrl) session.proxyUrl = proxyUrl
 
-      // Every selected region refused us. Decodo answers 407 for regions a plan
-      // does not entitle, so a team pinned to a narrow region set can walk its
-      // whole list ("region X exit unreachable" → "all selected regions
-      // unreachable") and end up joining direct — from the pod's datacenter IP,
-      // the single strongest bot signal on both Meet and Zoom. An unpinned
-      // residential exit is strictly better than no exit, so spend one more
-      // start without the geo pin before conceding the proxy.
+      // Every pinned region refused us; an unpinned residential exit beats a datacenter IP.
       if (!session.proxyUrl) {
         console.warn(
           `[BrowserSession] pinned residential exit unavailable for ${platform} — retrying without a geo pin`
@@ -231,11 +223,7 @@ export async function establishBrowserSession(
     }
   }
 
-  // A Zoom in-pod relaunch exists to escape an IP-keyed wall, so it is worth
-  // nothing unless the exit actually moved. Decodo always hands back a new
-  // session label; on a narrow pinned pool it can hand back the same network
-  // every time. Meet verifies this already (burned-ASN loop above) — Zoom
-  // assumed it. Verify, and re-roll onto the next candidate region if not.
+  // A Zoom in-pod retry only helps if the exit network changed; re-roll the region if not.
   if (session.proxyUrl && platform === "zoom" && (opts.inProcessAttempt ?? 0) > 0) {
     const ASN_ROTATIONS = 2
     for (let rot = 1; rot <= ASN_ROTATIONS; rot++) {
@@ -251,8 +239,7 @@ export async function establishBrowserSession(
         { countryOffset: countryOffset + rot }
       )
       if (!rotated) {
-        // The rotation tore the old proxy down without replacing it — don't
-        // launch against a dead proxy URL; the guard below decides what next.
+        // The old proxy is gone; let the guard below decide.
         session.proxyUrl = undefined
         break
       }
@@ -271,10 +258,7 @@ export async function establishBrowserSession(
   // clear session.proxyUrl on a failed rotation — not just the initial proxy
   // start. The LAST retry still falls back to a live/direct exit as the
   // final resort rather than never joining.
-  // Zoom is included because its browser-join wall blocks datacenter IPs
-  // outright: measured over 14 days of prod, attempts that fell through to a
-  // proxy-less join were walled 93% of the time. The cap is platform-aware
-  // (getMaxRetryCount), so Meet keeps exactly the budget it had.
+  // Zoom walls 93% of proxy-less joins (14 days of prod).
   if (
     (platform === "meet" || platform === "zoom") &&
     !session.proxyUrl &&

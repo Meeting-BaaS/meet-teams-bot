@@ -59,12 +59,7 @@ export async function humanType(page: Page, text: string): Promise<void> {
   let typos = 0
   const maxTypos = text.length > 6 ? 2 : 1
   for (const ch of text) {
-    // A character no US-QWERTY key produces (a Cyrillic look-alike from the
-    // display-name disguise, an accent, an emoji) cannot be typed honestly:
-    // keyboard.type() dispatches keydown with code:"" and keyCode:0, which is
-    // one of the oldest automation signatures there is. insertText fires the
-    // input events without inventing a key event, which is what a paste or an
-    // IME commit looks like — unusual for a person, but not synthetic.
+    // keyboard.type() sends keyCode 0 for non-QWERTY characters, a classic automation tell.
     if (!/^[\x20-\x7e]$/.test(ch)) {
       await page.keyboard.insertText(ch)
       await sleep(rand(45, 120))

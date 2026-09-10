@@ -8,8 +8,7 @@ import { UNKNOWN_SPEAKER } from "./types"
  * own active-speaker indicator, shadow-buffered whole-call) > transcription
  * (live transcription-system turns, when one ran). A lower-trust source never
  * overwrites a higher-trust one — it only fills sufficiently large holes —
- * unless a lower-trust source proves the primary collapsed onto one
- * participant (see detectSourceDissonance).
+ * unless it proves the primary collapsed (see detectSourceDissonance).
  */
 
 export type TimelineSourceKind = "network" | "ui" | "transcription"
@@ -32,23 +31,12 @@ export const MIN_SEGMENT_SECONDS = 1
 // (label-only backfill), never the timeline's.
 export const LEADING_RETROFIT_MAX_SECONDS = 20
 
-// --- Source dissonance (primary-collapse) detection ---
-// A primary source can fail by being confidently WRONG rather than absent:
-// every stretch pinned on one participant. Hole-filling cannot repair that —
-// a wrong answer leaves no holes — so on proof of collapse the contradicting
-// source is promoted and the primary demoted. Proof is never a bare suspicion:
-// a real monologue looks identical from the primary alone.
-/** An identity must own this much unambiguous time to count as a speaker. */
+// --- Source dissonance: a collapsed primary leaves no holes for fallbacks to fill ---
+/** Seconds an identity needs to count as a speaker. */
 export const SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS = 15
 /** Share of the primary's named time its top speaker must hold to look collapsed. */
 export const SOURCE_DISSONANCE_DOMINANCE_RATIO = 0.85
-/**
- * How much MORE time the challenger must give the other speakers than the
- * primary did. Dominance alone is not proof: on a call where one person really
- * does hold 95% of the floor, both sources agree and there is nothing to fix.
- * Requiring the challenger to multiply the others' time is what separates a
- * collapse from a lopsided-but-correct call.
- */
+/** How many times more time the challenger must give the other speakers. */
 export const SOURCE_DISSONANCE_DISAGREEMENT_FACTOR = 3
 
 export interface SpeakerSourceDissonance {
@@ -121,23 +109,8 @@ function effectiveSpeakers(durations: Map<string, number>): Array<[string, numbe
 }
 
 /**
- * Detect the production failure where the primary source pins effectively a
- * whole call on one participant while an independent, lower-trust source saw
- * several people taking turns.
- *
- * Four things must hold, and each rules out a specific false positive:
- *  - the primary is DOMINATED by one effective speaker (not merely "named
- *    exactly one"): a collapse usually leaves slivers of the real second
- *    speaker, and an exclusivity test loses those cases — prod bot acf4eecf
- *    was 5,271 samples against 31, which can clear the effective floor;
- *  - the challenger has two or more effective speakers, so a transient
- *    active-tile misread cannot promote anything;
- *  - the two sources SHARE the dominant identity, which distinguishes a real
- *    collapse from two sources using incompatible naming schemes;
- *  - the challenger gives the OTHER speakers materially more time than the
- *    primary did, which is what separates a collapse from a genuinely lopsided
- *    call that both sources describe the same way.
- * The recording bot is excluded from both sides throughout.
+ * A primary dominated by one speaker, contradicted by a lower-trust source that
+ * shares that speaker and gives the others several times more time. Bots excluded.
  */
 function detectSourceDissonance(
   sources: TimelineSource[],
@@ -319,11 +292,7 @@ export function assembleSpeakerTimeline(
   let assembled: DiarizationSegment[] = []
   const filledBySource: Partial<Record<TimelineSourceKind, number>> = {}
 
-  // On proof of collapse the challenger leads and the primary goes LAST, not
-  // second: it has just been shown wrong about identity, so it should fill
-  // holes only after every source we have not disproven. It is demoted rather
-  // than dropped — it is wrong about who spoke, not about that speech
-  // happened, so it still covers what the challenger left uncovered.
+  // On collapse the challenger leads and the primary fills holes last.
   const detected = detectSourceDissonance(sources, options?.botNames)
   const ordered = detected
     ? [

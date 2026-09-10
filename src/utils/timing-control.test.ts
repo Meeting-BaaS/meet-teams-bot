@@ -40,9 +40,6 @@ describe("handleTimingControl lateness guard", () => {
     expect(mockSetError).not.toHaveBeenCalled()
   })
 
-  // The zombie requeue: our own watchdog kills a wedged bot after 5h and the
-  // SIGTERM handler used to requeue it, so a fresh pod joined a meeting that had
-  // ended hours earlier. Even with that fixed, never join this late.
   it("refuses to join hours after the meeting could still be running", async () => {
     const startTime = now() - 5 * 3600
     await expect(handleTimingControl(startTime)).rejects.toThrow(/Refusing to join/)
