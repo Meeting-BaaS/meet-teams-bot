@@ -59,6 +59,12 @@ export async function humanType(page: Page, text: string): Promise<void> {
   let typos = 0
   const maxTypos = text.length > 6 ? 2 : 1
   for (const ch of text) {
+    // keyboard.type() sends keyCode 0 for non-QWERTY characters, a classic automation tell.
+    if (!/^[\x20-\x7e]$/.test(ch)) {
+      await page.keyboard.insertText(ch)
+      await sleep(rand(45, 120))
+      continue
+    }
     const lower = ch.toLowerCase()
     const neighbours = ADJACENT[lower]
     if (typos < maxTypos && neighbours && Math.random() < 0.12) {

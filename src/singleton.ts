@@ -2,7 +2,14 @@ import { envVars } from "./config/env-vars"
 import { MetricsCollector } from "./services/metrics-collector"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
-import type { ArtifactKey, MeetingParams, Participant, RecordingMode } from "./types"
+import {
+  type ArtifactKey,
+  type MeetingParams,
+  type Participant,
+  type RecordingMode,
+  UNKNOWN_SPEAKER
+} from "./types"
+import { disguiseBotName, shouldDisguiseBotName } from "./utils/bot-name-disguise"
 import { PiiRedactor } from "./utils/PiiRedactor"
 
 class Global {
@@ -68,9 +75,15 @@ class Global {
       throw new Error("Missing required parameter: bot_uuid")
     }
 
+    // Disguise once here so every downstream name comparison sees the same string.
+    const disguisedName = shouldDisguiseBotName(meetingParams.meeting_platform ?? "")
+      ? disguiseBotName(meetingParams.bot_name, meetingParams.bot_uuid)
+      : meetingParams.bot_name
+
     // Normalize the recording mode before setting
     const normalizedParams = {
       ...meetingParams,
+      bot_name: disguisedName,
       recording_mode: this.normalizeRecordingMode(meetingParams.recording_mode)
     }
 
@@ -80,6 +93,11 @@ class Global {
     // params are available: bot names often contain end-user names and
     // must be masked as <BOT_NAME> in every log line.
     PiiRedactor.registerBotName(normalizedParams.bot_name)
+    if (disguisedName !== meetingParams.bot_name) {
+      // The original spelling can still reach logs via entry_message or extra.
+      PiiRedactor.registerBotName(meetingParams.bot_name)
+      console.log(`[BotName] display name disguised for the ${meetingParams.meeting_platform} join`)
+    }
 
     console.log(`🤖 Bot ${meetingParams.bot_uuid} initialized with validated parameters`)
   }
@@ -361,10 +379,7 @@ class Global {
   }
 
   public addParticipantIfNotExists(participant: Participant): void {
-    // TODO: Use id instead of name
-    if (!this.participants.some((p) => p.name === participant.name)) {
-      this.participants.push(participant)
-    }
+    Global.registerIdentity(this.participants, participant)
   }
 
   public getParticipants(): Participant[] {
@@ -376,10 +391,43 @@ class Global {
   }
 
   public addSpeakerIfNotExists(speaker: Participant): void {
-    // TODO: Use id instead of name
-    if (!this.speakers.some((s) => s.name === speaker.name)) {
-      this.speakers.push(speaker)
+    Global.registerIdentity(this.speakers, speaker)
+  }
+
+  /**
+   * Add `incoming` keyed by device id, else by name ("Unknown" never counts as a
+   * name). A device's placeholder row is renamed in place once its name resolves.
+   */
+  private static registerIdentity(registry: Participant[], incoming: Participant): void {
+    const device = incoming.participantId
+    const isNamed = Boolean(incoming.name) && incoming.name !== UNKNOWN_SPEAKER
+
+    if (device) {
+      const known = registry.find((p) => p.participantId === device)
+      if (known) {
+        if (!isNamed || known.name === incoming.name) return
+        // Already listed from another device: drop the placeholder.
+        if (registry.some((p) => p !== known && p.name === incoming.name)) {
+          registry.splice(registry.indexOf(known), 1)
+          return
+        }
+        known.name = incoming.name
+        known.id = incoming.id
+        // Keep roster metadata the naming update doesn't carry.
+        known.displayName = incoming.displayName ?? known.displayName
+        known.profilePicture = incoming.profilePicture ?? known.profilePicture
+        known.isNetworkDetected = incoming.isNetworkDetected
+        return
+      }
     }
+
+    // Same person, different endpoint — only ever collapsed on a real name.
+    if (isNamed && registry.some((p) => p.name === incoming.name)) return
+
+    // One placeholder row for unidentified participants without a device id.
+    if (!isNamed && !device && registry.some((p) => p.name === incoming.name)) return
+
+    registry.push(incoming)
   }
 
   public getSpeakers(): Participant[] {

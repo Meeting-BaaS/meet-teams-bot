@@ -79,6 +79,8 @@ export const envVars = cleanEnv(process.env, {
   // meet/teams later is a one-value change. Only takes effect when
   // STEALTHFOX_BINARY_PATH is set, so local/dev without the binary is unaffected.
   STEALTHFOX_PLATFORMS: str({ default: "zoom" }),
+  // Comma-separated platforms ("zoom", "all") that disguise bot-like names; empty = off.
+  HOMOGLYPH_NAME_PLATFORMS: str({ default: "" }),
   // Absolute path to the stealthfox Firefox binary. Baked into the Docker image
   // at /opt/stealthfox/<tag>/firefox by scripts/fetch-stealthfox.sh. Empty =
   // stealthfox disabled (falls back to CloakBrowser).

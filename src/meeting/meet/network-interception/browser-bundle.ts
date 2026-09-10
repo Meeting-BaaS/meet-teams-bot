@@ -427,12 +427,82 @@ export function browserInterceptionLogic(schema: any[]) {
         })
     }
 
+    // ===== CONFERENCE SCOPE =====
+    // Device ids are `spaces/<space>/devices/<n>`: pin our space, drop users from any other.
+    let ownSpace: string | null = null
+    // Set once ownSpace comes from the bot's own device record, not a majority guess.
+    let ownSpaceIsAuthoritative = false
+    let foreignSpaceUsers = 0
+
+    function spaceOf(deviceId: unknown): string | null {
+      if (typeof deviceId !== "string") return null
+      const match = deviceId.match(/^spaces\/([^/]+)\//)
+      return match ? match[1] : null
+    }
+
+    function isSelfRecord(user: any): boolean {
+      return user?.isCurrentUserString === "true" || user?.isCurrentUserString === "1"
+    }
+
     function updateUsers(userManager: any, users: any[]) {
-      users
-        .filter((u) => u?.deviceId)
-        .forEach((user) => {
-          userManager.allUsersMap.set(user.deviceId, user)
-        })
+      const rostered = users.filter((u) => u?.deviceId)
+
+      if (!ownSpaceIsAuthoritative) {
+        let selfSpace: string | null = null
+        for (const user of rostered) {
+          if (!isSelfRecord(user)) continue
+          const space = spaceOf(user.deviceId)
+          if (space) {
+            selfSpace = space
+            break
+          }
+        }
+
+        if (selfSpace) {
+          if (ownSpace && ownSpace !== selfSpace) {
+            // The provisional pin was wrong; purge users admitted under it.
+            let purged = 0
+            for (const deviceId of [...userManager.allUsersMap.keys()]) {
+              const space = spaceOf(deviceId)
+              if (space && space !== selfSpace) {
+                userManager.allUsersMap.delete(deviceId)
+                purged++
+              }
+            }
+            console.warn(
+              `[NetworkInterceptor] 🔒 re-pinned the conference from the bot's own device (dropped ${purged} user(s) admitted under the provisional pin)`
+            )
+          }
+          ownSpace = selfSpace
+          ownSpaceIsAuthoritative = true
+        } else if (!ownSpace) {
+          // No self record yet: provisionally pin the majority space.
+          const counts = new Map<string, number>()
+          for (const user of rostered) {
+            const space = spaceOf(user.deviceId)
+            if (space) counts.set(space, (counts.get(space) ?? 0) + 1)
+          }
+          let best = 0
+          for (const [space, count] of counts) {
+            if (count > best) {
+              best = count
+              ownSpace = space
+            }
+          }
+        }
+      }
+
+      for (const user of rostered) {
+        const space = spaceOf(user.deviceId)
+        if (ownSpace && space && space !== ownSpace) {
+          foreignSpaceUsers++
+          console.warn(
+            `[NetworkInterceptor] 🔒 dropped a user from another conference (${foreignSpaceUsers} so far)`
+          )
+          continue
+        }
+        userManager.allUsersMap.set(user.deviceId, user)
+      }
     }
 
     function getAllUsers(userManager: any) {
@@ -627,7 +697,8 @@ export function browserInterceptionLogic(schema: any[]) {
       return audioData.some((v) => Math.abs(v) > 0.001)
     }
 
-    // Find users with audio levels from contributing sources
+    // Rank every audible source, including unresolved SSRCs (`user` null), so an
+    // unnameable speaker can't hand every turn to the nameable one.
     function getUsersWithAudio(contributingSources: any[], userManager: any): any[] {
       return contributingSources
         .map((source) => ({
@@ -636,8 +707,14 @@ export function browserInterceptionLogic(schema: any[]) {
           timestamp: source.timestamp,
           user: getUserByStreamId(userManager, source.source.toString())
         }))
-        .filter((x) => x.user && x.audioLevel > 0.05)
+        .filter((x) => x.audioLevel > 0.05)
         .sort((a, b) => b.audioLevel - a.audioLevel)
+    }
+
+    // An unresolved SSRC is keyed by the SSRC itself, surfacing as its own "Unknown".
+    function speakingDeviceOf(entry: any): string | null {
+      if (!entry) return null
+      return entry.user ? entry.user.deviceId : String(entry.ssrc)
     }
 
     // Build user state list with speaking status
@@ -712,6 +789,19 @@ export function browserInterceptionLogic(schema: any[]) {
       const allUsers = getAllUsers(userManager)
       const filteredUsers = filterActiveUsers(allUsers)
       const users = buildUserStateList(filteredUsers, speakingDeviceId, audioLevel)
+
+      // Audible but not rostered: emit as Unknown so the last speaker doesn't keep the turn.
+      if (speakingDeviceId && !users.some((u: any) => u.deviceId === speakingDeviceId)) {
+        users.push({
+          deviceId: speakingDeviceId,
+          name: "Unknown",
+          isCurrentUser: false,
+          isSpeaking: true,
+          status: 1,
+          isHost: false,
+          audioLevel
+        })
+      }
 
       // Calls the Node-side callback exposed via Playwright"s exposeFunction (see network-interception/index.ts)
       // This crosses the browser/Node boundary → triggers NetworkSpeakerLogger.handleNetworkPayload
@@ -929,8 +1019,8 @@ export function browserInterceptionLogic(schema: any[]) {
                     // DEBUG: Log speaker detection only when speaker changes (reduces noise significantly)
                     // The speaker change log below will handle the important state changes
 
-                    if (loudestSpeaker?.user) {
-                      const currentSpeakerId = loudestSpeaker.user.deviceId
+                    const currentSpeakerId = speakingDeviceOf(loudestSpeaker)
+                    if (currentSpeakerId) {
                       // Only broadcast if speaker changed
                       if (currentSpeakerId !== lastBroadcastedSpeakerId) {
                         console.error(
@@ -1274,8 +1364,8 @@ export function browserInterceptionLogic(schema: any[]) {
 
         const usersWithAudioLevels = getUsersWithAudio(freshSources, userManager)
         const loudestSpeaker = usersWithAudioLevels[0]
-        if (loudestSpeaker?.user) {
-          const currentSpeakerId = loudestSpeaker.user.deviceId
+        const currentSpeakerId = speakingDeviceOf(loudestSpeaker)
+        if (currentSpeakerId) {
           if (currentSpeakerId !== lastBroadcastedSpeakerId) {
             console.error(
               `[NetworkInterceptor] 🎤 Speaker changed (csrc sample): ${lastBroadcastedSpeakerId || "none"} → ${currentSpeakerId} (audioLevel: ${loudestSpeaker.audioLevel})`

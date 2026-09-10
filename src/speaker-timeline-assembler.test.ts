@@ -2,7 +2,8 @@ import type { DiarizationSegment } from "./diarization-tracker"
 import {
   assembleSpeakerTimeline,
   GAP_FILL_MIN_SECONDS,
-  LEADING_RETROFIT_MAX_SECONDS
+  LEADING_RETROFIT_MAX_SECONDS,
+  SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
 } from "./speaker-timeline-assembler"
 
 function seg(
@@ -259,5 +260,137 @@ describe("assembleSpeakerTimeline retrofit cap boundary", () => {
     )
     expect(retrofittedFromSeconds).toBeUndefined()
     expect(segments[0]?.start_time).toBe(start)
+  })
+})
+
+describe("assembleSpeakerTimeline source dissonance", () => {
+  // Prod bot 22e3adba: network pinned a two-person call on one speaker.
+  const network = [seg("Stefano", 0, 1400, 2)]
+  const ui = [seg("Stefano", 0, 640, 2), seg("Emanuele", 640, 1350, 3)]
+
+  it("promotes corroborated multi-speaker evidence when the primary collapsed", () => {
+    const { segments, filledBySource, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: ui }
+      ],
+      1400
+    )
+
+    expect(sourceDissonance).toMatchObject({
+      reason: "primary_dominated_challenger_multi_speaker",
+      demotedSource: "network",
+      promotedSource: "ui",
+      primaryEffectiveSpeakers: 1,
+      challengerEffectiveSpeakers: 2,
+      primaryDominance: 1
+    })
+    // The demoted primary still covers the tail the UI never reached.
+    expect(segments).toEqual([...ui, seg("Stefano", 1350, 1400, 2)])
+    expect(filledBySource.network).toBe(1)
+  })
+
+  it("does not promote a transient second speaker", () => {
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Stefano", 0, 120)] },
+        {
+          kind: "ui",
+          segments: [
+            seg("Stefano", 0, 100),
+            seg("Emanuele", 100, 100 + SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS - 0.1)
+          ]
+        }
+      ],
+      120
+    )
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual([seg("Stefano", 0, 120)])
+  })
+
+  it("does not count the recording bot as multi-speaker evidence", () => {
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Stefano", 0, 120)] },
+        {
+          kind: "ui",
+          segments: [seg("Stefano", 0, 60), seg("MeetingBaaS Notetaker", 60, 120)]
+        }
+      ],
+      120,
+      { botNames: ["MeetingBaaS Notetaker"] }
+    )
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual([seg("Stefano", 0, 120)])
+  })
+
+  it("requires a shared identity before treating disagreement as collapse", () => {
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Network Identity", 0, 120)] },
+        { kind: "ui", segments: [seg("Alice", 0, 60), seg("Bob", 60, 120)] }
+      ],
+      120
+    )
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual([seg("Network Identity", 0, 120)])
+  })
+
+  it("catches a PARTIAL collapse, where the primary found slivers of the second speaker", () => {
+    // Prod bot acf4eecf: 5,271 speaking samples against 31.
+    const { sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)] },
+        { kind: "ui", segments: ui }
+      ],
+      1400
+    )
+    expect(sourceDissonance).toMatchObject({
+      promotedSource: "ui",
+      primaryEffectiveSpeakers: 2,
+      primaryOtherSeconds: 20,
+      challengerOtherSeconds: 710
+    })
+  })
+
+  it("leaves a lopsided but CORRECT call alone when both sources agree", () => {
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)] },
+        { kind: "ui", segments: [seg("Stefano", 0, 1375, 2), seg("Emanuele", 1375, 1398, 3)] }
+      ],
+      1400
+    )
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual([seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)])
+  })
+
+  it("demotes the collapsed primary BELOW every source it has not disproven", () => {
+    const { filledBySource, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: [seg("Stefano", 0, 600, 2), seg("Emanuele", 600, 1200, 3)] },
+        { kind: "transcription", segments: [seg("Emanuele", 1200, 1395, 3)] }
+      ],
+      1400
+    )
+    expect(sourceDissonance?.promotedSource).toBe("ui")
+    expect(filledBySource.transcription).toBe(1)
+    expect(filledBySource.network).toBeUndefined()
+  })
+
+  it("accepts any lower-trust source as the challenger, not just the UI observer", () => {
+    const { sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: [] },
+        { kind: "transcription", segments: ui }
+      ],
+      1400
+    )
+    expect(sourceDissonance).toMatchObject({
+      demotedSource: "network",
+      promotedSource: "transcription"
+    })
   })
 })

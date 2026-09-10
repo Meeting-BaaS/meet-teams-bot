@@ -3,10 +3,13 @@
 
 import path from "node:path"
 import type { Page } from "@playwright/test"
+import { GLOBAL } from "../../../singleton"
 import { teamsBrowserInterceptionLogic } from "./browser-bundle"
+import { deriveMeetingScope, resolveRosterScope, type TeamsInterceptorScope } from "./meeting-scope"
 import { resolveSpeakingSet } from "./speaker-timeline"
 
 export type { NetworkPayload, NetworkUser } from "./types"
+
 import type { NetworkPayload } from "./types"
 
 declare global {
@@ -19,11 +22,22 @@ declare global {
   }
 }
 
+/** Roster scope for the meeting at `joinUrl`; links without a thread id resolve in-page. */
+export function buildTeamsInterceptorScope(joinUrl: string): TeamsInterceptorScope {
+  return {
+    ...deriveMeetingScope(joinUrl),
+    isAuthenticated: Boolean(GLOBAL.get().teams_login_config)
+  }
+}
+
 /**
  * Inject interception scripts; must run BEFORE page.goto() (addInitScript only
  * applies to later navigations). Reuses the shared Meet libs bundle for pako.
  */
-export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<boolean> {
+export async function setupTeamsNetworkInterceptionScripts(
+  page: Page,
+  joinUrl: string
+): Promise<boolean> {
   try {
     const bundlePath = path.resolve(
       __dirname,
@@ -36,6 +50,11 @@ export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<
     return false
   }
 
+  const scope = buildTeamsInterceptorScope(joinUrl)
+  console.log(
+    `[Teams NetworkInterceptor] Roster scope: conversation=${scope.conversationId ?? "unresolved (will latch in-page)"} authenticated=${scope.isAuthenticated}`
+  )
+
   const script = `
         (function() {
             try {
@@ -44,7 +63,7 @@ export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<
                     console.error("[Teams NetworkInterceptor] pako dependency not loaded");
                 }
                 // As source: the stringified bundle cannot import it.
-                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()});
+                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()}, ${resolveRosterScope.toString()}, ${JSON.stringify(scope)});
             } catch (e) {
                 console.error("[Teams NetworkInterceptor] Initialization error:", e);
             }

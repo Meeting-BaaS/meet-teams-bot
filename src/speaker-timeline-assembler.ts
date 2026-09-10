@@ -7,7 +7,8 @@ import { UNKNOWN_SPEAKER } from "./types"
  * interception — authoritative wherever it produced data) > ui (the platform's
  * own active-speaker indicator, shadow-buffered whole-call) > transcription
  * (live transcription-system turns, when one ran). A lower-trust source never
- * overwrites a higher-trust one — it only fills sufficiently large holes.
+ * overwrites a higher-trust one — it only fills sufficiently large holes —
+ * unless it proves the primary collapsed (see detectSourceDissonance).
  */
 
 export type TimelineSourceKind = "network" | "ui" | "transcription"
@@ -30,6 +31,27 @@ export const MIN_SEGMENT_SECONDS = 1
 // (label-only backfill), never the timeline's.
 export const LEADING_RETROFIT_MAX_SECONDS = 20
 
+// --- Source dissonance: a collapsed primary leaves no holes for fallbacks to fill ---
+/** Seconds an identity needs to count as a speaker. */
+export const SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS = 15
+/** Share of the primary's named time its top speaker must hold to look collapsed. */
+export const SOURCE_DISSONANCE_DOMINANCE_RATIO = 0.85
+/** How many times more time the challenger must give the other speakers. */
+export const SOURCE_DISSONANCE_DISAGREEMENT_FACTOR = 3
+
+export interface SpeakerSourceDissonance {
+  reason: "primary_dominated_challenger_multi_speaker"
+  demotedSource: TimelineSourceKind
+  promotedSource: TimelineSourceKind
+  primaryEffectiveSpeakers: number
+  challengerEffectiveSpeakers: number
+  /** Share of the primary's named time held by its top speaker. */
+  primaryDominance: number
+  /** Seconds the primary vs the challenger gave everyone but that speaker. */
+  primaryOtherSeconds: number
+  challengerOtherSeconds: number
+}
+
 /** Positive-length segments, chronological. */
 function normalize(segments: DiarizationSegment[]): DiarizationSegment[] {
   return segments
@@ -50,6 +72,98 @@ function coverageOf(segments: DiarizationSegment[]): Array<[number, number]> {
     }
   }
   return merged
+}
+
+/** Named, non-bot speaking seconds by normalized identity. */
+function speakerDurations(
+  segments: DiarizationSegment[],
+  excludeSpeakers: string[] = []
+): Map<string, number> {
+  const excluded = new Set(
+    [UNKNOWN_SPEAKER, ...excludeSpeakers].map((name) => name.trim().toLowerCase())
+  )
+  const bySpeaker = new Map<string, DiarizationSegment[]>()
+  for (const segment of normalize(segments)) {
+    const key = segment.speaker?.trim().toLowerCase()
+    if (!key || excluded.has(key)) continue
+    const existing = bySpeaker.get(key) ?? []
+    existing.push(segment)
+    bySpeaker.set(key, existing)
+  }
+
+  const durations = new Map<string, number>()
+  for (const [speaker, speakerSegments] of bySpeaker) {
+    durations.set(
+      speaker,
+      coverageOf(speakerSegments).reduce((sum, [start, end]) => sum + end - start, 0)
+    )
+  }
+  return durations
+}
+
+/** Identities holding at least the effective-speaker floor. */
+function effectiveSpeakers(durations: Map<string, number>): Array<[string, number]> {
+  return [...durations].filter(
+    ([, seconds]) => seconds >= SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
+  )
+}
+
+/**
+ * A primary dominated by one speaker, contradicted by a lower-trust source that
+ * shares that speaker and gives the others several times more time. Bots excluded.
+ */
+function detectSourceDissonance(
+  sources: TimelineSource[],
+  botNames: string[] = []
+): { dissonance: SpeakerSourceDissonance; challengerIndex: number } | undefined {
+  if (sources.length < 2) return undefined
+
+  const primaryDurations = speakerDurations(sources[0].segments, botNames)
+  const primaryEffective = effectiveSpeakers(primaryDurations)
+  if (primaryEffective.length === 0) return undefined
+
+  const primaryNamedSeconds = [...primaryDurations.values()].reduce((a, b) => a + b, 0)
+  if (primaryNamedSeconds <= 0) return undefined
+
+  let dominant = primaryEffective[0]
+  for (const entry of primaryEffective) {
+    if (entry[1] > dominant[1]) dominant = entry
+  }
+  const dominance = dominant[1] / primaryNamedSeconds
+  if (dominance < SOURCE_DISSONANCE_DOMINANCE_RATIO) return undefined
+
+  const primaryOtherSeconds = primaryNamedSeconds - dominant[1]
+  const requiredOtherSeconds = Math.max(
+    SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS,
+    primaryOtherSeconds * SOURCE_DISSONANCE_DISAGREEMENT_FACTOR
+  )
+
+  for (let index = 1; index < sources.length; index++) {
+    const challengerDurations = speakerDurations(sources[index].segments, botNames)
+    const challengerEffective = effectiveSpeakers(challengerDurations)
+    if (challengerEffective.length < 2) continue
+    if (!challengerEffective.some(([speaker]) => speaker === dominant[0])) continue
+
+    const challengerOtherSeconds = challengerEffective
+      .filter(([speaker]) => speaker !== dominant[0])
+      .reduce((sum, [, seconds]) => sum + seconds, 0)
+    if (challengerOtherSeconds < requiredOtherSeconds) continue
+
+    return {
+      challengerIndex: index,
+      dissonance: {
+        reason: "primary_dominated_challenger_multi_speaker",
+        demotedSource: sources[0].kind,
+        promotedSource: sources[index].kind,
+        primaryEffectiveSpeakers: primaryEffective.length,
+        challengerEffectiveSpeakers: challengerEffective.length,
+        primaryDominance: Number(dominance.toFixed(3)),
+        primaryOtherSeconds: Number(primaryOtherSeconds.toFixed(1)),
+        challengerOtherSeconds: Number(challengerOtherSeconds.toFixed(1))
+      }
+    }
+  }
+  return undefined
 }
 
 /** Holes of at least GAP_FILL_MIN_SECONDS in [0, meetingEnd] left by coverage. */
@@ -173,11 +287,22 @@ export function assembleSpeakerTimeline(
   segments: DiarizationSegment[]
   filledBySource: Partial<Record<TimelineSourceKind, number>>
   retrofittedFromSeconds?: number
+  sourceDissonance?: SpeakerSourceDissonance
 } {
   let assembled: DiarizationSegment[] = []
   const filledBySource: Partial<Record<TimelineSourceKind, number>> = {}
 
-  for (const [index, source] of sources.entries()) {
+  // On collapse the challenger leads and the primary fills holes last.
+  const detected = detectSourceDissonance(sources, options?.botNames)
+  const ordered = detected
+    ? [
+        sources[detected.challengerIndex],
+        ...sources.filter((_, index) => index !== 0 && index !== detected.challengerIndex),
+        sources[0]
+      ]
+    : sources
+
+  for (const [index, source] of ordered.entries()) {
     if (index === 0) {
       // Primary source taken as-is, Unknowns included.
       assembled = normalize(source.segments)
@@ -202,6 +327,7 @@ export function assembleSpeakerTimeline(
   return {
     segments: suppressCoveredUnknowns(segments),
     filledBySource,
-    retrofittedFromSeconds
+    retrofittedFromSeconds,
+    sourceDissonance: detected?.dissonance
   }
 }

@@ -35,6 +35,70 @@ export function zoomBrowserInterceptionLogic() {
     ;(window as any).__zoomNetworkInterceptorInitialized = true
     ;(window as any).__zoomNetworkInterceptorStopped = false
 
+    // ===== STEALTH: native-toString masking =====
+    // Our wrapped globals must report "[native code]" to Function.prototype.toString.
+    const __nativeStr = new WeakMap<any, string>()
+    try {
+      const __origToString = Function.prototype.toString
+      const __tsProxy = new Proxy(__origToString, {
+        apply(target, thisArg: any, args: any[]) {
+          const masked = thisArg == null ? undefined : __nativeStr.get(thisArg)
+          if (masked) return masked
+          return Reflect.apply(target, thisArg, args)
+        }
+      })
+      ;(Function.prototype as any).toString = __tsProxy
+    } catch (_e) {
+      /* environment forbids patching — masking is simply absent */
+    }
+
+    // Copy the original's native signature, .name and .length onto a wrapper.
+    const __disguise = (wrapper: any, original: any): any => {
+      try {
+        __nativeStr.set(wrapper, `function ${original.name}() { [native code] }`)
+        Object.defineProperty(wrapper, "name", { value: original.name, configurable: true })
+        Object.defineProperty(wrapper, "length", { value: original.length, configurable: true })
+      } catch (_e) {
+        /* frozen or non-configurable — skip */
+      }
+      return wrapper
+    }
+
+    // ===== STEALTH: cloak our injected window globals =====
+    // Non-enumerable; re-run later because Playwright installs its bridges out of band.
+    const __CLOAK_NAMES = [
+      "__zoomNetworkInterceptorMain",
+      "__zoomNetworkInterceptorInitialized",
+      "__zoomNetworkInterceptorStopped",
+      "__zoomSpeakerQueue",
+      "__zoomStopNetworkInterception",
+      "__zoomNetDiag",
+      "zoomSpeakersChanged",
+      "zoomSpeakerForensics",
+      "zoomCleanerLog",
+      "zoomChatMessage",
+      "zoomChatCleanup",
+      "zoomObserverCleanup",
+      "zoomHtmlCleanerInterval"
+    ]
+    const __cloak = () => {
+      for (const n of __CLOAK_NAMES) {
+        try {
+          if (Object.prototype.hasOwnProperty.call(window, n)) {
+            const v = (window as any)[n]
+            Object.defineProperty(window, n, {
+              value: v,
+              enumerable: false,
+              configurable: true,
+              writable: true
+            })
+          }
+        } catch (_e) {
+          /* already non-configurable — skip */
+        }
+      }
+    }
+
     // "[NetworkInterceptor]" prefix so page-logger surfaces warn/error by
     // default (no LOG_LEVEL=debug needed); "[Zoom]" distinguishes from Meet/Teams.
     const LOG = "[NetworkInterceptor][Zoom]"
@@ -761,6 +825,7 @@ export function zoomBrowserInterceptionLogic() {
       ProxiedWebSocket.OPEN = OriginalWebSocket.OPEN
       ProxiedWebSocket.CLOSING = OriginalWebSocket.CLOSING
       ProxiedWebSocket.CLOSED = OriginalWebSocket.CLOSED
+      __disguise(ProxiedWebSocket, OriginalWebSocket)
       ;(window as any).WebSocket = ProxiedWebSocket
     }
 
@@ -783,6 +848,7 @@ export function zoomBrowserInterceptionLogic() {
           return worker
         } as any
         ProxiedWorker.prototype = OriginalWorker.prototype
+        __disguise(ProxiedWorker, OriginalWorker)
         ;(window as any).Worker = ProxiedWorker
       }
     }
@@ -825,11 +891,17 @@ export function zoomBrowserInterceptionLogic() {
           ProxiedRTCPeerConnection.generateCertificate = (...a: any[]) =>
             OriginalRTCPeerConnection.generateCertificate(...a)
         }
+        __disguise(ProxiedRTCPeerConnection, OriginalRTCPeerConnection)
         ;(window as any).RTCPeerConnection = ProxiedRTCPeerConnection
       }
     }
 
     const pollInterval = setInterval(pollReceivers, 100)
+    __cloak()
+    setTimeout(__cloak, 0)
+    setTimeout(__cloak, 1000)
+    setTimeout(__cloak, 4000)
+
     ;(window as any).__zoomStopNetworkInterception = () => {
       ;(window as any).__zoomNetworkInterceptorStopped = true
       try {

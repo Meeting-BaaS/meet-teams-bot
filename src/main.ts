@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { exit } from "node:process"
 import { ZodError } from "zod"
 import { Api } from "./api/methods"
@@ -15,6 +16,7 @@ import {
   uploadLogsToS3,
   uploadScreenshotsToS3
 } from "./utils/Logger"
+import { isBotLikeName, skeletonizeBotName } from "./utils/bot-name-disguise"
 import { BotMessageSchema } from "./utils/meeting-params-schema"
 import { PathManager } from "./utils/PathManager"
 import { getMaxRetryCount } from "./config/retry-config"
@@ -24,9 +26,17 @@ import {
   shouldAttemptRetry
 } from "./utils/retry-handler"
 
-// Bot-like display-name tokens; log-only hint when a Zoom join is rejected.
-const BOT_LIKE_NAME_RE =
-  /note ?taker|recorder|recording|transcri|\bbots?\b|\bai\b|assistant|\bnotes?\b/i
+// sqs-consumer's watchdog drops WATCHDOG_KILL_SENTINEL before SIGTERMing a bot that
+// outlived its recording window; requeuing it would relaunch into a dead meeting.
+function killedByWatchdog(): boolean {
+  const sentinel = process.env["WATCHDOG_KILL_SENTINEL"]
+  if (!sentinel) return false
+  try {
+    return existsSync(sentinel)
+  } catch {
+    return false
+  }
+}
 
 // On SIGTERM (k8s eviction), requeue the meeting to a fresh pod so it isn't lost.
 // The shared GLOBAL.claimRecovery() token is taken ONLY right before a requeue, so
@@ -39,7 +49,15 @@ process.on("SIGTERM", async () => {
     console.log("[SIGTERM] Recovery already owned by a requeuing handler — standing down")
     return
   }
-  console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
+  const watchdogKill = killedByWatchdog()
+  if (watchdogKill) {
+    console.error(
+      "[SIGTERM] Watchdog kill — this bot outlived its recording window; salvaging artifacts, NOT requeuing"
+    )
+    GLOBAL.setShouldRetry(false)
+  } else {
+    console.error("[SIGTERM] Pod termination received — requeuing so the meeting isn't lost")
+  }
   try {
     if (!GLOBAL.isServerless()) await uploadLogsToS3()
   } catch (e) {
@@ -49,6 +67,8 @@ process.on("SIGTERM", async () => {
     if (GLOBAL.hasRecordingFinalized()) {
       // Merged recording exists — preserve for S3/EFS salvage, don't requeue (no claim).
       console.log("[SIGTERM] Recording finalized — preserving artifacts (not requeuing)")
+    } else if (watchdogKill) {
+      console.log("[SIGTERM] Watchdog kill — artifacts preserved, requeue deliberately skipped")
     } else if (!GLOBAL.isServerless()) {
       GLOBAL.setShouldRetry(true)
       if (shouldAttemptRetry(GLOBAL.getRetryCount())) {
@@ -167,7 +187,8 @@ async function handleFailedRecording(): Promise<void> {
   if (
     (endReason === MeetingEndReason.ZoomAnonymousJoinNotAllowed ||
       endReason === MeetingEndReason.BotNotAccepted) &&
-    BOT_LIKE_NAME_RE.test(botName)
+    // Undo the homoglyph disguise before matching.
+    isBotLikeName(skeletonizeBotName(botName))
   ) {
     console.warn(
       `[Hint] Bot display name "${botName}" contains a bot-indicating keyword; some Zoom hosts auto-reject such names — a more human name may get admitted.`

@@ -11,7 +11,7 @@ import {
 } from "../proxy/toggle-proxy"
 import { GLOBAL } from "../singleton"
 import { MeetingEndReason } from "../state-machine/types"
-import { IN_PROCESS_RETRY_MAX, MAX_RETRY_COUNT } from "../config/retry-config"
+import { getMaxRetryCount, IN_PROCESS_RETRY_MAX, MAX_RETRY_COUNT } from "../config/retry-config"
 import { formatError } from "../utils/Logger"
 import { openBrowser } from "./browser"
 
@@ -24,6 +24,9 @@ const LAUNCH_TIMEOUT_MS = 60_000
 // would trip the crash handler). It's a local transport, not a network round-trip,
 // so ~750ms is plenty; pkill -9 below is instant, keeping the fast retry fast.
 const BROWSER_CLOSE_TIMEOUT_MS = 750
+
+// Exit ASN of this pod's previous Zoom session, to spot a retry on the same network.
+let lastZoomExitAsn: number | null = null
 
 /**
  * Force-reap any Firefox/stealthfox processes still alive after context.close().
@@ -90,6 +93,20 @@ export async function establishBrowserSession(
         { countryOffset }
       )
       if (proxyUrl) session.proxyUrl = proxyUrl
+
+      // Every pinned region refused us; an unpinned residential exit beats a datacenter IP.
+      if (!session.proxyUrl) {
+        console.warn(
+          `[BrowserSession] pinned residential exit unavailable for ${platform} — retrying without a geo pin`
+        )
+        const unpinned = await startToggleProxy(
+          GLOBAL.get().bot_uuid,
+          retryCount,
+          `${opts.sessionSuffix ?? ""}nopin`,
+          { skipGeoPin: true }
+        )
+        if (unpinned) session.proxyUrl = unpinned
+      }
 
       // Burned-ASN avoidance (Meet only). startToggleProxy already probed the
       // exit IP + ASN. If we landed on a network Google is currently flagging,
@@ -206,7 +223,32 @@ export async function establishBrowserSession(
     }
   }
 
-  // Meet, no proxy, retries remain → requeue instead of joining direct.
+  // A Zoom in-pod retry only helps if the exit network changed; re-roll the region if not.
+  if (session.proxyUrl && platform === "zoom" && (opts.inProcessAttempt ?? 0) > 0) {
+    const ASN_ROTATIONS = 2
+    for (let rot = 1; rot <= ASN_ROTATIONS; rot++) {
+      const asn = getExitAsn()
+      if (asn === null || asn !== lastZoomExitAsn) break
+      console.warn(
+        `[BrowserSession] Zoom in-pod retry landed on the same exit ASN ${asn} — rotating (${rot}/${ASN_ROTATIONS})`
+      )
+      const rotated = await startToggleProxy(
+        GLOBAL.get().bot_uuid,
+        retryCount,
+        `${opts.sessionSuffix ?? ""}a${rot}`,
+        { countryOffset: countryOffset + rot }
+      )
+      if (!rotated) {
+        // The old proxy is gone; let the guard below decide.
+        session.proxyUrl = undefined
+        break
+      }
+      session.proxyUrl = rotated
+    }
+  }
+  if (platform === "zoom") lastZoomExitAsn = getExitAsn()
+
+  // Meet/Zoom, no proxy, retries remain → requeue instead of joining direct.
   // A proxyless Meet join comes from the pod's datacenter IP and flags ~94%
   // (measured in prod during the 2026-08-10 Decodo capacity burst: 523
   // upstream_unreachable joins → 491 flagged) — it burns the team's
@@ -216,14 +258,19 @@ export async function establishBrowserSession(
   // clear session.proxyUrl on a failed rotation — not just the initial proxy
   // start. The LAST retry still falls back to a live/direct exit as the
   // final resort rather than never joining.
-  if (platform === "meet" && !session.proxyUrl && retryCount < MAX_RETRY_COUNT) {
+  // Zoom walls 93% of proxy-less joins (14 days of prod).
+  if (
+    (platform === "meet" || platform === "zoom") &&
+    !session.proxyUrl &&
+    retryCount < getMaxRetryCount()
+  ) {
     console.warn(
-      "[BrowserSession] Meet proxy unavailable — requeueing instead of a direct (datacenter-IP) join"
+      `[BrowserSession] ${platform} proxy unavailable — requeueing instead of a direct (datacenter-IP) join`
     )
     GLOBAL.setError(MeetingEndReason.ProxyUnavailable)
     GLOBAL.setShouldRetry(true)
     throw new Error(
-      "Residential proxy unavailable for Meet join — requeueing to retry when the pool has capacity"
+      `Residential proxy unavailable for ${platform} join — requeueing to retry when the pool has capacity`
     )
   }
 
