@@ -70,4 +70,15 @@ export class ChatObserver {
     }
     return false
   }
+
+  /**
+   * How the chat-panel attach went ("ready" / "disabled" / "failed"). Only
+   * meaningful for Teams; other platforms report "unknown".
+   */
+  public getPanelAttachOutcome(): "ready" | "disabled" | "failed" | "unknown" {
+    if (this.observer instanceof TeamsChatObserver) {
+      return this.observer.panelAttachOutcome
+    }
+    return "unknown"
+  }
 }

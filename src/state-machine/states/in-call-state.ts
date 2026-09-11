@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test"
 import { switchToRecordingBranding } from "../../branding"
-import { ChatManager } from "../../chat-manager"
+import { ChatManager, reportChatStatus } from "../../chat-manager"
 import { Events } from "../../events"
 import { ChatObserver } from "../../meeting/chatObserver"
 import { HtmlCleaner } from "../../meeting/htmlCleaner"
@@ -224,6 +224,8 @@ export class InCallState extends BaseState {
     }
 
     // Send entry message after chat observation is ready
+    // Single shape (strictNullChecks is off here — no discriminant narrowing).
+    let entrySendOutcome: { success: boolean; error?: string } | null = null
     if (GLOBAL.get().entry_message && this.context.playwrightPage) {
       console.log(`Sending entry message via ChatManager (platform=${platform})...`)
       try {
@@ -235,6 +237,7 @@ export class InCallState extends BaseState {
         )
         if (result.success) {
           console.log("[InCallState] Entry message sent successfully")
+          entrySendOutcome = { success: true }
           // Only the ENTRY message arms the zoom end-detection grace window.
           // Mid-meeting bot chat sends (e.g. API-triggered) must NOT re-arm it,
           // otherwise a genuine removal right after such a message could be
@@ -244,10 +247,62 @@ export class InCallState extends BaseState {
           }
         } else {
           console.error("[InCallState] Entry message failed:", (result as { error: string }).error)
+          entrySendOutcome = { success: false, error: (result as { error: string }).error }
         }
       } catch (error) {
         console.error("Failed to send entry message:", formatError(error))
+        entrySendOutcome = {
+          success: false,
+          error: error instanceof Error ? error.message : formatError(error).message,
+        }
       }
+    }
+
+    this.reportChatAvailability(platform, entrySendOutcome)
+  }
+
+  /**
+   * One-shot chat-availability signal, sent right after join. Lets integrators
+   * disable chat-dependent UX (slash commands, chat panels) at runtime instead
+   * of discovering a dead chat after the meeting.
+   */
+  private reportChatAvailability(
+    platform: string,
+    entrySendOutcome: { success: boolean; error?: string } | null
+  ): void {
+    const chatObserver = this.context.chatObserver
+
+    // No entry message configured: fall back to what the observer saw while
+    // attaching the panel (only Teams learns anything there). An "unknown"
+    // outcome means the observer never came up — report it as not attached
+    // rather than staying silent.
+    if (entrySendOutcome == null) {
+      if (platform === "teams" && chatObserver) {
+        const outcome = chatObserver.getPanelAttachOutcome()
+        if (outcome === "ready") {
+          reportChatStatus(true, null)
+        } else if (outcome === "disabled") {
+          reportChatStatus(false, "organizer_disabled")
+        } else {
+          // "failed" and "unknown" both mean we never saw a usable panel
+          reportChatStatus(false, "panel_not_attached")
+        }
+      }
+      return
+    }
+
+    if (entrySendOutcome.success) {
+      reportChatStatus(true, null)
+      return
+    }
+
+    const errorText = entrySendOutcome.error ?? ""
+    if (chatObserver?.isChatDisabled()) {
+      reportChatStatus(false, "organizer_disabled")
+    } else if (errorText.includes("Chat input not found")) {
+      reportChatStatus(false, "panel_not_attached")
+    } else {
+      reportChatStatus(false, "send_failed")
     }
   }
 

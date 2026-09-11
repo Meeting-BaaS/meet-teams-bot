@@ -316,7 +316,20 @@ export class ChatManager {
           if (btn) { btn.click(); return true }
           return false
         })
-        await page.waitForSelector(inputSelectors.join(", "), { timeout: 2000 })
+        // Teams lazy-loads the chat panel; a single 2s wait loses the race on
+        // a meaningful share of meetings (the input only mounts seconds later).
+        // Wait patiently — bounded retries, same budget the panel-open path uses.
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            await page.waitForSelector(inputSelectors.join(', '), { timeout: 2000 })
+            break
+          } catch {
+            if (attempt === 4) {
+              return { success: false, error: 'Chat input not found', status: 400 }
+            }
+            await page.waitForTimeout(1000)
+          }
+        }
       }
 
       // Find which selector matches
@@ -418,4 +431,40 @@ export class ChatManager {
       }
     })
   }
+}
+
+export type ChatAvailabilityReason =
+  | "organizer_disabled"
+  | "panel_not_attached"
+  | "send_failed"
+  | null
+
+/**
+ * Report once per meeting, right after joining, whether the bot can actually
+ * use chat — based on the entry-message attempt and the chat-panel attach
+ * outcome. Lets integrators disable chat-dependent UX (slash commands, chat
+ * panels) at runtime instead of discovering a dead chat after the meeting.
+ * Fire-and-forget.
+ */
+export function reportChatStatus(available: boolean, reason: ChatAvailabilityReason): void {
+  if (envVars.SERVERLESS) return
+
+  const params = GLOBAL.get()
+  axios({
+    method: "POST",
+    url: "/bot-process/chat-status",
+    data: {
+      bot_id: params.bot_id,
+      bot_uuid: params.bot_uuid,
+      available,
+      reason
+    }
+  }).catch((error) => {
+    if (error instanceof Error) {
+      console.warn(
+        "[ChatManager] Failed to report chat status (continuing):",
+        error.message
+      )
+    }
+  })
 }
