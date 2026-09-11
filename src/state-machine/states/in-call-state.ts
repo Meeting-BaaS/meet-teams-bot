@@ -273,7 +273,9 @@ export class InCallState extends BaseState {
     const chatObserver = this.context.chatObserver
 
     // No entry message configured: fall back to what the observer saw while
-    // attaching the panel (only Teams learns anything there).
+    // attaching the panel (only Teams learns anything there). An "unknown"
+    // outcome means the observer never came up — report it as not attached
+    // rather than staying silent.
     if (entrySendOutcome == null) {
       if (platform === "teams" && chatObserver) {
         const outcome = chatObserver.getPanelAttachOutcome()
@@ -281,7 +283,8 @@ export class InCallState extends BaseState {
           reportChatStatus(true, null)
         } else if (outcome === "disabled") {
           reportChatStatus(false, "organizer_disabled")
-        } else if (outcome === "failed") {
+        } else {
+          // "failed" and "unknown" both mean we never saw a usable panel
           reportChatStatus(false, "panel_not_attached")
         }
       }

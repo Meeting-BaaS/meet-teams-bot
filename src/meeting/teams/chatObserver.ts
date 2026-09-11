@@ -190,6 +190,23 @@ export class TeamsChatObserver {
             return false
           }
 
+          // The pane list alone is NOT success — sending needs the CKEditor
+          // input, and Teams mounts it a beat after the panel. Wait for one of
+          // the three input selectors specifically; otherwise keep retrying
+          // (same as the panel-open case above).
+          try {
+            await this.page.waitForSelector(
+              '[aria-label="Type a message"], [placeholder="Type a message"], div[data-tid="ckeditor"][role="textbox"]',
+              { timeout: CHAT_ACTION_TIMEOUT_MS }
+            )
+          } catch {
+            console.warn(`[TeamsChatObserver] Panel open but chat input not ready, attempt ${attempt}/${MAX_CHAT_OPEN_RETRIES}`)
+            if (attempt < MAX_CHAT_OPEN_RETRIES) {
+              await this.page.waitForTimeout(CHAT_RETRY_INTERVAL_MS)
+            }
+            continue
+          }
+
           console.log("[TeamsChatObserver] Chat panel opened successfully")
           return true
         } catch {
