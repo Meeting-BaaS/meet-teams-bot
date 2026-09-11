@@ -16,6 +16,12 @@ export class TeamsChatObserver {
   private page: Page
   private isObserving = false
   private _chatDisabled = false
+  /**
+   * Outcome of trying to attach the chat panel: "ready" (input usable),
+   * "disabled" (organizer turned chat off), "failed" (panel never became
+   * usable — reading may still work via the bind hook, sending will not).
+   */
+  public panelAttachOutcome: "ready" | "disabled" | "failed" = "failed"
 
   constructor(page: Page) {
     this.page = page
@@ -62,6 +68,7 @@ export class TeamsChatObserver {
 
     // Open the chat panel (needed for sending)
     const chatOpened = await this.openChatPanel()
+    this.panelAttachOutcome = chatOpened ? "ready" : this._chatDisabled ? "disabled" : "failed"
     if (!chatOpened) {
       console.warn("[TeamsChatObserver] Could not open chat panel, observation may be limited")
     }
