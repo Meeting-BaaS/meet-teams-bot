@@ -190,8 +190,24 @@ fi\n\
 # delivers 48 kHz and matches AUDIO_SAMPLE_RATE in ScreenRecorder.ts.\n\
 pactl load-module module-null-sink sink_name=virtual_speaker rate=48000 \\\n\
     sink_properties=device.description=Virtual_Speaker,device.class=sound\n\
-pactl load-module module-virtual-source source_name=virtual_mic\n\
+\n# Dedicated input sink for mic INJECTION. Its monitor is the master of the\n\
+# virtual_mic source, so audio written to virtual_mic_input becomes the bot's\n\
+# OUTGOING mic. Without this dedicated sink (and the explicit master= below),\n\
+# module-virtual-source defaults its master to the server default source —\n\
+# which is virtual_speaker.monitor (incoming meeting audio) — so a bot that\n\
+# grants microphone (streaming_input / talking bots) captures the meeting's\n\
+# own audio and echoes it back. Recording-only bots never granted the mic, so\n\
+# this loopback was latent until the audio-streaming path. (Ported from a\n\
+# downstream fork's live PulseAudio debugging.)\n\
+pactl load-module module-null-sink sink_name=virtual_mic_input rate=48000 \\\n\
+    sink_properties=device.description=Virtual_Mic_Input,device.class=sound\n\
+pactl load-module module-virtual-source source_name=virtual_mic \\\n\
+    master=virtual_mic_input.monitor\n\
 pactl set-default-sink virtual_speaker\n\
+\n# Make virtual_mic the default source so Chrome getUserMedia captures the\n\
+# isolated mic, not virtual_speaker.monitor (previously unset → defaulted to\n\
+# the speaker monitor = echo).\n\
+pactl set-default-source virtual_mic\n\
 \n\
 # Optimize audio quality and latency\n\
 pactl set-sink-volume virtual_speaker 100%\n\
