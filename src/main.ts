@@ -295,6 +295,11 @@ async function handleFailedRecording(opts: { terminal?: boolean } = {}): Promise
     }
   }
 
+  if (!GLOBAL.claimFailureReport()) {
+    console.log("Terminal failure already reported by another handler — skipping")
+    return
+  }
+
   // Normal failure handling (original code)
   // An earlier attempt's anti-bot wall explains a vaguer final failure better.
   if (

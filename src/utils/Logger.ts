@@ -606,6 +606,7 @@ export function setupExitHandler() {
   }
 
   const reportCrashFailure = async (): Promise<void> => {
+    if (!GLOBAL.claimFailureReport()) return
     try {
       const { NORMAL_END_REASONS } = await import("../state-machine/constants")
       const { MeetingEndReason } = await import("../state-machine/types")

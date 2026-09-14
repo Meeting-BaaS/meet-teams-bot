@@ -20,6 +20,7 @@ class Global {
   private shouldRetry = false // NEW: Retry flag
   private recoveryClaimed = false // True once a termination/crash path has taken ownership of log-upload + requeue (see claimRecovery)
   private endMeetingReportClaimed = false // True while/after a path owns the end-meeting-trampoline report (see claimEndMeetingReport)
+  private failureReportClaimed = false // True once a path owns the terminal failure report (see claimFailureReport)
   private recordingFinalized = false // True once the recording is merged and entering upload (see markRecordingFinalized)
   private endMeetingPayloadReady = false // True once uploadToS3 has recorded the complete artifact manifest
   private artifactKeys: ArtifactKey[] = []
@@ -367,6 +368,13 @@ class Global {
 
   public releaseEndMeetingReport(): void {
     this.endMeetingReportClaimed = false
+  }
+
+  /** One terminal failure report per bot, whichever path (main, SIGTERM, crash) gets there first. */
+  public claimFailureReport(): boolean {
+    if (this.failureReportClaimed) return false
+    this.failureReportClaimed = true
+    return true
   }
 
   // Phase marker: true once the recording has been MERGED into its final output
