@@ -704,8 +704,9 @@ export function zoomBrowserInterceptionLogic() {
         // No audio signal yet — better than reporting nobody.
         speaking = nodeSpeakerIds.size ? nodeSpeakerIds : activeSpeakerIds
       }
-      // Any speaker source (levels, nodes or active-speaker) proves the signal works.
-      if (speaking.size && !firstSpeakerAt) firstSpeakerAt = Date.now()
+      // Decoded audio speakers (levels or active-speaker) prove the signal works; the sharer node doesn't.
+      if (speaking.size && speaking !== nodeSpeakerIds && !firstSpeakerAt)
+        firstSpeakerAt = Date.now()
 
       const users = Array.from(participantsById.values()).map((p) => ({
         deviceId: p.userId,
