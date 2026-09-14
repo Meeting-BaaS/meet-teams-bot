@@ -765,6 +765,7 @@ export class TeamsProvider implements MeetingProviderInterface {
       throw new Error("Bot stopped before joining meeting")
     }
 
+    let joinClicked = false
     try {
       // Authenticated bots join AS the signed-in user — the name comes from the
       // Microsoft account, and the authenticated pre-join has no guest-name field.
@@ -784,16 +785,17 @@ export class TeamsProvider implements MeetingProviderInterface {
               .then(() => true)
               .catch(() => false)
           : false
-        if (!clicked) await clickWithInnerText(page, "button", "Join now", 20)
+        joinClicked = clicked || (await clickWithInnerText(page, "button", "Join now", 20))
       } else {
         await typeBotName(page, GLOBAL.get().bot_name, 20)
-        await clickWithInnerText(page, "button", "Join now", 20)
+        joinClicked = await clickWithInnerText(page, "button", "Join now", 20)
       }
     } catch (e) {
       console.error('Error during bot name typing or second "Join now" click:', e)
       throw new Error("RetryableError")
     }
-    onJoinRequested?.()
+    // Only a Join click that landed asks to be admitted.
+    if (joinClicked) onJoinRequested?.()
 
     // Wait to be in the meeting
     console.log("Waiting to confirm meeting join...")
