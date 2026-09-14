@@ -26,6 +26,7 @@ import {
   shouldAttemptRetry
 } from "./utils/retry-handler"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
+import { explainedByPriorWall } from "./meeting/zoom-join-failure"
 
 // sqs-consumer's watchdog drops WATCHDOG_KILL_SENTINEL before SIGTERMing a bot that
 // outlived its recording window; requeuing it would relaunch into a dead meeting.
@@ -295,9 +296,17 @@ async function handleFailedRecording(opts: { terminal?: boolean } = {}): Promise
   }
 
   // Normal failure handling (original code)
+  // An earlier attempt's anti-bot wall explains a vaguer final failure better.
+  if (
+    GLOBAL.get().meeting_platform === "zoom" &&
+    explainedByPriorWall(GLOBAL.get().prior_end_reasons, GLOBAL.getEndReason())
+  ) {
+    GLOBAL.replaceError(MeetingEndReason.ZoomAnonymousJoinNotAllowed)
+  }
+  const finalReason = GLOBAL.getEndReason()
   const errorMessage =
-    originalErrorMessage ||
-    (endReason ? getErrorMessageFromCode(endReason) : "Recording did not complete successfully")
+    GLOBAL.getErrorMessage() ||
+    (finalReason ? getErrorMessageFromCode(finalReason) : "Recording did not complete successfully")
 
   await Events.recordingFailed(errorMessage)
 

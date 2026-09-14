@@ -89,6 +89,8 @@ export const BotMessageSchema = object({
   ignored_participant_names: array(string()).default([]),
   speech_to_text_provider: SpeechToTextProviderSchema.default("none"),
   retry_count: number().int().nonnegative().default(0),
+  // End reasons of earlier (requeued) attempts; must match the sqs-consumer schema.
+  prior_end_reasons: array(string()).default([]),
 
   // ISO-3166 alpha-2 countries the residential proxy exit may pin to, chosen by
   // the team in settings (api-server passes them through). The bot picks one;

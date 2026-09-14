@@ -33,3 +33,22 @@ export function resolveZoomJoinFailureReason(
   }
   return latestReason
 }
+
+// Vague final failures an earlier (requeued) attempt's wall explains better. Timeouts
+// stay: they mean a later attempt got past the wall.
+const EXPLAINED_BY_PRIOR_WALL: ReadonlySet<string> = new Set([
+  MeetingEndReason.CannotJoinMeeting,
+  MeetingEndReason.ZoomLoadingStalled,
+  MeetingEndReason.ProxyUnavailable,
+  MeetingEndReason.Internal
+])
+
+export function explainedByPriorWall(
+  priorEndReasons: readonly string[],
+  latestReason: MeetingEndReason | null
+): boolean {
+  return (
+    priorEndReasons.includes(MeetingEndReason.ZoomAnonymousJoinNotAllowed) &&
+    (latestReason === null || EXPLAINED_BY_PRIOR_WALL.has(latestReason))
+  )
+}
