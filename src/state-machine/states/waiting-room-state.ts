@@ -261,7 +261,7 @@ export class WaitingRoomState extends BaseState {
    * requeue (a genuinely fresh pod). Xvfb/PulseAudio/screen-recorder scaffolding
    * stays up across attempts; only the browser context + proxy session recycle.
    * The one-time, device/display-level side effects (audio capture, branding
-   * switch, dialog observer, waiting-room webhook) run only on the first attempt.
+   * switch, dialog observer) run only on the first attempt.
    */
   private async joinWithInProcessRetry(meetingLink: string): Promise<void> {
     const isZoom = GLOBAL.get().meeting_platform === "zoom"
@@ -303,8 +303,6 @@ export class WaitingRoomState extends BaseState {
           }
           // Branding switch (warmup placeholder → real image) — idempotent trigger.
           notifyJoinReady()
-          // Waiting-room webhook — fire once, not per relaunch.
-          Events.inWaitingRoom()
         }
 
         if (this.context.playwrightPage) {
@@ -556,7 +554,11 @@ export class WaitingRoomState extends BaseState {
             }
           },
           this.context.dialogObserver,
-          onAdmissionDetected
+          onAdmissionDetected,
+          // in_waiting_room only once the bot has really asked in (sendOnce dedupes).
+          () => {
+            if (!GLOBAL.isSupersededJoinAttempt(attempt)) Events.inWaitingRoom()
+          }
         )
       )
         .then(() => {

@@ -297,7 +297,10 @@ export class ZoomProvider implements MeetingProviderInterface {
   async joinMeeting(
     page: Page,
     cancelCheck: () => boolean,
-    onJoinSuccess: () => void
+    onJoinSuccess: () => void,
+    _dialogObserver?: unknown,
+    _onAdmissionDetected?: () => void,
+    onJoinRequested?: () => void
   ): Promise<void> {
     const htmlSnapshot = HtmlSnapshotService.getInstance()
     await htmlSnapshot.captureSnapshot(page, "zoom_join_meeting_start")
@@ -557,6 +560,7 @@ export class ZoomProvider implements MeetingProviderInterface {
         .catch(() => false)
     }
     console.log("[Zoom] Join input dispatched — waiting for admission...")
+    onJoinRequested?.()
     await sleep(3000)
 
     await this.waitForAdmission(page, cancelCheck)

@@ -537,7 +537,10 @@ export class TeamsProvider implements MeetingProviderInterface {
   async joinMeeting(
     page: Page,
     cancelCheck: () => boolean,
-    onJoinSuccess: () => void
+    onJoinSuccess: () => void,
+    _dialogObserver?: unknown,
+    _onAdmissionDetected?: () => void,
+    onJoinRequested?: () => void
   ): Promise<void> {
     console.log("joining meeting")
 
@@ -790,6 +793,7 @@ export class TeamsProvider implements MeetingProviderInterface {
       console.error('Error during bot name typing or second "Join now" click:', e)
       throw new Error("RetryableError")
     }
+    onJoinRequested?.()
 
     // Wait to be in the meeting
     console.log("Waiting to confirm meeting join...")

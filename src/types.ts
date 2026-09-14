@@ -24,7 +24,9 @@ export interface MeetingProviderInterface {
     // Fired when admission is DETECTED but not yet confirmed (e.g. Meet's
     // lobby cleared while the join-confirm debounce is still running) so the
     // caller can keep its waiting-room deadline from expiring mid-confirmation.
-    onAdmissionDetected?: () => void
+    onAdmissionDetected?: () => void,
+    // Fired once the bot has actually asked to be admitted (after its Join click).
+    onJoinRequested?: () => void
   ): Promise<void>
   findEndMeeting(page: Page, opts?: { ignoreAloneSignals?: boolean }): Promise<boolean>
   parseMeetingUrl(meeting_url: string): Promise<{ meetingId: string; password: string }>

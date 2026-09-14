@@ -289,7 +289,8 @@ export class MeetProvider implements MeetingProviderInterface {
     cancelCheck: () => boolean,
     onJoinSuccess: () => void,
     dialogObserver?: SimpleDialogObserver,
-    onAdmissionDetected?: () => void
+    onAdmissionDetected?: () => void,
+    onJoinRequested?: () => void
   ): Promise<void> {
     try {
       // Capture DOM state before starting join process
@@ -398,6 +399,7 @@ export class MeetProvider implements MeetingProviderInterface {
       if (initialClick) {
         console.log("Successfully clicked join button on initial attempt")
         lastJoinClickAt = Date.now()
+        onJoinRequested?.()
       } else {
         console.log("Join button not found on initial attempt, will retry in loop")
       }
@@ -422,6 +424,7 @@ export class MeetProvider implements MeetingProviderInterface {
         if (nowInWaitingRoom && !inWaitingRoom) {
           console.log("📋 Bot is in waiting room, waiting for host to admit...")
           inWaitingRoom = true
+          onJoinRequested?.()
         }
 
         // Detect when we leave the waiting room
@@ -440,6 +443,7 @@ export class MeetProvider implements MeetingProviderInterface {
           const retried = await clickJoinCtaIfPresent(page)
           if (retried) {
             lastJoinClickAt = Date.now()
+            onJoinRequested?.()
             joinRetryCount += 1
             console.log(`Clicked join button (attempt #${joinRetryCount})`)
           }
