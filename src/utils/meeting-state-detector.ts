@@ -1,5 +1,9 @@
 import type { Locator, Page } from "@playwright/test"
 import type { MeetingEndReason } from "../state-machine/types"
+import { withTimeout } from "./page-reads"
+
+// evaluate / count / isVisible have no timeout of their own.
+const DETECTOR_READ_TIMEOUT_MS = 5_000
 
 /**
  * Generic Meeting State Detection Utility
@@ -58,6 +62,7 @@ export type StateDetectionResult = {
   count?: number
   matchedText?: string
   pattern?: DenialPattern | SelectorPattern
+  error?: unknown // set when the check couldn't run (e.g. CSP refused evaluate)
 }
 
 export type MeetingStateDetector = {
@@ -79,10 +84,11 @@ async function checkIndicators(
   const matchedSelectors: string[] = []
   for (const selector of selectors) {
     try {
-      const count = await page
-        .locator(selector)
-        .count()
-        .catch(() => 0)
+      const count = await withTimeout(
+        page.locator(selector).count(),
+        DETECTOR_READ_TIMEOUT_MS,
+        `count(${selector})`
+      ).catch(() => 0)
       if (count > 0) {
         if (checkVisibility) {
           // Just check presence in DOM, not visibility
@@ -90,11 +96,11 @@ async function checkIndicators(
           foundCount++
           matchedSelectors.push(selector)
         } else {
-          const isVisible = await page
-            .locator(selector)
-            .first()
-            .isVisible()
-            .catch(() => false)
+          const isVisible = await withTimeout(
+            page.locator(selector).first().isVisible(),
+            DETECTOR_READ_TIMEOUT_MS,
+            `isVisible(${selector})`
+          ).catch(() => false)
           if (isVisible) {
             foundCount++
             matchedSelectors.push(selector)
@@ -298,13 +304,17 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
         }
 
         // Single in-page pass instead of one locator round-trip per phrase
-        const matched = await page.evaluate(findVisibleDenialTextIndex, {
-          patterns: config.denialPatterns.map((p) => ({
-            texts: p.texts,
-            scopeSelectors: p.scopeSelectors ?? []
-          })),
-          ignoreSelectors: config.denialIgnoreWithinSelectors ?? []
-        })
+        const matched = await withTimeout(
+          page.evaluate(findVisibleDenialTextIndex, {
+            patterns: config.denialPatterns.map((p) => ({
+              texts: p.texts,
+              scopeSelectors: p.scopeSelectors ?? []
+            })),
+            ignoreSelectors: config.denialIgnoreWithinSelectors ?? []
+          }),
+          DETECTOR_READ_TIMEOUT_MS,
+          `${config.providerName} isDenied`
+        )
 
         if (matched.patternIdx >= 0) {
           const pattern = config.denialPatterns[matched.patternIdx]
@@ -323,8 +333,11 @@ export const createStateDetector = (config: StateDetectionConfig): MeetingStateD
         }
         return { state: "denied", matched: false }
       } catch (error) {
-        console.error(`[${config.providerName}] Error checking denied state:`, error)
-        return { state: "denied", matched: false }
+        console.error(
+          `[${config.providerName}] Error checking denied state:`,
+          error instanceof Error ? error.message : error
+        )
+        return { state: "denied", matched: false, error }
       }
     },
 

@@ -43,7 +43,14 @@ function killedByWatchdog(): boolean {
 // The shared GLOBAL.claimRecovery() token is taken ONLY right before a requeue, so
 // at most one requeue happens; a non-requeuing path must never take it (that would
 // starve the primary retry in handleFailedRecording).
-process.on("SIGTERM", async () => {
+// Awaited by the main flow before exit, so it can't kill an in-flight requeue/report.
+let sigtermHandling: Promise<void> | null = null
+
+process.on("SIGTERM", () => {
+  sigtermHandling ??= handleSigterm()
+})
+
+async function handleSigterm(): Promise<void> {
   if (GLOBAL.isRecoveryClaimed()) {
     // A requeuing path already owns recovery and may be mid-write — stand down
     // (do NOT exit) so we don't kill it.
@@ -73,10 +80,7 @@ process.on("SIGTERM", async () => {
       // Report it as terminal, or the backend never learns the bot ended.
       const endReason = GLOBAL.getEndReason()
       if (!endReason || NORMAL_END_REASONS.includes(endReason)) {
-        GLOBAL.setError(
-          MeetingEndReason.Internal,
-          "Bot was stopped after outliving its recording window"
-        )
+        GLOBAL.setError(MeetingEndReason.Internal, "The bot reached its maximum session length.")
       }
       if (GLOBAL.claimRecovery()) {
         GLOBAL.setShouldRetry(false)
@@ -108,13 +112,25 @@ process.on("SIGTERM", async () => {
         } else {
           console.log("[SIGTERM] Recovery claimed concurrently — skipping duplicate requeue")
         }
+      } else if (GLOBAL.claimRecovery()) {
+        // No retries left: report now, or the bot stays at its last status.
+        console.log("[SIGTERM] Retries exhausted — reporting terminal failure")
+        const endReason = GLOBAL.getEndReason()
+        if (!endReason || NORMAL_END_REASONS.includes(endReason)) {
+          GLOBAL.setError(
+            MeetingEndReason.Internal,
+            "The recording session could not be completed."
+          )
+        }
+        GLOBAL.setShouldRetry(false)
+        await handleFailedRecording({ terminal: true })
       }
     }
   } catch (e) {
     console.error("[SIGTERM] requeue failed:", formatError(e))
   }
   exit(0)
-})
+}
 
 // Setup console logger first to ensure proper formatting
 setupConsoleLogger()
@@ -391,6 +407,7 @@ async function handleFailedRecording(opts: { terminal?: boolean } = {}): Promise
         // metrics report is best-effort, never block exit
       }
     }
+    if (sigtermHandling) await sigtermHandling
     console.log("exiting instance")
     exit(0)
   }

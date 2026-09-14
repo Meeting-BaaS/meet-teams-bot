@@ -14,10 +14,39 @@ import { Streaming } from "../../streaming"
 import { formatError } from "../../utils/Logger"
 import { handleTimingControl } from "../../utils/timing-control"
 
+import { awaitJoinPhase, JoinPhaseInterrupted, runInJoinAttempt } from "../join-attempt"
 import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
 import { loginToGoogleMeetWithSso, MeetSsoLoginError } from "./google-meet-sso-login"
 import { loginToTeamsWithCredentials, TeamsLoginError } from "./microsoft-teams-login"
+
+// Backstop for opening the page (Zoom's host-not-started wait alone can take 10 min).
+const OPEN_MEETING_PAGE_DEADLINE_MS = 12 * 60 * 1000
+
+// End reasons that mean "stop joining now", whoever set them.
+const STOP_REASONS: ReadonlyArray<MeetingEndReason> = [
+  MeetingEndReason.ApiRequest,
+  MeetingEndReason.LoginRequired,
+  MeetingEndReason.ExitingMeetingBeforeRecord
+]
+
+function isStopRequested(): boolean {
+  const reason = GLOBAL.getEndReason()
+  return reason !== null && STOP_REASONS.includes(reason)
+}
+
+/** A superseded attempt finished after its outcome was decided: note it, change nothing. */
+function logLateSettle(
+  attempt: number,
+  phase: string,
+  result: PromiseSettledResult<unknown>
+): void {
+  const outcome =
+    result.status === "fulfilled" ? "succeeded" : `failed: ${formatError(result.reason)}`
+  console.log(
+    `[join#${attempt}] superseded attempt finished ${phase} late (${outcome}) — outcome already decided`
+  )
+}
 
 export class WaitingRoomState extends BaseState {
   async execute(): StateExecuteResult {
@@ -250,8 +279,9 @@ export class WaitingRoomState extends BaseState {
     }
 
     for (let attempt = 0; ; attempt++) {
+      const joinAttempt = GLOBAL.beginJoinAttempt()
       try {
-        await this.openMeetingPage(meetingLink)
+        await this.openMeetingPage(meetingLink, joinAttempt)
 
         // (Re)start the dialog observer for THIS attempt's page, EVERY attempt.
         // The observer self-stops when the page closes during an in-process retry
@@ -292,9 +322,11 @@ export class WaitingRoomState extends BaseState {
           ScreenRecorderManager.getInstance().startRecording(this.context.playwrightPage)
         }
 
-        await this.waitForAcceptance()
+        await this.waitForAcceptance(joinAttempt)
         return
       } catch (error) {
+        // The outcome is decided here; the attempt may still be running.
+        GLOBAL.supersedeJoinAttempt(joinAttempt, "attempt ended")
         const reason = GLOBAL.getEndReason()
         if (reason === MeetingEndReason.ZoomAnonymousJoinNotAllowed) {
           confirmedBotWall = reason
@@ -362,31 +394,62 @@ export class WaitingRoomState extends BaseState {
     }
   }
 
-  private async openMeetingPage(meetingLink: string) {
-    if (!this.context.browserContext) {
+  private async openMeetingPage(meetingLink: string, attempt: number) {
+    const browserContext = this.context.browserContext
+    if (!browserContext) {
       throw new Error("Browser context not initialized")
     }
 
     try {
       console.info("Attempting to open meeting page:", meetingLink)
-      this.context.playwrightPage = await this.context.provider.openMeetingPage(
-        this.context.browserContext,
-        meetingLink,
-        GLOBAL.get().streaming_input
+      this.context.playwrightPage = await awaitJoinPhase(
+        runInJoinAttempt(attempt, () =>
+          this.context.provider.openMeetingPage(
+            browserContext,
+            meetingLink,
+            GLOBAL.get().streaming_input
+          )
+        ),
+        {
+          label: `join#${attempt} opening the meeting page`,
+          deadlineMs: OPEN_MEETING_PAGE_DEADLINE_MS,
+          isStopRequested,
+          onLateSettle: (result) => logLateSettle(attempt, "opening the meeting page", result)
+        }
       )
       // Page logger is already set up in openMeetingPage() before page.goto()
       // so we can see logs from init scripts. BaseState.setupPageLoggers() runs
       // too early (page doesn't exist yet) and would miss init script logs.
       console.info("Meeting page opened successfully")
     } catch (error) {
+      if (error instanceof JoinPhaseInterrupted) {
+        GLOBAL.supersedeJoinAttempt(attempt, error.message)
+        if (error.interruption === "deadline") {
+          console.error(
+            `[join#${attempt}] meeting page did not open within ${OPEN_MEETING_PAGE_DEADLINE_MS / 60_000} minutes`
+          )
+          this.failStalledJoin()
+        }
+      }
       console.error("Failed to open meeting page:", formatError(error))
 
       throw new Error(error instanceof Error ? error.message : "Failed to open meeting page")
     }
   }
 
-  private async waitForAcceptance(): Promise<void> {
-    if (!this.context.playwrightPage) {
+  /** Page never opened: retry on a fresh pod. The message is customer-visible. */
+  private failStalledJoin(): void {
+    const reason =
+      GLOBAL.get().meeting_platform === "zoom"
+        ? MeetingEndReason.ZoomLoadingStalled
+        : MeetingEndReason.CannotJoinMeeting
+    GLOBAL.setError(reason, "The meeting page did not finish loading.")
+    GLOBAL.setShouldRetry(true)
+  }
+
+  private async waitForAcceptance(attempt: number): Promise<void> {
+    const page = this.context.playwrightPage
+    if (!page) {
       throw new Error("Meeting page not initialized")
     }
 
@@ -395,7 +458,9 @@ export class WaitingRoomState extends BaseState {
     // (e.g. "You can't join this video call" → auto-redirect to workspace.google.com).
     // Only check for Meet — Teams URLs are on a different domain and would false-positive.
     const isMeet = GLOBAL.get().meeting_platform === "meet"
-    const startTime = await handleTimingControl(GLOBAL.get().start_time, isMeet ? async () => {
+    const startTime = await handleTimingControl(GLOBAL.get().start_time, async () => {
+      if (isStopRequested()) return true
+      if (!isMeet) return false
       const url = this.context.playwrightPage?.url() ?? ""
       if (url && !url.includes("meet.google.com")) {
         console.log(`Page navigated away from Meet during timing wait: ${url}`)
@@ -407,11 +472,14 @@ export class WaitingRoomState extends BaseState {
         return true
       }
       return false
-    } : undefined)
+    })
 
     // If the abort check detected a denial during the wait, bail out immediately
     if (GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted) {
       throw new Error("Bot denied during timing control wait")
+    }
+    if (isStopRequested()) {
+      throw new Error(`Stop requested before the scheduled join time (${GLOBAL.getEndReason()})`)
     }
 
     // Store the actual start time for later use - It is sent to the backend at the end of the meeting
@@ -426,6 +494,8 @@ export class WaitingRoomState extends BaseState {
       const onWaitingRoomTimeout = () => {
         if (!joinSuccessful) {
           // Trigger the timeout only if we are not in the meeting
+          GLOBAL.supersedeJoinAttempt(attempt, "waiting-room timeout")
+          clearInterval(checkStopSignal)
           GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
           const timeoutError = new Error("Waiting room timeout reached")
           console.error("Waiting room timeout reached", timeoutError)
@@ -454,20 +524,17 @@ export class WaitingRoomState extends BaseState {
       }
 
       const checkStopSignal = setInterval(() => {
-        if (
-          GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
-          GLOBAL.getEndReason() === MeetingEndReason.LoginRequired ||
-          GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord
-        ) {
+        if (isStopRequested()) {
+          GLOBAL.supersedeJoinAttempt(attempt, `stop requested (${GLOBAL.getEndReason()})`)
           clearInterval(checkStopSignal)
           clearTimeout(timeout)
-          reject()
+          reject(new Error(`Stop requested while waiting for admission (${GLOBAL.getEndReason()})`))
         }
       }, 1000)
 
-      this.context.provider
-        .joinMeeting(
-          this.context.playwrightPage,
+      runInJoinAttempt(attempt, () =>
+        this.context.provider.joinMeeting(
+          page,
           () =>
             GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
             GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord,
@@ -486,12 +553,25 @@ export class WaitingRoomState extends BaseState {
           this.context.dialogObserver,
           onAdmissionDetected
         )
+      )
         .then(() => {
+          // Superseded: the outcome is already decided, only log it.
+          if (GLOBAL.isSupersededJoinAttempt(attempt)) {
+            logLateSettle(attempt, "waiting for admission", {
+              status: "fulfilled",
+              value: undefined
+            })
+            return
+          }
           clearInterval(checkStopSignal)
           clearTimeout(timeout)
           resolve()
         })
-        .catch((error) => {
+        .catch((error: unknown) => {
+          if (GLOBAL.isSupersededJoinAttempt(attempt)) {
+            logLateSettle(attempt, "waiting for admission", { status: "rejected", reason: error })
+            return
+          }
           clearInterval(checkStopSignal)
           clearTimeout(timeout)
           reject(error)

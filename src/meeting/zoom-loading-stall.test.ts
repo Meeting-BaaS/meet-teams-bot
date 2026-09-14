@@ -216,6 +216,23 @@ describe("ZoomLoadingStallTracker", () => {
     // The odd frame reappears: the grace starts over rather than firing at once.
     expect(tracker.observe(snap({ text: "something odd" }), 4_000).type).toBe("wait")
   })
+
+  it("does not charge healthy lobby time to the next loading episode", () => {
+    const tracker = new ZoomLoadingStallTracker("admission", { maxReloads: 0 })
+    const lobby = snap({ text: "Please wait, the meeting host will let you in soon" })
+    const joining = snap({ readyState: "loading", text: "Joining Meeting..." })
+
+    for (let now = 0; now <= LOAD_PHASE_HARD_CAP_MS + 60_000; now += 2_000) {
+      expect(tracker.observe(lobby, now).type).toBe("ready")
+    }
+    const admittedAt = LOAD_PHASE_HARD_CAP_MS + 62_000
+    expect(tracker.observe(joining, admittedAt).type).toBe("wait")
+    // A genuinely frozen overlay is still caught, on its own clock.
+    expect(tracker.observe(joining, admittedAt + STALL_AFTER_MS)).toMatchObject({
+      type: "giveUp",
+      stalled: true
+    })
+  })
 })
 
 describe("createZoomLoadProbe", () => {
@@ -268,5 +285,44 @@ describe("createZoomLoadProbe", () => {
     const page = { evaluate: jest.fn(async () => answered) } as unknown as Page
 
     expect(await createZoomLoadProbe(page, selectors, 20)()).toEqual(answered)
+  })
+
+  const cspPage = (counts: Record<string, number>, text: string) =>
+    ({
+      evaluate: jest.fn(async () => {
+        throw new Error("page.evaluate: call to eval() blocked by CSP")
+      }),
+      locator: jest.fn((selector: string) => ({
+        count: async () => counts[selector] ?? 0,
+        innerText: async () => text
+      })),
+      url: () => "https://app.zoom.us/wc/123/join"
+    }) as unknown as Page
+
+  it("reads a CSP-refused page through the isolated world instead of calling it frozen", async () => {
+    const page = cspPage({ "#input-for-name": 1, "*": 800, "body > *": 3 }, "Enter your name")
+
+    const snapshot = await createZoomLoadProbe(page, selectors, 200)()
+
+    expect(snapshot).toMatchObject({
+      prejoinReady: true,
+      elementCount: 800,
+      appRootEmpty: false,
+      url: "https://app.zoom.us/wc/123/join"
+    })
+    expect(classifyZoomLoadState(snapshot)).toBe("ready")
+  })
+
+  it("still reports the frozen snapshot when the page fails for another reason", async () => {
+    const page = {
+      evaluate: jest.fn(async () => {
+        throw new Error("Target page, context or browser has been closed")
+      })
+    } as unknown as Page
+
+    expect(await createZoomLoadProbe(page, selectors, 200)()).toMatchObject({
+      readyState: "loading",
+      url: ""
+    })
   })
 })

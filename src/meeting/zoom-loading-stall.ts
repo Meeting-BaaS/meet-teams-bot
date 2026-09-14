@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test"
+import { countIsolated, isCspEvaluateBlock, readVisibleTextIsolated } from "../utils/page-reads"
 
 /**
  * Zoom's web client can take a very long time to come up — and sometimes never
@@ -217,13 +218,15 @@ export class ZoomLoadingStallTracker {
   }
 
   observe(snapshot: ZoomLoadSnapshot, now: number): ZoomLoadAction {
-    this.startedAt ??= now
-
     const state = classifyZoomLoadState(snapshot)
     if (state === "ready") {
+      // Client is up: end the episode so lobby time never counts toward the next one.
+      this.startedAt = null
+      this.lastFingerprint = null
       this.unknownSince = null
       return { type: "ready" }
     }
+    this.startedAt ??= now
 
     if (state === "unknown") {
       this.unknownSince ??= now
@@ -304,6 +307,16 @@ export interface ZoomLoadProbeSelectors {
   meetingUi: string
 }
 
+/** Zoom's spinner / loading layers. */
+const LOADING_INDICATOR_SELECTORS = [
+  ".loading-layer",
+  ".zm-loading",
+  '[class*="loading-spinner"]',
+  '[class*="LoadingLayer"]',
+  ".preview-loading",
+  "#zmmtg-root > .loading"
+].join(",")
+
 /** Ceiling on one probe. `page.evaluate` has no timeout of its own, so a
  *  renderer whose main thread is wedged never returns from it — and that is the
  *  exact page this module exists to catch. Without a bound the polling loop
@@ -383,7 +396,7 @@ async function readZoomLoadSnapshot(
 ): Promise<ZoomLoadSnapshot> {
   try {
     return await page.evaluate(
-      ({ prejoin, meetingUi }) => {
+      ({ prejoin, meetingUi, loading }) => {
         const text = (document.body?.innerText || "").slice(0, 4000)
 
         // Raw querySelector, never a Playwright visibility check: Zoom's web
@@ -415,26 +428,51 @@ async function readZoomLoadSnapshot(
           text,
           elementCount: document.getElementsByTagName("*").length,
           appRootEmpty,
-          loadingIndicator: has(
-            [
-              ".loading-layer",
-              ".zm-loading",
-              '[class*="loading-spinner"]',
-              '[class*="LoadingLayer"]',
-              ".preview-loading",
-              "#zmmtg-root > .loading"
-            ].join(",")
-          ),
+          loadingIndicator: has(loading),
           prejoinReady: has(prejoin),
           meetingUiReady: has(meetingUi)
         }
       },
-      { prejoin: selectors.prejoin, meetingUi: selectors.meetingUi }
+      {
+        prejoin: selectors.prejoin,
+        meetingUi: selectors.meetingUi,
+        loading: LOADING_INDICATOR_SELECTORS
+      }
     )
-  } catch {
+  } catch (error) {
+    // CSP refused our script, not the page: read it through the isolated world.
+    if (isCspEvaluateBlock(error)) return readZoomLoadSnapshotIsolated(page, selectors)
     // An unreadable page is exactly the frozen case this module exists for, so
     // report the unresponsive snapshot and let the tracker's clock run, instead
     // of the caller treating the error as a hard join failure.
     return unresponsiveSnapshot()
+  }
+}
+
+/** Same indicators via bounded isolated-world reads (readyState isn't observable there). */
+async function readZoomLoadSnapshotIsolated(
+  page: Page,
+  selectors: ZoomLoadProbeSelectors
+): Promise<ZoomLoadSnapshot> {
+  const [text, elementCount, bodyChildren, roots, rootChildren, loading, prejoin, meetingUi] =
+    await Promise.all([
+      readVisibleTextIsolated(page),
+      countIsolated(page, "*"),
+      countIsolated(page, "body > *"),
+      countIsolated(page, "#zmmtg-root, #root, #app"),
+      countIsolated(page, "#zmmtg-root > *, #root > *, #app > *"),
+      countIsolated(page, LOADING_INDICATOR_SELECTORS),
+      countIsolated(page, selectors.prejoin),
+      countIsolated(page, selectors.meetingUi)
+    ])
+  return {
+    readyState: "complete",
+    url: page.url(),
+    text: text.slice(0, 4000),
+    elementCount,
+    appRootEmpty: roots > 0 ? rootChildren === 0 : bodyChildren === 0,
+    loadingIndicator: loading > 0,
+    prejoinReady: prejoin > 0,
+    meetingUiReady: meetingUi > 0
   }
 }
