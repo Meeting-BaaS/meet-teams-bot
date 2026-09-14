@@ -194,6 +194,7 @@ export class WaitingRoomState extends BaseState {
           MeetingEndReason.InvalidMeetingUrl,
           MeetingEndReason.ApiRequest,
           MeetingEndReason.TimeoutWaitingToStart,
+          MeetingEndReason.WaitingForHostTimeout,
           // A plain waiting-room timeout / host denial is a NORMAL outcome (host
           // never admitted, no one joined, or entry was refused), not something a
           // fresh exit IP can fix — so it must be terminal, not requeued. This is
@@ -237,6 +238,7 @@ export class WaitingRoomState extends BaseState {
             Events.botRejected()
             return this.handleError(error as Error)
           case MeetingEndReason.TimeoutWaitingToStart:
+          case MeetingEndReason.WaitingForHostTimeout:
             Events.waitingRoomTimeout()
             return this.handleError(error as Error)
           case MeetingEndReason.ApiRequest:
@@ -496,7 +498,9 @@ export class WaitingRoomState extends BaseState {
           // Trigger the timeout only if we are not in the meeting
           GLOBAL.supersedeJoinAttempt(attempt, "waiting-room timeout")
           clearInterval(checkStopSignal)
-          GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+          GLOBAL.setError(
+            this.context.provider.waitingTimeoutReason?.() ?? MeetingEndReason.TimeoutWaitingToStart
+          )
           const timeoutError = new Error("Waiting room timeout reached")
           console.error("Waiting room timeout reached", timeoutError)
           reject(timeoutError)

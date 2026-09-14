@@ -32,6 +32,8 @@ export enum MeetingEndReason {
   BotNotAccepted = "botNotAccepted",
   CannotJoinMeeting = "cannotJoinMeeting",
   TimeoutWaitingToStart = "timeoutWaitingToStart",
+  // Host never started the meeting (the native SDK bot reports the same).
+  WaitingForHostTimeout = "waitingForHostTimeout",
   InvalidMeetingUrl = "invalidMeetingUrl",
   StreamingSetupFailed = "streamingSetupFailed",
   LoginRequired = "loginRequired",
@@ -95,6 +97,8 @@ export function getErrorMessageFromCode(errorCode: MeetingEndReason): string {
       return "Cannot join meeting - meeting is not reachable."
     case MeetingEndReason.TimeoutWaitingToStart:
       return "Timeout waiting to start recording."
+    case MeetingEndReason.WaitingForHostTimeout:
+      return "The bot timed out while waiting for the meeting host to start the meeting."
     case MeetingEndReason.InvalidMeetingUrl:
       return "Invalid meeting URL provided."
     case MeetingEndReason.StreamingSetupFailed:

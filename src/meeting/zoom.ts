@@ -36,6 +36,7 @@ import {
   type ZoomLoadProbeSelectors,
   ZoomLoadingStallTracker
 } from "./zoom-loading-stall"
+import { updateZoomLobbyState, type ZoomLobbyState, zoomWaitingTimeoutReason } from "./zoom-lobby"
 import { ZOOM_STATE_CONFIG } from "./zoom-state-config"
 
 // Zoom Web Client selectors (verified against the live DOM). Two client variants
@@ -125,6 +126,11 @@ export class ZoomProvider implements MeetingProviderInterface {
   // Removal debounce state (see findEndMeeting).
   private leaveButtonMisses = 0
   private inMeetingSince: number | null = null
+  private lobby: ZoomLobbyState | null = null
+
+  waitingTimeoutReason(): MeetingEndReason {
+    return zoomWaitingTimeoutReason(this.lobby)
+  }
 
   async parseMeetingUrl(meeting_url: string) {
     return parseZoomMeetingUrl(meeting_url)
@@ -275,7 +281,8 @@ export class ZoomProvider implements MeetingProviderInterface {
       if (!isHostNotStarted) break
 
       if (Date.now() - startTime >= HOST_NOT_STARTED_MAX_WAIT_MS) {
-        GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+        // "Error - Zoom" is what Zoom serves until the host starts the meeting.
+        GLOBAL.setError(MeetingEndReason.WaitingForHostTimeout)
         throw new Error("[Zoom] Host did not start the meeting within the wait timeout")
       }
       console.log(
@@ -862,7 +869,9 @@ export class ZoomProvider implements MeetingProviderInterface {
       // beside it was immediately overwritten and a detected stall never
       // actually retried. ZoomLoadingStalled is retryable by construction, and
       // the retry decision now lives in exactly one place (ZOOM_TERMINAL).
-      const loadAction = loadTracker.observe(await probe(), Date.now())
+      const snapshot = await probe()
+      this.lobby = updateZoomLobbyState(this.lobby, snapshot.text)
+      const loadAction = loadTracker.observe(snapshot, Date.now())
       if (loadAction.type === "giveUp" && loadAction.stalled) {
         console.warn(`[Zoom] ${loadAction.detail}`)
         GLOBAL.setError(MeetingEndReason.ZoomLoadingStalled)
@@ -901,7 +910,7 @@ export class ZoomProvider implements MeetingProviderInterface {
       await sleep(2000)
     }
 
-    GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+    GLOBAL.setError(this.waitingTimeoutReason())
     throw new Error(`[Zoom] Not admitted within ${timeoutMs}ms`)
   }
 

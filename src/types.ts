@@ -1,5 +1,6 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import type { output } from "zod"
+import type { MeetingEndReason } from "./state-machine/types"
 import type {
   BotMessageSchema,
   MeetingPlatformSchema,
@@ -35,6 +36,8 @@ export interface MeetingProviderInterface {
     _enter_message?: string
   ): string
   closeMeeting(page: Page): Promise<void>
+  // Timeout reason from what the page last showed; defaults to TimeoutWaitingToStart.
+  waitingTimeoutReason?(): MeetingEndReason
 }
 
 export type MeetingParams = output<typeof BotMessageSchema>

@@ -104,6 +104,7 @@ export class ErrorState extends BaseState {
             await Events.botRemovedTooEarly()
             break
           case MeetingEndReason.TimeoutWaitingToStart:
+          case MeetingEndReason.WaitingForHostTimeout:
             await Events.waitingRoomTimeout()
             break
           case MeetingEndReason.InvalidMeetingUrl:
