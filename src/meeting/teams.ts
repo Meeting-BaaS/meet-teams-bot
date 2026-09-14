@@ -539,7 +539,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     cancelCheck: () => boolean,
     onJoinSuccess: () => void,
     _dialogObserver?: unknown,
-    _onAdmissionDetected?: () => void,
+    onAdmissionDetected?: () => void,
     onJoinRequested?: () => void
   ): Promise<void> {
     console.log("joining meeting")
@@ -826,6 +826,8 @@ export class TeamsProvider implements MeetingProviderInterface {
       }
     }
 
+    // Extend the waiting-room deadline before the mic cleanup below delays onJoinSuccess.
+    onAdmissionDetected?.()
     console.log("Successfully confirmed we are in the meeting")
 
     // Guarantee the bot is muted after actually entering the call — the pre-join mute
