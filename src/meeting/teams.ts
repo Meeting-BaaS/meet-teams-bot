@@ -1031,14 +1031,20 @@ async function clickWithInnerText(
         const humanizeActive = Boolean((page as unknown as { _original?: unknown })._original)
         const humanized = humanizeActive && (await clickButtonHumanized(page, htmlType, innerText))
         if (!humanized) {
-          // A miss (e.g. the button was only found in the iframe) is not a click: keep trying.
+          // Search where the detector does (first iframe, then the page); a miss is not a click.
           continueButton = await page.evaluate(
             ({ innerText, htmlType }) => {
-              const el = Array.from(document.querySelectorAll(htmlType)).find(
-                (e) => e.textContent?.trim() === innerText
-              )
-              ;(el as HTMLElement | undefined)?.click()
-              return el !== undefined
+              const frameDoc = document.querySelector("iframe")?.contentDocument
+              for (const doc of frameDoc ? [frameDoc, document] : [document]) {
+                const el = Array.from(doc.querySelectorAll(htmlType)).find(
+                  (e) => e.textContent?.trim() === innerText
+                )
+                if (el) {
+                  ;(el as HTMLElement).click()
+                  return true
+                }
+              }
+              return false
             },
             { innerText, htmlType }
           )
