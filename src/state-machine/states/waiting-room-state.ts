@@ -537,9 +537,7 @@ export class WaitingRoomState extends BaseState {
       runInJoinAttempt(attempt, () =>
         this.context.provider.joinMeeting(
           page,
-          () =>
-            GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
-            GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord,
+          isStopRequested,
           // Add a callback to notify that the join succeeded
           () => {
             joinSuccessful = true
