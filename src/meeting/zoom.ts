@@ -14,7 +14,14 @@ import {
 } from "../urlParser/zoomUrlParser"
 import { humanClick, humanType } from "../utils/humanize"
 import { formatError } from "../utils/Logger"
-import { createStateDetector } from "../utils/meeting-state-detector"
+import { createStateDetector, type StateDetectionResult } from "../utils/meeting-state-detector"
+import {
+  countIsolated,
+  ISOLATED_READ_TIMEOUT_MS,
+  isCspEvaluateBlock,
+  readVisibleTextIsolated,
+  withTimeout
+} from "../utils/page-reads"
 import { sleep } from "../utils/sleep"
 import { getZoomEntryMessageSentAt } from "./zoom/entry-message-timing"
 import {
@@ -29,6 +36,7 @@ import {
   type ZoomLoadProbeSelectors,
   ZoomLoadingStallTracker
 } from "./zoom-loading-stall"
+import { updateZoomLobbyState, type ZoomLobbyState, zoomWaitingTimeoutReason } from "./zoom-lobby"
 import { ZOOM_STATE_CONFIG } from "./zoom-state-config"
 
 // Zoom Web Client selectors (verified against the live DOM). Two client variants
@@ -81,6 +89,10 @@ const BOT_BLOCK_TEXTS = [
 const HOST_NOT_STARTED_RETRY_MS = 15_000
 const HOST_NOT_STARTED_MAX_WAIT_MS = 10 * 60 * 1000
 
+// Playwright page reads (title, evaluate) have no timeout of their own.
+const PAGE_READ_TIMEOUT_MS = 5_000
+const FREEZE_TIMEOUT_MS = 20_000
+
 // Removal debounce. Zoom auto-hides the footer that holds the Leave button, and
 // recording-state ends the meeting on a single findEndMeeting()===true, so a
 // bare "Leave button missing" check would eject the bot from a live meeting on
@@ -114,6 +126,11 @@ export class ZoomProvider implements MeetingProviderInterface {
   // Removal debounce state (see findEndMeeting).
   private leaveButtonMisses = 0
   private inMeetingSince: number | null = null
+  private lobby: ZoomLobbyState | null = null
+
+  waitingTimeoutReason(): MeetingEndReason {
+    return zoomWaitingTimeoutReason(this.lobby)
+  }
 
   async parseMeetingUrl(meeting_url: string) {
     return parseZoomMeetingUrl(meeting_url)
@@ -215,6 +232,7 @@ export class ZoomProvider implements MeetingProviderInterface {
     const startTime = Date.now()
     let fingerprintCaptured = false
     while (true) {
+      if (page.isClosed()) throw new Error("[Zoom] Page closed while opening the meeting")
       try {
         await page.goto(link, { waitUntil: "domcontentloaded", timeout: 60_000 })
         // Clear any stale retry flag left by a flaky earlier goto. The real
@@ -242,7 +260,7 @@ export class ZoomProvider implements MeetingProviderInterface {
       // Auth-required fail-fast: the sign-in page never renders #input-for-name,
       // so without this the bot waits the full name-input timeout for a field
       // that never appears. isDenied maps the matched text to the end reason.
-      const denied = await zoomStateDetector.isDenied(page)
+      const denied = await this.checkPreAdmissionDenial(page)
       if (denied.matched) {
         const reason =
           (denied.pattern && "reason" in denied.pattern ? denied.pattern.reason : undefined) ??
@@ -255,12 +273,16 @@ export class ZoomProvider implements MeetingProviderInterface {
         throw new Error(`Zoom pre-join denial: ${reason}`)
       }
 
-      const title = await page.title().catch(() => "")
+      // Bounded: title() can hang forever on a relaunched page.
+      const title = await withTimeout(page.title(), PAGE_READ_TIMEOUT_MS, "page.title").catch(
+        () => ""
+      )
       const isHostNotStarted = title === "Error - Zoom" || title === "error - Zoom"
       if (!isHostNotStarted) break
 
       if (Date.now() - startTime >= HOST_NOT_STARTED_MAX_WAIT_MS) {
-        GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+        // "Error - Zoom" is what Zoom serves until the host starts the meeting.
+        GLOBAL.setError(MeetingEndReason.WaitingForHostTimeout)
         throw new Error("[Zoom] Host did not start the meeting within the wait timeout")
       }
       console.log(
@@ -275,7 +297,10 @@ export class ZoomProvider implements MeetingProviderInterface {
   async joinMeeting(
     page: Page,
     cancelCheck: () => boolean,
-    onJoinSuccess: () => void
+    onJoinSuccess: () => void,
+    _dialogObserver?: unknown,
+    _onAdmissionDetected?: () => void,
+    onJoinRequested?: () => void
   ): Promise<void> {
     const htmlSnapshot = HtmlSnapshotService.getInstance()
     await htmlSnapshot.captureSnapshot(page, "zoom_join_meeting_start")
@@ -535,9 +560,18 @@ export class ZoomProvider implements MeetingProviderInterface {
         .catch(() => false)
     }
     console.log("[Zoom] Join input dispatched — waiting for admission...")
+    onJoinRequested?.()
     await sleep(3000)
 
     await this.waitForAdmission(page, cancelCheck)
+
+    // Admitted after this attempt was superseded: the outcome is decided, don't take over.
+    if (GLOBAL.inSupersededJoinAttempt()) {
+      console.warn(
+        "[Zoom] Admitted after this join attempt was superseded — not taking over the meeting"
+      )
+      return
+    }
 
     onJoinSuccess()
     console.log("[Zoom] ✅ onJoinSuccess called")
@@ -738,6 +772,8 @@ export class ZoomProvider implements MeetingProviderInterface {
     const probe = createZoomLoadProbe(page, LOAD_PROBE_SELECTORS)
 
     while (true) {
+      if (page.isClosed()) throw new Error("[Zoom] Page closed while waiting for the pre-join card")
+
       // This loop can now run for minutes, so it has to honour a stop request
       // the way waitForAdmission does — otherwise an API stop sits unanswered
       // until the whole load phase gives up.
@@ -794,6 +830,9 @@ export class ZoomProvider implements MeetingProviderInterface {
     const probe = createZoomLoadProbe(page, LOAD_PROBE_SELECTORS)
 
     while (Date.now() - start < timeoutMs) {
+      // Closed by cleanup or a relaunch: don't read it as a stall.
+      if (page.isClosed()) throw new Error("[Zoom] Page closed while waiting for admission")
+
       if (cancelCheck()) {
         if (!GLOBAL.getEndReason()) GLOBAL.setError(MeetingEndReason.ApiRequest)
         throw new Error("API request to stop Zoom recording")
@@ -815,7 +854,7 @@ export class ZoomProvider implements MeetingProviderInterface {
       this.throwIfPasscodeBlocked(await this.readPasscodeState(page))
 
       // Rejected / meeting ended.
-      const denied = await zoomStateDetector.isDenied(page)
+      const denied = await this.checkPreAdmissionDenial(page)
       if (denied.matched) {
         const reason =
           (denied.pattern && "reason" in denied.pattern ? denied.pattern.reason : undefined) ??
@@ -834,7 +873,9 @@ export class ZoomProvider implements MeetingProviderInterface {
       // beside it was immediately overwritten and a detected stall never
       // actually retried. ZoomLoadingStalled is retryable by construction, and
       // the retry decision now lives in exactly one place (ZOOM_TERMINAL).
-      const loadAction = loadTracker.observe(await probe(), Date.now())
+      const snapshot = await probe()
+      this.lobby = updateZoomLobbyState(this.lobby, snapshot.text)
+      const loadAction = loadTracker.observe(snapshot, Date.now())
       if (loadAction.type === "giveUp" && loadAction.stalled) {
         console.warn(`[Zoom] ${loadAction.detail}`)
         GLOBAL.setError(MeetingEndReason.ZoomLoadingStalled)
@@ -873,7 +914,7 @@ export class ZoomProvider implements MeetingProviderInterface {
       await sleep(2000)
     }
 
-    GLOBAL.setError(MeetingEndReason.TimeoutWaitingToStart)
+    GLOBAL.setError(this.waitingTimeoutReason())
     throw new Error(`[Zoom] Not admitted within ${timeoutMs}ms`)
   }
 
@@ -890,8 +931,40 @@ export class ZoomProvider implements MeetingProviderInterface {
     throw new Error(`[Zoom] zoom_anonymous_join_not_allowed: ${wall}`)
   }
 
+  /** isDenied, falling back to isolated reads when CSP blocks evaluate (safe pre-admission). */
+  private async checkPreAdmissionDenial(page: Page): Promise<StateDetectionResult> {
+    const denied = await zoomStateDetector.isDenied(page)
+    if (denied.matched || !isCspEvaluateBlock(denied.error)) return denied
+
+    const text = (await readVisibleTextIsolated(page)).replace(/\s+/g, " ")
+    for (const pattern of ZOOM_STATE_CONFIG.denialPatterns) {
+      for (const phrase of pattern.texts) {
+        const scopes = pattern.scopeSelectors ?? []
+        const found =
+          scopes.length === 0
+            ? text.includes(phrase.toLowerCase())
+            : (await withTimeout(
+                page.locator(scopes.join(",")).filter({ hasText: phrase }).count(),
+                ISOLATED_READ_TIMEOUT_MS,
+                "scoped denial count"
+              ).catch(() => 0)) > 0
+        if (found) {
+          console.warn(`[Zoom] Denial match "${phrase}" (isolated read; page refused evaluate)`)
+          return { state: "denied", matched: true, matchedText: phrase, pattern }
+        }
+      }
+    }
+    return denied
+  }
+
   private async detectBotWall(page: Page): Promise<string | null> {
-    try {
+    // A CSP refusal must not read as "no wall".
+    let cspBlocked = false
+    const noAnswer = (error: unknown): null => {
+      if (isCspEvaluateBlock(error)) cspBlocked = true
+      return null
+    }
+    {
       // Zoom's own pre-join image CAPTCHA ("Type the characters you see"). It can
       // render pre-Join OR persist through the Join click and the admission wait,
       // so this runs both pre-click and every admission poll. Detection is a raw
@@ -902,8 +975,8 @@ export class ZoomProvider implements MeetingProviderInterface {
       // be served it — so we route it to the same ZoomAnonymousJoinNotAllowed reason
       // as the other walls, which triggers the fast in-pod relaunch on a new exit IP
       // (joinWithInProcessRetry) instead of blocking until the 600s timeout.
-      const captcha = await page
-        .evaluate(() => {
+      const captcha = await withTimeout(
+        page.evaluate(() => {
           // Only fire on a captcha that is actually RENDERED. Zoom injects the
           // container only when it challenges the bot (verified: absent on normal
           // joins), but guard with offsetParent !== null so a hidden pre-render
@@ -912,25 +985,34 @@ export class ZoomProvider implements MeetingProviderInterface {
           const els = document.querySelectorAll(
             '.component_smart_captcha, .CaptchaContainer, input[placeholder*="captcha" i]'
           )
-          const shown = Array.from(els).some(
-            (el) => (el as HTMLElement).offsetParent !== null
-          )
+          const shown = Array.from(els).some((el) => (el as HTMLElement).offsetParent !== null)
           const textShown = (document.body?.innerText || "")
             .toLowerCase()
             .includes("type the characters you see")
           return shown || textShown
-        })
-        .catch(() => false)
+        }),
+        PAGE_READ_TIMEOUT_MS,
+        "detectBotWall captcha"
+      ).catch(noAnswer)
       if (captcha) return "zoom smart captcha"
 
-      return await page.evaluate((phrases: string[]) => {
-        const body = (document.body?.innerText || "").toLowerCase()
-        for (const p of phrases) if (body.includes(p)) return p
-        return null
-      }, BOT_BLOCK_TEXTS)
-    } catch {
-      return null
+      const phrase = await withTimeout(
+        page.evaluate((phrases: string[]) => {
+          const body = (document.body?.innerText || "").toLowerCase()
+          for (const p of phrases) if (body.includes(p)) return p
+          return null
+        }, BOT_BLOCK_TEXTS),
+        PAGE_READ_TIMEOUT_MS,
+        "detectBotWall phrases"
+      ).catch(noAnswer)
+      if (phrase) return phrase
     }
+    if (!cspBlocked) return null
+
+    // Visible text only, so a hidden pre-rendered captcha can't fire.
+    const text = await readVisibleTextIsolated(page)
+    if (text.includes("type the characters you see")) return "zoom smart captcha"
+    return BOT_BLOCK_TEXTS.find((p) => text.includes(p)) ?? null
   }
 
   /**
@@ -939,8 +1021,36 @@ export class ZoomProvider implements MeetingProviderInterface {
    * visible rejection even when aria-describedby is missing.
    */
   private async readPasscodeState(page: Page): Promise<ZoomPasscodeDomState> {
-    return page
-      .evaluate(({ selector, invalidPattern }): ZoomPasscodeDomState => {
+    const absent: ZoomPasscodeDomState = {
+      present: false,
+      value: "",
+      invalid: false,
+      errorText: ""
+    }
+    try {
+      return await withTimeout(this.evaluatePasscodeState(page), PAGE_READ_TIMEOUT_MS, "passcode")
+    } catch (error) {
+      if (!isCspEvaluateBlock(error)) return absent
+    }
+    // CSP refused the in-page read: use the isolated world.
+    if ((await countIsolated(page, PASSCODE_INPUT)) === 0) return absent
+    const field = page.locator(PASSCODE_INPUT).first()
+    const [value, ariaInvalid, text] = await Promise.all([
+      field.inputValue({ timeout: ISOLATED_READ_TIMEOUT_MS }).catch(() => ""),
+      field.getAttribute("aria-invalid", { timeout: ISOLATED_READ_TIMEOUT_MS }).catch(() => null),
+      readVisibleTextIsolated(page)
+    ])
+    return {
+      present: true,
+      value,
+      invalid: ariaInvalid === "true",
+      errorText: text.match(new RegExp(ZOOM_INVALID_PASSCODE_PATTERN, "i"))?.[0] ?? ""
+    }
+  }
+
+  private evaluatePasscodeState(page: Page): Promise<ZoomPasscodeDomState> {
+    return page.evaluate(
+      ({ selector, invalidPattern }): ZoomPasscodeDomState => {
         const field = document.querySelector(selector) as HTMLInputElement | null
         if (!field) {
           return { present: false, value: "", invalid: false, errorText: "" }
@@ -954,8 +1064,7 @@ export class ZoomProvider implements MeetingProviderInterface {
         const directError =
           document.querySelector("#error-for-pwd, #error-for-passcode")?.textContent || ""
         const bodyText = document.body?.innerText || ""
-        const explicitError =
-          bodyText.match(new RegExp(invalidPattern, "i"))?.[0] || ""
+        const explicitError = bodyText.match(new RegExp(invalidPattern, "i"))?.[0] || ""
 
         return {
           present: true,
@@ -963,8 +1072,9 @@ export class ZoomProvider implements MeetingProviderInterface {
           invalid: field.getAttribute("aria-invalid") === "true",
           errorText: [describedText, directError, explicitError].filter(Boolean).join(" ")
         }
-      }, { selector: PASSCODE_INPUT, invalidPattern: ZOOM_INVALID_PASSCODE_PATTERN })
-      .catch(() => ({ present: false, value: "", invalid: false, errorText: "" }))
+      },
+      { selector: PASSCODE_INPUT, invalidPattern: ZOOM_INVALID_PASSCODE_PATTERN }
+    )
   }
 
   /** Route deterministic passcode failures through centralized end-reason handling. */
@@ -979,16 +1089,29 @@ export class ZoomProvider implements MeetingProviderInterface {
     throw new Error(`[Zoom] ${getErrorMessageFromCode(reason)}`)
   }
 
+  /** No answer within FREEZE_TIMEOUT_MS. A CSP refusal isn't a freeze: ask the isolated world. */
+  private async isPageFrozen(page: Page): Promise<boolean> {
+    try {
+      await withTimeout(
+        page.evaluate(() => document.readyState),
+        FREEZE_TIMEOUT_MS,
+        "readyState"
+      )
+      return false
+    } catch (error) {
+      if (!isCspEvaluateBlock(error)) return true
+    }
+    try {
+      await withTimeout(page.locator("body").count(), FREEZE_TIMEOUT_MS, "body count")
+      return false
+    } catch {
+      return true
+    }
+  }
+
   async findEndMeeting(page: Page, _opts?: { ignoreAloneSignals?: boolean }): Promise<boolean> {
     // Page freeze → meeting almost certainly ended (mirrors Meet/Teams).
-    try {
-      await Promise.race([
-        page.evaluate(() => document.readyState),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("freeze")), 20_000)
-        )
-      ])
-    } catch {
+    if (await this.isPageFrozen(page)) {
       console.log("[Zoom] Page frozen 20s — meeting likely ended")
       return true
     }

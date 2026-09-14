@@ -3,6 +3,7 @@ import { MeetingEndReason } from "../state-machine/types"
 const DOWNGRADEABLE_AFTER_ZOOM_BOT_WALL: ReadonlySet<MeetingEndReason> = new Set([
   MeetingEndReason.CannotJoinMeeting,
   MeetingEndReason.TimeoutWaitingToStart,
+  MeetingEndReason.WaitingForHostTimeout,
   // A relaunch that only manages to stall tells us nothing new — the confirmed
   // wall is still the better explanation of why this bot never got in.
   MeetingEndReason.ZoomLoadingStalled,
@@ -31,4 +32,23 @@ export function resolveZoomJoinFailureReason(
     return confirmedBotWall
   }
   return latestReason
+}
+
+// Vague final failures an earlier (requeued) attempt's wall explains better. Timeouts
+// stay: they mean a later attempt got past the wall.
+const EXPLAINED_BY_PRIOR_WALL: ReadonlySet<string> = new Set([
+  MeetingEndReason.CannotJoinMeeting,
+  MeetingEndReason.ZoomLoadingStalled,
+  MeetingEndReason.ProxyUnavailable,
+  MeetingEndReason.Internal
+])
+
+export function explainedByPriorWall(
+  priorEndReasons: readonly string[],
+  latestReason: MeetingEndReason | null
+): boolean {
+  return (
+    priorEndReasons.includes(MeetingEndReason.ZoomAnonymousJoinNotAllowed) &&
+    (latestReason === null || EXPLAINED_BY_PRIOR_WALL.has(latestReason))
+  )
 }

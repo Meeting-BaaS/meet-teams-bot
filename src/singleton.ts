@@ -1,6 +1,7 @@
 import { envVars } from "./config/env-vars"
 import { MetricsCollector } from "./services/metrics-collector"
 import { NORMAL_END_REASONS } from "./state-machine/constants"
+import { currentJoinAttemptId } from "./state-machine/join-attempt"
 import { getErrorMessageFromCode, MeetingEndReason } from "./state-machine/types"
 import {
   type ArtifactKey,
@@ -19,6 +20,7 @@ class Global {
   private shouldRetry = false // NEW: Retry flag
   private recoveryClaimed = false // True once a termination/crash path has taken ownership of log-upload + requeue (see claimRecovery)
   private endMeetingReportClaimed = false // True while/after a path owns the end-meeting-trampoline report (see claimEndMeetingReport)
+  private failureReportClaimed = false // True once a path owns the terminal failure report (see claimFailureReport)
   private recordingFinalized = false // True once the recording is merged and entering upload (see markRecordingFinalized)
   private endMeetingPayloadReady = false // True once uploadToS3 has recorded the complete artifact manifest
   private artifactKeys: ArtifactKey[] = []
@@ -33,6 +35,8 @@ class Global {
   private lastNetworkAudioFramesAt = 0 // Date.now() of the last health check reporting per-participant tracks delivering frames (path alive even during silence)
   private rearmedNetworkDiarization = false // Track if the network path was ever re-armed after a fallback
   private networkInterceptionStopped = false // Page-side interceptor was torn down; nothing can restart it
+  private joinAttempt = 0 // Latest join attempt; earlier ones are superseded
+  private joinAttemptSuperseded = false
 
   /**
    * Normalizes recording mode values to snake_case format.
@@ -149,6 +153,8 @@ class Global {
   }
 
   public setError(reason: MeetingEndReason, message?: string): void {
+    if (this.dropSupersededWrite(`setError(${reason})`)) return
+
     // Don't override these end reasons — they represent a definitive decision
     // about why the bot is stopping and shouldn't be clobbered during cleanup
     if (
@@ -185,12 +191,14 @@ class Global {
    * failure reason; ordinary callers must keep using setError().
    */
   public replaceError(reason: MeetingEndReason, message?: string): void {
+    if (this.dropSupersededWrite(`replaceError(${reason})`)) return
     this.endReason = null
     this.errorMessage = null
     this.setError(reason, message)
   }
 
   public setEndReason(reason: MeetingEndReason): void {
+    if (this.dropSupersededWrite(`setEndReason(${reason})`)) return
     console.log(`🔵 Setting global end reason: ${reason}`)
     this.endReason = reason
 
@@ -233,6 +241,40 @@ class Global {
     this.shouldRetry = false
   }
 
+  /** Earlier attempts keep running, but their setError/setEndReason/setShouldRetry are dropped. */
+  public beginJoinAttempt(): number {
+    this.joinAttempt += 1
+    this.joinAttemptSuperseded = false
+    return this.joinAttempt
+  }
+
+  /** Stop letting `attempt` decide the outcome (timeout, stop request, relaunch). */
+  public supersedeJoinAttempt(attempt: number, why: string): void {
+    if (attempt !== this.joinAttempt || this.joinAttemptSuperseded) return
+    this.joinAttemptSuperseded = true
+    console.log(
+      `[join#${attempt}] superseded (${why}) — it keeps running, but its outcome no longer counts`
+    )
+  }
+
+  public isSupersededJoinAttempt(attempt: number): boolean {
+    return attempt !== this.joinAttempt || this.joinAttemptSuperseded
+  }
+
+  /** True when the calling code runs on behalf of a superseded join attempt. */
+  public inSupersededJoinAttempt(): boolean {
+    const attempt = currentJoinAttemptId()
+    return attempt !== undefined && this.isSupersededJoinAttempt(attempt)
+  }
+
+  private dropSupersededWrite(what: string): boolean {
+    if (!this.inSupersededJoinAttempt()) return false
+    console.log(
+      `[join#${currentJoinAttemptId()}] superseded — dropping ${what} (end reason stays ${this.endReason ?? "unset"})`
+    )
+    return true
+  }
+
   public clearMeetSsoConfig(): void {
     if (this.meetingParams) {
       this.meetingParams.meet_sso_config = null
@@ -247,6 +289,7 @@ class Global {
 
   // NEW: Retry flag methods
   public setShouldRetry(value: boolean): void {
+    if (this.dropSupersededWrite(`setShouldRetry(${value})`)) return
     this.shouldRetry = value
     if (value) {
       console.log("🔄 Marking error as retryable")
@@ -325,6 +368,13 @@ class Global {
 
   public releaseEndMeetingReport(): void {
     this.endMeetingReportClaimed = false
+  }
+
+  /** One terminal failure report per bot, whichever path (main, SIGTERM, crash) gets there first. */
+  public claimFailureReport(): boolean {
+    if (this.failureReportClaimed) return false
+    this.failureReportClaimed = true
+    return true
   }
 
   // Phase marker: true once the recording has been MERGED into its final output

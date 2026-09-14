@@ -1,5 +1,5 @@
 import { MeetingEndReason } from "../state-machine/types"
-import { resolveZoomJoinFailureReason } from "./zoom-join-failure"
+import { explainedByPriorWall, resolveZoomJoinFailureReason } from "./zoom-join-failure"
 
 describe("Zoom join failure evidence", () => {
   const wall = MeetingEndReason.ZoomAnonymousJoinNotAllowed
@@ -30,5 +30,26 @@ describe("Zoom join failure evidence", () => {
     expect(resolveZoomJoinFailureReason(null, MeetingEndReason.CannotJoinMeeting)).toBe(
       MeetingEndReason.CannotJoinMeeting
     )
+  })
+})
+
+describe("explainedByPriorWall", () => {
+  const wall = MeetingEndReason.ZoomAnonymousJoinNotAllowed
+
+  it("lets an earlier attempt's wall explain a vague final failure", () => {
+    expect(explainedByPriorWall([wall, wall], MeetingEndReason.CannotJoinMeeting)).toBe(true)
+  })
+
+  it("keeps a final timeout: that attempt got past the wall", () => {
+    expect(explainedByPriorWall([wall], MeetingEndReason.TimeoutWaitingToStart)).toBe(false)
+  })
+
+  it("needs an earlier wall", () => {
+    expect(
+      explainedByPriorWall(
+        [MeetingEndReason.ZoomLoadingStalled],
+        MeetingEndReason.CannotJoinMeeting
+      )
+    ).toBe(false)
   })
 })

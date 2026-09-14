@@ -510,6 +510,8 @@ export function setupExitHandler() {
     //  - BEFORE finalize (join, or mid-recording where the only copy is ephemeral
     //    /tmp that dies with the pod) → requeue to re-record.
     // Dynamic import avoids a static import cycle (retry-handler → singleton).
+    let requeued = false
+    let reportedElsewhere = false
     try {
       if (GLOBAL.hasRecordingFinalized()) {
         logger.error(
@@ -568,6 +570,7 @@ export function setupExitHandler() {
           if (GLOBAL.claimRecovery()) {
             try {
               await requeueToSQS(buildRetryMessage())
+              requeued = true
               logger.error("[Crash] Early crash — requeued to SQS for retry")
             } catch (e) {
               // Send failed — release so another path can requeue (see releaseRecovery).
@@ -585,6 +588,7 @@ export function setupExitHandler() {
               logger.error(`[Crash] retrying status emit failed (non-fatal): ${evErr}`)
             }
           } else {
+            reportedElsewhere = true
             logger.error("[Crash] Recovery claimed concurrently — skipping duplicate requeue")
           }
         } else {
@@ -594,7 +598,30 @@ export function setupExitHandler() {
     } catch (e) {
       logger.error(`[Crash] requeue skipped/failed: ${e}`)
     }
+    // Nothing else will report this bot (the consumer reads exit 1 as handled).
+    if (!requeued && !reportedElsewhere && !GLOBAL.hasRecordingFinalized()) {
+      await reportCrashFailure()
+    }
     process.exit(1)
+  }
+
+  const reportCrashFailure = async (): Promise<void> => {
+    if (!GLOBAL.claimFailureReport()) return
+    try {
+      const { NORMAL_END_REASONS } = await import("../state-machine/constants")
+      const { MeetingEndReason } = await import("../state-machine/types")
+      const endReason = GLOBAL.getEndReason()
+      if (!endReason || NORMAL_END_REASONS.includes(endReason)) {
+        GLOBAL.setError(MeetingEndReason.Internal, "The recording session could not be completed.")
+      }
+      const { Events } = await import("../events")
+      const { Api } = await import("../api/methods")
+      await Events.recordingFailed(GLOBAL.getErrorMessage() ?? "")
+      await Api.instance?.notifyRecordingFailure()
+      logger.error("[Crash] Reported terminal failure")
+    } catch (e) {
+      logger.error(`[Crash] failure report failed: ${e}`)
+    }
   }
 
   process.on("uncaughtException", (error) => {

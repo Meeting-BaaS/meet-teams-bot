@@ -10,10 +10,16 @@ export type {
 // Counters the browser bundle publishes for Node to read. All non-PII, so they
 // are safe to log every meeting.
 export type ZoomNetDiag = {
-  wsCreated: number
+  wsCreated: number // ws/rtc/csrc fields are no longer observed: always 0/false
   wsFrames: number
   jsonFrames: number
   workerMsgs: number
+  workersCreated: number
+  // First worker created / first worker message (performance.now(), Date.now()); -1 = not yet
+  workerFirstCreatedPerf: number
+  workerFirstCreatedEpoch: number
+  workerFirstMsgPerf: number
+  workerFirstMsgEpoch: number
   rosterFrames: number
   rosterParticipants: number
   speakerFrames: number

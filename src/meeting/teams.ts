@@ -537,7 +537,10 @@ export class TeamsProvider implements MeetingProviderInterface {
   async joinMeeting(
     page: Page,
     cancelCheck: () => boolean,
-    onJoinSuccess: () => void
+    onJoinSuccess: () => void,
+    _dialogObserver?: unknown,
+    onAdmissionDetected?: () => void,
+    onJoinRequested?: () => void
   ): Promise<void> {
     console.log("joining meeting")
 
@@ -762,6 +765,7 @@ export class TeamsProvider implements MeetingProviderInterface {
       throw new Error("Bot stopped before joining meeting")
     }
 
+    let joinClicked = false
     try {
       // Authenticated bots join AS the signed-in user — the name comes from the
       // Microsoft account, and the authenticated pre-join has no guest-name field.
@@ -781,15 +785,17 @@ export class TeamsProvider implements MeetingProviderInterface {
               .then(() => true)
               .catch(() => false)
           : false
-        if (!clicked) await clickWithInnerText(page, "button", "Join now", 20)
+        joinClicked = clicked || (await clickWithInnerText(page, "button", "Join now", 20))
       } else {
         await typeBotName(page, GLOBAL.get().bot_name, 20)
-        await clickWithInnerText(page, "button", "Join now", 20)
+        joinClicked = await clickWithInnerText(page, "button", "Join now", 20)
       }
     } catch (e) {
       console.error('Error during bot name typing or second "Join now" click:', e)
       throw new Error("RetryableError")
     }
+    // Only a Join click that landed asks to be admitted.
+    if (joinClicked) onJoinRequested?.()
 
     // Wait to be in the meeting
     console.log("Waiting to confirm meeting join...")
@@ -820,6 +826,8 @@ export class TeamsProvider implements MeetingProviderInterface {
       }
     }
 
+    // Extend the waiting-room deadline before the mic cleanup below delays onJoinSuccess.
+    onAdmissionDetected?.()
     console.log("Successfully confirmed we are in the meeting")
 
     // Guarantee the bot is muted after actually entering the call — the pre-join mute
@@ -1025,12 +1033,20 @@ async function clickWithInnerText(
         const humanizeActive = Boolean((page as unknown as { _original?: unknown })._original)
         const humanized = humanizeActive && (await clickButtonHumanized(page, htmlType, innerText))
         if (!humanized) {
-          await page.evaluate(
+          // Search where the detector does (first iframe, then the page); a miss is not a click.
+          continueButton = await page.evaluate(
             ({ innerText, htmlType }) => {
-              const el = Array.from(document.querySelectorAll(htmlType)).find(
-                (e) => e.textContent?.trim() === innerText
-              )
-              ;(el as HTMLElement | undefined)?.click()
+              const frameDoc = document.querySelector("iframe")?.contentDocument
+              for (const doc of frameDoc ? [frameDoc, document] : [document]) {
+                const el = Array.from(doc.querySelectorAll(htmlType)).find(
+                  (e) => e.textContent?.trim() === innerText
+                )
+                if (el) {
+                  ;(el as HTMLElement).click()
+                  return true
+                }
+              }
+              return false
             },
             { innerText, htmlType }
           )

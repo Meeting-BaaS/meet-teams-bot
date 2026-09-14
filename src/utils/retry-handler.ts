@@ -67,6 +67,7 @@ function isValidHttpUrl(value: unknown): value is string {
 export function buildRetryMessage(): MeetingParams {
   const params = GLOBAL.get()
   const currentRetryCount = GLOBAL.getRetryCount()
+  const endReason = GLOBAL.getEndReason()
 
   const message = {
     ...params,
@@ -74,6 +75,8 @@ export function buildRetryMessage(): MeetingParams {
       ? params.transformed_meeting_url
       : null,
     retry_count: currentRetryCount + 1,
+    // So a later, vaguer failure can't hide an earlier one (e.g. the anti-bot wall).
+    prior_end_reasons: [...(params.prior_end_reasons ?? []), ...(endReason ? [endReason] : [])],
     // This process IS the Zoom *web* engine — the native SDK path is a separate
     // Rust binary (client-zoom) that never runs this code. The consumer schema
     // defaults a missing zoom_engine to "sdk", so a retry that omits it gets

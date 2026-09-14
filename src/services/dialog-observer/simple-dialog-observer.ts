@@ -203,6 +203,9 @@ export class SimpleDialogObserver {
   private zoomMuteTimer: NodeJS.Timeout | null = null
   private zoomMuteRunning = false
 
+  // Zoom: no page-script clicks on the pre-join card, where Zoom judges bots.
+  private zoomAdmitted = false
+
   static pause() {
     SimpleDialogObserver._paused = true
     console.info("[SimpleDialogObserver] Observer paused")
@@ -257,6 +260,15 @@ export class SimpleDialogObserver {
     this.startGlobalDialogObserver()
   }
 
+  /** The bot is in the meeting: Zoom's mute enforcement and modal dismissal may start. */
+  markAdmitted(): void {
+    if (this.zoomAdmitted) return
+    this.zoomAdmitted = true
+    if (this.dialogObserverInterval && GLOBAL.get().meeting_platform === "zoom") {
+      this.startZoomMuteTimer()
+    }
+  }
+
   stopGlobalDialogObserver() {
     if (this.dialogObserverInterval) {
       clearInterval(this.dialogObserverInterval)
@@ -279,7 +291,7 @@ export class SimpleDialogObserver {
     // mic — waiting up to 5s for the next modal cycle would leave the bot
     // audible. This separate timer tackles mute only and is lightweight enough
     // not to contend with the FFmpeg stdout reader on the event loop.
-    if (GLOBAL.get().meeting_platform === "zoom") {
+    if (GLOBAL.get().meeting_platform === "zoom" && this.zoomAdmitted) {
       this.startZoomMuteTimer()
     }
   }
@@ -347,6 +359,7 @@ export class SimpleDialogObserver {
 
     // Zoom: robust in-page dismissal (shadow-piercing, no visibility gate).
     if (platform === "zoom") {
+      if (!this.zoomAdmitted) return { found: false, dismissed: false, modalType: null }
       return this.checkAndDismissZoomModals(page)
     }
 
