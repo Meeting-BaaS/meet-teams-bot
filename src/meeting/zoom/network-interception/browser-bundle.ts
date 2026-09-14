@@ -20,10 +20,10 @@
 // undocumented and differs between client builds) and learn which opcode carries
 // the active speaker at runtime. Opcodes are only counted, for diagnostics.
 //
-// No CSRC on Zoom web: its peer connections are datachannel-only and media rides
-// the WASM/WebSocket stack, so there are no audio receivers. The CSRC code below
-// is a guarded no-op kept for builds that differ.
+// Only window.Worker is wrapped: in prod the WebSocket/RTCPeerConnection hooks never
+// saw a frame (ws=0 rtc=4 recv=0 vs worker=5315), and every patched global is surface.
 
+/* istanbul ignore file -- stringified into the page */
 /** biome-ignore-all lint/suspicious/noExplicitAny: browser-side bundle over untyped Zoom internals. */
 
 export function zoomBrowserInterceptionLogic() {
@@ -37,9 +37,17 @@ export function zoomBrowserInterceptionLogic() {
 
     // ===== STEALTH: native-toString masking =====
     // Our wrapped globals must report "[native code]" to Function.prototype.toString.
+    // Use the engine's own rendering: Firefox formats it differently from Chromium.
     const __nativeStr = new WeakMap<any, string>()
+    const __origToString = Function.prototype.toString
+    const __nativeSource = (fn: any): string | undefined => {
+      try {
+        return Reflect.apply(__origToString, fn, [])
+      } catch (_e) {
+        return undefined
+      }
+    }
     try {
-      const __origToString = Function.prototype.toString
       const __tsProxy = new Proxy(__origToString, {
         apply(target, thisArg: any, args: any[]) {
           const masked = thisArg == null ? undefined : __nativeStr.get(thisArg)
@@ -47,6 +55,9 @@ export function zoomBrowserInterceptionLogic() {
           return Reflect.apply(target, thisArg, args)
         }
       })
+      // Mask the proxy itself too.
+      const __tsSource = __nativeSource(__origToString)
+      if (__tsSource) __nativeStr.set(__tsProxy, __tsSource)
       ;(Function.prototype as any).toString = __tsProxy
     } catch (_e) {
       /* environment forbids patching — masking is simply absent */
@@ -55,7 +66,10 @@ export function zoomBrowserInterceptionLogic() {
     // Copy the original's native signature, .name and .length onto a wrapper.
     const __disguise = (wrapper: any, original: any): any => {
       try {
-        __nativeStr.set(wrapper, `function ${original.name}() { [native code] }`)
+        __nativeStr.set(
+          wrapper,
+          __nativeSource(original) ?? `function ${original.name}() { [native code] }`
+        )
         Object.defineProperty(wrapper, "name", { value: original.name, configurable: true })
         Object.defineProperty(wrapper, "length", { value: original.length, configurable: true })
       } catch (_e) {
@@ -102,30 +116,16 @@ export function zoomBrowserInterceptionLogic() {
     // "[NetworkInterceptor]" prefix so page-logger surfaces warn/error by
     // default (no LOG_LEVEL=debug needed); "[Zoom]" distinguishes from Meet/Teams.
     const LOG = "[NetworkInterceptor][Zoom]"
-    const DEBUG = false
-    const debug = (...args: any[]) => {
-      if (DEBUG) console.log(LOG, ...args)
-    }
 
     // ===== STATE =====
 
     // Zoom user id (stringified) → participant record.
     const participantsById = new Map<string, any>()
-    // ssrc (stringified) → Zoom user id, when the build publishes ssrcs.
-    const ssrcToUserId = new Map<string, string>()
     // Sticky until the next indication — Zoom only emits on change.
     let activeSpeakerIds = new Set<string>()
     // Node drains this via page.evaluate; exposeFunction bindings aren't reliably
     // visible to an addInitScript bundle under the anti-detect browser.
     ;(window as any).__zoomSpeakerQueue = (window as any).__zoomSpeakerQueue || []
-
-    // receiver → seen-active
-    const receiverMap = new Map<RTCRtpReceiver, boolean>()
-    // Only authoritative once a source resolves to a participant.
-    let csrcAvailable = false
-    let hasObservedCsrcMapping = false
-    // Ids currently speaking per CSRC audio levels.
-    let csrcSpeakingIds = new Set<string>()
 
     // evt 8005 per-user audio levels: userId -> { level, at }.
     const userLevels = new Map<string, { level: number; at: number }>()
@@ -147,9 +147,6 @@ export function zoomBrowserInterceptionLogic() {
     let sawAsn = false
 
     let lastSpeakingLogKey = ""
-    // Deadline anchor for the self-check below. Measured from interceptor start so a
-    // total decode failure (no roster ever) is caught too, not just a partial one.
-    const interceptorStartedAt = Date.now()
     let firstRosterAt = 0
     let firstSpeakerAt = 0
     let healthReported = false
@@ -162,6 +159,11 @@ export function zoomBrowserInterceptionLogic() {
       wsFrames: 0,
       jsonFrames: 0,
       workerMsgs: 0,
+      workersCreated: 0,
+      workerFirstCreatedPerf: -1,
+      workerFirstCreatedEpoch: -1,
+      workerFirstMsgPerf: -1,
+      workerFirstMsgEpoch: -1,
       rosterFrames: 0,
       rosterParticipants: 0,
       speakerFrames: 0,
@@ -243,7 +245,6 @@ export function zoomBrowserInterceptionLogic() {
     // a last resort before any asn is seen, and only when bStatus says it's active.
     const NODE_KEY_RE = /^active[_-]?node[_-]?id$/i
     const SPEAKING_FLAG_RE = /^(is[_-]?speaking|b[_-]?speaking|audio[_-]?active|speaking)$/i
-    const SSRC_KEY_RE = /^(audio[_-]?ssrc|ssrc|audio[_-]?source)$/i
 
     // Forms seen: 12345, "12345", [12345], [{id:12345}], {id:12345}.
     function speakerIdsFrom(value: any): string[] {
@@ -382,13 +383,6 @@ export function zoomBrowserInterceptionLogic() {
             out.speakerIds.push(id)
             out.speakerKeys.push(key)
           }
-        }
-
-        if (SSRC_KEY_RE.test(key)) {
-          const id = idOf(node)
-          const ssrc =
-            typeof value === "number" || typeof value === "string" ? String(value) : undefined
-          if (id && ssrc && ssrc !== "0") ssrcToUserId.set(ssrc, id)
         }
 
         // body.remove is an object map keyed by id, not an array.
@@ -652,90 +646,29 @@ export function zoomBrowserInterceptionLogic() {
       }
     }
 
-    // ===== PER-SPEAKER (CSRC) =====
+    // ===== SELF-CHECK =====
 
-    function addReceiver(receiver: RTCRtpReceiver | undefined): void {
-      if (!receiver || receiverMap.has(receiver)) return
-      receiverMap.set(receiver, false)
-      diag.receiversAdded++
-      debug("➕ audio receiver added")
-    }
-
-    function pollReceivers(): void {
+    // Hand back to the DOM observer if no speaker signal decoded by the deadline.
+    function checkSpeakerSignal(): void {
+      if (healthReported || firstSpeakerAt) return
       if ((window as any).__zoomNetworkInterceptorStopped) return
-
-      const speaking = new Set<string>()
-      let mappedThisPoll = false
+      healthReported = true
       const now = Date.now()
-
-      for (const [receiver] of receiverMap) {
-        let sources: any[] = []
-        try {
-          sources = (receiver as any).getContributingSources?.() || []
-        } catch {
-          sources = []
+      const nothingDecoded = !firstRosterAt
+      console.warn(
+        `${LOG} ⚠️ ${nothingDecoded ? "no roster or speaker signal decoded" : "roster decoded but no active-speaker signal"} — requesting fallback`
+      )
+      enqueue({
+        users: [],
+        timestamp: now,
+        source: "network_interception_failed",
+        failure: {
+          trackId: "zoom-signaling",
+          reason: "timeout",
+          trackState: `roster=${participantsById.size} frames=${diag.jsonFrames} speakerFrames=${diag.speakerFrames}`,
+          timestamp: now
         }
-        if (receiver.track?.readyState === "ended") {
-          receiverMap.set(receiver, false)
-          continue
-        }
-        if (sources.length > 0) receiverMap.set(receiver, true)
-
-        for (const source of sources) {
-          if (now - source.timestamp > 200) continue
-          const userId = ssrcToUserId.get(String(source.source))
-          if (!userId) continue
-          mappedThisPoll = true
-          // audioLevel is 0..1; treat anything above the noise floor as speech.
-          // Some engines leave it undefined — a recent contributing source is
-          // then the only available evidence.
-          const level = typeof source.audioLevel === "number" ? source.audioLevel : undefined
-          if (level === undefined || level > 0.005) speaking.add(userId)
-        }
-      }
-
-      if (mappedThisPoll) {
-        hasObservedCsrcMapping = true
-        diag.csrcMapped++
-      }
-      const hasActiveReceiver = Array.from(receiverMap.values()).some(Boolean)
-      if (!hasActiveReceiver) hasObservedCsrcMapping = false
-      csrcAvailable = hasObservedCsrcMapping
-
-      if (csrcAvailable) {
-        const sameSet =
-          speaking.size === csrcSpeakingIds.size &&
-          Array.from(speaking).every((id) => csrcSpeakingIds.has(id))
-        csrcSpeakingIds = speaking
-        if (!sameSet) broadcastSpeakerUpdate("audio")
-      }
-
-      diag.csrcAvailable = csrcAvailable
-      diag.queueLen = ((window as any).__zoomSpeakerQueue || []).length
-
-      // Hand back to the DOM observer if the network path isn't producing: either
-      // the roster decoded but nobody ever speaks, or nothing decoded at all.
-      if (!healthReported && !csrcAvailable && now - interceptorStartedAt > SPEAKER_SIGNAL_TIMEOUT_MS) {
-        const noSpeakerSignal = !!firstRosterAt && !firstSpeakerAt
-        const nothingDecoded = !firstRosterAt && !firstSpeakerAt
-        if (noSpeakerSignal || nothingDecoded) {
-          healthReported = true
-          console.warn(
-            `${LOG} ⚠️ ${nothingDecoded ? "no roster or speaker signal decoded" : "roster decoded but no active-speaker signal"} — requesting fallback`
-          )
-          enqueue({
-            users: [],
-            timestamp: now,
-            source: "network_interception_failed",
-            failure: {
-              trackId: "zoom-signaling",
-              reason: "timeout",
-              trackState: `roster=${participantsById.size} frames=${diag.jsonFrames} speakerFrames=${diag.speakerFrames}`,
-              timestamp: now
-            }
-          })
-        }
-      }
+      })
     }
 
     // ===== BROADCAST TO NODE =====
@@ -754,12 +687,10 @@ export function zoomBrowserInterceptionLogic() {
     function broadcastSpeakerUpdate(source: "roster" | "audio"): void {
       if ((window as any).__zoomNetworkInterceptorStopped) return
 
-      // Best available: CSRC (absent on Zoom web), then per-user levels once
-      // nLevel proves itself, then the active-speaker nodes.
+      // Best available: per-user levels once nLevel proves itself, then the
+      // active-speaker nodes.
       let speaking: Set<string>
-      if (csrcAvailable) {
-        speaking = csrcSpeakingIds
-      } else if (sawLevelZero && sawLevelPositive && lastLevelSeq >= lastActiveSpeakerSeq) {
+      if (sawLevelZero && sawLevelPositive && lastLevelSeq >= lastActiveSpeakerSeq) {
         const now = Date.now()
         speaking = new Set<string>()
         for (const [userId, sample] of userLevels) {
@@ -799,117 +730,110 @@ export function zoomBrowserInterceptionLogic() {
       diag.broadcasts++
     }
 
-    // ===== INTERCEPTORS =====
+    // ===== INTERCEPTOR =====
 
-    // WebSocket proxy — Zoom's RWG signaling rides here as JSON text frames.
-    {
-      const OriginalWebSocket = (window as any).WebSocket
-      const ProxiedWebSocket = function (this: any, url: string, protocols?: any) {
-        const ws =
-          protocols !== undefined
-            ? new OriginalWebSocket(url, protocols)
-            : new OriginalWebSocket(url)
-        diag.wsCreated++
-        try {
-          ws.addEventListener("message", (event: any) => {
-            diag.wsFrames++
-            decodeFrame(event.data)
-          })
-        } catch {
-          // ignore
-        }
-        return ws
-      } as any
-      ProxiedWebSocket.prototype = OriginalWebSocket.prototype
-      ProxiedWebSocket.CONNECTING = OriginalWebSocket.CONNECTING
-      ProxiedWebSocket.OPEN = OriginalWebSocket.OPEN
-      ProxiedWebSocket.CLOSING = OriginalWebSocket.CLOSING
-      ProxiedWebSocket.CLOSED = OriginalWebSocket.CLOSED
-      __disguise(ProxiedWebSocket, OriginalWebSocket)
-      ;(window as any).WebSocket = ProxiedWebSocket
-    }
-
-    // Worker proxy — observe only. Zoom's workers come from blob: URLs, and
-    // rewriting one to importScripts() the original is blocked by CSP and stops the
-    // client booting. Construct with the original url; just read what it posts back.
+    // Worker wrapper — observe only; never rewrite the script URL (Zoom's CSP blocks it).
+    // Native-shaped: TypeError without `new`, prototype/constructor chain, subclassing.
     {
       const OriginalWorker = (window as any).Worker
-      if (OriginalWorker) {
-        const ProxiedWorker = function (this: any, url: string | URL, options?: any) {
-          const worker = new OriginalWorker(url, options)
+      // Captured early so a page hook on addEventListener never sees us.
+      const addListener = (window as any).EventTarget?.prototype?.addEventListener
+      const perfNow = (): number => {
+        try {
+          return Math.round(performance.now())
+        } catch {
+          return -1
+        }
+      }
+
+      if (typeof OriginalWorker === "function") {
+        const onWorkerMessage = (event: any) => {
+          diag.workerMsgs++
+          if (diag.workerFirstMsgEpoch < 0) {
+            diag.workerFirstMsgPerf = perfNow()
+            diag.workerFirstMsgEpoch = Date.now()
+          }
+          decodeFrame(event?.data)
+        }
+
+        // Strict: sloppy functions carry own arguments/caller that natives lack.
+        const ProxiedWorker = function (this: any, _scriptURL: any) {
+          // biome-ignore lint/suspicious/noRedundantUseStrict: stringified into a sloppy-mode init script, where this is not redundant
+          "use strict"
+          if (new.target === undefined) {
+            // Let the native throw, so the message is the engine's own.
+            // biome-ignore lint/complexity/noArguments: rest params would make "use strict" illegal here
+            Reflect.apply(OriginalWorker, this, arguments)
+            throw new TypeError("Worker constructor: 'new' is required")
+          }
+          // new.target keeps subclasses (class X extends Worker) intact.
+          // biome-ignore lint/complexity/noArguments: rest params would make "use strict" illegal here
+          const worker = Reflect.construct(OriginalWorker, arguments, new.target)
+          diag.workersCreated++
+          if (diag.workerFirstCreatedEpoch < 0) {
+            diag.workerFirstCreatedPerf = perfNow()
+            diag.workerFirstCreatedEpoch = Date.now()
+          }
           try {
-            worker.addEventListener("message", (event: any) => {
-              diag.workerMsgs++
-              decodeFrame(event.data)
-            })
+            if (typeof addListener === "function") {
+              Reflect.apply(addListener, worker, ["message", onWorkerMessage])
+            } else {
+              worker.addEventListener("message", onWorkerMessage)
+            }
           } catch {
             // ignore
           }
           return worker
         } as any
+
         ProxiedWorker.prototype = OriginalWorker.prototype
+        try {
+          // A function's own `prototype` is writable; a native interface object's isn't.
+          Object.defineProperty(ProxiedWorker, "prototype", { writable: false })
+        } catch {
+          // non-configurable in this engine — leave writable
+        }
+        try {
+          Object.setPrototypeOf(ProxiedWorker, Object.getPrototypeOf(OriginalWorker))
+        } catch {
+          // ignore
+        }
         __disguise(ProxiedWorker, OriginalWorker)
         ;(window as any).Worker = ProxiedWorker
-      }
-    }
 
-    // RTCPeerConnection proxy — audio receivers (CSRC) and any data channel Zoom
-    // uses for in-band signaling.
-    {
-      const OriginalRTCPeerConnection = (window as any).RTCPeerConnection
-      if (OriginalRTCPeerConnection) {
-        const ProxiedRTCPeerConnection = function (this: any, ...args: any[]) {
-          const pc = Reflect.construct(OriginalRTCPeerConnection, args) as RTCPeerConnection
-          diag.rtcCreated++
-
-          pc.addEventListener("track", (event) => {
-            if (event.track?.kind === "audio") addReceiver(event.receiver)
-          })
-          pc.addEventListener("datachannel", (event) => {
-            try {
-              event.channel.addEventListener("message", (msg: any) => decodeFrame(msg.data))
-            } catch {
-              // ignore
+        // Only once the swap took; same descriptor shape as native.
+        if ((window as any).Worker === ProxiedWorker) {
+          try {
+            const ctor = Object.getOwnPropertyDescriptor(OriginalWorker.prototype, "constructor")
+            if (ctor && "value" in ctor) {
+              Object.defineProperty(OriginalWorker.prototype, "constructor", {
+                ...ctor,
+                value: ProxiedWorker
+              })
             }
-          })
-
-          const originalCreateDataChannel = pc.createDataChannel.bind(pc)
-          pc.createDataChannel = (label, options) => {
-            const channel = originalCreateDataChannel(label, options)
-            try {
-              channel.addEventListener("message", (msg: any) => decodeFrame(msg.data))
-            } catch {
-              // ignore
-            }
-            return channel
+          } catch {
+            // ignore
           }
-
-          return pc
-        } as any
-        ProxiedRTCPeerConnection.prototype = OriginalRTCPeerConnection.prototype
-        if (typeof OriginalRTCPeerConnection.generateCertificate === "function") {
-          ProxiedRTCPeerConnection.generateCertificate = (...a: any[]) =>
-            OriginalRTCPeerConnection.generateCertificate(...a)
         }
-        __disguise(ProxiedRTCPeerConnection, OriginalRTCPeerConnection)
-        ;(window as any).RTCPeerConnection = ProxiedRTCPeerConnection
       }
     }
 
-    const pollInterval = setInterval(pollReceivers, 100)
-    __cloak()
-    setTimeout(__cloak, 0)
-    setTimeout(__cloak, 1000)
-    setTimeout(__cloak, 4000)
+    const healthTimer = setTimeout(checkSpeakerSignal, SPEAKER_SIGNAL_TIMEOUT_MS)
 
+    // Assigned before the synchronous cloak so it's never enumerable.
     ;(window as any).__zoomStopNetworkInterception = () => {
       ;(window as any).__zoomNetworkInterceptorStopped = true
       try {
-        clearInterval(pollInterval)
+        clearTimeout(healthTimer)
       } catch {
         // ignore
       }
     }
+
+    __cloak()
+    setTimeout(__cloak, 0)
+    setTimeout(__cloak, 1000)
+    setTimeout(__cloak, 4000)
   } catch (error) {
     console.error("[NetworkInterceptor][Zoom] ❌ Initialization error:", error)
   }

@@ -542,6 +542,7 @@ export class WaitingRoomState extends BaseState {
           () => {
             joinSuccessful = true
             console.log("Join successful notification received")
+            this.context.dialogObserver?.markAdmitted()
             // Stop humanizing the moment we're admitted — restore native
             // Playwright speed for the in-call phase. Both Meet and Teams
             // humanize the join now; dehumanize() is a safe no-op if the page

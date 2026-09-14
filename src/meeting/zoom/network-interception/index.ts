@@ -81,7 +81,11 @@ export async function setupZoomNetworkInterceptionCallback(
     const diagPoll = setInterval(() => {
       void (async () => {
         try {
-          const d = await page.evaluate(() => window.__zoomNetDiag ?? null)
+          // queueLen is read live; the drain above empties the queue.
+          const d = await page.evaluate(() => {
+            const diag = window.__zoomNetDiag
+            return diag ? { ...diag, queueLen: (window.__zoomSpeakerQueue || []).length } : null
+          })
           if (d) {
             // Paths only, no values. Limited to opcodes carrying a roster or speaker;
             // these are what identify the replacements if Zoom renumbers events.
@@ -106,7 +110,10 @@ export async function setupZoomNetworkInterceptionCallback(
                 ` bcast=${d.broadcasts} qLen=${d.queueLen} drained=${drainedTotal}` +
                 ` lvl=${d.levelMin}..${d.levelMax} lvlAuth=${d.levelsAuthoritative}` +
                 ` asEvt=${d.activeSpeakerEvt}` +
-                ` evt=[${topEvts}] spkKeys=[${(d.speakerKeys ?? []).join(",")}]`
+                ` evt=[${topEvts}] spkKeys=[${(d.speakerKeys ?? []).join(",")}]` +
+                ` wk=${d.workersCreated}` +
+                ` wkNew=${formatTiming(d.workerFirstCreatedPerf, d.workerFirstCreatedEpoch)}` +
+                ` wkMsg=${formatTiming(d.workerFirstMsgPerf, d.workerFirstMsgEpoch)}`
             )
           }
         } catch {
@@ -152,7 +159,14 @@ export async function verifyZoomNetworkInterception(page: Page): Promise<boolean
   }
 }
 
-/** Stop interception (clears the CSRC poll loop and silences callbacks). */
+// First-worker timing as `<page ms>ms@<epoch ms>`; "-" = not yet.
+function formatTiming(perfMs: number | undefined, epochMs: number | undefined): string {
+  if (typeof epochMs !== "number" || epochMs < 0) return "-"
+  const perf = typeof perfMs === "number" && perfMs >= 0 ? `${perfMs}` : "?"
+  return `${perf}ms@${epochMs}`
+}
+
+/** Stop interception (cancels the speaker-signal deadline and silences callbacks). */
 export async function stopZoomNetworkInterception(page: Page): Promise<void> {
   try {
     await page.evaluate(() => {
