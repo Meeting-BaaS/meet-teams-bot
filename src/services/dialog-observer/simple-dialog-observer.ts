@@ -36,6 +36,13 @@ const MEET_MODAL_PATTERNS: ModalPattern[] = [
     buttonTexts: [], // No buttons to click, just dismiss with Escape
     exitByEscape: true
   },
+  // Lobby idle prompt ("You've been waiting a long time…"): only ever keep waiting, never leave.
+  {
+    name: "keep_waiting_prompt",
+    selector: 'div[role="dialog"]:has-text("waiting a long time"):has(button)',
+    buttonTexts: ["Keep waiting"],
+    exitByEscape: false
+  },
   // Recording/transcription modals - MUST come first (they may contain "camera"/"microphone" text)
   {
     name: "recording_notification",
