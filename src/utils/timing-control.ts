@@ -12,7 +12,7 @@ export const JOIN_DEADLINE_AFTER_START_SEC = 12 * 60 * 60
  * Returns the actual start time (either scheduled or current) for reporting to backend.
  *
  * @param abortCheck - Optional async callback polled every ~3s during the wait.
- *                     If it returns true the wait is terminated early (e.g. page navigated away).
+ *                     If it returns true the wait is terminated early (e.g. a stop request).
  */
 export async function handleTimingControl(
   startTime?: number,

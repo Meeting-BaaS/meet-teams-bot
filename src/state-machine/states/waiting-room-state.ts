@@ -166,6 +166,9 @@ export class WaitingRoomState extends BaseState {
         }
       }
 
+      // Wait off-page: Meet shows an idle prompt to a bot left on its pre-join screen.
+      await this.waitForScheduledStart()
+
       // Open the page and wait for admission, with bounded in-process retries on
       // Zoom's IP-keyed anti-bot wall (relaunch on a fresh exit IP in this warm
       // pod before the SQS requeue). Non-Zoom platforms run exactly one attempt.
@@ -447,43 +450,23 @@ export class WaitingRoomState extends BaseState {
     GLOBAL.setShouldRetry(true)
   }
 
+  /** Wait for start_time before the page opens, so no timeout window starts before the meeting does. */
+  private async waitForScheduledStart(): Promise<void> {
+    const startTime = await handleTimingControl(GLOBAL.get().start_time, async () =>
+      isStopRequested()
+    )
+    if (isStopRequested()) {
+      throw new Error(`Stop requested before the scheduled join time (${GLOBAL.getEndReason()})`)
+    }
+    // Sent to the backend at the end of the meeting
+    GLOBAL.setStartTime(startTime)
+  }
+
   private async waitForAcceptance(attempt: number): Promise<void> {
     const page = this.context.playwrightPage
     if (!page) {
       throw new Error("Meeting page not initialized")
     }
-
-    // Handle timing control for precise meeting join times.
-    // While waiting, poll the page URL to detect if Google Meet denied/redirected
-    // (e.g. "You can't join this video call" → auto-redirect to workspace.google.com).
-    // Only check for Meet — Teams URLs are on a different domain and would false-positive.
-    const isMeet = GLOBAL.get().meeting_platform === "meet"
-    const startTime = await handleTimingControl(GLOBAL.get().start_time, async () => {
-      if (isStopRequested()) return true
-      if (!isMeet) return false
-      const url = this.context.playwrightPage?.url() ?? ""
-      if (url && !url.includes("meet.google.com")) {
-        console.log(`Page navigated away from Meet during timing wait: ${url}`)
-        GLOBAL.setShouldRetry(true)
-        GLOBAL.setError(
-          MeetingEndReason.BotNotAccepted,
-          "Google Meet denied entry - page redirected during scheduled wait"
-        )
-        return true
-      }
-      return false
-    })
-
-    // If the abort check detected a denial during the wait, bail out immediately
-    if (GLOBAL.getEndReason() === MeetingEndReason.BotNotAccepted) {
-      throw new Error("Bot denied during timing control wait")
-    }
-    if (isStopRequested()) {
-      throw new Error(`Stop requested before the scheduled join time (${GLOBAL.getEndReason()})`)
-    }
-
-    // Store the actual start time for later use - It is sent to the backend at the end of the meeting
-    GLOBAL.setStartTime(startTime)
 
     const timeoutMs = GLOBAL.get().waiting_room_timeout * 1000
     console.info(`Setting waiting room timeout to ${timeoutMs}ms`)
