@@ -4,8 +4,12 @@ import type internal from "stream"
 import { envVars } from "./config/env-vars"
 
 // sudo apt install linux-modules-extra-`uname -r`
-// The env variable VIRTUAL_MIC is used to set the virtual mic name. It needs to be prefixed with 'pulse:'
-const MICRO_DEVICE: string = `pulse:${envVars.VIRTUAL_MIC}` // pulseaudio virtual mic
+// Playback into the bot's outgoing mic targets the dedicated INPUT SINK
+// (VIRTUAL_MIC_SINK), whose monitor is the master of the VIRTUAL_MIC source
+// Chrome reads. Writing here — not to the VIRTUAL_MIC source name — keeps the
+// outgoing mic isolated from virtual_speaker (incoming meeting audio), so
+// streaming/talking bots don't echo the meeting back into itself.
+const MICRO_DEVICE: string = `pulse:${envVars.VIRTUAL_MIC_SINK}` // pulseaudio mic-injection sink
 const CAMERA_DEVICE: string = envVars.VIDEO_DEVICE
 
 // This abstract claas contains the current ffmpeg process
