@@ -16,3 +16,21 @@ export function signedInPreJoinAction(
   if (retriesUsed < SIGNED_IN_PREJOIN_RETRIES) return "retry_sign_in"
   return fallback === "anonymous" ? "join_anonymously" : "fail"
 }
+
+export interface PersonalTeamsMeeting {
+  meetingId: string
+  passcode: string
+}
+
+/** A personal Teams (teams.live.com) meeting, which a work account joins by ID from its own Calendar. */
+export function personalTeamsMeeting(link: string): PersonalTeamsMeeting | null {
+  try {
+    const url = new URL(link)
+    const host = url.hostname.toLowerCase()
+    const match = url.pathname.match(/^\/meet\/(\d+)\/?$/)
+    if ((host !== "teams.live.com" && !host.endsWith(".teams.live.com")) || !match) return null
+    return { meetingId: match[1], passcode: url.searchParams.get("p") ?? "" }
+  } catch {
+    return null
+  }
+}

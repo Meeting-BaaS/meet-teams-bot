@@ -10,7 +10,9 @@ import { createStateDetector, patternLocator } from "../utils/meeting-state-dete
 import { sleep } from "../utils/sleep"
 import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from "./teams/audio-capture"
 import {
+  type PersonalTeamsMeeting,
   type PreJoinState,
+  personalTeamsMeeting,
   SIGNED_IN_PREJOIN_RETRIES,
   signedInPreJoinAction
 } from "./teams-signin-guard"
@@ -125,6 +127,12 @@ export class TeamsProvider implements MeetingProviderInterface {
     await browserContext.grantPermissions(["microphone", "camera"], {
       origin: url.origin
     })
+    // A personal meeting joined by ID runs inside the Teams web app, not on teams.live.com.
+    if (isAuthenticatedTeams && personalTeamsMeeting(link)) {
+      for (const origin of TEAMS_APP_ORIGINS) {
+        await browserContext.grantPermissions(["microphone", "camera"], { origin })
+      }
+    }
 
     // ── Block Teams' native-app deep link ────────────────────────────────────
     // The teams.live.com launcher fires a custom-scheme deep link (msteams:…) to
@@ -438,10 +446,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
 
     try {
-      const response = await page.goto(link, {
-        waitUntil: "load",
-        timeout: 15000
-      })
+      const response = await this.navigateToMeeting(page, link)
 
       // Catch transient Microsoft edge failures (503/502/504): the page resolves
       // with an HTML error body, the join inputs never appear, and we'd otherwise
@@ -912,11 +917,28 @@ export class TeamsProvider implements MeetingProviderInterface {
       )
       await HtmlSnapshotService.getInstance().captureSnapshot(page, "teams_signed_out_prejoin")
       await refreshTeamsSession(page.context(), config)
-      await page
-        .goto(this.meetingLink, { waitUntil: "load", timeout: 15_000 })
-        .catch((e) => console.warn(`[teams] meeting reload failed: ${formatError(e)}`))
+      await this.navigateToMeeting(page, this.meetingLink).catch((e) =>
+        console.warn(`[teams] meeting reload failed: ${formatError(e)}`)
+      )
       await reachSignedInPreJoin(page)
     }
+  }
+
+  /** Signed-in bots open personal Teams meetings by ID from Calendar; everything else loads the link. */
+  private async navigateToMeeting(
+    page: Page,
+    link: string
+  ): Promise<Awaited<ReturnType<Page["goto"]>>> {
+    const personal = GLOBAL.get().teams_login_config ? personalTeamsMeeting(link) : null
+    if (personal) {
+      try {
+        await joinPersonalMeetingById(page, personal)
+        return null
+      } catch (e) {
+        console.warn(`[teams] join by ID from Calendar failed, loading the link: ${formatError(e)}`)
+      }
+    }
+    return page.goto(link, { waitUntil: "load", timeout: 15_000 })
   }
 
   async findEndMeeting(page: Page, _opts?: { ignoreAloneSignals?: boolean }): Promise<boolean> {
@@ -989,6 +1011,28 @@ export class TeamsProvider implements MeetingProviderInterface {
 }
 
 const INPUT_BOT = 'input[placeholder="Type your name"]'
+
+const TEAMS_APP_URL = "https://teams.microsoft.com/v2/"
+const TEAMS_APP_ORIGINS = ["https://teams.microsoft.com", "https://teams.cloud.microsoft"]
+// Calendar's app id in the Teams app bar; the aria-label also carries a keyboard shortcut.
+const CALENDAR_APP_BUTTON =
+  'button[data-tid="ef56c0de-36fc-4ef8-b417-3d82ba9d073c"], button[aria-label^="Calendar"]'
+const CALENDAR_IFRAME = 'iframe[name="embedded-page-container"][src*="/hosted/calendar"]'
+
+/** Calendar → Join with an ID: the teams.live.com link only offers a work account the guest join. */
+async function joinPersonalMeetingById(page: Page, meeting: PersonalTeamsMeeting): Promise<void> {
+  await page.goto(TEAMS_APP_URL, { waitUntil: "domcontentloaded", timeout: 30_000 })
+  await page.locator(CALENDAR_APP_BUTTON).first().click({ timeout: 45_000 })
+  const calendar = page.frameLocator(CALENDAR_IFRAME)
+  await calendar.getByRole("button", { name: "Join with an ID" }).click({ timeout: 30_000 })
+  await calendar.getByRole("menuitem", { name: "Join with an ID" }).click({ timeout: 10_000 })
+  const dialog = calendar.getByRole("dialog", { name: "Join a meeting with an ID" })
+  await dialog.getByRole("textbox", { name: "Meeting ID" }).fill(meeting.meetingId)
+  await dialog.getByRole("textbox", { name: "Meeting passcode" }).fill(meeting.passcode)
+  await dialog.getByRole("button", { name: "Join Meeting" }).click({ timeout: 10_000 })
+  console.log(`[teams] opened personal meeting ${meeting.meetingId} by ID from Calendar`)
+}
+
 const SIGNED_OUT_PREJOIN = "TeamsSignedOutPreJoin"
 const PRE_JOIN_BUTTON = TEAMS_STATE_CONFIG.preJoinPattern?.selectors.join(", ") ?? ""
 
