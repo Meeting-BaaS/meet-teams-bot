@@ -575,6 +575,8 @@ export class TeamsSpeakersObserver {
                 `[TEAMS-DEBUG-INIT] Found ${currentSpeakersList.length} speakers already talking`
               )
               await window.teamsSpeakersChanged(currentSpeakersList)
+              // The first checkSpeakers must not resend this roster as a heartbeat.
+              lastHeartbeat = Date.now()
               // Initialize CUR_SPEAKERS with ALL speakers (speaking and not speaking)
               // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
               const allSpeakers = getSpeakerFromDocument(Date.now() - speakerLatency) // .filter(
