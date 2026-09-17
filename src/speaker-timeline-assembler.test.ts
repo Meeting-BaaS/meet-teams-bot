@@ -9,8 +9,8 @@ const seg = (speaker: string, start: number, end: number, id = 1): DiarizationSe
 })
 
 describe("speaker attribution priority (including no STT)", () => {
-  it("uses a single UI speaker even for a one-second Unknown or named network interval", () => {
-    for (const name of ["Unknown", "Network Guest"]) {
+  it("uses a single UI speaker for a one-second unresolved network interval", () => {
+    for (const name of ["Unknown"]) {
       const { segments } = assembleSpeakerTimeline(
         [
           { kind: "network", segments: [seg(name, 0, 10)] },
@@ -24,6 +24,45 @@ describe("speaker attribution priority (including no STT)", () => {
         { ...seg(name, 4, 10), source: "network" }
       ])
     }
+  })
+
+  it("preserves resolved network names and exact boundaries despite conflicting UI", () => {
+    const network = [seg("Host", 0, 3), seg("Guest", 3, 4, 2), seg("Host", 4, 10)]
+    const { segments } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: [seg("Lagging UI", 2, 5, 3)] }
+      ],
+      10
+    )
+    expect(segments).toEqual(network.map((s) => ({ ...s, source: "network" })))
+  })
+
+  it("fills a short missing network interval without overwriting its named edges", () => {
+    const { segments } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Host", 0, 3), seg("Host", 4, 10)] },
+        { kind: "ui", segments: [seg("Guest", 2, 5, 2)] }
+      ],
+      10
+    )
+    expect(segments).toEqual([
+      { ...seg("Host", 0, 3), source: "network" },
+      { ...seg("Guest", 3, 4, 2), source: "ui" },
+      { ...seg("Host", 4, 10), source: "network" }
+    ])
+  })
+
+  it("does not let UI erase concurrent named and unresolved network sources", () => {
+    const network = [seg("Host", 0, 10), seg("Unknown", 3, 5, 2)]
+    const { segments } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: [seg("UI Guest", 3, 5, 3)] }
+      ],
+      10
+    )
+    expect(segments).toEqual(network.map((s) => ({ ...s, source: "network" })))
   })
 
   it.each(["Other Guest", "Unknown"])("falls back to network for ambiguous UI (%s)", (other) => {

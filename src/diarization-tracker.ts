@@ -270,8 +270,8 @@ export class DiarizationTracker {
       )
     }
 
-    // Final priority is independent of STT: one observed UI speaker, otherwise
-    // a repaired network identity. Leave unobserved/unresolved spans unnamed.
+    // Final priority is independent of STT: repaired network identity first,
+    // then one fresh UI speaker. Leave unobserved/unresolved spans unnamed.
     const meetingEndRel = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
     const { segments: assembled, filledBySource } = assembleSpeakerTimeline(
       [

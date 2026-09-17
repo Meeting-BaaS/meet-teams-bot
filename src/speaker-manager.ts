@@ -123,7 +123,7 @@ export class SpeakerManager {
             meetingStartTime,
             (deviceId) => instance.resolveDeviceForBackfill(deviceId),
             (userId) => instance.userIdNames.get(userId),
-            // Fresh single-speaker UI observations take priority at finalization.
+            // Fresh single-speaker UI observations fill unresolved network intervals.
             [
               {
                 kind: "ui",

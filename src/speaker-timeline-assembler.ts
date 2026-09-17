@@ -12,8 +12,9 @@ const isNamed = (segment: DiarizationSegment): boolean =>
   Boolean(segment.speaker.trim()) && segment.speaker.trim() !== UNKNOWN_SPEAKER
 
 /**
- * Resolve each observed interval independently. A single named UI participant
- * wins; ambiguous/absent UI falls back to network identity, then transcription.
+ * Resolve each observed interval independently. Resolved network identity wins;
+ * a single fresh named UI participant fills missing or unresolved network time.
+ * Transcription is the last naming fallback.
  * Unknown network identities survive when no source can name them. Never
  * extend a name into unobserved time or merge distinct unresolved participants.
  * UI freshness and self filtering are enforced by the observation buffer.
@@ -60,10 +61,10 @@ export function assembleSpeakerTimeline(
     const namedNetwork = network.filter(({ segment }) => isNamed(segment))
     const transcription = byKind("transcription").filter(({ segment }) => isNamed(segment))
     const selected =
-      uiIdentities.size === 1 && ui.every(({ segment }) => isNamed(segment))
-        ? ui.slice(0, 1)
-        : namedNetwork.length > 0
-          ? network
+      namedNetwork.length > 0
+        ? network
+        : uiIdentities.size === 1 && ui.every(({ segment }) => isNamed(segment))
+          ? ui.slice(0, 1)
           : transcription.length > 0
             ? transcription
             : network
