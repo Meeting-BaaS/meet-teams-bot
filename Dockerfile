@@ -208,7 +208,7 @@ if ! pactl list sources short | grep -q "virtual_speaker.monitor"; then\n\
     echo "❌ virtual_speaker.monitor not found - audio setup failed"\n\
     exit 1\n\
 fi\n\
-\necho "✅ Virtual display and audio ready"\n\necho "🔍 VNC available at localhost:5900 (password: debug)"\n\n# Start application\ncd /app/\nnode build/src/main.js\n\n# Cleanup on exit\ntrap "kill $PULSE_PID $VNC_PID $XVFB_PID 2>/dev/null || true" EXIT\n' > /start.sh && chmod +x /start.sh
+\necho "✅ Virtual display and audio ready"\n\necho "🔍 VNC available at localhost:5900 (password: debug)"\n\n# Start application\ncd /app/\n\nif [ "$PROFILER" = "true" ]; then\n    if [ -x /app/node_modules/.bin/tsx ] && [ -f /app/profiler/metric-collector.ts ]; then\n        ( /app/node_modules/.bin/tsx /app/profiler/metric-collector.ts </dev/null || echo "Profiler stopped" >&2 ) &\n        echo "Profiler started (pid $!)"\n    else\n        echo "Profiler skipped: missing tsx or metric-collector.ts" >&2\n    fi\nfi\n\nnode build/src/main.js\n\n# Cleanup on exit\ntrap "kill $PULSE_PID $VNC_PID $XVFB_PID 2>/dev/null || true" EXIT\n' > /start.sh && chmod +x /start.sh
 
 # Expose VNC port for debugging
 EXPOSE 5900
