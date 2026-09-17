@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from "@playwright/test"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
+import { refreshTeamsSession } from "../state-machine/states/microsoft-teams-login"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/teamsUrlParser"
@@ -8,6 +9,13 @@ import { formatError } from "../utils/Logger"
 import { createStateDetector, patternLocator } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from "./teams/audio-capture"
+import {
+  type PersonalTeamsMeeting,
+  type PreJoinState,
+  personalTeamsMeeting,
+  SIGNED_IN_PREJOIN_RETRIES,
+  signedInPreJoinAction
+} from "./teams-signin-guard"
 import { TEAMS_STATE_CONFIG } from "./teams-state-config"
 
 // Types for Teams chat API interception
@@ -70,6 +78,8 @@ async function probeUrlStatus(url: string): Promise<number | null> {
 }
 
 export class TeamsProvider implements MeetingProviderInterface {
+  private meetingLink = ""
+
   async parseMeetingUrl(meeting_url: string) {
     return parseMeetingUrlFromJoinInfos(meeting_url)
   }
@@ -84,6 +94,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     attempts = 0
   ): Promise<Page> {
     const url = new URL(link)
+    this.meetingLink = link
 
     // Authenticated Teams bots: reuse the page the sign-in flow left open on
     // teams.microsoft.com (it holds the live MSAL session). Opening a FRESH page
@@ -116,6 +127,12 @@ export class TeamsProvider implements MeetingProviderInterface {
     await browserContext.grantPermissions(["microphone", "camera"], {
       origin: url.origin
     })
+    // A personal meeting joined by ID runs inside the Teams web app, not on teams.live.com.
+    if (isAuthenticatedTeams && personalTeamsMeeting(link)) {
+      for (const origin of TEAMS_APP_ORIGINS) {
+        await browserContext.grantPermissions(["microphone", "camera"], { origin })
+      }
+    }
 
     // ── Block Teams' native-app deep link ────────────────────────────────────
     // The teams.live.com launcher fires a custom-scheme deep link (msteams:…) to
@@ -429,10 +446,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
 
     try {
-      const response = await page.goto(link, {
-        waitUntil: "load",
-        timeout: 15000
-      })
+      const response = await this.navigateToMeeting(page, link)
 
       // Catch transient Microsoft edge failures (503/502/504): the page resolves
       // with an HTML error body, the join inputs never appear, and we'd otherwise
@@ -552,7 +566,7 @@ export class TeamsProvider implements MeetingProviderInterface {
     // browser → Join now). The "Continue without audio or video" button is a
     // light/anonymous-interface prompt that never appears there, so its extra retry
     // loops below are skipped for authenticated bots (they were pure dead wait).
-    const isAuthenticatedTeams = Boolean(GLOBAL.get().teams_login_config)
+    let isAuthenticatedTeams = Boolean(GLOBAL.get().teams_login_config)
 
     try {
       await ensurePageLoaded(page)
@@ -568,43 +582,8 @@ export class TeamsProvider implements MeetingProviderInterface {
       // Playwright so CloakBrowser's humanized click applies — no blind retry loop.
       // (Anonymous/other interfaces fall through to the generic button loop below.)
       if (isAuthenticatedTeams) {
-        const continuePat = TEAMS_STATE_CONFIG.continueOnBrowserPattern
-        const preJoinPat = TEAMS_STATE_CONFIG.preJoinPattern
-
-        // This link may open the launcher OR land straight on the pre-join.
-        if (continuePat && preJoinPat) {
-          await patternLocator(page, continuePat)
-            .or(patternLocator(page, preJoinPat))
-            .first()
-            .waitFor({ state: "visible", timeout: 30_000 })
-            .catch(() => {})
-        }
-        if (await isOnMicrosoftLoginPage(page)) throw new Error("LoginRequired")
-
-        // On the launcher, click through to the web pre-join, then wait for it.
-        const onLauncher =
-          !!continuePat &&
-          (await patternLocator(page, continuePat)
-            .first()
-            .isVisible()
-            .catch(() => false))
-        if (onLauncher && continuePat) {
-          await patternLocator(page, continuePat)
-            .first()
-            .click({ timeout: 3_000 })
-            .then(() => console.log('✅ [teams] clicked "Continue on this browser"'))
-            .catch((e) =>
-              console.warn(`[teams] continue-on-browser click failed: ${formatError(e)}`)
-            )
-          if (preJoinPat) {
-            await patternLocator(page, preJoinPat)
-              .first()
-              .waitFor({ state: "visible", timeout: 30_000 })
-              .catch(() => {})
-          }
-        } else {
-          console.log("✅ [teams] already at the pre-join (Join now) screen")
-        }
+        await reachSignedInPreJoin(page)
+        isAuthenticatedTeams = await this.ensureSignedInPreJoin(page, cancelCheck)
       }
 
       // Try multiple approaches to handle Teams button scenarios (anonymous/other
@@ -676,8 +655,11 @@ export class TeamsProvider implements MeetingProviderInterface {
         }
       }
     } catch (e) {
-      if (e instanceof Error && e.message === "LoginRequired") {
-        throw e // Re-throw LoginRequired errors
+      if (
+        e instanceof Error &&
+        (e.message === "LoginRequired" || e.message === SIGNED_OUT_PREJOIN)
+      ) {
+        throw e
       }
       console.warn("Failed during Teams button handling:", e)
     }
@@ -893,6 +875,72 @@ export class TeamsProvider implements MeetingProviderInterface {
     }
   }
 
+  /** Retry a signed-out pre-join, then apply the fallback. Returns whether the bot is still signed in. */
+  private async ensureSignedInPreJoin(page: Page, cancelCheck: () => boolean): Promise<boolean> {
+    for (let retries = 0; ; retries++) {
+      const config = GLOBAL.get().teams_login_config
+      if (!config || cancelCheck()) return Boolean(config)
+
+      const state: PreJoinState = (await visibleInPageOrFrame(page, INPUT_BOT, 2_000))
+        ? "signed_out"
+        : (await visibleInPageOrFrame(page, PRE_JOIN_BUTTON, 2_000))
+          ? "signed_in"
+          : "unresolved"
+      const action = signedInPreJoinAction(state, retries, config.fallback)
+      if (action === "join_signed_in") return true
+
+      if (action === "join_anonymously") {
+        console.warn(`[teams] pre-join still ${state} — joining as a guest (fallback: anonymous)`)
+        GLOBAL.clearTeamsLoginConfig()
+        // A shown guest pre-join is already the guest flow; a page that never loaded reopens the guest link.
+        if (state === "unresolved") {
+          try {
+            this.meetingLink = (await this.parseMeetingUrl(GLOBAL.get().meeting_url)).meetingId
+            await page.goto(this.meetingLink, { waitUntil: "load", timeout: 15_000 })
+          } catch (e) {
+            console.warn(`[teams] guest meeting reload failed: ${formatError(e)}`)
+          }
+        }
+        return false
+      }
+      if (action === "fail") {
+        console.error(`[teams] pre-join still ${state} — failing the join (fallback: fail)`)
+        GLOBAL.setError(
+          MeetingEndReason.TeamsLoginFailedTimeout,
+          "Microsoft sign-in completed, but Teams did not open the meeting with the signed-in account."
+        )
+        throw new Error(SIGNED_OUT_PREJOIN)
+      }
+
+      console.warn(
+        `[teams] pre-join ${state === "signed_out" ? "asks for a guest name" : "did not load"} — retrying sign-in (${retries + 1}/${SIGNED_IN_PREJOIN_RETRIES})`
+      )
+      await HtmlSnapshotService.getInstance().captureSnapshot(page, "teams_signed_out_prejoin")
+      await refreshTeamsSession(page.context(), config)
+      await this.navigateToMeeting(page, this.meetingLink).catch((e) =>
+        console.warn(`[teams] meeting reload failed: ${formatError(e)}`)
+      )
+      await reachSignedInPreJoin(page)
+    }
+  }
+
+  /** Signed-in bots open personal Teams meetings by ID from Calendar; everything else loads the link. */
+  private async navigateToMeeting(
+    page: Page,
+    link: string
+  ): Promise<Awaited<ReturnType<Page["goto"]>>> {
+    const personal = GLOBAL.get().teams_login_config ? personalTeamsMeeting(link) : null
+    if (personal) {
+      try {
+        await joinPersonalMeetingById(page, personal)
+        return null
+      } catch (e) {
+        console.warn(`[teams] join by ID from Calendar failed, loading the link: ${formatError(e)}`)
+      }
+    }
+    return page.goto(link, { waitUntil: "load", timeout: 15_000 })
+  }
+
   async findEndMeeting(page: Page, _opts?: { ignoreAloneSignals?: boolean }): Promise<boolean> {
     // Teams end-detection (login page / freeze / removed) has no "alone" signal,
     // so _opts.ignoreAloneSignals is not applicable here.
@@ -963,6 +1011,87 @@ export class TeamsProvider implements MeetingProviderInterface {
 }
 
 const INPUT_BOT = 'input[placeholder="Type your name"]'
+
+const TEAMS_APP_URL = "https://teams.microsoft.com/v2/"
+const TEAMS_APP_ORIGINS = ["https://teams.microsoft.com", "https://teams.cloud.microsoft"]
+// Calendar's app id in the Teams app bar; the aria-label also carries a keyboard shortcut.
+const CALENDAR_APP_BUTTON =
+  'button[data-tid="ef56c0de-36fc-4ef8-b417-3d82ba9d073c"], button[aria-label^="Calendar"]'
+const CALENDAR_IFRAME = 'iframe[name="embedded-page-container"][src*="/hosted/calendar"]'
+
+/** Calendar → Join with an ID: the teams.live.com link only offers a work account the guest join. */
+async function joinPersonalMeetingById(page: Page, meeting: PersonalTeamsMeeting): Promise<void> {
+  await page.goto(TEAMS_APP_URL, { waitUntil: "domcontentloaded", timeout: 30_000 })
+  await page.locator(CALENDAR_APP_BUTTON).first().click({ timeout: 45_000 })
+  const calendar = page.frameLocator(CALENDAR_IFRAME)
+  await calendar.getByRole("button", { name: "Join with an ID" }).click({ timeout: 30_000 })
+  await calendar.getByRole("menuitem", { name: "Join with an ID" }).click({ timeout: 10_000 })
+  const dialog = calendar.getByRole("dialog", { name: "Join a meeting with an ID" })
+  await dialog.getByRole("textbox", { name: "Meeting ID" }).fill(meeting.meetingId)
+  await dialog.getByRole("textbox", { name: "Meeting passcode" }).fill(meeting.passcode)
+  await dialog.getByRole("button", { name: "Join Meeting" }).click({ timeout: 10_000 })
+  console.log(`[teams] opened personal meeting ${meeting.meetingId} by ID from Calendar`)
+}
+
+const SIGNED_OUT_PREJOIN = "TeamsSignedOutPreJoin"
+const PRE_JOIN_BUTTON = TEAMS_STATE_CONFIG.preJoinPattern?.selectors.join(", ") ?? ""
+
+/** Visible in the page or Teams' first iframe, where the pre-join can also render. */
+async function visibleInPageOrFrame(
+  page: Page,
+  selector: string,
+  timeout: number
+): Promise<boolean> {
+  if (!selector) return false
+  const targets = [page.locator(selector), page.frameLocator("iframe").first().locator(selector)]
+  return Promise.any(
+    targets.map((l) =>
+      l
+        .first()
+        .waitFor({ state: "visible", timeout })
+        .then(() => true)
+    )
+  ).catch(() => false)
+}
+
+/** Walk an authenticated join from the launcher ("Continue on this browser") to the pre-join. */
+async function reachSignedInPreJoin(page: Page): Promise<void> {
+  const continuePat = TEAMS_STATE_CONFIG.continueOnBrowserPattern
+  const preJoinPat = TEAMS_STATE_CONFIG.preJoinPattern
+
+  // This link may open the launcher OR land straight on the pre-join.
+  if (continuePat && preJoinPat) {
+    await patternLocator(page, continuePat)
+      .or(patternLocator(page, preJoinPat))
+      .first()
+      .waitFor({ state: "visible", timeout: 30_000 })
+      .catch(() => {})
+  }
+  if (await isOnMicrosoftLoginPage(page)) throw new Error("LoginRequired")
+
+  // On the launcher, click through to the web pre-join, then wait for it.
+  const onLauncher =
+    !!continuePat &&
+    (await patternLocator(page, continuePat)
+      .first()
+      .isVisible()
+      .catch(() => false))
+  if (onLauncher && continuePat) {
+    await patternLocator(page, continuePat)
+      .first()
+      .click({ timeout: 3_000 })
+      .then(() => console.log('✅ [teams] clicked "Continue on this browser"'))
+      .catch((e) => console.warn(`[teams] continue-on-browser click failed: ${formatError(e)}`))
+    if (preJoinPat) {
+      await patternLocator(page, preJoinPat)
+        .first()
+        .waitFor({ state: "visible", timeout: 30_000 })
+        .catch(() => {})
+    }
+  } else {
+    console.log("✅ [teams] already at the pre-join (Join now) screen")
+  }
+}
 
 async function clickWithInnerText(
   page: Page,
