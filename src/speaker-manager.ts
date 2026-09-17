@@ -12,6 +12,7 @@ import { PathManager } from "./utils/PathManager"
 import { PiiRedactor } from "./utils/PiiRedactor"
 import { isBotName, silenceBotSpeaker } from "./utils/speaker-attribution"
 import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
+import { chooseLiveFillName, pickFreshUiSpeakerName } from "./utils/ui-name-fill"
 
 
 export class SpeakerManager {
@@ -48,6 +49,13 @@ export class SpeakerManager {
   // identity that catches it on every path — the network path has no isSelf.
   private selfDisplayedName?: string
   private selfDeviceId?: string
+  // Latest fresh UI evidence naming the single person on the floor. The UI
+  // observer keeps running while muted (shadow-only), so this keeps tracking
+  // even after the network path takes attribution. Used to fill Unknown network
+  // speakers live instead of waiting for the finalize-time backfill.
+  private lastFreshUiName: { name: string; at: number } | null = null
+  // Count of live name fills, logged (count only — names are PII) at finalize.
+  private liveNameFills = 0
   // Diagnostic-only arbitration evidence. Never changes speaker ownership.
   private readonly attributionShadow = new SpeakerAttributionShadowTracker()
 
@@ -134,6 +142,9 @@ export class SpeakerManager {
         }
       }
     } finally {
+      if (instance.liveNameFills > 0) {
+        console.log(`[SpeakerManager] Live name-fills applied this call: ${instance.liveNameFills}`)
+      }
       instance.observeAttributionShadow(() => instance.attributionShadow.finalize(lastTimestamp))
     }
   }
@@ -185,6 +196,10 @@ export class SpeakerManager {
    */
   public async handleUiBridgeUpdate(observed: SpeakerData[]): Promise<void> {
     this.learnSelfIdentity(observed)
+    // Recorded before the mute check below: the bridge keeps running while
+    // muted (shadow-only), and its fresh name evidence is what lets the network
+    // path stream a real name for speakers whose device never resolved.
+    this.rememberFreshUiName(observed)
     const timestamps = observed
       .map((speaker) => speaker.timestamp)
       .filter((timestamp) => Number.isFinite(timestamp) && timestamp > 0)
@@ -254,6 +269,26 @@ export class SpeakerManager {
         if (speaker.deviceId && !this.selfDeviceId) this.selfDeviceId = speaker.deviceId
       }
     }
+  }
+
+  /**
+   * Track the single named person the UI observer currently sees speaking.
+   *
+   * Only unambiguous evidence is recorded (exactly one active non-self speaker,
+   * and it must be named), which is what makes the live fill safe: with one
+   * candidate there is nothing to pick between. The observers emit full
+   * speaker-state snapshots, so an ambiguous or silent snapshot clears earlier
+   * evidence immediately instead of letting it age out.
+   */
+  private rememberFreshUiName(observed: SpeakerData[]): void {
+    const params = GLOBAL.get()
+    const name = pickFreshUiSpeakerName({
+      observed,
+      excludedNames: [params.bot_name, this.selfDisplayedName].filter((n): n is string =>
+        Boolean(n)
+      )
+    })
+    this.lastFreshUiName = name ? { name, at: Date.now() } : null
   }
 
   /**
@@ -359,10 +394,46 @@ export class SpeakerManager {
       const botName = params.bot_name
       const botCanSpeak = Boolean(params.streaming_input)
 
+      // Resolve the best-known names first (resolveNetworkName also remembers
+      // device -> name), then fill a still-unresolved speaking speaker from
+      // fresh UI evidence. Filling is deliberately narrow: the update must hold
+      // EXACTLY ONE speaking network speaker, and that speaker must be the
+      // unresolved one (a resolved speaker active next to it must never lend it
+      // a name), with fresh unambiguous UI evidence (see rememberFreshUiName).
+      // Turn boundaries stay network-owned; only the name is filled, and never
+      // over a resolved network name.
+      const resolvedNames = networkUsers.map((user) => this.resolveNetworkName(user))
+      const networkSpeakingCount = networkUsers.filter((user) => user.isSpeaking === true).length
+      const unresolvedSpeakingCount = networkUsers.filter(
+        (user, index) => user.isSpeaking === true && resolvedNames[index] === UNKNOWN_SPEAKER
+      ).length
+      const fillName = chooseLiveFillName({
+        networkSpeakingCount,
+        unresolvedSpeakingCount,
+        evidence: this.lastFreshUiName,
+        now: Date.now()
+      })
+
       // Convert network users to SpeakerData format
-      const speakers: SpeakerData[] = networkUsers.map((user) => {
+      const speakers: SpeakerData[] = networkUsers.map((user, index) => {
         // Use fullName as stable identifier, fallback to name (displayName)
-        const stableName = this.resolveNetworkName(user)
+        let stableName = resolvedNames[index]
+        if (fillName && user.isSpeaking === true && stableName === UNKNOWN_SPEAKER) {
+          stableName = fillName
+          // Remember the device under the filled name: later callbacks keep the
+          // identity instead of flipping back to Unknown mid-turn, and the
+          // finalize backfill can reproduce the same stable id for this device.
+          if (user.deviceId) {
+            this.deviceNames.set(user.deviceId, fillName)
+            this.deviceProfilePictures.set(user.deviceId, user.profilePicture)
+          }
+          if (this.liveNameFills === 0) {
+            console.log(
+              "[SpeakerManager] Live name-fill: unresolved network speaker named from fresh UI evidence"
+            )
+          }
+          this.liveNameFills++
+        }
         const stableId = generateStableUserId(stableName, user.profilePicture)
         const sequentialId = this.sequentialIdManager.getSequentialId(stableId)
 

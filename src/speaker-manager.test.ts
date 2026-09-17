@@ -206,6 +206,172 @@ describe("SpeakerManager UI bridge arbitration", () => {
   })
 })
 
+/**
+ * Live name-fill: the network path owns turn boundaries, but when a speaking
+ * SSRC never resolves to a roster device it streams as "Unknown" for the whole
+ * call (the UI bridge that could name it is muted). These tests drive the real
+ * update path to pin that a fresh, unambiguous UI observation fills the name
+ * without ever overriding a resolved network identity or guessing between two
+ * candidates.
+ */
+describe("SpeakerManager live name-fill for unresolved network speakers", () => {
+  beforeEach(() => {
+    registeredSpeakers.length = 0
+    registeredParticipants.length = 0
+    params = { bot_name: "SPEAKER SEP Test", streaming_input: undefined }
+    networkInterceptionFailed = false
+    diarizationFallbackTriggered = false
+    rearmedNetworkDiarization = false
+    ;(SpeakerManager as unknown as { instance: SpeakerManager | null }).instance = null
+    jest.spyOn(console, "table").mockImplementation(() => {})
+    jest.spyOn(console, "log").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  const unknownUser = (deviceId: string): NetworkUser => networkUser("Unknown", true, deviceId)
+
+  it("names an unresolved network speaker from fresh single-speaker UI evidence", async () => {
+    const manager = SpeakerManager.getInstance()
+    // Network takes attribution with a named speaker; the bridge is now muted.
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    // The muted observer still supplies evidence: exactly one named speaker.
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    // An SSRC that never resolved arrives speaking: it streams with Alice's name.
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Alice"])
+    expect(registeredParticipants).toContain("Alice")
+    expect(registeredParticipants).not.toContain("Unknown")
+  })
+
+  it("stays Unknown when the UI saw two people speaking", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true), uiSpeaker("Bob", true)])
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Unknown"])
+  })
+
+  it("stays Unknown when two unresolved speakers arrive together", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    await manager.handleNetworkSpeakerUpdate(
+      [unknownUser("ssrc-42"), unknownUser("ssrc-43")],
+      1785941000100
+    )
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Unknown"])
+    expect(registeredSpeakers).not.toContain("Alice")
+  })
+
+  it("expires old UI evidence", async () => {
+    const manager = SpeakerManager.getInstance()
+    const nowSpy = jest.spyOn(Date, "now").mockReturnValue(1_000_000)
+
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+
+    nowSpy.mockReturnValue(1_000_000 + 6_000)
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Unknown"])
+  })
+
+  it("never overwrites a resolved network name with UI evidence", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    await manager.handleNetworkSpeakerUpdate([networkUser("Bob", true, "device-2")], 1785941000100)
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Bob"])
+    expect(registeredSpeakers).not.toContain("Alice")
+  })
+
+  it("stays Unknown when a resolved speaker is active next to the unresolved one", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    // Alice (resolved) and an unresolved speaker share the floor: lending the
+    // UI name to the unresolved one would double-name a single voice.
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Alice", true, "device-2"), unknownUser("ssrc-42")],
+      1785941000100
+    )
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Alice", "Unknown"])
+  })
+
+  it("clears evidence when a later snapshot is ambiguous", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    // Full-state snapshot: two people speaking invalidates the earlier evidence.
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true), uiSpeaker("Bob", true)])
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Unknown"])
+    expect(registeredSpeakers).not.toContain("Alice")
+  })
+
+  it("clears evidence when the floor goes silent", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    await manager.handleUiBridgeUpdate([])
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Unknown"])
+  })
+
+  it("keeps the filled identity for later callbacks on the same device", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
+
+    // Evidence is gone (TTL/expiry), but the device now remembers its name:
+    // the same device must not flip back to Unknown mid-turn.
+    const nowSpy = jest.spyOn(Date, "now").mockReturnValue(2_000_000_000)
+    await manager.handleNetworkSpeakerUpdate([networkUser("", true, "ssrc-42")], 1785941000200)
+    nowSpy.mockRestore()
+
+    expect(registeredSpeakers).toEqual(["Net Speaker", "Alice"])
+    expect(registeredSpeakers).not.toContain("Unknown")
+  })
+})
+
 describe("SpeakerManager network updates after fallback", () => {
   beforeEach(() => {
     registeredSpeakers.length = 0
@@ -226,7 +392,10 @@ describe("SpeakerManager network updates after fallback", () => {
     const manager = SpeakerManager.getInstance()
 
     diarizationFallbackTriggered = true
-    await manager.handleNetworkSpeakerUpdate([networkUser("Straggler", true, "device-9")], 1785941000000)
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Straggler", true, "device-9")],
+      1785941000000
+    )
 
     expect(registeredSpeakers).toEqual([])
     expect(registeredParticipants).toEqual([])
@@ -404,7 +573,10 @@ describe("SpeakerManager network updates after fallback", () => {
     // Network names Alice, so she holds a real sequential id. A fallback then
     // hands the floor to the observer, which emits id 0 — and a re-arm hands it
     // back. Without reconciliation Alice is two speakers in one meeting.
-    await manager.handleNetworkSpeakerUpdate([networkUser("Alice", true, "device-1")], 1785941000000)
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Alice", true, "device-1")],
+      1785941000000
+    )
 
     diarizationFallbackTriggered = true
     const captured: SpeakerData[] = []
