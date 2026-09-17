@@ -91,14 +91,21 @@ export class TeamsSpeakersObserver {
         // Display name for a v2 tile. aria-label first (older builds), else the
         // data-tid, which on the current client holds the display name. Never
         // return an email — some builds put the address in data-tid and that is
-        // PII, not a name. A trailing "(Guest)" is part of Teams' label, not the
-        // person's name, and is stripped so it matches the caption author text.
+        // PII, not a name. Trailing Teams labels ("(Guest)", "External", "Unfamiliar",
+        // "(Unverified)") are not the person's name and are stripped so it matches the caption author text.
         function resolveTileName(element: Element): string {
           const aria = element.getAttribute("aria-label")?.split(",")[0]?.trim()
-          if (aria) return aria
+          if (aria) return stripParticipantLabels(aria)
           const tid = element.getAttribute("data-tid")?.trim() || ""
           if (!tid || tid.includes("@")) return ""
-          return tid.replace(/\s*\(Guest\)\s*$/i, "").trim()
+          return stripParticipantLabels(tid)
+        }
+
+        function stripParticipantLabels(name: string): string {
+          const label = /\s*\(?\b(?:guest|external|unfamiliar|unverified)\b\)?\s*$/i
+          let out = name.trim()
+          while (label.test(out)) out = out.replace(label, "").trim()
+          return out
         }
 
         // ── Caption-derived speaking signal ────────────────────────────────
