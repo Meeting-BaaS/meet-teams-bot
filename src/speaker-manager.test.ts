@@ -50,7 +50,9 @@ jest.mock("./state-machine/machine", () => ({
 jest.mock("./browser/page-logger", () => ({ enablePrintPageLogs: () => {} }))
 
 jest.mock("./utils/PathManager", () => ({
-  PathManager: { getInstance: () => ({ getSpeakerLogPath: () => "/dev/null" }) }
+  PathManager: {
+    getInstance: () => ({ getSpeakerLogPath: () => "/dev/null" })
+  }
 }))
 
 jest.mock("./utils/PiiRedactor", () => ({
@@ -85,7 +87,10 @@ describe("SpeakerManager network speaker registration", () => {
 
   it("never registers a recording bot as a speaker", async () => {
     await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
-      [networkUser("SPEAKER SEP Test", true, "device-bot"), networkUser("Amr El Shimy", true, "device-1")],
+      [
+        networkUser("SPEAKER SEP Test", true, "device-bot"),
+        networkUser("Amr El Shimy", true, "device-1")
+      ],
       1785941000000
     )
 
@@ -95,7 +100,10 @@ describe("SpeakerManager network speaker registration", () => {
   })
 
   it("registers a bot that streams audio into the meeting", async () => {
-    params = { bot_name: "Voice Agent", streaming_input: "wss://example.test/audio" }
+    params = {
+      bot_name: "Voice Agent",
+      streaming_input: "wss://example.test/audio"
+    }
 
     await SpeakerManager.getInstance().handleNetworkSpeakerUpdate(
       [networkUser("Voice Agent", true, "device-bot")],
@@ -145,7 +153,10 @@ describe("SpeakerManager UI bridge arbitration", () => {
 
   it("mutes UI events after the network path reports its first speaker", async () => {
     const manager = SpeakerManager.getInstance()
-    await manager.handleNetworkSpeakerUpdate([networkUser("Net Speaker", true, "device-1")], 1785941000000)
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
 
     await manager.handleUiBridgeUpdate([uiSpeaker("Late UI Speaker", true)])
 
@@ -188,7 +199,10 @@ describe("SpeakerManager UI bridge arbitration", () => {
 
   it("does not mute the bridge on roster-only network updates (nobody speaking)", async () => {
     const manager = SpeakerManager.getInstance()
-    await manager.handleNetworkSpeakerUpdate([networkUser("Silent Sam", false, "device-3")], 1785941000000)
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Silent Sam", false, "device-3")],
+      1785941000000
+    )
 
     await manager.handleUiBridgeUpdate([uiSpeaker("Early Speaker", true)])
 
@@ -197,7 +211,10 @@ describe("SpeakerManager UI bridge arbitration", () => {
 
   it("unmutes the bridge when the network path is retired by the fallback", async () => {
     const manager = SpeakerManager.getInstance()
-    await manager.handleNetworkSpeakerUpdate([networkUser("Net Speaker", true, "device-1")], 1785941000000)
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
 
     diarizationFallbackTriggered = true
     await manager.handleUiBridgeUpdate([uiSpeaker("Fallback Speaker", true)])
@@ -475,8 +492,8 @@ describe("SpeakerManager network updates after fallback", () => {
 
     const segments = manager.buildUiFallbackSegments(T0, T0 + 60_000)
     expect(segments).toEqual([
-      { speaker: "X", user_id: 0, start_time: 10, end_time: 30 },
-      { speaker: "Y", user_id: 0, start_time: 40, end_time: 60 }
+      { speaker: "X", user_id: 1, start_time: 10, end_time: 25 },
+      { speaker: "Y", user_id: 2, start_time: 40, end_time: 55 }
     ])
   })
 
@@ -487,10 +504,20 @@ describe("SpeakerManager network updates after fallback", () => {
 
     // Meet falsely lights the bot as the sole speaker for 30s.
     await manager.handleUiBridgeUpdate([
-      { name: "SPEAKER SEP Test", id: 0, timestamp: T0 + 5_000, isSpeaking: true }
+      {
+        name: "SPEAKER SEP Test",
+        id: 0,
+        timestamp: T0 + 5_000,
+        isSpeaking: true
+      }
     ])
     await manager.handleUiBridgeUpdate([
-      { name: "SPEAKER SEP Test", id: 0, timestamp: T0 + 35_000, isSpeaking: false }
+      {
+        name: "SPEAKER SEP Test",
+        id: 0,
+        timestamp: T0 + 35_000,
+        isSpeaking: false
+      }
     ])
 
     // No customer speech may be attributed to the bot by the fallback.
@@ -532,7 +559,7 @@ describe("SpeakerManager network updates after fallback", () => {
     ])
 
     const segments = manager.buildUiFallbackSegments(T0, T0 + 600_000)
-    expect(segments).toEqual([{ speaker: "X", user_id: 0, start_time: 10, end_time: 130 }])
+    expect(segments).toEqual([{ speaker: "X", user_id: 1, start_time: 10, end_time: 25 }])
   })
 
   it("silences a self-marked speaker even when its displayed name is not bot_name (SSO ghost)", async () => {
@@ -567,7 +594,7 @@ describe("SpeakerManager network updates after fallback", () => {
     expect(manager.buildUiFallbackSegments(T0, T0 + 60_000)).toEqual([])
   })
 
-  it("gives a UI speaker the id the network already assigned to that name", async () => {
+  it("gives a UI speaker the id the network assigned to the same device", async () => {
     const manager = SpeakerManager.getInstance()
 
     // Network names Alice, so she holds a real sequential id. A fallback then
@@ -591,13 +618,13 @@ describe("SpeakerManager network updates after fallback", () => {
         captured.push(...speakers)
       })
 
-    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    await manager.handleUiBridgeUpdate([{ ...uiSpeaker("Alice", true), deviceId: "device-1" }])
     await manager.handleUiBridgeUpdate([uiSpeaker("Never Networked", true)])
 
     expect(captured[0].id).toBe(1)
     // Nobody the network ever named keeps the id-0 sentinel, so observer-only
     // meetings are unchanged.
-    expect(captured[1].id).toBe(0)
+    expect(captured[1].id).toBe(2)
   })
 })
 
@@ -652,5 +679,71 @@ describe("SpeakerManager learned self identity (SSO)", () => {
     // Humans unaffected.
     await manager.handleNetworkSpeakerUpdate([networkUser("Amr El Shimy", true, "d1")], T0 + 7_000)
     expect(registeredSpeakers).toEqual(["Amr El Shimy"])
+  })
+})
+
+describe("UI freshness and unresolved source identities", () => {
+  const start = 1785941000000
+  beforeEach(() => {
+    ;(SpeakerManager as any).instance = null
+    params = { bot_name: "Notetaker" }
+    networkInterceptionFailed = false
+    diarizationFallbackTriggered = false
+    rearmedNetworkDiarization = false
+    jest.spyOn(console, "table").mockImplementation(() => {})
+  })
+  afterEach(() => jest.restoreAllMocks())
+
+  it("retains primary UI evidence without STT and expires stale observations", async () => {
+    const manager = SpeakerManager.getInstance()
+    const ui = (second: number) => ({
+      ...uiSpeaker("Guest", true),
+      timestamp: start + second * 1000
+    })
+    await manager.handleUiBridgeUpdate([ui(1)])
+    await manager.handleUiBridgeUpdate([ui(11)])
+    await manager.handleUiBridgeUpdate([ui(40)])
+    expect(manager.buildUiFallbackSegments(start, start + 100000)).toEqual([
+      { speaker: "Guest", user_id: 1, start_time: 1, end_time: 26 },
+      { speaker: "Guest", user_id: 1, start_time: 40, end_time: 55 }
+    ])
+  })
+
+  it("rejects UI with a named speaker and an unnamed simultaneous speaker", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleUiBridgeUpdate([uiSpeaker("Guest", true), uiSpeaker("Unknown", true)])
+    expect(manager.buildUiFallbackSegments(start, start + 10000)).toEqual([])
+  })
+
+  it("repairs an unnamed UI interval only from the roster for its exact device", async () => {
+    const manager = SpeakerManager.getInstance()
+    await manager.handleUiBridgeUpdate([{ ...uiSpeaker("Unknown", true), deviceId: "source-a" }])
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Guest", false, "source-a")],
+      start + 5000
+    )
+    const segments = manager.buildUiFallbackSegments(start, start + 6000)
+    expect(segments).toEqual([{ speaker: "Guest", user_id: 1, start_time: 0, end_time: 6 }])
+  })
+
+  it("keeps two Unknown devices distinct and reuses the ID when one resolves", async () => {
+    const manager = SpeakerManager.getInstance()
+    const updates: SpeakerData[][] = []
+    jest.spyOn(manager, "handleSpeakerUpdate").mockImplementation(async (speakers) => {
+      updates.push(speakers)
+    })
+    await manager.handleNetworkSpeakerUpdate([networkUser("Unknown", true, "source-a")], start)
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Unknown", true, "source-b")],
+      start + 1000
+    )
+    await manager.handleNetworkSpeakerUpdate([networkUser("Guest", true, "source-a")], start + 2000)
+    expect(updates[0][0].id).not.toBe(updates[1][0].id)
+    expect(updates[2][0].id).toBe(updates[0][0].id)
+    expect((manager as any).resolveDeviceForBackfill("source-a")).toEqual({
+      name: "Guest",
+      userId: updates[0][0].id
+    })
+    expect((manager as any).resolveDeviceForBackfill("source-b")).toBeUndefined()
   })
 })

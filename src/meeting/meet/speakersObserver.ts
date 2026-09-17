@@ -445,6 +445,7 @@ export class MeetSpeakersObserver {
         }
 
         // SHARED CRITICAL checkSpeakers logic
+        let lastHeartbeat = 0
         async function checkSpeakers() {
           try {
             const timestamp = Date.now() - speakerLatency
@@ -462,7 +463,7 @@ export class MeetSpeakersObserver {
             )
 
             // Send data only when a speakers change state is detected
-            if (!areMapsEqual(CUR_SPEAKERS, new_speakers)) {
+            if (!areMapsEqual(CUR_SPEAKERS, new_speakers) || Date.now() - lastHeartbeat >= 5000) {
               console.log(
                 `[MEET-DEBUG-CHANGE] Speakers changed - ${currentSpeakersList.length} total`
               )
@@ -475,6 +476,7 @@ export class MeetSpeakersObserver {
               // CRITICAL: Call the callback
               console.log("[MEET-DEBUG-CALLBACK] Calling meetSpeakersChanged")
               await window.meetSpeakersChanged(currentSpeakersList)
+              lastHeartbeat = Date.now()
 
               // CRITICAL: Update current speakers AFTER calling callback
               CUR_SPEAKERS.clear()

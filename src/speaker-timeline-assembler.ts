@@ -1,16 +1,6 @@
 import type { DiarizationSegment } from "./diarization-tracker"
 import { UNKNOWN_SPEAKER } from "./types"
 
-/**
- * Final speaker-timeline assembly: re-assembles the diarization artifact from
- * every source, best source per stretch. Trust order: network (WebRTC
- * interception — authoritative wherever it produced data) > ui (the platform's
- * own active-speaker indicator, shadow-buffered whole-call) > transcription
- * (live transcription-system turns, when one ran). A lower-trust source never
- * overwrites a higher-trust one — it only fills sufficiently large holes —
- * unless it proves the primary collapsed (see detectSourceDissonance).
- */
-
 export type TimelineSourceKind = "network" | "ui" | "transcription"
 
 export interface TimelineSource {
@@ -18,266 +8,15 @@ export interface TimelineSource {
   segments: DiarizationSegment[]
 }
 
-// Minimum hole size before a lower-trust source is consulted — anything
-// shorter is ordinary turn-taking silence.
-export const GAP_FILL_MIN_SECONDS = 10
-// Minimum length a clipped contribution must keep to be emitted.
-export const MIN_SEGMENT_SECONDS = 1
-// Cap on stretching the first segment back over the boot gap. The gap this
-// exists for is the join greeting (prod: median 3.5s, all observed cases
-// <=21s). A larger stretch inflates a barely-heard participant's talk-time
-// (prod: 1s -> 147s) past the reconciliation's "effective speaker" floor and
-// masked a real collapse; longer leading gaps are the reconciliation's job
-// (label-only backfill), never the timeline's.
-export const LEADING_RETROFIT_MAX_SECONDS = 20
-
-// --- Source dissonance: a collapsed primary leaves no holes for fallbacks to fill ---
-/** Seconds an identity needs to count as a speaker. */
-export const SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS = 15
-/** Share of the primary's named time its top speaker must hold to look collapsed. */
-export const SOURCE_DISSONANCE_DOMINANCE_RATIO = 0.85
-/** How many times more time the challenger must give the other speakers. */
-export const SOURCE_DISSONANCE_DISAGREEMENT_FACTOR = 3
-
-export interface SpeakerSourceDissonance {
-  reason: "primary_dominated_challenger_multi_speaker"
-  demotedSource: TimelineSourceKind
-  promotedSource: TimelineSourceKind
-  primaryEffectiveSpeakers: number
-  challengerEffectiveSpeakers: number
-  /** Share of the primary's named time held by its top speaker. */
-  primaryDominance: number
-  /** Seconds the primary vs the challenger gave everyone but that speaker. */
-  primaryOtherSeconds: number
-  challengerOtherSeconds: number
-}
-
-/** Positive-length segments, chronological. */
-function normalize(segments: DiarizationSegment[]): DiarizationSegment[] {
-  return segments
-    .filter((s) => s.end_time > s.start_time)
-    .slice()
-    .sort((a, b) => a.start_time - b.start_time)
-}
-
-/** Union of the segments' spans as merged, sorted intervals. */
-function coverageOf(segments: DiarizationSegment[]): Array<[number, number]> {
-  const merged: Array<[number, number]> = []
-  for (const s of normalize(segments)) {
-    const last = merged[merged.length - 1]
-    if (last && s.start_time <= last[1]) {
-      last[1] = Math.max(last[1], s.end_time)
-    } else {
-      merged.push([s.start_time, s.end_time])
-    }
-  }
-  return merged
-}
-
-/** Named, non-bot speaking seconds by normalized identity. */
-function speakerDurations(
-  segments: DiarizationSegment[],
-  excludeSpeakers: string[] = []
-): Map<string, number> {
-  const excluded = new Set(
-    [UNKNOWN_SPEAKER, ...excludeSpeakers].map((name) => name.trim().toLowerCase())
-  )
-  const bySpeaker = new Map<string, DiarizationSegment[]>()
-  for (const segment of normalize(segments)) {
-    const key = segment.speaker?.trim().toLowerCase()
-    if (!key || excluded.has(key)) continue
-    const existing = bySpeaker.get(key) ?? []
-    existing.push(segment)
-    bySpeaker.set(key, existing)
-  }
-
-  const durations = new Map<string, number>()
-  for (const [speaker, speakerSegments] of bySpeaker) {
-    durations.set(
-      speaker,
-      coverageOf(speakerSegments).reduce((sum, [start, end]) => sum + end - start, 0)
-    )
-  }
-  return durations
-}
-
-/** Identities holding at least the effective-speaker floor. */
-function effectiveSpeakers(durations: Map<string, number>): Array<[string, number]> {
-  return [...durations].filter(
-    ([, seconds]) => seconds >= SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
-  )
-}
+const isNamed = (segment: DiarizationSegment): boolean =>
+  Boolean(segment.speaker.trim()) && segment.speaker.trim() !== UNKNOWN_SPEAKER
 
 /**
- * A primary dominated by one speaker, contradicted by a lower-trust source that
- * shares that speaker and gives the others several times more time. Bots excluded.
- */
-function detectSourceDissonance(
-  sources: TimelineSource[],
-  botNames: string[] = []
-): { dissonance: SpeakerSourceDissonance; challengerIndex: number } | undefined {
-  if (sources.length < 2) return undefined
-
-  const primaryDurations = speakerDurations(sources[0].segments, botNames)
-  const primaryEffective = effectiveSpeakers(primaryDurations)
-  if (primaryEffective.length === 0) return undefined
-
-  const primaryNamedSeconds = [...primaryDurations.values()].reduce((a, b) => a + b, 0)
-  if (primaryNamedSeconds <= 0) return undefined
-
-  let dominant = primaryEffective[0]
-  for (const entry of primaryEffective) {
-    if (entry[1] > dominant[1]) dominant = entry
-  }
-  const dominance = dominant[1] / primaryNamedSeconds
-  if (dominance < SOURCE_DISSONANCE_DOMINANCE_RATIO) return undefined
-
-  const primaryOtherSeconds = primaryNamedSeconds - dominant[1]
-  const requiredOtherSeconds = Math.max(
-    SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS,
-    primaryOtherSeconds * SOURCE_DISSONANCE_DISAGREEMENT_FACTOR
-  )
-
-  for (let index = 1; index < sources.length; index++) {
-    const challengerDurations = speakerDurations(sources[index].segments, botNames)
-    const challengerEffective = effectiveSpeakers(challengerDurations)
-    if (challengerEffective.length < 2) continue
-    if (!challengerEffective.some(([speaker]) => speaker === dominant[0])) continue
-
-    const challengerOtherSeconds = challengerEffective
-      .filter(([speaker]) => speaker !== dominant[0])
-      .reduce((sum, [, seconds]) => sum + seconds, 0)
-    if (challengerOtherSeconds < requiredOtherSeconds) continue
-
-    return {
-      challengerIndex: index,
-      dissonance: {
-        reason: "primary_dominated_challenger_multi_speaker",
-        demotedSource: sources[0].kind,
-        promotedSource: sources[index].kind,
-        primaryEffectiveSpeakers: primaryEffective.length,
-        challengerEffectiveSpeakers: challengerEffective.length,
-        primaryDominance: Number(dominance.toFixed(3)),
-        primaryOtherSeconds: Number(primaryOtherSeconds.toFixed(1)),
-        challengerOtherSeconds: Number(challengerOtherSeconds.toFixed(1))
-      }
-    }
-  }
-  return undefined
-}
-
-/** Holes of at least GAP_FILL_MIN_SECONDS in [0, meetingEnd] left by coverage. */
-function gapsIn(coverage: Array<[number, number]>, meetingEnd: number): Array<[number, number]> {
-  const gaps: Array<[number, number]> = []
-  let cursor = 0
-  for (const [start, end] of coverage) {
-    if (start - cursor >= GAP_FILL_MIN_SECONDS) {
-      gaps.push([cursor, start])
-    }
-    cursor = Math.max(cursor, end)
-  }
-  if (meetingEnd - cursor >= GAP_FILL_MIN_SECONDS) {
-    gaps.push([cursor, meetingEnd])
-  }
-  return gaps
-}
-
-/** The parts of the candidates that fall inside the gaps. */
-function clipIntoGaps(
-  candidates: DiarizationSegment[],
-  gaps: Array<[number, number]>
-): DiarizationSegment[] {
-  const clipped: DiarizationSegment[] = []
-  for (const candidate of candidates) {
-    if (!candidate.speaker || candidate.speaker === UNKNOWN_SPEAKER) {
-      continue
-    }
-    for (const [gapStart, gapEnd] of gaps) {
-      const start = Math.max(candidate.start_time, gapStart)
-      const end = Math.min(candidate.end_time, gapEnd)
-      if (end - start >= MIN_SEGMENT_SECONDS) {
-        clipped.push({ ...candidate, start_time: start, end_time: end })
-      }
-    }
-  }
-  return clipped
-}
-
-/**
- * Stretch the earliest NAMED segment back to 0 so speech recorded before any
- * diarization source was live (the boot-gap greeting, the prod leading-
- * "Unknown" class) inherits the first identified speaker.
- */
-function retrofitLeadingGap(
-  segments: DiarizationSegment[],
-  excludeSpeakers?: string[]
-): {
-  segments: DiarizationSegment[]
-  retrofittedFromSeconds?: number
-} {
-  let firstNamed: DiarizationSegment | null = null
-  for (const s of segments) {
-    if (s.speaker === UNKNOWN_SPEAKER) continue
-    // Never stretch the recording bot's own segment (its join announcement can
-    // be the first thing diarized) — the boot gap belongs to a human. Both the
-    // configured bot_name and the LEARNED displayed name (SSO: the account's
-    // name, which bot_name matching misses) are excluded.
-    if (excludeSpeakers?.includes(s.speaker)) continue
-    if (!firstNamed || s.start_time < firstNamed.start_time) firstNamed = s
-  }
-  if (
-    !firstNamed ||
-    firstNamed.start_time <= 0 ||
-    firstNamed.start_time > LEADING_RETROFIT_MAX_SECONDS
-  ) {
-    return { segments }
-  }
-  const target = firstNamed
-  return {
-    segments: segments.map((s) => (s === target ? { ...s, start_time: 0 } : s)),
-    retrofittedFromSeconds: target.start_time
-  }
-}
-
-/**
- * Clip Unknown segments down to what named coverage does not overlap.
- * Downstream mapping picks by overlap, so an Unknown left under a named
- * segment would still win the words the repair names. Uncovered remainders
- * are kept — they mark real speech nothing ever named.
- */
-function suppressCoveredUnknowns(segments: DiarizationSegment[]): DiarizationSegment[] {
-  const namedCoverage = coverageOf(segments.filter((s) => s.speaker !== UNKNOWN_SPEAKER))
-  const out: DiarizationSegment[] = []
-  for (const segment of segments) {
-    if (segment.speaker !== UNKNOWN_SPEAKER) {
-      out.push(segment)
-      continue
-    }
-    let pieces: Array<[number, number]> = [[segment.start_time, segment.end_time]]
-    for (const [coverStart, coverEnd] of namedCoverage) {
-      const next: Array<[number, number]> = []
-      for (const [pieceStart, pieceEnd] of pieces) {
-        if (coverEnd <= pieceStart || coverStart >= pieceEnd) {
-          next.push([pieceStart, pieceEnd])
-          continue
-        }
-        if (coverStart > pieceStart) next.push([pieceStart, coverStart])
-        if (coverEnd < pieceEnd) next.push([coverEnd, pieceEnd])
-      }
-      pieces = next
-    }
-    for (const [pieceStart, pieceEnd] of pieces) {
-      if (pieceEnd - pieceStart >= MIN_SEGMENT_SECONDS) {
-        out.push({ ...segment, start_time: pieceStart, end_time: pieceEnd })
-      }
-    }
-  }
-  return normalize(out)
-}
-
-/**
- * Assemble the final timeline. `sources` must be ordered highest-trust first;
- * each source contributes only where everything before it left a hole.
+ * Resolve each observed interval independently. A single named UI participant
+ * wins; ambiguous/absent UI falls back to network identity, then transcription.
+ * Unknown network identities survive when no source can name them. Never
+ * extend a name into unobserved time or merge distinct unresolved participants.
+ * UI freshness and self filtering are enforced by the observation buffer.
  */
 export function assembleSpeakerTimeline(
   sources: TimelineSource[],
@@ -286,48 +25,68 @@ export function assembleSpeakerTimeline(
 ): {
   segments: DiarizationSegment[]
   filledBySource: Partial<Record<TimelineSourceKind, number>>
-  retrofittedFromSeconds?: number
-  sourceDissonance?: SpeakerSourceDissonance
 } {
-  let assembled: DiarizationSegment[] = []
+  const excluded = new Set((options?.botNames ?? []).map((name) => name.trim().toLowerCase()))
+  type Entry = { segment: DiarizationSegment; kind: TimelineSourceKind }
+  const events = new Map<number, Array<{ entry: Entry; opening: boolean }>>()
+  for (const source of sources) {
+    for (const segment of source.segments) {
+      const start = Math.max(0, segment.start_time)
+      const end = Math.min(meetingEnd, segment.end_time)
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue
+      if (excluded.has(segment.speaker.trim().toLowerCase())) continue
+      const entry: Entry = { segment, kind: source.kind }
+      events.set(start, [...(events.get(start) ?? []), { entry, opening: true }])
+      events.set(end, [...(events.get(end) ?? []), { entry, opening: false }])
+    }
+  }
+  const boundaries = [...events.keys()].sort((a, b) => a - b)
+  const active = new Set<Entry>()
+  const segments: DiarizationSegment[] = []
   const filledBySource: Partial<Record<TimelineSourceKind, number>> = {}
-
-  // On collapse the challenger leads and the primary fills holes last.
-  const detected = detectSourceDissonance(sources, options?.botNames)
-  const ordered = detected
-    ? [
-        sources[detected.challengerIndex],
-        ...sources.filter((_, index) => index !== 0 && index !== detected.challengerIndex),
-        sources[0]
-      ]
-    : sources
-
-  for (const [index, source] of ordered.entries()) {
-    if (index === 0) {
-      // Primary source taken as-is, Unknowns included.
-      assembled = normalize(source.segments)
-      continue
+  // Per identity, so interleaved overlapping network speakers can also coalesce.
+  const tails = new Map<string, DiarizationSegment>()
+  for (let index = 0; index < boundaries.length - 1; index++) {
+    const start = boundaries[index]
+    const end = boundaries[index + 1]
+    for (const { entry, opening } of events.get(start) ?? []) {
+      if (opening) active.add(entry)
+      else active.delete(entry)
     }
-    // Holes are measured against NAMED coverage only — a named fallback wins
-    // a stretch the network could only call "Unknown" (clipped away at the end).
-    const clipped = clipIntoGaps(
-      normalize(source.segments),
-      gapsIn(coverageOf(assembled.filter((s) => s.speaker !== UNKNOWN_SPEAKER)), meetingEnd)
-    )
-    if (clipped.length > 0) {
-      filledBySource[source.kind] = clipped.length
-      assembled = normalize([...assembled, ...clipped])
+    const byKind = (kind: TimelineSourceKind) => [...active].filter((entry) => entry.kind === kind)
+    const ui = byKind("ui")
+    const uiIdentities = new Set(ui.map(({ segment }) => `${segment.user_id}:${segment.speaker}`))
+    const network = byKind("network")
+    const namedNetwork = network.filter(({ segment }) => isNamed(segment))
+    const transcription = byKind("transcription").filter(({ segment }) => isNamed(segment))
+    const selected =
+      uiIdentities.size === 1 && ui.every(({ segment }) => isNamed(segment))
+        ? ui.slice(0, 1)
+        : namedNetwork.length > 0
+          ? network
+          : transcription.length > 0
+            ? transcription
+            : network
+    const emitted = new Set<string>()
+    for (const { segment, kind } of selected) {
+      const key = `${kind}:${segment.user_id}:${segment.speaker}`
+      if (emitted.has(key)) continue
+      emitted.add(key)
+      const previous = tails.get(key)
+      if (previous?.end_time === start) {
+        previous.end_time = end
+      } else {
+        const resolved = {
+          ...segment,
+          start_time: start,
+          end_time: end,
+          source: kind
+        }
+        segments.push(resolved)
+        tails.set(key, resolved)
+        filledBySource[kind] = (filledBySource[kind] ?? 0) + 1
+      }
     }
   }
-
-  const { segments, retrofittedFromSeconds } = retrofitLeadingGap(
-    assembled,
-    options?.botNames
-  )
-  return {
-    segments: suppressCoveredUnknowns(segments),
-    filledBySource,
-    retrofittedFromSeconds,
-    sourceDissonance: detected?.dissonance
-  }
+  return { segments, filledBySource }
 }

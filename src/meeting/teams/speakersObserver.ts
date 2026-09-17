@@ -482,6 +482,7 @@ export class TeamsSpeakersObserver {
         }
 
         // SHARED CRITICAL checkSpeakers logic
+        let lastHeartbeat = 0
         async function checkSpeakers() {
           try {
             const timestamp = Date.now() - speakerLatency
@@ -496,7 +497,7 @@ export class TeamsSpeakersObserver {
             )
 
             // Send data only when a speakers change state is detected - EXACT SAME AS EXTENSION
-            if (!areMapsEqual(CUR_SPEAKERS, new_speakers)) {
+            if (!areMapsEqual(CUR_SPEAKERS, new_speakers) || Date.now() - lastHeartbeat >= 5000) {
               console.log(
                 `[TEAMS-DEBUG-CHANGE] Speakers changed - ${currentSpeakersList.length} total`
               )
@@ -509,6 +510,7 @@ export class TeamsSpeakersObserver {
               // CRITICAL: Call the callback
               console.log("[TEAMS-DEBUG-CALLBACK] Calling teamsSpeakersChanged")
               await window.teamsSpeakersChanged(currentSpeakersList)
+              lastHeartbeat = Date.now()
 
               // CRITICAL: Update current speakers AFTER calling callback
               CUR_SPEAKERS.clear()

@@ -60,7 +60,7 @@ describe("DiarizationTracker backfill", () => {
       )
       .then(() => {
         const segments = readSegments()
-        expect(segments).toHaveLength(3)
+        expect(segments).toHaveLength(1)
         expect(segments.every((s) => s.speaker === "Amr El Shimy")).toBe(true)
         expect(segments.every((s) => s.user_id === 2)).toBe(true)
       })
@@ -75,9 +75,7 @@ describe("DiarizationTracker backfill", () => {
     tracker.updateSpeaker(speech("dev-b", "Unknown", 4), MEETING_START)
 
     await tracker.end(MEETING_START + 6000, MEETING_START, (deviceId) =>
-      deviceId === "dev-a"
-        ? { name: "Amr El Shimy", userId: 2 }
-        : { name: "Johnny", userId: 3 }
+      deviceId === "dev-a" ? { name: "Amr El Shimy", userId: 2 } : { name: "Johnny", userId: 3 }
     )
 
     const segments = readSegments()
@@ -127,7 +125,7 @@ describe("DiarizationTracker backfill", () => {
     )
 
     const segments = readSegments()
-    expect(segments).toHaveLength(3)
+    expect(segments).toHaveLength(1)
     expect(segments.every((s) => s.speaker === "Real Speaker")).toBe(true)
     expect(segments.every((s) => s.user_id === 5)).toBe(true)
   })
@@ -213,7 +211,9 @@ describe("DiarizationTracker recording-clock clamp", () => {
       // destroy() rather than emit() so the stream really tears down.
       const stream = (tracker as unknown as { fileStream: WriteStream | null }).fileStream
       expect(stream).not.toBeNull()
-      const diskFull = Object.assign(new Error("no space left on device"), { code: "ENOSPC" })
+      const diskFull = Object.assign(new Error("no space left on device"), {
+        code: "ENOSPC"
+      })
       const closed = new Promise<void>((resolve) => stream?.once("close", () => resolve()))
       stream?.destroy(diskFull)
       await closed
@@ -297,12 +297,18 @@ describe("DiarizationTracker final re-assembly", () => {
 
     const segments = readSegments()
     const jonny = segments.find((s) => s.speaker === "Jonny")
-    // Filled from UI, then the boot-gap retrofit stretched the earliest named
-    // segment (Jonny's) back to 0.
-    expect(jonny).toEqual({ speaker: "Jonny", user_id: 0, start_time: 0, end_time: 80 })
+    // Only observed UI time is attributed; no opening-name guess.
+    expect(jonny).toEqual({
+      speaker: "Jonny",
+      user_id: 0,
+      source: "ui",
+      start_time: 12,
+      end_time: 80
+    })
     expect(segments.find((s) => s.speaker === "Amr El Shimy")).toEqual({
       speaker: "Amr El Shimy",
       user_id: 0,
+      source: "network",
       start_time: 90,
       end_time: 100
     })
@@ -322,6 +328,14 @@ describe("DiarizationTracker final re-assembly", () => {
     ])
 
     const segments = readSegments()
-    expect(segments).toEqual([{ speaker: "Jonny", user_id: 0, start_time: 0, end_time: 40 }])
+    expect(segments).toEqual([
+      {
+        speaker: "Jonny",
+        user_id: 0,
+        source: "ui",
+        start_time: 5,
+        end_time: 40
+      }
+    ])
   })
 })

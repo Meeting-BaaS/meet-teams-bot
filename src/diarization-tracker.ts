@@ -7,7 +7,8 @@ import { PathManager } from "./utils/PathManager"
 
 export interface DiarizationSegment {
   speaker: string
-  user_id: number // Sequential user ID (0 for UI-based detection, 1+ for network-based)
+  source?: "ui" | "network" | "transcription"
+  user_id: number // Stable sequential source identity
   start_time: number
   end_time: number
 }
@@ -44,6 +45,7 @@ export class DiarizationTracker {
     speaker: string
     startTime: number
     userId: number
+    source: "ui" | "network"
     deviceId?: string
   } | null = null
   private recentSegments: DiarizationSegment[] = [] // Last 5 closed segments
@@ -52,7 +54,10 @@ export class DiarizationTracker {
   // that were flushed while a name was still unresolved can be repaired.
   // Without this, only the single open segment could ever be fixed and every
   // "Unknown" already written to disk stayed wrong forever.
-  private allSegments: Array<{ segment: DiarizationSegment; deviceId?: string }> = []
+  private allSegments: Array<{
+    segment: DiarizationSegment
+    deviceId?: string
+  }> = []
   private filePath: string
   private isEnded = false
   private hasTrackedAnySegment = false // True once ANY speaker segment was ever opened
@@ -88,7 +93,11 @@ export class DiarizationTracker {
    * @param speaker - Speaker data with name and timestamp
    * @param meetingStartTime - Meeting start timestamp in milliseconds
    */
-  public updateSpeaker(speaker: SpeakerData, meetingStartTime: number): void {
+  public updateSpeaker(
+    speaker: SpeakerData,
+    meetingStartTime: number,
+    source: "ui" | "network" = "network"
+  ): void {
     if (this.isEnded) {
       console.warn("DiarizationTracker: Attempted to update after ended")
       return
@@ -108,6 +117,7 @@ export class DiarizationTracker {
         speaker: this.currentSegment.speaker,
         start_time: this.currentSegment.startTime,
         end_time: relativeTime,
+        source: this.currentSegment.source,
         user_id: this.currentSegment.userId
       }
       // Clamping to the recording clock can collapse a segment to zero length
@@ -142,6 +152,7 @@ export class DiarizationTracker {
       speaker: speaker.name,
       startTime: relativeTime,
       userId: speaker.id,
+      source,
       deviceId: speaker.deviceId
     }
     this.hasTrackedAnySegment = true
@@ -235,6 +246,7 @@ export class DiarizationTracker {
           speaker: this.currentSegment.speaker,
           start_time: this.currentSegment.startTime,
           end_time: Math.max(0, (lastTimestamp - meetingStartTime) / 1000),
+          source: this.currentSegment.source,
           user_id: this.currentSegment.userId
         },
         deviceId: this.currentSegment.deviceId
@@ -258,16 +270,10 @@ export class DiarizationTracker {
       )
     }
 
-    // Final pass: re-assemble the artifact best-source-per-stretch (repaired
-    // network authoritative; fallbacks fill large holes; boot gap retrofitted
-    // onto the first identified speaker). See speaker-timeline-assembler.ts.
+    // Final priority is independent of STT: one observed UI speaker, otherwise
+    // a repaired network identity. Leave unobserved/unresolved spans unnamed.
     const meetingEndRel = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
-    const {
-      segments: assembled,
-      filledBySource,
-      retrofittedFromSeconds,
-      sourceDissonance
-    } = assembleSpeakerTimeline(
+    const { segments: assembled, filledBySource } = assembleSpeakerTimeline(
       [
         {
           kind: "network" as const,
@@ -275,7 +281,9 @@ export class DiarizationTracker {
           // segments carry the account's displayed name, which no bot_name
           // exclusion can catch; the device id is canonical.
           segments: this.allSegments
-            .filter((e) => !selfDeviceId || e.deviceId !== selfDeviceId)
+            .filter(
+              (e) => e.segment.source !== "ui" && (!selfDeviceId || e.deviceId !== selfDeviceId)
+            )
             .map((e) => e.segment)
         },
         ...(fallbackSources ?? [])
@@ -283,26 +291,9 @@ export class DiarizationTracker {
       meetingEndRel,
       { botNames }
     )
-    if (sourceDissonance) {
-      // An interceptor was wrong for the whole call. Counts only: names are PII.
-      console.error(
-        `[DiarizationTracker] ⚠️ Source dissonance (${sourceDissonance.reason}): promoted ${sourceDissonance.promotedSource} over ${sourceDissonance.demotedSource}; ` +
-          `effective speakers ${sourceDissonance.demotedSource}=${sourceDissonance.primaryEffectiveSpeakers} ${sourceDissonance.promotedSource}=${sourceDissonance.challengerEffectiveSpeakers}, ` +
-          `dominance=${sourceDissonance.primaryDominance}, other-speaker seconds ${sourceDissonance.primaryOtherSeconds} -> ${sourceDissonance.challengerOtherSeconds}`
-      )
-    }
     for (const [kind, count] of Object.entries(filledBySource)) {
-      console.log(
-        `[DiarizationTracker] Filled ${count} timeline gap segment(s) from the ${kind} fallback`
-      )
+      console.log(`[DiarizationTracker] Selected ${count} timeline segment(s) from ${kind}`)
     }
-    if (retrofittedFromSeconds !== undefined) {
-      // Greppable across bot logs to track the boot gap in production.
-      console.log(
-        `[DiarizationTracker] Boot-gap retrofit: first segment stretched to 0s from +${retrofittedFromSeconds.toFixed(1)}s`
-      )
-    }
-
     await this.closeStream()
 
     // Rewrite from the assembled timeline — the append log can hold unresolved
@@ -353,7 +344,11 @@ export class DiarizationTracker {
   /**
    * Get the current active segment.
    */
-  public getCurrentSegment(): { speaker: string; startTime: number; userId: number } | null {
+  public getCurrentSegment(): {
+    speaker: string
+    startTime: number
+    userId: number
+  } | null {
     return this.currentSegment
   }
 
