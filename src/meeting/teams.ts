@@ -9,7 +9,11 @@ import { formatError } from "../utils/Logger"
 import { createStateDetector, patternLocator } from "../utils/meeting-state-detector"
 import { sleep } from "../utils/sleep"
 import { enableTeamsAudioCapture, verifyTeamsAudioCapture } from "./teams/audio-capture"
-import { SIGNED_IN_PREJOIN_RETRIES, signedInPreJoinAction } from "./teams-signin-guard"
+import {
+  type PreJoinState,
+  SIGNED_IN_PREJOIN_RETRIES,
+  signedInPreJoinAction
+} from "./teams-signin-guard"
 import { TEAMS_STATE_CONFIG } from "./teams-state-config"
 
 // Types for Teams chat API interception
@@ -872,31 +876,30 @@ export class TeamsProvider implements MeetingProviderInterface {
       const config = GLOBAL.get().teams_login_config
       if (!config || cancelCheck()) return Boolean(config)
 
-      const guestNameVisible = await page
-        .locator(INPUT_BOT)
-        .first()
-        .waitFor({ state: "visible", timeout: 2_000 })
-        .then(() => true)
-        .catch(() => false)
-      const action = signedInPreJoinAction(guestNameVisible, retries, config.fallback)
+      const state: PreJoinState = (await visibleInPageOrFrame(page, INPUT_BOT, 2_000))
+        ? "signed_out"
+        : (await visibleInPageOrFrame(page, PRE_JOIN_BUTTON, 2_000))
+          ? "signed_in"
+          : "unresolved"
+      const action = signedInPreJoinAction(state, retries, config.fallback)
       if (action === "join_signed_in") return true
 
       if (action === "join_anonymously") {
-        console.warn("[teams] pre-join still signed out — joining as a guest (fallback: anonymous)")
+        console.warn(`[teams] pre-join still ${state} — joining as a guest (fallback: anonymous)`)
         GLOBAL.clearTeamsLoginConfig()
         return false
       }
       if (action === "fail") {
-        console.error("[teams] pre-join still signed out — failing the join (fallback: fail)")
+        console.error(`[teams] pre-join still ${state} — failing the join (fallback: fail)`)
         GLOBAL.setError(
           MeetingEndReason.TeamsLoginFailedTimeout,
-          "Microsoft sign-in completed, but Teams opened the meeting without the signed-in account."
+          "Microsoft sign-in completed, but Teams did not open the meeting with the signed-in account."
         )
         throw new Error(SIGNED_OUT_PREJOIN)
       }
 
       console.warn(
-        `[teams] pre-join asks for a guest name — not signed in, retrying (${retries + 1}/${SIGNED_IN_PREJOIN_RETRIES})`
+        `[teams] pre-join ${state === "signed_out" ? "asks for a guest name" : "did not load"} — retrying sign-in (${retries + 1}/${SIGNED_IN_PREJOIN_RETRIES})`
       )
       await HtmlSnapshotService.getInstance().captureSnapshot(page, "teams_signed_out_prejoin")
       await refreshTeamsSession(page.context(), config)
@@ -978,6 +981,25 @@ export class TeamsProvider implements MeetingProviderInterface {
 
 const INPUT_BOT = 'input[placeholder="Type your name"]'
 const SIGNED_OUT_PREJOIN = "TeamsSignedOutPreJoin"
+const PRE_JOIN_BUTTON = TEAMS_STATE_CONFIG.preJoinPattern?.selectors.join(", ") ?? ""
+
+/** Visible in the page or Teams' first iframe, where the pre-join can also render. */
+async function visibleInPageOrFrame(
+  page: Page,
+  selector: string,
+  timeout: number
+): Promise<boolean> {
+  if (!selector) return false
+  const targets = [page.locator(selector), page.frameLocator("iframe").first().locator(selector)]
+  return Promise.any(
+    targets.map((l) =>
+      l
+        .first()
+        .waitFor({ state: "visible", timeout })
+        .then(() => true)
+    )
+  ).catch(() => false)
+}
 
 /** Walk an authenticated join from the launcher ("Continue on this browser") to the pre-join. */
 async function reachSignedInPreJoin(page: Page): Promise<void> {

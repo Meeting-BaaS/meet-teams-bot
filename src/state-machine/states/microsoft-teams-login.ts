@@ -169,9 +169,10 @@ export async function refreshTeamsSession(
   browserContext: BrowserContext,
   config: TeamsLoginConfig
 ): Promise<void> {
-  const page = await browserContext.newPage()
+  let page: Page | undefined
   try {
-    // Passive wait for the app's own token exchange, so the meeting reload finds a cached session.
+    page = await browserContext.newPage()
+    // Deliberately awaited (bounded): handing off on cookies alone is what lost the session originally.
     const authorized = page
       .waitForResponse((r) => r.url().includes("/authsvc/v1.0/authz") && r.ok(), {
         timeout: 20_000
@@ -190,7 +191,7 @@ export async function refreshTeamsSession(
     const m = err instanceof Error ? err.message : String(err)
     console.warn(`[teams-login] session refresh failed: ${m}`)
   } finally {
-    await page.close().catch(() => {})
+    await page?.close().catch(() => {})
   }
 }
 

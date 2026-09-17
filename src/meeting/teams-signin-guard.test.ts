@@ -2,29 +2,38 @@ import { SIGNED_IN_PREJOIN_RETRIES, signedInPreJoinAction } from "./teams-signin
 
 describe("signedInPreJoinAction", () => {
   it.each(["anonymous", "fail"] as const)(
-    "joins signed in when no guest name field shows (fallback %s)",
+    "joins signed in on a confirmed signed-in pre-join (fallback %s)",
     (fallback) => {
-      expect(signedInPreJoinAction(false, 0, fallback)).toBe("join_signed_in")
-      expect(signedInPreJoinAction(false, SIGNED_IN_PREJOIN_RETRIES, fallback)).toBe(
+      expect(signedInPreJoinAction("signed_in", 0, fallback)).toBe("join_signed_in")
+      expect(signedInPreJoinAction("signed_in", SIGNED_IN_PREJOIN_RETRIES, fallback)).toBe(
         "join_signed_in"
       )
     }
   )
 
-  it("retries the sign-in while retries remain", () => {
-    for (let used = 0; used < SIGNED_IN_PREJOIN_RETRIES; used++) {
-      expect(signedInPreJoinAction(true, used, "anonymous")).toBe("retry_sign_in")
-      expect(signedInPreJoinAction(true, used, "fail")).toBe("retry_sign_in")
+  it.each(["signed_out", "unresolved"] as const)(
+    "retries the sign-in on a %s pre-join while retries remain",
+    (state) => {
+      for (let used = 0; used < SIGNED_IN_PREJOIN_RETRIES; used++) {
+        expect(signedInPreJoinAction(state, used, "anonymous")).toBe("retry_sign_in")
+        expect(signedInPreJoinAction(state, used, "fail")).toBe("retry_sign_in")
+      }
     }
-  })
+  )
 
-  it("joins as a guest once retries are spent and the fallback is anonymous", () => {
-    expect(signedInPreJoinAction(true, SIGNED_IN_PREJOIN_RETRIES, "anonymous")).toBe(
-      "join_anonymously"
-    )
-  })
+  it.each(["signed_out", "unresolved"] as const)(
+    "joins as a guest on a %s pre-join once retries are spent and the fallback is anonymous",
+    (state) => {
+      expect(signedInPreJoinAction(state, SIGNED_IN_PREJOIN_RETRIES, "anonymous")).toBe(
+        "join_anonymously"
+      )
+    }
+  )
 
-  it("fails once retries are spent and the fallback is fail", () => {
-    expect(signedInPreJoinAction(true, SIGNED_IN_PREJOIN_RETRIES, "fail")).toBe("fail")
-  })
+  it.each(["signed_out", "unresolved"] as const)(
+    "fails on a %s pre-join once retries are spent and the fallback is fail",
+    (state) => {
+      expect(signedInPreJoinAction(state, SIGNED_IN_PREJOIN_RETRIES, "fail")).toBe("fail")
+    }
+  )
 })
