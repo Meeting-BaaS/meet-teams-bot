@@ -898,7 +898,7 @@ export class TeamsProvider implements MeetingProviderInterface {
             this.meetingLink = (await this.parseMeetingUrl(GLOBAL.get().meeting_url)).meetingId
             await page.goto(this.meetingLink, { waitUntil: "load", timeout: 15_000 })
           } catch (e) {
-            console.warn(`[teams] guest meeting reload failed: ${formatError(e)}`)
+            console.warn(`[teams] guest meeting reload failed: ${formatError(e).message}`)
           }
         }
         return false
@@ -918,7 +918,7 @@ export class TeamsProvider implements MeetingProviderInterface {
       await HtmlSnapshotService.getInstance().captureSnapshot(page, "teams_signed_out_prejoin")
       await refreshTeamsSession(page.context(), config)
       await this.navigateToMeeting(page, this.meetingLink).catch((e) =>
-        console.warn(`[teams] meeting reload failed: ${formatError(e)}`)
+        console.warn(`[teams] meeting reload failed: ${formatError(e).message}`)
       )
       await reachSignedInPreJoin(page)
     }
@@ -935,7 +935,9 @@ export class TeamsProvider implements MeetingProviderInterface {
         await joinPersonalMeetingById(page, personal)
         return null
       } catch (e) {
-        console.warn(`[teams] join by ID from Calendar failed, loading the link: ${formatError(e)}`)
+        console.warn(
+          `[teams] join by ID from Calendar failed, loading the link: ${formatError(e).message}`
+        )
       }
     }
     return page.goto(link, { waitUntil: "load", timeout: 15_000 })
@@ -1081,7 +1083,9 @@ async function reachSignedInPreJoin(page: Page): Promise<void> {
       .first()
       .click({ timeout: 3_000 })
       .then(() => console.log('✅ [teams] clicked "Continue on this browser"'))
-      .catch((e) => console.warn(`[teams] continue-on-browser click failed: ${formatError(e)}`))
+      .catch((e) =>
+        console.warn(`[teams] continue-on-browser click failed: ${formatError(e).message}`)
+      )
     if (preJoinPat) {
       await patternLocator(page, preJoinPat)
         .first()

@@ -47,6 +47,8 @@ export const TEAMS_CLEANUP_STYLE_ID = "mbaas-teams-cleanup-style"
 export async function setupTeamsCleanupStyles(page: Page): Promise<void> {
   await page.addInitScript(
     ({ css, id }: { css: string; id: string }) => {
+      // Outlook's hosted Calendar iframe (join by ID) wraps its dialog fields in role="alert".
+      if (/(^|\.)outlook\./i.test(location.hostname)) return
       const install = () => {
         const root = document.head || document.documentElement
         if (!root || document.getElementById(id)) return
