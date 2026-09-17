@@ -887,6 +887,15 @@ export class TeamsProvider implements MeetingProviderInterface {
       if (action === "join_anonymously") {
         console.warn(`[teams] pre-join still ${state} — joining as a guest (fallback: anonymous)`)
         GLOBAL.clearTeamsLoginConfig()
+        // A shown guest pre-join is already the guest flow; a page that never loaded reopens the guest link.
+        if (state === "unresolved") {
+          try {
+            this.meetingLink = (await this.parseMeetingUrl(GLOBAL.get().meeting_url)).meetingId
+            await page.goto(this.meetingLink, { waitUntil: "load", timeout: 15_000 })
+          } catch (e) {
+            console.warn(`[teams] guest meeting reload failed: ${formatError(e)}`)
+          }
+        }
         return false
       }
       if (action === "fail") {
