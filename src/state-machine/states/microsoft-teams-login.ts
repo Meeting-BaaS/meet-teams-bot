@@ -164,6 +164,37 @@ export async function loginToTeamsWithCredentials(
   }
 }
 
+/** Re-warm the Teams web session in a side tab after a meeting page opened signed out. */
+export async function refreshTeamsSession(
+  browserContext: BrowserContext,
+  config: TeamsLoginConfig
+): Promise<void> {
+  let page: Page | undefined
+  try {
+    page = await browserContext.newPage()
+    // Deliberately awaited (bounded): handing off on cookies alone is what lost the session originally.
+    const authorized = page
+      .waitForResponse((r) => r.url().includes("/authsvc/v1.0/authz") && r.ok(), {
+        timeout: 20_000
+      })
+      .then(() => true)
+      .catch(() => false)
+    await page.goto("https://teams.microsoft.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: 30_000
+    })
+    await settleTeamsAuth(browserContext, page, config, 20_000)
+    console.info(
+      `[teams-login] session refresh: Teams authz ${(await authorized) ? "completed" : "not observed"}`
+    )
+  } catch (err) {
+    const m = err instanceof Error ? err.message : String(err)
+    console.warn(`[teams-login] session refresh failed: ${m}`)
+  } finally {
+    await page?.close().catch(() => {})
+  }
+}
+
 async function resolveCredentials(config: TeamsLoginConfig): Promise<ResolvedCredentials> {
   // LOCAL TESTING ONLY: if TEAMS_LOGIN_LOCAL_PASSWORD is set, skip the api-server
   // resolve-session fetch and sign in with login_email + this password directly.
