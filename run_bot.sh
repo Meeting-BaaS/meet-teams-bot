@@ -400,6 +400,16 @@ run_with_config() {
         debug_env="-e LOG_LEVEL=debug"
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
+
+    # Profiler: start.sh launches it when PROFILER=true. The mount keeps the local
+    # collector in use without another rebuild after the image already has it.
+    local profiler_args=""
+    if [ "${PROFILER:-false}" = "true" ]; then
+        local profiler_dir="$(cd "$(dirname "$0")" && pwd)/profiler"
+        local profiler_interval=${PROFILER_INTERVAL_MS:-10000}
+        profiler_args="-e PROFILER=true -e PROFILER_INTERVAL_MS=$profiler_interval -v $profiler_dir:/app/profiler:ro"
+        print_info "📊 Profiler enabled - sampling every ${profiler_interval}ms"
+    fi
     
     # Get .env file argument if .env exists
     local env_file_arg=$(get_env_file_arg)
@@ -415,6 +425,7 @@ run_with_config() {
         -e RECORDING="$recording_mode" \
         -e ENVIRON="local" \
         $debug_env \
+        $profiler_args \
         -v "$(pwd)/$output_dir:/app/recordings" \
         -v "$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate_custom_branding.sh:/generate_custom_branding.sh:ro" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
@@ -525,6 +536,16 @@ run_with_config_and_overrides() {
         debug_env="-e LOG_LEVEL=debug"
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
+
+    # Profiler: start.sh launches it when PROFILER=true. The mount keeps the local
+    # collector in use without another rebuild after the image already has it.
+    local profiler_args=""
+    if [ "${PROFILER:-false}" = "true" ]; then
+        local profiler_dir="$(cd "$(dirname "$0")" && pwd)/profiler"
+        local profiler_interval=${PROFILER_INTERVAL_MS:-10000}
+        profiler_args="-e PROFILER=true -e PROFILER_INTERVAL_MS=$profiler_interval -v $profiler_dir:/app/profiler:ro"
+        print_info "📊 Profiler enabled - sampling every ${profiler_interval}ms"
+    fi
     
     # Get .env file argument if .env exists
     local env_file_arg=$(get_env_file_arg)
@@ -540,6 +561,7 @@ run_with_config_and_overrides() {
         -e RECORDING="$recording_mode" \
         -e ENVIRON="local" \
         $debug_env \
+        $profiler_args \
         -v "$(pwd)/$output_dir:/app/recordings" \
         -v "$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate_custom_branding.sh:/generate_custom_branding.sh:ro" \
         "$(get_docker_image)" 2>&1 | while IFS= read -r line; do
@@ -648,6 +670,16 @@ run_with_json() {
         debug_env="-e LOG_LEVEL=debug"
         print_info "🐛 DEBUG logs enabled - verbose speakers logging activated"
     fi
+
+    # Profiler: start.sh launches it when PROFILER=true. The mount keeps the local
+    # collector in use without another rebuild after the image already has it.
+    local profiler_args=""
+    if [ "${PROFILER:-false}" = "true" ]; then
+        local profiler_dir="$(cd "$(dirname "$0")" && pwd)/profiler"
+        local profiler_interval=${PROFILER_INTERVAL_MS:-10000}
+        profiler_args="-e PROFILER=true -e PROFILER_INTERVAL_MS=$profiler_interval -v $profiler_dir:/app/profiler:ro"
+        print_info "📊 Profiler enabled - sampling every ${profiler_interval}ms"
+    fi
     
     # Get .env file argument if .env exists
     local env_file_arg=$(get_env_file_arg)
@@ -662,6 +694,7 @@ run_with_json() {
         -e RECORDING="$recording_mode" \
         -e ENVIRON="local" \
         $debug_env \
+        $profiler_args \
         -v "$(pwd)/$output_dir:/app/recordings" \
         -v "$(cd "$(dirname "$0")/../.." && pwd)/scripts/generate_custom_branding.sh:/generate_custom_branding.sh:ro" \
         "$(get_docker_image)"
@@ -1055,6 +1088,10 @@ show_help() {
     echo "  DEBUG=true|false            - Enable/disable debug mode with VNC (default: false)"
     echo "  DEBUG_LOGS=true|false       - Enable/disable speakers debug logs (default: false)"
     echo
+    echo "Flags (run / debug):"
+    echo "  --profile                    - Print per-process CPU/memory while the bot runs"
+    echo "  --profile=<ms>               - Same, with a custom sampling interval (default: 10000)"
+    echo
     echo "Examples:"
     echo "  $0 build"
     echo "  $0 run params.json"
@@ -1065,6 +1102,8 @@ show_help() {
     echo "  RECORDING=false $0 debug params.json  # Debug without video recording"
     echo "  DEBUG=true $0 run params.json       # Run with VNC debug access only"
     echo "  DEBUG_LOGS=true $0 run params.json  # Run with speakers debug logs only"
+    echo "  $0 run params.json --profile        # Run with CPU/memory profiling"
+    echo "  $0 run params.json --profile=500    # Profile every 500ms"
     echo "  $0 run-json '{\"meeting_url\":\"https://meet.google.com/abc-def-ghi\", \"bot_name\":\"RecordingBot\"}'"
     echo "  RECORDING=false $0 run-json '{...}'  # Run JSON config without recording"
     echo "  DEBUG=true $0 run-json '{...}'      # Run JSON config with VNC debug"
@@ -1111,7 +1150,18 @@ main() {
             fi
             # All remaining args are key=value overrides
             while [ -n "${1:-}" ]; do
-                overrides+=("$1")
+                case "$1" in
+                    --profile)
+                        export PROFILER=true
+                        ;;
+                    --profile=*)
+                        export PROFILER=true
+                        export PROFILER_INTERVAL_MS="${1#--profile=}"
+                        ;;
+                    *)
+                        overrides+=("$1")
+                        ;;
+                esac
                 shift
             done
             if [ ! -f "$config_file" ]; then
@@ -1131,7 +1181,18 @@ main() {
                 shift
             fi
             while [ -n "${1:-}" ]; do
-                overrides+=("$1")
+                case "$1" in
+                    --profile)
+                        export PROFILER=true
+                        ;;
+                    --profile=*)
+                        export PROFILER=true
+                        export PROFILER_INTERVAL_MS="${1#--profile=}"
+                        ;;
+                    *)
+                        overrides+=("$1")
+                        ;;
+                esac
                 shift
             done
             if [ ! -f "$config_file" ]; then
