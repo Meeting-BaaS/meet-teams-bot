@@ -29,6 +29,8 @@ describe("personalTeamsMeeting", () => {
     "https://teams.microsoft.com/meet/33493510506560?p=abc",
     "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d",
     "https://teams.live.com/light-meetings/launch?coords=abc",
+    "https://otherteams.live.com/meet/9316626699519?p=abc",
+    "https://teams.live.com/meet/9316626699519abc?p=abc",
     "not a url"
   ])("ignores %p", (link) => {
     expect(personalTeamsMeeting(link)).toBeNull()

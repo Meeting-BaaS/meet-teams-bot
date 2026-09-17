@@ -26,8 +26,9 @@ export interface PersonalTeamsMeeting {
 export function personalTeamsMeeting(link: string): PersonalTeamsMeeting | null {
   try {
     const url = new URL(link)
-    const match = url.pathname.match(/^\/meet\/(\d+)/)
-    if (!url.hostname.endsWith("teams.live.com") || !match) return null
+    const host = url.hostname.toLowerCase()
+    const match = url.pathname.match(/^\/meet\/(\d+)\/?$/)
+    if ((host !== "teams.live.com" && !host.endsWith(".teams.live.com")) || !match) return null
     return { meetingId: match[1], passcode: url.searchParams.get("p") ?? "" }
   } catch {
     return null
