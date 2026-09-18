@@ -149,6 +149,26 @@ export class SpeakerManager {
         console.log(`[SpeakerManager] Live name-fills applied this call: ${instance.liveNameFills}`)
       }
       instance.observeAttributionShadow(() => instance.attributionShadow.finalize(lastTimestamp))
+      instance.warnUnresolvedUnknownIdentities()
+    }
+  }
+
+  private warnUnresolvedUnknownIdentities(): void {
+    try {
+      const unknownSpeakers = GLOBAL.getSpeakers().filter(
+        (speaker) => speaker.name === UNKNOWN_SPEAKER
+      ).length
+      const unknownParticipants = GLOBAL.getParticipants().filter(
+        (participant) => participant.name === UNKNOWN_SPEAKER
+      ).length
+      if (unknownSpeakers === 0 && unknownParticipants === 0) {
+        return
+      }
+      console.warn(
+        `[SpeakerAlert] unresolved_unknown speakers=${unknownSpeakers} participants=${unknownParticipants}`
+      )
+    } catch {
+      console.error("[SpeakerAlert] unresolved_unknown check failed")
     }
   }
 

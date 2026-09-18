@@ -338,4 +338,20 @@ describe("DiarizationTracker final re-assembly", () => {
       }
     ])
   })
+
+  it("alerts when assembled segments remain Unknown after repair", async () => {
+    const tracker = freshTracker()
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+
+    tracker.updateSpeaker(speech("orphan-ssrc", "Unknown", 1), MEETING_START)
+
+    await tracker.end(MEETING_START + 8000, MEETING_START, () => undefined)
+
+    const alerts = warnSpy.mock.calls.filter((call) =>
+      String(call[0]).includes("[SpeakerAlert] unresolved_unknown segments=")
+    )
+    expect(alerts).toHaveLength(1)
+    expect(String(alerts[0][0])).toMatch(/segments=\d+\/\d+/)
+    warnSpy.mockRestore()
+  })
 })

@@ -29,6 +29,8 @@ jest.mock("./singleton", () => ({
       addOnce(registeredParticipants, participant.name),
     addSpeakerIfNotExists: (participant: Participant) =>
       addOnce(registeredSpeakers, participant.name),
+    getSpeakers: () => registeredSpeakers.map((name) => ({ name })),
+    getParticipants: () => registeredParticipants.map((name) => ({ name })),
     hasNetworkInterceptionSetupFailed: () => networkInterceptionFailed,
     hasDiarizationFallbackTriggered: () => diarizationFallbackTriggered,
     hasRearmedNetworkDiarization: () => rearmedNetworkDiarization
@@ -826,5 +828,56 @@ describe("UI freshness and unresolved source identities", () => {
       userId: updates[0][0].id
     })
     expect((manager as any).resolveDeviceForBackfill("source-b")).toBeUndefined()
+  })
+})
+
+describe("SpeakerManager unresolved Unknown alert at finalize", () => {
+  beforeEach(() => {
+    registeredSpeakers.length = 0
+    registeredParticipants.length = 0
+    params = { bot_name: "SPEAKER SEP Test", streaming_input: undefined }
+    networkInterceptionFailed = false
+    diarizationFallbackTriggered = false
+    rearmedNetworkDiarization = false
+    ;(SpeakerManager as unknown as { instance: SpeakerManager | null }).instance = null
+    jest.spyOn(console, "table").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    jest.restoreAllMocks()
+  })
+
+  it("warns once when Unknown remains on the speaker list after finalize", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Unknown", true, "orphan-ssrc")],
+      1785941000000
+    )
+
+    await SpeakerManager.finalize()
+
+    const alerts = warnSpy.mock.calls.filter((call) =>
+      String(call[0]).includes("[SpeakerAlert] unresolved_unknown")
+    )
+    expect(alerts).toHaveLength(1)
+    expect(String(alerts[0][0])).toContain("speakers=1")
+    expect(String(alerts[0][0])).toContain("participants=1")
+  })
+
+  it("does not warn when every identity resolved", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
+    const manager = SpeakerManager.getInstance()
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Alice", true, "device-1")],
+      1785941000000
+    )
+
+    await SpeakerManager.finalize()
+
+    const alerts = warnSpy.mock.calls.filter((call) =>
+      String(call[0]).includes("[SpeakerAlert] unresolved_unknown")
+    )
+    expect(alerts).toHaveLength(0)
   })
 })

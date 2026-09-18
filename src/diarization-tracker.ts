@@ -320,7 +320,7 @@ export class DiarizationTracker {
     const stillUnknown = assembled.filter((s) => s.speaker === UNKNOWN_SPEAKER).length
     if (stillUnknown > 0) {
       console.warn(
-        `[DiarizationTracker] ${stillUnknown}/${assembled.length} segment(s) remain "${UNKNOWN_SPEAKER}" — no source ever resolved those stretches`
+        `[SpeakerAlert] unresolved_unknown segments=${stillUnknown}/${assembled.length}`
       )
     }
     console.log(`Diarization tracking completed: ${this.filePath}`)
