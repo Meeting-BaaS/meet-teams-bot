@@ -62,6 +62,7 @@ jest.mock("./utils/PiiRedactor", () => ({
 }))
 
 import { SpeakerManager } from "./speaker-manager"
+import { UI_NAME_FILL_MAX_AGE_MS } from "./utils/ui-name-fill"
 
 function networkUser(name: string, isSpeaking: boolean, deviceId: string): NetworkUser {
   return { name, fullName: name, isSpeaking, deviceId } as NetworkUser
@@ -307,10 +308,36 @@ describe("SpeakerManager live name-fill for unresolved network speakers", () => 
     )
     await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
 
-    nowSpy.mockReturnValue(1_000_000 + 6_000)
+    nowSpy.mockReturnValue(1_000_000 + UI_NAME_FILL_MAX_AGE_MS + 1)
     await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
 
     expect(registeredSpeakers).toEqual(["Net Speaker", "Unknown"])
+  })
+
+  it("counts an expired evidence record once, and again after new evidence", async () => {
+    const manager = SpeakerManager.getInstance()
+    const nowSpy = jest.spyOn(Date, "now").mockReturnValue(1_000_000)
+
+    await manager.handleNetworkSpeakerUpdate(
+      [networkUser("Net Speaker", true, "device-1")],
+      1785941000000
+    )
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+
+    nowSpy.mockReturnValue(1_000_000 + UI_NAME_FILL_MAX_AGE_MS + 1)
+    // Several periodic updates hit the same stale evidence record.
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000200)
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000300)
+
+    expect((manager as unknown as { liveFillExpiredRejections: number }).liveFillExpiredRejections).toBe(1)
+
+    // A new snapshot replaces the record; its expiry is countable again.
+    await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
+    nowSpy.mockReturnValue(1_000_000 + 2 * (UI_NAME_FILL_MAX_AGE_MS + 1))
+    await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000400)
+
+    expect((manager as unknown as { liveFillExpiredRejections: number }).liveFillExpiredRejections).toBe(2)
   })
 
   it("never overwrites a resolved network name with UI evidence", async () => {
