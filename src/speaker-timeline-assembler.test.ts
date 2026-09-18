@@ -1,396 +1,165 @@
 import type { DiarizationSegment } from "./diarization-tracker"
-import {
-  assembleSpeakerTimeline,
-  GAP_FILL_MIN_SECONDS,
-  LEADING_RETROFIT_MAX_SECONDS,
-  SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
-} from "./speaker-timeline-assembler"
+import { assembleSpeakerTimeline } from "./speaker-timeline-assembler"
 
-function seg(
-  speaker: string,
-  start: number,
-  end: number,
-  userId = 2
-): DiarizationSegment {
-  return { speaker, user_id: userId, start_time: start, end_time: end }
-}
+const seg = (speaker: string, start: number, end: number, id = 1): DiarizationSegment => ({
+  speaker,
+  user_id: id,
+  start_time: start,
+  end_time: end
+})
 
-describe("assembleSpeakerTimeline", () => {
-  it("keeps the primary (network) timeline untouched when it has no holes", () => {
-    const network = [seg("Amr", 0, 50), seg("Jonny", 50, 100)]
-    const { segments, filledBySource } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: network },
-        { kind: "ui", segments: [seg("Impostor", 10, 90, 0)] }
-      ],
-      100
-    )
-    expect(segments).toEqual(network)
-    expect(filledBySource.ui).toBeUndefined()
-  })
-
-  it("fills a mid-call hole from the UI source, clipped to the hole", () => {
-    // Network went quiet 100→160; UI saw Jonny speaking 90→150.
-    const { segments, filledBySource } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Amr", 20, 100), seg("Amr", 160, 200)] },
-        { kind: "ui", segments: [seg("Jonny", 90, 150, 0)] }
-      ],
-      200
-    )
-    expect(filledBySource.ui).toBe(1)
-    const filled = segments.find((s) => s.speaker === "Jonny")
-    expect(filled).toEqual(seg("Jonny", 100, 150, 0))
-  })
-
-  it("ignores holes shorter than the gap threshold (ordinary turn-taking silence)", () => {
-    const shortGapEnd = 100 + GAP_FILL_MIN_SECONDS - 1
-    const { segments } = assembleSpeakerTimeline(
-      [
-        {
-          kind: "network",
-          segments: [seg("Amr", 0, 100), seg("Amr", shortGapEnd, 200)]
-        },
-        { kind: "ui", segments: [seg("Jonny", 100, shortGapEnd, 0)] }
-      ],
-      200
-    )
-    expect(segments.some((s) => s.speaker === "Jonny")).toBe(false)
-  })
-
-  it("consults sources in trust order: transcription only fills what UI left", () => {
-    const { segments, filledBySource } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Amr", 0, 100)] },
-        { kind: "ui", segments: [seg("Jonny", 100, 150, 0)] },
-        // Overlaps UI's contribution AND the still-open 150→200 hole: only the
-        // uncovered part survives.
-        { kind: "transcription", segments: [seg("Speaker 1", 120, 200, 0)] }
-      ],
-      200
-    )
-    expect(filledBySource.ui).toBe(1)
-    expect(filledBySource.transcription).toBe(1)
-    const fromTranscription = segments.find((s) => s.speaker === "Speaker 1")
-    expect(fromTranscription).toEqual(seg("Speaker 1", 150, 200, 0))
-  })
-
-  it("never lets a fallback contribute an Unknown segment", () => {
-    const { segments } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Amr", 15, 200)] },
-        { kind: "ui", segments: [seg("Unknown", 0, 12, 0)] }
-      ],
-      200
-    )
-    // Unknown was rejected, so only the retrofit covers the leading window.
-    expect(segments.every((s) => s.speaker === "Amr")).toBe(true)
-  })
-
-  it("retrofits the boot gap onto the first identified speaker", () => {
-    // Prod case 8db02fee: first utterance ("Grazie.") at 6.1s, first
-    // diarization segment much later — the greeting surfaced as Unknown.
-    const { segments } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Opener", 14, 300), seg("Guest", 300, 400)] }],
-      400
-    )
-    expect(segments[0]).toEqual(seg("Opener", 0, 300))
-  })
-
-  it("does not retrofit past the cap — a first segment that late means something broke", () => {
-    const lateStart = LEADING_RETROFIT_MAX_SECONDS + 1
-    const { segments } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Amr", lateStart, lateStart + 60)] }],
-      lateStart + 60
-    )
-    expect(segments[0].start_time).toBe(lateStart)
-  })
-
-  it("retrofits onto the first NAMED segment and clips the Unknown it now covers", () => {
-    const { segments } = assembleSpeakerTimeline(
-      [
-        {
-          kind: "network",
-          segments: [seg("Unknown", 5, 15, 0), seg("Amr", 18, 100)]
-        }
-      ],
-      100
-    )
-    // The retrofit stretches Amr over the Unknown; leaving the Unknown in
-    // place would still win the opening words downstream (overlap pick).
-    expect(segments).toEqual([seg("Amr", 0, 100)])
-  })
-
-  it("lets a named fallback win a stretch the network only knew as Unknown", () => {
-    const { segments, filledBySource } = assembleSpeakerTimeline(
-      [
-        {
-          kind: "network",
-          segments: [seg("Amr", 0, 100), seg("Unknown", 100, 160, 0), seg("Amr", 160, 200)]
-        },
-        { kind: "ui", segments: [seg("Jonny", 110, 150, 0)] }
-      ],
-      200
-    )
-    expect(filledBySource.ui).toBe(1)
-    expect(segments.find((s) => s.speaker === "Jonny")).toEqual(seg("Jonny", 110, 150, 0))
-    // The Unknown keeps only its uncovered remainders — Jonny's span is
-    // Unknown-free.
-    for (const s of segments.filter((x) => x.speaker === "Unknown")) {
-      expect(s.end_time <= 110 || s.start_time >= 150).toBe(true)
+describe("speaker attribution priority (including no STT)", () => {
+  it("uses a single UI speaker for a one-second unresolved network interval", () => {
+    for (const name of ["Unknown"]) {
+      const { segments } = assembleSpeakerTimeline(
+        [
+          { kind: "network", segments: [seg(name, 0, 10)] },
+          { kind: "ui", segments: [seg("UI Guest", 3, 4, 2)] }
+        ],
+        10
+      )
+      expect(segments).toEqual([
+        { ...seg(name, 0, 3), source: "network" },
+        { ...seg("UI Guest", 3, 4, 2), source: "ui" },
+        { ...seg(name, 4, 10), source: "network" }
+      ])
     }
   })
 
-  it("keeps the uncovered remainder of a partially covered Unknown", () => {
+  it("preserves resolved network names and exact boundaries despite conflicting UI", () => {
+    const network = [seg("Host", 0, 3), seg("Guest", 3, 4, 2), seg("Host", 4, 10)]
+    const { segments } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: [seg("Lagging UI", 2, 5, 3)] }
+      ],
+      10
+    )
+    expect(segments).toEqual(network.map((s) => ({ ...s, source: "network" })))
+  })
+
+  it("fills a short missing network interval without overwriting its named edges", () => {
+    const { segments } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Host", 0, 3), seg("Host", 4, 10)] },
+        { kind: "ui", segments: [seg("Guest", 2, 5, 2)] }
+      ],
+      10
+    )
+    expect(segments).toEqual([
+      { ...seg("Host", 0, 3), source: "network" },
+      { ...seg("Guest", 3, 4, 2), source: "ui" },
+      { ...seg("Host", 4, 10), source: "network" }
+    ])
+  })
+
+  it("does not let UI erase concurrent named and unresolved network sources", () => {
+    const network = [seg("Host", 0, 10), seg("Unknown", 3, 5, 2)]
+    const { segments } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: network },
+        { kind: "ui", segments: [seg("UI Guest", 3, 5, 3)] }
+      ],
+      10
+    )
+    expect(segments).toEqual(network.map((s) => ({ ...s, source: "network" })))
+  })
+
+  it.each(["Other Guest", "Unknown"])("falls back to network for ambiguous UI (%s)", (other) => {
+    const { segments } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "ui",
+          segments: [seg("Guest", 0, 10, 2), seg(other, 0, 10, 3)]
+        },
+        { kind: "network", segments: [seg("Network Guest", 0, 10)] },
+        {
+          kind: "transcription",
+          segments: [seg("Acoustic Guest", 0, 10, 4)]
+        }
+      ],
+      10
+    )
+    expect(segments).toEqual([{ ...seg("Network Guest", 0, 10), source: "network" }])
+  })
+
+  it("keeps different unresolved source IDs separate without STT", () => {
     const { segments } = assembleSpeakerTimeline(
       [
         {
           kind: "network",
-          // Named coverage [0..50] overlaps the Unknown's head only.
-          segments: [seg("Amr", 0, 50), seg("Unknown", 40, 90, 0), seg("Amr", 320, 400)]
+          segments: [seg("Unknown", 1, 3, 1), seg("Unknown", 3, 5, 2)]
         }
       ],
-      400
+      10
     )
-    // First named segment starts at 0 → no retrofit. Unknown survives as its
-    // uncovered tail.
-    expect(segments.find((s) => s.speaker === "Unknown")).toEqual(seg("Unknown", 50, 90, 0))
+    expect(segments.map((s) => s.user_id)).toEqual([1, 2])
+    expect(segments.map((s) => s.start_time)).toEqual([1, 3])
+    expect(segments[1].end_time).toBe(5)
   })
 
-  it("handles an empty network timeline: the UI source fills the whole meeting", () => {
-    const { segments, filledBySource } = assembleSpeakerTimeline(
+  it("does not extend any source into an unobserved opening or tail", () => {
+    const { segments } = assembleSpeakerTimeline(
+      [{ kind: "ui", segments: [seg("Guest", 5, 7)] }],
+      10
+    )
+    expect(segments).toEqual([{ ...seg("Guest", 5, 7), source: "ui" }])
+  })
+
+  it("uses transcription only when UI and network cannot name the interval", () => {
+    const { segments } = assembleSpeakerTimeline(
       [
-        { kind: "network", segments: [] },
-        { kind: "ui", segments: [seg("Jonny", 5, 60, 0)] }
+        { kind: "network", segments: [seg("Unknown", 0, 10)] },
+        { kind: "transcription", segments: [seg("Guest", 3, 5, 2)] }
       ],
-      120
+      10
     )
-    expect(filledBySource.ui).toBe(1)
-    expect(segments).toEqual([seg("Jonny", 0, 60, 0)])
-  })
-})
-
-describe("assembleSpeakerTimeline retrofit reporting", () => {
-  it("reports the original start the retrofit stretched from", () => {
-    const { retrofittedFromSeconds } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Opener", 14, 300)] }],
-      300
-    )
-    expect(retrofittedFromSeconds).toBe(14)
+    expect(segments[1]).toEqual({
+      ...seg("Guest", 3, 5, 2),
+      source: "transcription"
+    })
   })
 
-  it("reports nothing when no retrofit happened", () => {
-    const { retrofittedFromSeconds } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Amr", 0, 60)] }],
-      60
+  it("filters the recording bot before assessing UI ambiguity", () => {
+    const { segments } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "ui",
+          segments: [seg("Notetaker", 0, 10), seg("Guest", 0, 10, 2)]
+        }
+      ],
+      10,
+      { botNames: ["Notetaker"] }
     )
-    expect(retrofittedFromSeconds).toBeUndefined()
+    expect(segments).toEqual([{ ...seg("Guest", 0, 10, 2), source: "ui" }])
   })
-})
 
-describe("assembleSpeakerTimeline bot exclusion", () => {
-  it("never stretches the bot's own segment over the boot gap", () => {
-    // Prod bot 7ff21856: the bot's join announcement was the first diarized
-    // segment and the retrofit stretched IT to 0 instead of a human's.
-    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+  it("preserves concurrent network identities without picking one arbitrarily", () => {
+    const { segments } = assembleSpeakerTimeline(
       [
         {
           kind: "network",
-          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 18, 100)]
+          segments: [seg("Guest", 0, 10), seg("Host", 3, 5, 2)]
         }
       ],
-      100,
-      { botNames: ["MeetingBaaS's Notetaker"] }
+      10
     )
-    expect(retrofittedFromSeconds).toBe(18)
-    expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
-    expect(segments.find((s) => s.speaker === "MeetingBaaS's Notetaker")).toEqual(
-      seg("MeetingBaaS's Notetaker", 7, 14)
-    )
+    expect(segments).toEqual([
+      { ...seg("Guest", 0, 10), source: "network" },
+      { ...seg("Host", 3, 5, 2), source: "network" }
+    ])
   })
-})
 
-describe("assembleSpeakerTimeline multi-name bot exclusion", () => {
-  it("excludes the learned displayed name even when it differs from bot_name", () => {
-    // SSO: configured "Amr's Notetaker", displayed "MeetingBaaS's Notetaker".
-    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
+  it("clips invalid bounds and ignores empty segments", () => {
+    const { segments } = assembleSpeakerTimeline(
       [
         {
           kind: "network",
-          segments: [seg("MeetingBaaS's Notetaker", 7, 14), seg("Amr", 18, 100)]
+          segments: [seg("Guest", -2, 20), seg("Host", 2, 2)]
         }
       ],
-      100,
-      { botNames: ["Amr's Notetaker", "MeetingBaaS's Notetaker"] }
+      10
     )
-    expect(retrofittedFromSeconds).toBe(18)
-    expect(segments.find((s) => s.speaker === "Amr")?.start_time).toBe(0)
-  })
-})
-
-
-describe("assembleSpeakerTimeline retrofit cap", () => {
-  it("does not stretch a first segment that opens later than the greeting window", () => {
-    // Prod bot 013722ff: the guest's lone ~1s segment at +146.6s was stretched
-    // to 0s, inflating his talk-time to 147s and masking a collapse downstream.
-    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Guest", 146.6, 147.6), seg("Host", 147.6, 2400)] }],
-      2400
-    )
-    expect(retrofittedFromSeconds).toBeUndefined()
-    expect(segments[0]).toEqual(seg("Guest", 146.6, 147.6))
-  })
-})
-
-describe("assembleSpeakerTimeline retrofit cap boundary", () => {
-  it("retrofits a first segment opening exactly at the cap", () => {
-    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Opener", LEADING_RETROFIT_MAX_SECONDS, 60)] }],
-      60
-    )
-    expect(retrofittedFromSeconds).toBe(LEADING_RETROFIT_MAX_SECONDS)
-    expect(segments[0]?.start_time).toBe(0)
-  })
-
-  it("does not retrofit a first segment opening just past the cap", () => {
-    const start = LEADING_RETROFIT_MAX_SECONDS + 0.1
-    const { segments, retrofittedFromSeconds } = assembleSpeakerTimeline(
-      [{ kind: "network", segments: [seg("Opener", start, 60)] }],
-      60
-    )
-    expect(retrofittedFromSeconds).toBeUndefined()
-    expect(segments[0]?.start_time).toBe(start)
-  })
-})
-
-describe("assembleSpeakerTimeline source dissonance", () => {
-  // Prod bot 22e3adba: network pinned a two-person call on one speaker.
-  const network = [seg("Stefano", 0, 1400, 2)]
-  const ui = [seg("Stefano", 0, 640, 2), seg("Emanuele", 640, 1350, 3)]
-
-  it("promotes corroborated multi-speaker evidence when the primary collapsed", () => {
-    const { segments, filledBySource, sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: network },
-        { kind: "ui", segments: ui }
-      ],
-      1400
-    )
-
-    expect(sourceDissonance).toMatchObject({
-      reason: "primary_dominated_challenger_multi_speaker",
-      demotedSource: "network",
-      promotedSource: "ui",
-      primaryEffectiveSpeakers: 1,
-      challengerEffectiveSpeakers: 2,
-      primaryDominance: 1
-    })
-    // The demoted primary still covers the tail the UI never reached.
-    expect(segments).toEqual([...ui, seg("Stefano", 1350, 1400, 2)])
-    expect(filledBySource.network).toBe(1)
-  })
-
-  it("does not promote a transient second speaker", () => {
-    const { segments, sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Stefano", 0, 120)] },
-        {
-          kind: "ui",
-          segments: [
-            seg("Stefano", 0, 100),
-            seg("Emanuele", 100, 100 + SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS - 0.1)
-          ]
-        }
-      ],
-      120
-    )
-    expect(sourceDissonance).toBeUndefined()
-    expect(segments).toEqual([seg("Stefano", 0, 120)])
-  })
-
-  it("does not count the recording bot as multi-speaker evidence", () => {
-    const { segments, sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Stefano", 0, 120)] },
-        {
-          kind: "ui",
-          segments: [seg("Stefano", 0, 60), seg("MeetingBaaS Notetaker", 60, 120)]
-        }
-      ],
-      120,
-      { botNames: ["MeetingBaaS Notetaker"] }
-    )
-    expect(sourceDissonance).toBeUndefined()
-    expect(segments).toEqual([seg("Stefano", 0, 120)])
-  })
-
-  it("requires a shared identity before treating disagreement as collapse", () => {
-    const { segments, sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Network Identity", 0, 120)] },
-        { kind: "ui", segments: [seg("Alice", 0, 60), seg("Bob", 60, 120)] }
-      ],
-      120
-    )
-    expect(sourceDissonance).toBeUndefined()
-    expect(segments).toEqual([seg("Network Identity", 0, 120)])
-  })
-
-  it("catches a PARTIAL collapse, where the primary found slivers of the second speaker", () => {
-    // Prod bot acf4eecf: 5,271 speaking samples against 31.
-    const { sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)] },
-        { kind: "ui", segments: ui }
-      ],
-      1400
-    )
-    expect(sourceDissonance).toMatchObject({
-      promotedSource: "ui",
-      primaryEffectiveSpeakers: 2,
-      primaryOtherSeconds: 20,
-      challengerOtherSeconds: 710
-    })
-  })
-
-  it("leaves a lopsided but CORRECT call alone when both sources agree", () => {
-    const { segments, sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: [seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)] },
-        { kind: "ui", segments: [seg("Stefano", 0, 1375, 2), seg("Emanuele", 1375, 1398, 3)] }
-      ],
-      1400
-    )
-    expect(sourceDissonance).toBeUndefined()
-    expect(segments).toEqual([seg("Stefano", 0, 1380, 2), seg("Emanuele", 1380, 1400, 3)])
-  })
-
-  it("demotes the collapsed primary BELOW every source it has not disproven", () => {
-    const { filledBySource, sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: network },
-        { kind: "ui", segments: [seg("Stefano", 0, 600, 2), seg("Emanuele", 600, 1200, 3)] },
-        { kind: "transcription", segments: [seg("Emanuele", 1200, 1395, 3)] }
-      ],
-      1400
-    )
-    expect(sourceDissonance?.promotedSource).toBe("ui")
-    expect(filledBySource.transcription).toBe(1)
-    expect(filledBySource.network).toBeUndefined()
-  })
-
-  it("accepts any lower-trust source as the challenger, not just the UI observer", () => {
-    const { sourceDissonance } = assembleSpeakerTimeline(
-      [
-        { kind: "network", segments: network },
-        { kind: "ui", segments: [] },
-        { kind: "transcription", segments: ui }
-      ],
-      1400
-    )
-    expect(sourceDissonance).toMatchObject({
-      demotedSource: "network",
-      promotedSource: "transcription"
-    })
+    expect(segments).toEqual([{ ...seg("Guest", 0, 10), source: "network" }])
   })
 })

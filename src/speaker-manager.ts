@@ -14,10 +14,10 @@ import { isBotName, silenceBotSpeaker } from "./utils/speaker-attribution"
 import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
 import { chooseLiveFillName, pickFreshUiSpeakerName } from "./utils/ui-name-fill"
 
-
 export class SpeakerManager {
   private static instance: SpeakerManager | null = null
   private currentSpeaker: SpeakerData | null = null
+  private currentSource: "ui" | "network" | null = null
   private readonly PAUSE_BETWEEN_SENTENCES = 1000 // 1 second
   private lastSpeakerTime: number | null = null
   private diarizationTracker: DiarizationTracker | null = null
@@ -28,11 +28,8 @@ export class SpeakerManager {
   // a later payload can omit a name that an earlier one carried; without this,
   // a participant flips back to "Unknown" mid-meeting.
   private deviceNames = new Map<string, string>()
-  // Stable sequential user id -> resolved name. Populated live whenever a
-  // speaker resolves to a real name. The device-keyed backfill misses speakers
-  // whose deviceId churns (CSRC/SSRC active-speaker switching: each swap is a
-  // new bare-numeric deviceId the roster never maps), but their user id stays
-  // stable — so this lets finalize repair them by user id instead of device.
+  // Stable source id -> resolved name. Different unresolved devices never
+  // share an id; learning one name cannot relabel another source.
   private userIdNames = new Map<number, string>()
   // Profile picture per device, so a backfilled segment gets the same stable id
   // the live path would have produced for that participant.
@@ -126,18 +123,18 @@ export class SpeakerManager {
             meetingStartTime,
             (deviceId) => instance.resolveDeviceForBackfill(deviceId),
             (userId) => instance.userIdNames.get(userId),
-            // Fallback sources for the final re-assembly, highest trust
-            // first; a "transcription" source plugs in here when present.
+            // Fresh single-speaker UI observations fill unresolved network intervals.
             [
               {
                 kind: "ui",
                 segments: instance.buildUiFallbackSegments(meetingStartTime, lastTimestamp)
               }
             ],
-            [GLOBAL.get().bot_name, instance.selfDisplayedName].filter(
-              (n): n is string => Boolean(n)
-            ),
-            instance.selfDeviceId
+            (GLOBAL.get().streaming_input
+              ? []
+              : [GLOBAL.get().bot_name, instance.selfDisplayedName]
+            ).filter((n): n is string => Boolean(n)),
+            GLOBAL.get().streaming_input ? undefined : instance.selfDeviceId
           )
         }
       }
@@ -159,22 +156,22 @@ export class SpeakerManager {
   }
 
   /** Final name + stable id for a device, or undefined if it never resolved. */
-  private resolveDeviceForBackfill(
-    deviceId: string
-  ): { name: string; userId: number } | undefined {
+  private resolveDeviceForBackfill(deviceId: string): { name: string; userId: number } | undefined {
     const name = this.deviceNames.get(deviceId)
     if (!name || name === UNKNOWN_SPEAKER) {
       return undefined
     }
     return {
       name,
-      userId: this.idForDevice(name, this.deviceProfilePictures.get(deviceId))
+      userId: this.idForDevice(name, this.deviceProfilePictures.get(deviceId), deviceId)
     }
   }
 
   /** Sequential id for a resolved participant, matching the live path exactly. */
-  private idForDevice(name: string, profilePicture: string | undefined): number {
-    return this.sequentialIdManager.getSequentialId(generateStableUserId(name, profilePicture))
+  private idForDevice(name: string, profilePicture: string | undefined, deviceId?: string): number {
+    return this.sequentialIdManager.getSequentialId(
+      deviceId ? `device:${deviceId}` : generateStableUserId(name, profilePicture)
+    )
   }
 
   /**
@@ -210,6 +207,8 @@ export class SpeakerManager {
       )
     )
 
+    await this.logShadowSpeakers(observed)
+
     const networkRetired =
       GLOBAL.hasNetworkInterceptionSetupFailed() || GLOBAL.hasDiarizationFallbackTriggered()
 
@@ -229,33 +228,22 @@ export class SpeakerManager {
       // is a per-call cross-check of the network path (a prod collapse where
       // the UI had the right answer was only diagnosable from video frames).
       // Attribution unchanged; lines go to speaker_separation.log redacted.
-      await this.logShadowSpeakers(observed)
       return
     }
 
     await this.handleSpeakerUpdate(
-      observed.map((speaker) => ({ ...speaker, id: this.resolveUiUserId(speaker.name) })),
+      observed.map((speaker) => ({
+        ...speaker,
+        id: this.resolveUiUserId(speaker.name, speaker.deviceId)
+      })),
       "ui-observer"
     )
   }
 
-  /**
-   * Reuse the id the network path already gave this name.
-   *
-   * The observers emit id 0 — they run in the page with no access to the
-   * sequential id manager. That was harmless while retirement was permanent, but
-   * the path can now be re-armed, so one person would land as user_id 2, then 0,
-   * then 2 again across a single meeting and read downstream as two speakers.
-   *
-   * Falls back to 0 when the network never named them, so a meeting that only
-   * ever used the observer keeps exactly the ids it has today.
-   */
-  private resolveUiUserId(name: string): number {
-    if (!name || name === UNKNOWN_SPEAKER) return 0
-    for (const [id, known] of this.userIdNames) {
-      if (id !== 0 && known === name) return id
-    }
-    return 0
+  /** Prefer the platform identity; a display name is not a unique device key. */
+  private resolveUiUserId(name: string, deviceId?: string): number {
+    if (deviceId) return this.idForDevice(name, undefined, deviceId)
+    return this.sequentialIdManager.getSequentialId(`ui:${name}`)
   }
 
   /** Remember the bot's displayed name + device once the self marker shows it. */
@@ -313,19 +301,14 @@ export class SpeakerManager {
     )
   }
 
-  public async handleSpeakerUpdate(
-    observed: SpeakerData[],
-    source: string
-  ): Promise<void> {
+  public async handleSpeakerUpdate(observed: SpeakerData[], source: string): Promise<void> {
     try {
       // Which source drives every committed speaker update: network CSRC,
       // network dcrpc (NetEq), roster, or the UI-observer bridge. This is the
       // only node-side signal of source — the browser-side interceptor logs do
       // not reach the bot log. Count only; names/ids are PII and this ships to S3.
       const speakingNow = observed.filter((s) => s.isSpeaking).length
-      console.log(
-        `[SPEAKER-SRC] source=${source} speaking=${speakingNow}/${observed.length}`
-      )
+      console.log(`[SPEAKER-SRC] source=${source} speaking=${speakingNow}/${observed.length}`)
       // A recording bot stays in the roster but can never hold the floor — see
       // silenceBotSpeaker for what happens to a meeting when it does. A bot that
       // streams audio in does speak, and keeps its turns.
@@ -365,7 +348,11 @@ export class SpeakerManager {
       this.updateMeetingState(speakers, speakersCount)
 
       // Handle the speaker transcription
-      await this.handleSpeakersTranscription(speakers, speakersCount)
+      await this.handleSpeakersTranscription(
+        speakers,
+        speakersCount,
+        source === "ui-observer" ? "ui" : "network"
+      )
     } catch (error) {
       console.error("[SpeakerManager] ❌ Error handling speaker update:", error)
       throw error
@@ -416,13 +403,13 @@ export class SpeakerManager {
 
       // Convert network users to SpeakerData format
       const speakers: SpeakerData[] = networkUsers.map((user, index) => {
-        // Use fullName as stable identifier, fallback to name (displayName)
+        // Name can resolve late; the device identity stays stable.
         let stableName = resolvedNames[index]
         if (fillName && user.isSpeaking === true && stableName === UNKNOWN_SPEAKER) {
           stableName = fillName
-          // Remember the device under the filled name: later callbacks keep the
-          // identity instead of flipping back to Unknown mid-turn, and the
-          // finalize backfill can reproduce the same stable id for this device.
+          // Remember the device under the filled name: resolveNetworkName reads this map,
+          // so later callbacks keep the identity instead of flipping back to Unknown
+          // mid-turn, and the finalize backfill reproduces the same id for this device.
           if (user.deviceId) {
             this.deviceNames.set(user.deviceId, fillName)
             this.deviceProfilePictures.set(user.deviceId, user.profilePicture)
@@ -434,8 +421,7 @@ export class SpeakerManager {
           }
           this.liveNameFills++
         }
-        const stableId = generateStableUserId(stableName, user.profilePicture)
-        const sequentialId = this.sequentialIdManager.getSequentialId(stableId)
+        const sequentialId = this.idForDevice(stableName, user.profilePicture, user.deviceId)
 
         // Store participant metadata in singleton
         const participant: Participant = {
@@ -461,8 +447,7 @@ export class SpeakerManager {
         const isSpeaking =
           user.isSpeaking === true &&
           (botCanSpeak ||
-            (!isBotName(stableName, botName) &&
-              !this.isLearnedSelf(stableName, user.deviceId)))
+            (!isBotName(stableName, botName) && !this.isLearnedSelf(stableName, user.deviceId)))
 
         // Add speakers who are currently speaking
         if (isSpeaking) {
@@ -537,22 +522,23 @@ export class SpeakerManager {
   // observations are written once (the observer can re-emit on unrelated DOM
   // churn; only changes are informative).
   private lastShadowKey = ""
-  // In-memory copy of the muted UI observations (change-deduped, same stream
-  // as the ui-shadow log lines), consumed at finalize to fill timeline holes.
+  // UI observations on both primary and shadow paths; unchanged fresh
+  // observations advance lastSeen without consuming another buffer slot.
   private static readonly SHADOW_BUFFER_MAX = 20000
   private shadowObservations: Array<{
     t: number
-    speakers: Array<{ name: string; isSpeaking: boolean }>
+    lastSeen: number
+    speakers: Array<{ name: string; deviceId?: string; isSpeaking: boolean }>
   }> = []
   // True once the buffer refused an observation; the fallback timeline must
   // then end at the last retained one, not attribute the unobserved tail.
   private shadowBufferTruncated = false
   // A single observation cannot vouch for an unbounded stretch: the observer
-  // can stall, and change-dedupe means no further observation ever arrives.
-  private static readonly SHADOW_OPEN_MAX_MS = 120_000
+  // can stall. Meet/Teams refresh from DOM at least every 10 seconds.
+  private static readonly SHADOW_OPEN_MAX_MS = 15_000
 
   /**
-   * Conservative timeline from the muted UI observations: only stretches with
+   * Conservative timeline from UI observations: only stretches with
    * EXACTLY ONE participant speaking are emitted — ambiguity is dropped.
    */
   public buildUiFallbackSegments(
@@ -560,100 +546,95 @@ export class SpeakerManager {
     lastTimestamp: number
   ): DiarizationSegment[] {
     const segments: DiarizationSegment[] = []
-    let open: { name: string; start: number } | null = null
-    const close = (at: number) => {
-      if (!open) return
-      const start = Math.max(0, (open.start - meetingStartTime) / 1000)
-      const end = Math.max(0, (at - meetingStartTime) / 1000)
-      if (end > start) {
+    for (let i = 0; i < this.shadowObservations.length; i++) {
+      const observation = this.shadowObservations[i]
+      // Count unnamed active participants too: named + Unknown is ambiguous.
+      const speaking = observation.speakers.filter((s) => s.isSpeaking)
+      if (speaking.length !== 1) continue
+      const observed = speaking[0]
+      const resolvedName = observed.deviceId ? this.deviceNames.get(observed.deviceId) : undefined
+      const speaker = {
+        ...observed,
+        name:
+          !observed.name || observed.name === UNKNOWN_SPEAKER
+            ? (resolvedName ?? UNKNOWN_SPEAKER)
+            : observed.name
+      }
+      if (!speaker.name || speaker.name === UNKNOWN_SPEAKER) continue
+      const start = Math.max(0, (observation.t - meetingStartTime) / 1000)
+      const next =
+        this.shadowObservations[i + 1]?.t ??
+        (this.shadowBufferTruncated ? observation.lastSeen : lastTimestamp)
+      const end = Math.max(
+        0,
+        (Math.min(next, lastTimestamp, observation.lastSeen + SpeakerManager.SHADOW_OPEN_MAX_MS) -
+          meetingStartTime) /
+          1000
+      )
+      if (end > start)
         segments.push({
-          speaker: open.name,
-          user_id: this.resolveUiUserId(open.name),
+          speaker: speaker.name,
+          user_id: this.resolveUiUserId(speaker.name, speaker.deviceId),
           start_time: start,
           end_time: end
         })
-      }
-      open = null
     }
-    for (const observation of this.shadowObservations) {
-      const speaking = observation.speakers.filter(
-        (s) => s.isSpeaking && s.name && s.name !== UNKNOWN_SPEAKER
-      )
-      if (speaking.length === 1) {
-        const name = speaking[0].name
-        if (open && open.name !== name) close(observation.t)
-        if (!open) open = { name, start: observation.t }
-      } else {
-        close(observation.t)
-      }
-    }
-    // A truncated buffer stops reflecting the meeting — close there, not at
-    // meeting end — and never extend an open interval more than
-    // SHADOW_OPEN_MAX_MS past the observation that opened it.
-    const lastObserved = this.shadowObservations[this.shadowObservations.length - 1]?.t
-    const boundary = this.shadowBufferTruncated && lastObserved ? lastObserved : lastTimestamp
-    close(
-      lastObserved === undefined
-        ? boundary
-        : Math.min(boundary, lastObserved + SpeakerManager.SHADOW_OPEN_MAX_MS)
-    )
     return segments
   }
 
-  /**
-   * Append a muted UI observation to speaker_separation.log as a JSON OBJECT
-   * line ({"src":"ui-shadow",...}) — the committed stream uses bare arrays.
-   * Same PiiRedactor treatment; never touches attribution.
-   */
+  /** Buffer fresh UI evidence on both the primary and shadow paths. */
   private async logShadowSpeakers(speakers: SpeakerData[]): Promise<void> {
     try {
-      const key = speakers
-        .map((s) => `${s.name}:${s.isSpeaking ? 1 : 0}`)
+      const params = GLOBAL.get()
+      const botCanSpeak = Boolean(params.streaming_input)
+      const silenced = this.silenceSelf(
+        silenceBotSpeaker(speakers, params.bot_name, botCanSpeak),
+        botCanSpeak
+      )
+      const timestamps = speakers.map((s) => s.timestamp).filter((t) => Number.isFinite(t) && t > 0)
+      const t = timestamps.length > 0 ? Math.max(...timestamps) : Date.now()
+      const key = silenced
+        .map((s) => `${s.deviceId ?? s.name}:${s.name}:${s.isSpeaking ? 1 : 0}`)
         .sort()
         .join("|")
-      if (key === this.lastShadowKey) return
+      const previous = this.shadowObservations[this.shadowObservations.length - 1]
+      // A repeated observation refreshes the state only while it is contiguous.
+      // A stalled observer must leave a hole for network attribution.
+      if (previous && t < previous.lastSeen) return
+      if (
+        !this.shadowBufferTruncated &&
+        previous &&
+        key === this.lastShadowKey &&
+        t - previous.lastSeen <= SpeakerManager.SHADOW_OPEN_MAX_MS
+      ) {
+        previous.lastSeen = t
+        return
+      }
       this.lastShadowKey = key
-
-      // Buffer for the finalize-time gap fill, bot silenced like the committed
-      // path (Meet can falsely light the bot as sole speaker).
       if (this.shadowObservations.length < SpeakerManager.SHADOW_BUFFER_MAX) {
-        const params = GLOBAL.get()
-        const botCanSpeak = Boolean(params.streaming_input)
-        const silenced = this.silenceSelf(
-          silenceBotSpeaker(speakers, params.bot_name, botCanSpeak),
-          botCanSpeak
-        )
-        const timestamps = speakers
-          .map((s) => s.timestamp)
-          .filter((t) => Number.isFinite(t) && t > 0)
         this.shadowObservations.push({
-          t: timestamps.length > 0 ? Math.max(...timestamps) : Date.now(),
+          t,
+          lastSeen: t,
           speakers: silenced.map((s) => ({
             name: s.name,
+            deviceId: s.deviceId,
             isSpeaking: s.isSpeaking === true
           }))
         })
       } else if (!this.shadowBufferTruncated) {
         this.shadowBufferTruncated = true
         console.warn(
-          "[SpeakerBridge] ui-shadow buffer full — later observations are not buffered; the fallback timeline stops at the last retained one"
+          "[SpeakerBridge] UI buffer full — attribution ends at the last fresh observation"
         )
       }
-
       for (const speaker of speakers) {
-        if (speaker.name) {
-          PiiRedactor.registerSpeaker(speaker.name)
-        }
+        if (speaker.name) PiiRedactor.registerSpeaker(speaker.name)
       }
-      const line = PiiRedactor.redact(
-        JSON.stringify({ src: "ui-shadow", t: Date.now(), speakers })
-      )
       await fs.promises.appendFile(
         PathManager.getInstance().getSpeakerLogPath(),
-        `${line}\n`
+        `${PiiRedactor.redact(JSON.stringify({ src: "ui-shadow", t, speakers }))}\n`
       )
     } catch (e) {
-      // Shadow telemetry must never affect the meeting.
       console.error("Cannot append ui-shadow speaker log:", e)
     }
   }
@@ -738,17 +719,20 @@ export class SpeakerManager {
 
   private async handleSpeakersTranscription(
     speakers: SpeakerData[],
-    speakersCount: number
+    speakersCount: number,
+    source: "ui" | "network"
   ): Promise<void> {
+    if (source !== this.currentSource) this.currentSpeaker = null
+    this.currentSource = source
     switch (speakersCount) {
       case 0:
         await this.handleNoSpeakers(speakers)
         break
       case 1:
-        await this.handleSingleSpeaker(speakers)
+        await this.handleSingleSpeaker(speakers, source)
         break
       default:
-        await this.handleMultipleSpeakers(speakers)
+        await this.handleMultipleSpeakers(speakers, source)
         break
     }
   }
@@ -762,47 +746,62 @@ export class SpeakerManager {
     }
   }
 
-  private async handleSingleSpeaker(speakers: SpeakerData[]): Promise<void> {
+  private async handleSingleSpeaker(
+    speakers: SpeakerData[],
+    source: "ui" | "network"
+  ): Promise<void> {
     const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
     if (!activeSpeaker) return
 
     const meetingStartTime = MeetingStateMachine.instance.getStartTime()
     if (!meetingStartTime) return
 
-    if (activeSpeaker.name !== this.currentSpeaker?.name) {
+    if (
+      activeSpeaker.id !== this.currentSpeaker?.id ||
+      activeSpeaker.name !== this.currentSpeaker?.name
+    ) {
       // Speaker changed - update diarization tracker (writes to file)
-      this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
+      this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime, source)
     } else if (this.currentSpeaker.isSpeaking === false) {
       // The speaker has started speaking again after a pause
       if (activeSpeaker.timestamp >= this.currentSpeaker.timestamp + this.PAUSE_BETWEEN_SENTENCES) {
-        this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
+        this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime, source)
       }
     }
     this.currentSpeaker = activeSpeaker
   }
 
-  private async handleMultipleSpeakers(speakers: SpeakerData[]): Promise<void> {
+  private async handleMultipleSpeakers(
+    speakers: SpeakerData[],
+    source: "ui" | "network"
+  ): Promise<void> {
     const meetingStartTime = MeetingStateMachine.instance.getStartTime()
     if (!meetingStartTime) return
 
     const hasSpeakingCurrentSpeaker = speakers.some(
-      (speaker) => speaker.name === this.currentSpeaker?.name && speaker.isSpeaking === true
+      (speaker) =>
+        speaker.id === this.currentSpeaker?.id &&
+        speaker.name === this.currentSpeaker?.name &&
+        speaker.isSpeaking === true
     )
 
     if (hasSpeakingCurrentSpeaker) {
-      const activeSpeaker = speakers.find((speaker) => speaker.name === this.currentSpeaker!.name)
+      const activeSpeaker = speakers.find(
+        (speaker) =>
+          speaker.id === this.currentSpeaker!.id && speaker.name === this.currentSpeaker!.name
+      )
       if (this.currentSpeaker!.isSpeaking === false) {
         if (
           activeSpeaker.timestamp >=
           this.currentSpeaker!.timestamp + this.PAUSE_BETWEEN_SENTENCES
         ) {
-          this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
+          this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime, source)
         }
       }
       this.currentSpeaker = activeSpeaker
     } else {
       const activeSpeaker = speakers.find((v) => v.isSpeaking === true)
-      this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime)
+      this.diarizationTracker?.updateSpeaker(activeSpeaker, meetingStartTime, source)
       this.currentSpeaker = activeSpeaker
     }
   }
