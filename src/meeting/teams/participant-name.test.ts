@@ -48,7 +48,8 @@ describe("resolveTeamsTileName", () => {
   it.each([
     [{ nametags: ["Jonny (Guest)"] }, "Jonny"],
     [{ dataTid: "Jonny (Guest)" }, "Jonny"],
-    [{ dataTid: "menur1j", ariaLabel: "Jonny (Guest), muted" }, "Jonny"]
+    [{ dataTid: "menur1j", ariaLabel: "Jonny (Guest), muted" }, "Jonny"],
+    [{ nametags: ["Jonny (Guest) (Unverified)"] }, "Jonny"]
   ])("drops a bracketed guest label from %p", (parts, expected) => {
     expect(resolveTeamsTileName(parts)).toBe(expected)
   })

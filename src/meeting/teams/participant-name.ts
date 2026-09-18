@@ -28,8 +28,13 @@ export function resolveTeamsTileName(parts: {
   // Teams writes a guest's label in brackets after the name ("Jonny (Guest)"). Only the
   // bracketed form is dropped, so it matches the caption author text as before; bare words
   // are left alone because they can be the name itself.
-  const withoutBracketedLabel = (name: string): string =>
-    name.replace(/\s*\((?:guest|external|unverified|unfamiliar)\)\s*$/i, "").trim()
+  const withoutBracketedLabel = (name: string): string => {
+    const bracketed = /\s*\((?:guest|external|unverified|unfamiliar)\)\s*$/i
+    let out = name.trim()
+    // Stacked labels ("Jonny (Guest) (Unverified)") peel one at a time.
+    while (bracketed.test(out)) out = out.replace(bracketed, "").trim()
+    return out
+  }
 
   for (const nametag of parts.nametags ?? []) {
     const text = (nametag ?? "").trim()
