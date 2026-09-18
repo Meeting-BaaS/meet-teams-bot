@@ -12,7 +12,11 @@ import { PathManager } from "./utils/PathManager"
 import { PiiRedactor } from "./utils/PiiRedactor"
 import { isBotName, silenceBotSpeaker } from "./utils/speaker-attribution"
 import { createSequentialIdManager, generateStableUserId } from "./utils/speaker-id"
-import { chooseLiveFillName, pickFreshUiSpeakerName } from "./utils/ui-name-fill"
+import {
+  UI_NAME_FILL_MAX_AGE_MS,
+  chooseLiveFillName,
+  pickFreshUiSpeakerName
+} from "./utils/ui-name-fill"
 
 export class SpeakerManager {
   private static instance: SpeakerManager | null = null
@@ -59,6 +63,9 @@ export class SpeakerManager {
   private lastFreshUiName: { name: string; at: number } | null = null
   // Count of live name fills, logged (count only — names are PII) at finalize.
   private liveNameFills = 0
+  // Count of qualifying turns whose UI evidence had already expired — the
+  // UI→network lag signature. Logged at finalize to tune the fill TTL.
+  private liveFillExpiredRejections = 0
   // Diagnostic-only arbitration evidence. Never changes speaker ownership.
   private readonly attributionShadow = new SpeakerAttributionShadowTracker()
 
@@ -145,8 +152,10 @@ export class SpeakerManager {
         }
       }
     } finally {
-      if (instance.liveNameFills > 0) {
-        console.log(`[SpeakerManager] Live name-fills applied this call: ${instance.liveNameFills}`)
+      if (instance.liveNameFills > 0 || instance.liveFillExpiredRejections > 0) {
+        console.log(
+          `[SpeakerManager] Live name-fills applied this call: ${instance.liveNameFills} (evidence-expired rejections: ${instance.liveFillExpiredRejections})`
+        )
       }
       instance.observeAttributionShadow(() => instance.attributionShadow.finalize(lastTimestamp))
       instance.warnUnresolvedUnknownIdentities()
@@ -434,12 +443,25 @@ export class SpeakerManager {
       const unresolvedSpeakingCount = networkUsers.filter(
         (user, index) => user.isSpeaking === true && resolvedNames[index] === UNKNOWN_SPEAKER
       ).length
+      const now = Date.now()
       const fillName = chooseLiveFillName({
         networkSpeakingCount,
         unresolvedSpeakingCount,
         evidence: this.lastFreshUiName,
-        now: Date.now()
+        now
       })
+      // A turn that qualified for a fill but arrived after the evidence aged
+      // out is the signature of the UI→network lag. Counted (never named) so
+      // finalize logs tell us whether the TTL still needs tuning.
+      if (
+        !fillName &&
+        networkSpeakingCount === 1 &&
+        unresolvedSpeakingCount === 1 &&
+        this.lastFreshUiName &&
+        now - this.lastFreshUiName.at > UI_NAME_FILL_MAX_AGE_MS
+      ) {
+        this.liveFillExpiredRejections++
+      }
 
       // Convert network users to SpeakerData format
       const speakers: SpeakerData[] = networkUsers.map((user, index) => {

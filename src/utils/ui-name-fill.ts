@@ -2,11 +2,17 @@ import type { SpeakerData } from "../types"
 import { UNKNOWN_SPEAKER } from "../types"
 
 /**
- * How long a piece of UI name evidence stays usable for live fills. Short on
- * purpose: the fill is only trustworthy while the person it names is likely
- * still the one on the floor.
+ * How long a piece of UI name evidence stays usable for live fills.
+ *
+ * The UI observer emits only on speaker CHANGES (full-state snapshots), and
+ * Meet's network path detects the same turn 3–5.3s later — the documented
+ * median gap between the UI indicator and the first network segment. A TTL at
+ * or below that gap makes most turns unfillable: in prod (bot 0799c68d,
+ * ~70min, six participants) exactly one fill fired all call. This window must
+ * comfortably exceed that lag; newer snapshots still replace or clear the
+ * evidence, so staleness stays bounded by the next DOM change.
  */
-export const UI_NAME_FILL_MAX_AGE_MS = 5000
+export const UI_NAME_FILL_MAX_AGE_MS = 12_000
 
 /**
  * The single named person the UI observer currently sees speaking, or null.

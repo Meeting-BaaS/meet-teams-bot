@@ -1,4 +1,8 @@
-import { chooseLiveFillName, pickFreshUiSpeakerName } from "./ui-name-fill"
+import {
+  UI_NAME_FILL_MAX_AGE_MS,
+  chooseLiveFillName,
+  pickFreshUiSpeakerName
+} from "./ui-name-fill"
 
 describe("pickFreshUiSpeakerName", () => {
   const speaker = (name: string, isSpeaking: boolean, isSelf?: boolean) => ({
@@ -124,7 +128,7 @@ describe("chooseLiveFillName", () => {
         networkSpeakingCount: 1,
         unresolvedSpeakingCount: 1,
         evidence,
-        now: 1_000 + 5_001
+        now: 1_000 + UI_NAME_FILL_MAX_AGE_MS + 1
       })
     ).toBeNull()
   })
@@ -135,7 +139,7 @@ describe("chooseLiveFillName", () => {
         networkSpeakingCount: 1,
         unresolvedSpeakingCount: 1,
         evidence,
-        now: 1_000 + 5_000
+        now: 1_000 + UI_NAME_FILL_MAX_AGE_MS
       })
     ).toBe("Alice")
   })

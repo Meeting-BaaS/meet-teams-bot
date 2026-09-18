@@ -62,6 +62,7 @@ jest.mock("./utils/PiiRedactor", () => ({
 }))
 
 import { SpeakerManager } from "./speaker-manager"
+import { UI_NAME_FILL_MAX_AGE_MS } from "./utils/ui-name-fill"
 
 function networkUser(name: string, isSpeaking: boolean, deviceId: string): NetworkUser {
   return { name, fullName: name, isSpeaking, deviceId } as NetworkUser
@@ -307,7 +308,7 @@ describe("SpeakerManager live name-fill for unresolved network speakers", () => 
     )
     await manager.handleUiBridgeUpdate([uiSpeaker("Alice", true)])
 
-    nowSpy.mockReturnValue(1_000_000 + 6_000)
+    nowSpy.mockReturnValue(1_000_000 + UI_NAME_FILL_MAX_AGE_MS + 1)
     await manager.handleNetworkSpeakerUpdate([unknownUser("ssrc-42")], 1785941000100)
 
     expect(registeredSpeakers).toEqual(["Net Speaker", "Unknown"])
