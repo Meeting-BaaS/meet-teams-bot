@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test"
 import { HtmlSnapshotService } from "../../services/html-snapshot-service"
 import type { RecordingMode, SpeakerData } from "../../types"
+import { resolveTeamsTileName } from "./participant-name"
 
 declare global {
   interface Window {
@@ -62,7 +63,8 @@ export class TeamsSpeakersObserver {
         speakerLatency,
         mutationDebounce,
         checkInterval,
-        freezeTimeout
+        freezeTimeout,
+        resolveTileNameSource
       }) => {
         console.log("[Teams-Browser] Setting up observation - EXACT EXTENSION LOGIC")
 
@@ -88,24 +90,23 @@ export class TeamsSpeakersObserver {
           return document
         }
 
-        // Display name for a v2 tile. aria-label first (older builds), else the
-        // data-tid, which on the current client holds the display name. Never
-        // return an email — some builds put the address in data-tid and that is
-        // PII, not a name. Trailing Teams labels ("(Guest)", "External", "Unfamiliar",
-        // "(Unverified)") are not the person's name and are stripped so it matches the caption author text.
-        function resolveTileName(element: Element): string {
-          const aria = element.getAttribute("aria-label")?.split(",")[0]?.trim()
-          if (aria) return stripParticipantLabels(aria)
-          const tid = element.getAttribute("data-tid")?.trim() || ""
-          if (!tid || tid.includes("@")) return ""
-          return stripParticipantLabels(tid)
-        }
+        const resolveName = new Function(`return ${resolveTileNameSource}`)() as (parts: {
+          nametags?: Array<string | null | undefined>
+          dataTid?: string | null
+          ariaLabel?: string | null
+        }) => string
 
-        function stripParticipantLabels(name: string): string {
-          const label = /\s*\(?\b(?:guest|external|unfamiliar|unverified)\b\)?\s*$/i
-          let out = name.trim()
-          while (label.test(out)) out = out.replace(label, "").trim()
-          return out
+        // Teams puts the display name on the tile's data-tid and nametag, and only
+        // appends its account badges ("External unfamiliar") to aria-label.
+        function resolveTileName(element: Element): string {
+          const nametags = [...element.querySelectorAll('[data-tid="participant-info-nametag"]')].map(
+            (node) => node.textContent
+          )
+          return resolveName({
+            nametags,
+            dataTid: element.getAttribute("data-tid"),
+            ariaLabel: element.getAttribute("aria-label")
+          })
         }
 
         // ── Caption-derived speaking signal ────────────────────────────────
@@ -278,7 +279,7 @@ export class TeamsSpeakersObserver {
 
               if (element.hasAttribute("data-cid")) {
                 // old teams - EXACT SAME AS EXTENSION
-                const name = getParticipantName(element)
+                const name = isBlacklistedTile(element) ? "" : resolveTileName(element)
                 console.log(`[TEAMS-DEBUG] Old teams - found name of length: "${name.length}"`)
                 if (name !== "") {
                   if (element.getAttribute("aria-label")?.includes(", muted,")) {
@@ -301,7 +302,7 @@ export class TeamsSpeakersObserver {
                 element.getAttribute("data-tid") === "menur1j"
               ) {
                 //live platform: Handle live platform - EXACT SAME AS EXTENSION
-                const name = element.getAttribute("aria-label")?.split(",")[0] || ""
+                const name = resolveTileName(element)
                 console.log(`[TEAMS-DEBUG] Live platform - found name of length: "${name.length}"`)
                 if (name) {
                   // Only process if we have a name
@@ -461,32 +462,10 @@ export class TeamsSpeakersObserver {
           return false
         }
 
-        function getParticipantName(name: Element): string {
-          // EXACT SAME AS EXTENSION
-          const nameBlackList = ["Content shared by", "Leaving..."]
-          const toSplitOn = [
-            ", video is on,",
-            ", muted,",
-            ", Context menu is available",
-            "(Unverified)",
-            "left the meeting",
-            "Leaving..."
-          ]
-
-          const ariaLabel = name.getAttribute("aria-label") || ""
-          let result: string = ariaLabel
-
-          for (const blackListed of nameBlackList) {
-            if (ariaLabel.includes(blackListed)) {
-              return ""
-            }
-          }
-
-          for (const splitTerm of toSplitOn) {
-            result = result.split(splitTerm)[0]
-          }
-
-          return result
+        // Tiles that show content or a leaving participant carry no usable name.
+        function isBlacklistedTile(element: Element): boolean {
+          const ariaLabel = element.getAttribute("aria-label") || ""
+          return ["Content shared by", "Leaving..."].some((entry) => ariaLabel.includes(entry))
         }
 
         // SHARED CRITICAL LOGIC from speakersUtils
@@ -653,7 +632,9 @@ export class TeamsSpeakersObserver {
         speakerLatency: this.SPEAKER_LATENCY,
         mutationDebounce: this.MUTATION_DEBOUNCE,
         checkInterval: this.CHECK_INTERVAL,
-        freezeTimeout: this.FREEZE_TIMEOUT
+        freezeTimeout: this.FREEZE_TIMEOUT,
+        // One implementation, unit-tested in participant-name.test.ts.
+        resolveTileNameSource: resolveTeamsTileName.toString()
       }
     )
 

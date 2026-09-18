@@ -13,6 +13,11 @@ import { SpeakersObserver } from "../speakersObserver"
  * @param context - Meeting context to store the observer
  * @returns The started SpeakersObserver instance
  */
+// A startup in progress, per meeting. The bridge starts the observer at join and the
+// diarization-health fallback can ask for it again; without this, two overlapping starts
+// both call exposeFunction("<platform>SpeakersChanged") and the second one is rejected.
+const startingObservers = new WeakMap<MeetingContext, Promise<SpeakersObserver>>()
+
 export async function startUIBasedObserver(
   page: Page,
   context: MeetingContext
@@ -27,6 +32,18 @@ export async function startUIBasedObserver(
     return context.speakersObserver
   }
 
+  const starting = startingObservers.get(context)
+  if (starting) {
+    console.log("[UI Observer] Startup already in progress, awaiting it")
+    return starting
+  }
+
+  const startup = startObserver(page, context).finally(() => startingObservers.delete(context))
+  startingObservers.set(context, startup)
+  return startup
+}
+
+async function startObserver(page: Page, context: MeetingContext): Promise<SpeakersObserver> {
   // Stop existing observer if any (but not currently observing)
   if (context.speakersObserver) {
     console.warn("[UI Observer] Stopping existing observer before starting new one")
