@@ -66,6 +66,9 @@ export class SpeakerManager {
   // Count of qualifying turns whose UI evidence had already expired — the
   // UI→network lag signature. Logged at finalize to tune the fill TTL.
   private liveFillExpiredRejections = 0
+  // Timestamp of the evidence record already counted as expired, so periodic
+  // network updates cannot count the same stale record again.
+  private liveFillExpiredCountedAt: number | null = null
   // Diagnostic-only arbitration evidence. Never changes speaker ownership.
   private readonly attributionShadow = new SpeakerAttributionShadowTracker()
 
@@ -326,6 +329,8 @@ export class SpeakerManager {
       )
     })
     this.lastFreshUiName = name ? { name, at: Date.now() } : null
+    // New evidence record: a future expiry of it must be countable again.
+    this.liveFillExpiredCountedAt = null
   }
 
   /**
@@ -451,16 +456,19 @@ export class SpeakerManager {
         now
       })
       // A turn that qualified for a fill but arrived after the evidence aged
-      // out is the signature of the UI→network lag. Counted (never named) so
-      // finalize logs tell us whether the TTL still needs tuning.
+      // out is the signature of the UI→network lag. Counted once per evidence
+      // record (never named) so finalize logs tell us whether the TTL still
+      // needs tuning.
       if (
         !fillName &&
         networkSpeakingCount === 1 &&
         unresolvedSpeakingCount === 1 &&
         this.lastFreshUiName &&
-        now - this.lastFreshUiName.at > UI_NAME_FILL_MAX_AGE_MS
+        now - this.lastFreshUiName.at > UI_NAME_FILL_MAX_AGE_MS &&
+        this.liveFillExpiredCountedAt !== this.lastFreshUiName.at
       ) {
         this.liveFillExpiredRejections++
+        this.liveFillExpiredCountedAt = this.lastFreshUiName.at
       }
 
       // Convert network users to SpeakerData format
