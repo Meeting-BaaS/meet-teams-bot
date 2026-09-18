@@ -303,6 +303,40 @@ describe("assembleSpeakerTimeline source dissonance", () => {
     ])
   })
 
+  it("does not treat a mid-call rename as a second speaker (same id, two names)", () => {
+    // Network keeps the device's first name; the UI shows the new one.
+    const { segments, sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Jane Doe", 0, 1200, 2)] },
+        { kind: "ui", segments: [seg("Jane Doe", 0, 600, 2), seg("Jane Smith", 600, 1200, 2)] }
+      ],
+      1200
+    )
+    expect(sourceDissonance).toBeUndefined()
+    expect(segments).toEqual([{ ...seg("Jane Doe", 0, 1200, 2), source: "network" }])
+  })
+
+  it("keeps two participants with the same display name apart (two ids, one name)", () => {
+    // Both sources see two devices; neither is dominated, so nothing is promoted.
+    const { sourceDissonance } = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Alex", 0, 600, 2), seg("Alex", 600, 1200, 3)] },
+        { kind: "ui", segments: [seg("Alex", 0, 600, 2), seg("Alex", 600, 1200, 3)] }
+      ],
+      1200
+    )
+    expect(sourceDissonance).toBeUndefined()
+    // And a real collapse of two same-named people is still caught by id.
+    const collapsed = assembleSpeakerTimeline(
+      [
+        { kind: "network", segments: [seg("Alex", 0, 1200, 2)] },
+        { kind: "ui", segments: [seg("Alex", 0, 600, 2), seg("Alex", 600, 1200, 3)] }
+      ],
+      1200
+    )
+    expect(collapsed.sourceDissonance).toMatchObject({ promotedSource: "ui" })
+  })
+
   it("accepts any lower-trust source as the challenger, not just the UI observer", () => {
     const { sourceDissonance } = assembleSpeakerTimeline(
       [

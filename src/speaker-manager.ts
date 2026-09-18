@@ -43,7 +43,9 @@ export class SpeakerManager {
   // Roster key of the last UI observation forwarded to attribution. The
   // observer heartbeats an unchanged DOM every few seconds to keep the
   // buffer fresh; attribution, streaming and logs only need changes.
-  private lastForwardedUiKey = ""
+  // null = nothing forwarded since the last ownership change; an empty roster
+  // keys to "" and must still be forwarded (it is the first silence state).
+  private lastForwardedUiKey: string | null = null
   // Canonical self identity, learned from the platform's own self marker (the
   // "(You)" row carries both the DISPLAYED name and the device id). An SSO
   // bot displays the login account's name, not bot_name, so this is the only
@@ -232,7 +234,7 @@ export class SpeakerManager {
       // is a per-call cross-check of the network path (a prod collapse where
       // the UI had the right answer was only diagnosable from video frames).
       // Attribution unchanged; lines go to speaker_separation.log redacted.
-      this.lastForwardedUiKey = ""
+      this.lastForwardedUiKey = null
       return
     }
 
@@ -505,7 +507,7 @@ export class SpeakerManager {
         // Ownership changed hands: whatever UI roster was forwarded last must
         // be forwarded again if the fallback ever hands the floor back, even
         // when no UI callback entered the muted branch in between.
-        this.lastForwardedUiKey = ""
+        this.lastForwardedUiKey = null
         console.log("[SpeakerBridge] First speaking participant on the network path")
       }
 

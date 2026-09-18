@@ -769,6 +769,27 @@ describe("UI freshness and unresolved source identities", () => {
     diarizationFallbackTriggered = false
   })
 
+  it("forwards an empty roster right after a reset: it is the first silence state", async () => {
+    const manager = SpeakerManager.getInstance()
+    const forwarded = jest.spyOn(manager, "handleSpeakerUpdate").mockResolvedValue(undefined)
+    const uiForwards = () => forwarded.mock.calls.filter(([, source]) => source === "ui-observer").length
+
+    // Startup: the observer's first frame is often empty.
+    await manager.handleUiBridgeUpdate([])
+    expect(uiForwards()).toBe(1)
+    await manager.handleUiBridgeUpdate([])
+    expect(uiForwards()).toBe(1)
+
+    // Speaking roster, network takes over, fallback hands back an empty roster.
+    await manager.handleUiBridgeUpdate([{ ...uiSpeaker("Guest", true), timestamp: start + 1000 }])
+    expect(uiForwards()).toBe(2)
+    await manager.handleNetworkSpeakerUpdate([networkUser("Guest", true, "device-1")], start + 2000)
+    diarizationFallbackTriggered = true
+    await manager.handleUiBridgeUpdate([])
+    expect(uiForwards()).toBe(3)
+    diarizationFallbackTriggered = false
+  })
+
   it("rejects UI with a named speaker and an unnamed simultaneous speaker", async () => {
     const manager = SpeakerManager.getInstance()
     await manager.handleUiBridgeUpdate([uiSpeaker("Guest", true), uiSpeaker("Unknown", true)])

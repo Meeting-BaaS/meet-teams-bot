@@ -52,6 +52,19 @@ function coverageOf(segments: DiarizationSegment[]): Array<[number, number]> {
   return merged
 }
 
+/**
+ * Identity for cross-source comparison. Network and UI segments share the
+ * sequential id namespace whenever the observer saw a device id (both go
+ * through idForDevice), so a participant who renames mid-call or two people
+ * with the same display name stay one or two identities in BOTH sources. The
+ * display name is only the key for segments without a real id.
+ */
+function identityOf(segment: DiarizationSegment): string {
+  return segment.user_id > 0
+    ? `id:${segment.user_id}`
+    : `name:${segment.speaker.trim().toLowerCase()}`
+}
+
 function speakerDurations(
   segments: DiarizationSegment[],
   excludeSpeakers: string[] = []
@@ -61,8 +74,9 @@ function speakerDurations(
   )
   const bySpeaker = new Map<string, DiarizationSegment[]>()
   for (const segment of normalize(segments)) {
-    const key = segment.speaker?.trim().toLowerCase()
-    if (!key || excluded.has(key)) continue
+    const name = segment.speaker?.trim().toLowerCase()
+    if (!name || excluded.has(name)) continue
+    const key = identityOf(segment)
     const existing = bySpeaker.get(key) ?? []
     existing.push(segment)
     bySpeaker.set(key, existing)
@@ -84,8 +98,8 @@ function effectiveSpeakers(durations: Map<string, number>): Array<[string, numbe
 }
 
 /**
- * A primary dominated by one speaker, contradicted by a lower-trust source that
- * shares that speaker and gives the others several times more time. Bots excluded.
+ * A primary dominated by one identity, contradicted by a lower-trust source that
+ * shares that identity and gives the others several times more time. Bots excluded.
  *
  * This is the shared-mic / pinned-device class (prod 22e3adba, acf4eecf; 0.5% of
  * speech bots in the week of 2026-09-11, ~10 min of a second person each): the
