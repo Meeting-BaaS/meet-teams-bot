@@ -273,7 +273,11 @@ export class DiarizationTracker {
     // Final priority is independent of STT: repaired network identity first,
     // then one fresh UI speaker. Leave unobserved/unresolved spans unnamed.
     const meetingEndRel = Math.max(0, (lastTimestamp - meetingStartTime) / 1000)
-    const { segments: assembled, filledBySource } = assembleSpeakerTimeline(
+    const {
+      segments: assembled,
+      filledBySource,
+      sourceDissonance
+    } = assembleSpeakerTimeline(
       [
         {
           kind: "network" as const,
@@ -291,6 +295,14 @@ export class DiarizationTracker {
       meetingEndRel,
       { botNames }
     )
+    if (sourceDissonance) {
+      // An interceptor was wrong for the whole call. Counts only: names are PII.
+      console.error(
+        `[DiarizationTracker] ⚠️ Source dissonance (${sourceDissonance.reason}): promoted ${sourceDissonance.promotedSource} over ${sourceDissonance.demotedSource}; ` +
+          `effective speakers ${sourceDissonance.demotedSource}=${sourceDissonance.primaryEffectiveSpeakers} ${sourceDissonance.promotedSource}=${sourceDissonance.challengerEffectiveSpeakers}, ` +
+          `dominance=${sourceDissonance.primaryDominance}, other-speaker seconds ${sourceDissonance.primaryOtherSeconds} -> ${sourceDissonance.challengerOtherSeconds}`
+      )
+    }
     for (const [kind, count] of Object.entries(filledBySource)) {
       console.log(`[DiarizationTracker] Selected ${count} timeline segment(s) from ${kind}`)
     }

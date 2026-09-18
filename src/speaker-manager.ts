@@ -40,6 +40,12 @@ export class SpeakerManager {
   // seconds after they first speak — Meet's UI indicator fires much earlier.
   private networkSpeakerActive = false
   private uiBridgeMuteLogged = false
+  // Roster key of the last UI observation forwarded to attribution. The
+  // observer heartbeats an unchanged DOM every few seconds to keep the
+  // buffer fresh; attribution, streaming and logs only need changes.
+  // null = nothing forwarded since the last ownership change; an empty roster
+  // keys to "" and must still be forwarded (it is the first silence state).
+  private lastForwardedUiKey: string | null = null
   // Canonical self identity, learned from the platform's own self marker (the
   // "(You)" row carries both the DISPLAYED name and the device id). An SSO
   // bot displays the login account's name, not bot_name, so this is the only
@@ -228,8 +234,22 @@ export class SpeakerManager {
       // is a per-call cross-check of the network path (a prod collapse where
       // the UI had the right answer was only diagnosable from video frames).
       // Attribution unchanged; lines go to speaker_separation.log redacted.
+      this.lastForwardedUiKey = null
       return
     }
+
+    // A heartbeat re-emits the unchanged roster: it refreshed the buffer above
+    // and must not re-send speaker state to streaming clients, re-log the
+    // roster, or reopen an identical segment. It still counts as liveness.
+    const forwardedKey = observed
+      .map((s) => `${s.deviceId ?? s.name}:${s.name}:${s.isSpeaking ? 1 : 0}`)
+      .sort()
+      .join("|")
+    if (forwardedKey === this.lastForwardedUiKey) {
+      this.lastCallbackTime = Date.now()
+      return
+    }
+    this.lastForwardedUiKey = forwardedKey
 
     await this.handleSpeakerUpdate(
       observed.map((speaker) => ({
@@ -484,6 +504,10 @@ export class SpeakerManager {
       // here the track-based signal is live and authoritative.
       if (!this.networkSpeakerActive && speakers.some((s) => s.isSpeaking)) {
         this.networkSpeakerActive = true
+        // Ownership changed hands: whatever UI roster was forwarded last must
+        // be forwarded again if the fallback ever hands the floor back, even
+        // when no UI callback entered the muted branch in between.
+        this.lastForwardedUiKey = null
         console.log("[SpeakerBridge] First speaking participant on the network path")
       }
 
@@ -524,7 +548,9 @@ export class SpeakerManager {
   private lastShadowKey = ""
   // UI observations on both primary and shadow paths; unchanged fresh
   // observations advance lastSeen without consuming another buffer slot.
-  private static readonly SHADOW_BUFFER_MAX = 20000
+  // Sized from prod: Meet's indicator can flicker ~6 observations/s (a 67-min
+  // UI-fallback call produced 24k), so 20k truncated inside the hour.
+  private static readonly SHADOW_BUFFER_MAX = 100000
   private shadowObservations: Array<{
     t: number
     lastSeen: number
@@ -592,15 +618,19 @@ export class SpeakerManager {
         botCanSpeak
       )
       const timestamps = speakers.map((s) => s.timestamp).filter((t) => Number.isFinite(t) && t > 0)
-      const t = timestamps.length > 0 ? Math.max(...timestamps) : Date.now()
+      const previous = this.shadowObservations[this.shadowObservations.length - 1]
+      // Page observations carry the page clock minus the platform latency; an
+      // empty roster carries no timestamp and is stamped here, later. Keep the
+      // buffer ordered by clamping, never by dropping: the first real
+      // observation after an empty frame is the one that opens a speaker.
+      const observedAt = timestamps.length > 0 ? Math.max(...timestamps) : Date.now()
+      const t = previous ? Math.max(observedAt, previous.lastSeen) : observedAt
       const key = silenced
         .map((s) => `${s.deviceId ?? s.name}:${s.name}:${s.isSpeaking ? 1 : 0}`)
         .sort()
         .join("|")
-      const previous = this.shadowObservations[this.shadowObservations.length - 1]
       // A repeated observation refreshes the state only while it is contiguous.
       // A stalled observer must leave a hole for network attribution.
-      if (previous && t < previous.lastSeen) return
       if (
         !this.shadowBufferTruncated &&
         previous &&
