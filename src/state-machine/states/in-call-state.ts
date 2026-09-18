@@ -337,7 +337,12 @@ export class InCallState extends BaseState {
           // The SpeakerManager arbiter mutes this source once the network path
           // reports its first speaker. Non-blocking: opening the People panel
           // can take seconds and must not delay the recording-started event.
-          if (platform === "meet" && this.context.playwrightPage) {
+          // Teams needs the same bridge for a longer hole: its network path can take
+          // ~30s to attribute (or never, on a personal-Teams meeting), and the
+          // UI-fallback only starts after four stale health checks — measured at
+          // +27.5s on preprod bot 4e2c5e23, past the 20s leading-retrofit cap, so the
+          // opening speech shipped as "Unknown".
+          if ((platform === "meet" || platform === "teams") && this.context.playwrightPage) {
             this.startUIBasedObservation().catch((error) => {
               console.warn(
                 "[SpeakerBridge] UI bridge failed to start (network path still active):",
