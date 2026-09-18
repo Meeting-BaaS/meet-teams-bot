@@ -502,6 +502,10 @@ export class SpeakerManager {
       // here the track-based signal is live and authoritative.
       if (!this.networkSpeakerActive && speakers.some((s) => s.isSpeaking)) {
         this.networkSpeakerActive = true
+        // Ownership changed hands: whatever UI roster was forwarded last must
+        // be forwarded again if the fallback ever hands the floor back, even
+        // when no UI callback entered the muted branch in between.
+        this.lastForwardedUiKey = ""
         console.log("[SpeakerBridge] First speaking participant on the network path")
       }
 

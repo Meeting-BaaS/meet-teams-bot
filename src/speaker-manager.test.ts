@@ -751,6 +751,24 @@ describe("UI freshness and unresolved source identities", () => {
     expect(forwarded).toHaveBeenCalledTimes(3)
   })
 
+  it("forwards the fallback roster again after network ownership, without an intervening UI callback", async () => {
+    const manager = SpeakerManager.getInstance()
+    const forwarded = jest.spyOn(manager, "handleSpeakerUpdate").mockResolvedValue(undefined)
+    const uiForwards = () => forwarded.mock.calls.filter(([, source]) => source === "ui-observer").length
+    const ui = (second: number) => ({ ...uiSpeaker("Guest", true), timestamp: start + second * 1000 })
+
+    // Bridge live before any network speaker: roster forwarded once.
+    await manager.handleUiBridgeUpdate([ui(1)])
+    expect(uiForwards()).toBe(1)
+    // Network takes the floor; no UI callback lands while it owns attribution.
+    await manager.handleNetworkSpeakerUpdate([networkUser("Guest", true, "device-1")], start + 2000)
+    // The fallback retires the network path: the same roster must be forwarded again.
+    diarizationFallbackTriggered = true
+    await manager.handleUiBridgeUpdate([ui(3)])
+    expect(uiForwards()).toBe(2)
+    diarizationFallbackTriggered = false
+  })
+
   it("rejects UI with a named speaker and an unnamed simultaneous speaker", async () => {
     const manager = SpeakerManager.getInstance()
     await manager.handleUiBridgeUpdate([uiSpeaker("Guest", true), uiSpeaker("Unknown", true)])
