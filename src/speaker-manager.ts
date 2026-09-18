@@ -154,18 +154,22 @@ export class SpeakerManager {
   }
 
   private warnUnresolvedUnknownIdentities(): void {
-    const unknownSpeakers = GLOBAL.getSpeakers().filter(
-      (speaker) => speaker.name === UNKNOWN_SPEAKER
-    ).length
-    const unknownParticipants = GLOBAL.getParticipants().filter(
-      (participant) => participant.name === UNKNOWN_SPEAKER
-    ).length
-    if (unknownSpeakers === 0 && unknownParticipants === 0) {
-      return
+    try {
+      const unknownSpeakers = GLOBAL.getSpeakers().filter(
+        (speaker) => speaker.name === UNKNOWN_SPEAKER
+      ).length
+      const unknownParticipants = GLOBAL.getParticipants().filter(
+        (participant) => participant.name === UNKNOWN_SPEAKER
+      ).length
+      if (unknownSpeakers === 0 && unknownParticipants === 0) {
+        return
+      }
+      console.warn(
+        `[SpeakerAlert] unresolved_unknown speakers=${unknownSpeakers} participants=${unknownParticipants}`
+      )
+    } catch {
+      console.error("[SpeakerAlert] unresolved_unknown check failed")
     }
-    console.warn(
-      `[SpeakerAlert] unresolved_unknown speakers=${unknownSpeakers} participants=${unknownParticipants}`
-    )
   }
 
   /** Shadow telemetry must never change recording or finalization behavior. */
