@@ -535,7 +535,8 @@ describe("SpeakerManager network updates after fallback", () => {
     // Simulate a full buffer: the next (different) observation is refused.
     const buffer = (manager as any).shadowObservations as unknown[]
     const retained = buffer[buffer.length - 1]
-    while (buffer.length < 20000) buffer.push(retained)
+    const max = (SpeakerManager as unknown as { SHADOW_BUFFER_MAX: number }).SHADOW_BUFFER_MAX
+    while (buffer.length < max) buffer.push(retained)
     await manager.handleUiBridgeUpdate([
       { name: "Y", id: 0, timestamp: T0 + 20_000, isSpeaking: true }
     ])
@@ -707,6 +708,47 @@ describe("UI freshness and unresolved source identities", () => {
       { speaker: "Guest", user_id: 1, start_time: 1, end_time: 26 },
       { speaker: "Guest", user_id: 1, start_time: 40, end_time: 55 }
     ])
+  })
+
+  it("keeps the first real observation after an empty roster frame", async () => {
+    const manager = SpeakerManager.getInstance()
+    ;(manager as any).networkSpeakerActive = true
+    // An empty roster has no page timestamp: it is stamped with the node clock,
+    // which runs ahead of the page clock minus the platform latency.
+    const nodeNow = start + 5_000
+    const nowSpy = jest.spyOn(Date, "now").mockReturnValue(nodeNow)
+    await manager.handleUiBridgeUpdate([])
+    await manager.handleUiBridgeUpdate([{ ...uiSpeaker("Guest", true), timestamp: nodeNow - 1_500 }])
+    await manager.handleUiBridgeUpdate([{ ...uiSpeaker("Guest", false), timestamp: nodeNow + 10_000 }])
+    nowSpy.mockRestore()
+    expect(manager.buildUiFallbackSegments(start, start + 60_000)).toEqual([
+      { speaker: "Guest", user_id: 1, start_time: 5, end_time: 15 }
+    ])
+  })
+
+  it("forwards an unchanged UI roster to attribution once, not on every heartbeat", async () => {
+    const manager = SpeakerManager.getInstance()
+    const forwarded = jest.spyOn(manager, "handleSpeakerUpdate").mockResolvedValue(undefined)
+    const ui = (second: number, isSpeaking: boolean) => ({
+      ...uiSpeaker("Guest", isSpeaking),
+      timestamp: start + second * 1000
+    })
+    await manager.handleUiBridgeUpdate([ui(1, true)])
+    await manager.handleUiBridgeUpdate([ui(6, true)])
+    await manager.handleUiBridgeUpdate([ui(11, true)])
+    expect(forwarded).toHaveBeenCalledTimes(1)
+    await manager.handleUiBridgeUpdate([ui(16, false)])
+    expect(forwarded).toHaveBeenCalledTimes(2)
+    // Heartbeats still refreshed the buffer: the interval spans all of them.
+    expect(manager.buildUiFallbackSegments(start, start + 60_000)).toEqual([
+      { speaker: "Guest", user_id: 1, start_time: 1, end_time: 16 }
+    ])
+    // A mute/unmute cycle forwards the first observation again.
+    ;(manager as any).networkSpeakerActive = true
+    await manager.handleUiBridgeUpdate([ui(21, false)])
+    ;(manager as any).networkSpeakerActive = false
+    await manager.handleUiBridgeUpdate([ui(26, false)])
+    expect(forwarded).toHaveBeenCalledTimes(3)
   })
 
   it("rejects UI with a named speaker and an unnamed simultaneous speaker", async () => {
