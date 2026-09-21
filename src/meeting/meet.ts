@@ -50,7 +50,7 @@ const JOIN_CONFIRM_DEBOUNCE_MS = 6000
 const JOIN_CONFIRM_DEBOUNCE_NO_LOBBY_SEEN_MS = 10000
 // Meet's "trying to reconnect" overlay also contains "Return to home", one of
 // findEndMeeting()'s end-of-call matches — hold this long before treating it as real.
-const RECONNECT_OVERLAY_GRACE_PERIOD_MS = 20000
+const RECONNECT_OVERLAY_GRACE_PERIOD_MS = 40000
 
 /**
  * Checks that the page is still on meet.google.com.

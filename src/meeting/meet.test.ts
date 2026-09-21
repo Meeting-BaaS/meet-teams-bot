@@ -300,7 +300,7 @@ describe("MeetProvider.findEndMeeting", () => {
       })
 
       expect(await provider.findEndMeeting(page)).toBe(false)
-      jest.advanceTimersByTime(20001)
+      jest.advanceTimersByTime(40001)
       expect(await provider.findEndMeeting(page)).toBe(true)
     })
 
