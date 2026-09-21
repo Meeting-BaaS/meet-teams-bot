@@ -566,13 +566,19 @@ export class MeetProvider implements MeetingProviderInterface {
         if (isReconnecting) {
           if (this.reconnectOverlaySince === null) {
             this.reconnectOverlaySince = Date.now()
+            console.warn("[MEET-RECONNECT] overlay detected, holding")
             return false
           }
-          if (Date.now() - this.reconnectOverlaySince < RECONNECT_OVERLAY_GRACE_PERIOD_MS) {
+          const heldForMs = Date.now() - this.reconnectOverlaySince
+          if (heldForMs < RECONNECT_OVERLAY_GRACE_PERIOD_MS) {
             return false
           }
-          // grace period elapsed — fall through to endMessages below
+          console.warn(`[MEET-RECONNECT] grace period exceeded after ${heldForMs}ms, ending meeting`)
+          // fall through to endMessages below
         } else {
+          if (this.reconnectOverlaySince !== null) {
+            console.warn(`[MEET-RECONNECT] recovered after ${Date.now() - this.reconnectOverlaySince}ms`)
+          }
           this.reconnectOverlaySince = null
         }
 
