@@ -48,6 +48,9 @@ const JOIN_CONFIRM_DEBOUNCE_MS = 6000
 // the lobby and watched it clear is in the trusted case (admitted meetings
 // never re-show the text; 76/76 sampled), so it keeps the shorter window.
 const JOIN_CONFIRM_DEBOUNCE_NO_LOBBY_SEEN_MS = 10000
+// Meet's "trying to reconnect" overlay also contains "Return to home", one of
+// findEndMeeting()'s end-of-call matches — hold this long before treating it as real.
+const RECONNECT_OVERLAY_GRACE_PERIOD_MS = 40000
 
 /**
  * Checks that the page is still on meet.google.com.
@@ -79,6 +82,9 @@ export function assertOnMeetPage(page: Page, wasInMeeting = false): void {
 }
 
 export class MeetProvider implements MeetingProviderInterface {
+  // When the reconnect overlay was first seen; null once it clears.
+  private reconnectOverlaySince: number | null = null
+
   async parseMeetingUrl(meeting_url: string) {
     return parseMeetingUrlFromJoinInfos(meeting_url)
   }
@@ -552,6 +558,30 @@ export class MeetProvider implements MeetingProviderInterface {
         }
 
         const content = await page.content()
+
+        // Must run before endMessages below — "Return to home" also matches this overlay.
+        const isReconnecting =
+          content.includes("Trying to reconnect") ||
+          content.includes("You lost your network connection")
+        if (isReconnecting) {
+          if (this.reconnectOverlaySince === null) {
+            this.reconnectOverlaySince = Date.now()
+            console.warn("[MEET-RECONNECT] overlay detected, holding")
+            return false
+          }
+          const heldForMs = Date.now() - this.reconnectOverlaySince
+          if (heldForMs < RECONNECT_OVERLAY_GRACE_PERIOD_MS) {
+            return false
+          }
+          console.warn(`[MEET-RECONNECT] grace period exceeded after ${heldForMs}ms, ending meeting`)
+          // fall through to endMessages below
+        } else {
+          if (this.reconnectOverlaySince !== null) {
+            console.warn(`[MEET-RECONNECT] recovered after ${Date.now() - this.reconnectOverlaySince}ms`)
+          }
+          this.reconnectOverlaySince = null
+        }
+
         // "No one else" is an alone-signal that legitimately appears while the bot
         // waits alone during the early grace period. When ignoreAloneSignals is set
         // (grace-period check) we drop it so only definitive removal/ended screens

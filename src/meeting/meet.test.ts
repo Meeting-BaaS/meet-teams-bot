@@ -256,6 +256,77 @@ describe("MeetProvider.findEndMeeting", () => {
       expect(result).toBe(false)
     })
   })
+
+  // Regression for the 2026-09-21 prod incident: Meet's "trying to reconnect"
+  // overlay (shown when the bot's own connection drops) contains "Return to
+  // home", so a bot mid-call was reading a transient reconnect attempt as a
+  // definitive end and leaving while the meeting was still live for everyone
+  // else. See RECONNECT_OVERLAY_GRACE_PERIOD_MS in meet.ts.
+  describe("reconnect overlay grace period", () => {
+    beforeEach(() => {
+      jest.useFakeTimers()
+    })
+
+    afterEach(() => {
+      jest.useRealTimers()
+    })
+
+    it("holds (returns false) on first sight of the reconnect overlay, even though 'Return to home' is also present", async () => {
+      const page = createMockPage({
+        url: "https://meet.google.com/abc-defg-hij",
+        content:
+          "<html><body>You lost your network connection. Trying to reconnect.<a>Return to home screen</a></body></html>",
+      })
+
+      const result = await provider.findEndMeeting(page)
+      expect(result).toBe(false)
+    })
+
+    it("keeps holding while still reconnecting within the grace period", async () => {
+      const page = createMockPage({
+        url: "https://meet.google.com/abc-defg-hij",
+        content: "<html><body>Trying to reconnect. Return to home screen</body></html>",
+      })
+
+      expect(await provider.findEndMeeting(page)).toBe(false)
+      jest.advanceTimersByTime(10000)
+      expect(await provider.findEndMeeting(page)).toBe(false)
+    })
+
+    it("falls through and ends the meeting once the overlay persists past the grace period", async () => {
+      const page = createMockPage({
+        url: "https://meet.google.com/abc-defg-hij",
+        content: "<html><body>Trying to reconnect. Return to home screen</body></html>",
+      })
+
+      expect(await provider.findEndMeeting(page)).toBe(false)
+      jest.advanceTimersByTime(40001)
+      expect(await provider.findEndMeeting(page)).toBe(true)
+    })
+
+    it("resets the hold and does not end the meeting once the overlay clears", async () => {
+      const page = createMockPage({ url: "https://meet.google.com/abc-defg-hij" })
+      page.content
+        .mockResolvedValueOnce(
+          "<html><body>Trying to reconnect. Return to home screen</body></html>"
+        )
+        .mockResolvedValueOnce("<html><body>Meeting in progress</body></html>")
+
+      expect(await provider.findEndMeeting(page)).toBe(false)
+      jest.advanceTimersByTime(5000)
+      expect(await provider.findEndMeeting(page)).toBe(false)
+    })
+
+    it("still ends immediately on a genuine end screen with no reconnect overlay present", async () => {
+      const page = createMockPage({
+        url: "https://meet.google.com/abc-defg-hij",
+        content: "<html><body>Return to home screen</body></html>",
+      })
+
+      const result = await provider.findEndMeeting(page)
+      expect(result).toBe(true)
+    })
+  })
 })
 
 // ══════════════════════════════════════════════════════════════════
