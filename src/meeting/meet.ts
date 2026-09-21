@@ -48,6 +48,19 @@ const JOIN_CONFIRM_DEBOUNCE_MS = 6000
 // the lobby and watched it clear is in the trusted case (admitted meetings
 // never re-show the text; 76/76 sampled), so it keeps the shorter window.
 const JOIN_CONFIRM_DEBOUNCE_NO_LOBBY_SEEN_MS = 10000
+// Google Meet shows "You lost your network connection. Trying to reconnect."
+// when the bot's own connection drops mid-call. That overlay's markup includes
+// a "Return to home screen" link (Meet's escape hatch if reconnection fails),
+// which is also one of findEndMeeting()'s end-of-call substrings — so on the
+// very first poll (250ms cadence) after the overlay appears, the bot read a
+// transient reconnect attempt as a definitive meeting end and left mid-call.
+// Prod sample (2026-09-21, 2 days, 218 completed Meet bots): 14 hit this exact
+// "Return to home" match, and in every single one the roster still showed
+// multiple attendees at the moment of the match — none were a genuine
+// everyone-left end. Google Meet's own auto-reconnect typically resolves
+// within a few seconds; this bounds how long we tolerate the overlay before
+// falling through to treat it as terminal.
+const RECONNECT_OVERLAY_GRACE_PERIOD_MS = 20000
 
 /**
  * Checks that the page is still on meet.google.com.
@@ -79,6 +92,13 @@ export function assertOnMeetPage(page: Page, wasInMeeting = false): void {
 }
 
 export class MeetProvider implements MeetingProviderInterface {
+  // Timestamp when Meet's "trying to reconnect" overlay was first seen, so
+  // findEndMeeting() can hold off ending the meeting until the overlay has
+  // persisted past RECONNECT_OVERLAY_GRACE_PERIOD_MS. Reset once the overlay
+  // is no longer present (reconnected, or the call genuinely ended some other
+  // way).
+  private reconnectOverlaySince: number | null = null
+
   async parseMeetingUrl(meeting_url: string) {
     return parseMeetingUrlFromJoinInfos(meeting_url)
   }
@@ -552,6 +572,38 @@ export class MeetProvider implements MeetingProviderInterface {
         }
 
         const content = await page.content()
+
+        // A dropped connection on the bot's side shows this overlay while Meet
+        // retries — it is not a meeting end, and it must be checked before the
+        // endMessages match below, since "Return to home" also appears within
+        // this overlay's markup. Hold off ending until it has persisted past
+        // the grace period; reset the timer as soon as it clears.
+        const isReconnecting =
+          content.includes("Trying to reconnect") ||
+          content.includes("You lost your network connection")
+        if (isReconnecting) {
+          if (this.reconnectOverlaySince === null) {
+            this.reconnectOverlaySince = Date.now()
+            console.log(
+              "[findEndMeeting] Meet's 'trying to reconnect' overlay detected — holding for up to " +
+                `${RECONNECT_OVERLAY_GRACE_PERIOD_MS}ms before treating the call as ended`
+            )
+            return false
+          }
+          const reconnectingForMs = Date.now() - this.reconnectOverlaySince
+          if (reconnectingForMs < RECONNECT_OVERLAY_GRACE_PERIOD_MS) {
+            return false
+          }
+          console.log(
+            `[findEndMeeting] Reconnect overlay still present after ${reconnectingForMs}ms — giving up and falling through to normal end-message detection`
+          )
+          // Fall through: still reconnecting past the grace period, so let the
+          // endMessages check below (which will match "Return to home") end
+          // the meeting as it did before this fix, just no longer instantly.
+        } else {
+          this.reconnectOverlaySince = null
+        }
+
         // "No one else" is an alone-signal that legitimately appears while the bot
         // waits alone during the early grace period. When ignoreAloneSignals is set
         // (grace-period check) we drop it so only definitive removal/ended screens
