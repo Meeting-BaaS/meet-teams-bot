@@ -594,6 +594,11 @@ export class Streaming {
     }
 
     this.isPaused = false
+    // Reset the arrival baseline and frame duration so the first frame after a
+    // resume starts a fresh timeline. Otherwise a pause with no inbound packets
+    // is measured as a gap and injected as silence (up to the 2s cap).
+    this.inboundLastArrivalMs = null
+    this.inboundLastFrameMs = 0
     this.processPausedChunks()
     console.log("[Streaming] Resumed")
   }
@@ -736,9 +741,9 @@ export class Streaming {
     input_ws.on("message", (message: RawData) => {
       const now = Date.now()
       if (this.isPaused) {
-        // Dropped audio still counts as an arrival, so a pause must not
-        // inflate the silence padded after resume.
-        this.inboundLastArrivalMs = now
+        // Dropped audio must not feed the timeline. resume() resets the timing
+        // state, so paused time (whether or not packets arrive) is never
+        // injected as silence.
         return
       }
 
@@ -754,8 +759,11 @@ export class Streaming {
               : message
           const alignedLen = buf.length - (buf.length % 2)
           if (alignedLen === 0) {
+            // No complete sample yet, so no PCM is produced and the arrival
+            // baseline must NOT move: the next decoded frame has to measure its
+            // gap from the last frame that actually played, otherwise a
+            // fragmented frame hides the silence before it.
             this.inboundRemainder = Buffer.from(buf)
-            this.inboundLastArrivalMs = now
             return
           }
           this.inboundRemainder =
@@ -772,14 +780,14 @@ export class Streaming {
           const excessMs = Math.max(gapMs - this.inboundLastFrameMs, 0)
           const silenceMs = Math.min(excessMs, Streaming.INJECTION_MAX_SILENCE_MS)
           if (silenceMs >= Streaming.INJECTION_GAP_THRESHOLD_MS) {
-            const silenceSamples = Math.floor((silenceMs / 1000) * this.sample_rate)
+            const silenceSamples = Math.floor((silenceMs * this.sample_rate) / 1000)
             if (silenceSamples > 0) {
               stream.push(Buffer.alloc(silenceSamples * 4))
             }
           }
 
           const sampleCount = alignedLen / 2
-          this.inboundLastFrameMs = (sampleCount / this.sample_rate) * 1000
+          this.inboundLastFrameMs = (sampleCount * 1000) / this.sample_rate
           const f32Array = new Float32Array(sampleCount)
           for (let i = 0; i < sampleCount; i++) {
             // Read Int16 LE explicitly — avoids ArrayBuffer alignment/offset

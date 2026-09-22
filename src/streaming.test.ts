@@ -406,4 +406,49 @@ describe("Streaming injection arrival-gap silence", () => {
     // first chunk of the fresh stream.
     expect(mockStdin.sizes[mockStdin.sizes.length - 1]).toBe(960)
   })
+
+  it("does not inject paused time as silence after a resume with no packets", async () => {
+    const streaming = createStreaming()
+    const ws = mockWsInstances[0]!
+    ws.open()
+
+    ws.emit("message", pcmBuffer(240)) // 10ms
+    await flush()
+    mockStdin.sizes.length = 0
+    mockStdin.zeroWrites.length = 0
+
+    streaming.pause()
+    jest.advanceTimersByTime(5000) // paused with no inbound packets
+    streaming.resume()
+
+    ws.emit("message", pcmBuffer(240))
+    await flush()
+
+    // The 5s pause must not be replayed as silence: resume resets the timing
+    // state, so only the 10ms frame is written and no 2s-capped silence.
+    expect(mockStdin.sizes).toEqual([960])
+  })
+
+  it("does not advance the arrival baseline for a partial sample", async () => {
+    createStreaming()
+    const ws = mockWsInstances[0]!
+    ws.open()
+
+    ws.emit("message", pcmBuffer(240)) // 10ms
+    await flush()
+    mockStdin.sizes.length = 0
+    mockStdin.zeroWrites.length = 0
+
+    jest.advanceTimersByTime(150)
+    ws.emit("message", Buffer.from([0x01])) // 1 byte, no complete sample
+    await flush()
+
+    jest.advanceTimersByTime(1)
+    ws.emit("message", pcmBuffer(240)) // completes the straddled sample
+    await flush()
+
+    // Gap is measured from the last played frame (t=0, 10ms) to t=151, not
+    // from the 1-byte fragment: 151 - 10 = 141ms -> 3384 Float32 samples.
+    expect(mockStdin.sizes).toEqual([13536, 960])
+  })
 })
