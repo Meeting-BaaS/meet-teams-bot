@@ -1,14 +1,62 @@
 import type { DiarizationSegment } from "./diarization-tracker"
 import {
   assembleSpeakerTimeline,
+  collapseShortUnknownSandwiches,
+  SHORT_UNKNOWN_MAX_SECONDS,
   SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
 } from "./speaker-timeline-assembler"
+import { UNKNOWN_SPEAKER } from "./types"
 
 const seg = (speaker: string, start: number, end: number, id = 1): DiarizationSegment => ({
   speaker,
   user_id: id,
   start_time: start,
   end_time: end
+})
+
+describe("collapseShortUnknownSandwiches", () => {
+  it("merges neighbours across a short Unknown when both names match", () => {
+    expect(
+      collapseShortUnknownSandwiches([
+        seg("Alice", 0, 5),
+        seg(UNKNOWN_SPEAKER, 5, 5.2, 9),
+        seg("Alice", 5.2, 10)
+      ])
+    ).toEqual([seg("Alice", 0, 10)])
+  })
+
+  it("leaves Unknown when neighbour names differ", () => {
+    const segments = [
+      seg("Alice", 0, 5),
+      seg(UNKNOWN_SPEAKER, 5, 5.2, 9),
+      seg("Bob", 5.2, 10, 2)
+    ]
+    expect(collapseShortUnknownSandwiches(segments)).toEqual(segments)
+  })
+
+  it("leaves Unknown longer than the short threshold even with matching neighbours", () => {
+    const start = 5
+    const end = start + SHORT_UNKNOWN_MAX_SECONDS + 0.01
+    const segments = [seg("Alice", 0, start), seg(UNKNOWN_SPEAKER, start, end, 9), seg("Alice", end, 10)]
+    expect(collapseShortUnknownSandwiches(segments)).toEqual(segments)
+  })
+
+  it("collapses flip-flop Unknown chains across repeated passes", () => {
+    expect(
+      collapseShortUnknownSandwiches([
+        seg("Alice", 0, 1),
+        seg(UNKNOWN_SPEAKER, 1, 1.1, 9),
+        seg("Alice", 1.1, 2),
+        seg(UNKNOWN_SPEAKER, 2, 2.05, 9),
+        seg("Alice", 2.05, 3)
+      ])
+    ).toEqual([seg("Alice", 0, 3)])
+  })
+
+  it("does not remove a short named blip between matching neighbours", () => {
+    const segments = [seg("Alice", 0, 5), seg("Bob", 5, 5.2, 2), seg("Alice", 5.2, 10)]
+    expect(collapseShortUnknownSandwiches(segments)).toEqual(segments)
+  })
 })
 
 describe("speaker attribution priority (including no STT)", () => {
@@ -27,6 +75,23 @@ describe("speaker attribution priority (including no STT)", () => {
         { ...seg(name, 4, 10), source: "network" }
       ])
     }
+  })
+
+  it("collapses short Unknown sandwiches after source assembly", () => {
+    const { segments } = assembleSpeakerTimeline(
+      [
+        {
+          kind: "network",
+          segments: [
+            seg("Alice", 0, 5),
+            seg(UNKNOWN_SPEAKER, 5, 5.2, 9),
+            seg("Alice", 5.2, 10)
+          ]
+        }
+      ],
+      10
+    )
+    expect(segments).toEqual([{ ...seg("Alice", 0, 10), source: "network" }])
   })
 
   it("preserves resolved network names and exact boundaries despite conflicting UI", () => {
