@@ -17,6 +17,14 @@ export const SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS = 15
 export const SOURCE_DISSONANCE_DOMINANCE_RATIO = 0.85
 /** The challenger must give the other speakers this many times more seconds. */
 export const SOURCE_DISSONANCE_DISAGREEMENT_FACTOR = 3
+/**
+ * Meet's loudest-speaker path can briefly promote an orphan SSRC (no roster
+ * name) and emit a contiguous `Unknown` blip between two stretches of the same
+ * named person. Those spans are ranking flicker, not a real third speaker —
+ * real syllables are well above this. Only Unknown is eligible: a short named
+ * turn between different people is a legitimate handoff and must stay.
+ */
+export const SHORT_UNKNOWN_MAX_SECONDS = 0.5
 
 export interface SpeakerSourceDissonance {
   reason: "primary_dominated_challenger_multi_speaker"
@@ -95,6 +103,55 @@ function effectiveSpeakers(durations: Map<string, number>): Array<[string, numbe
   return [...durations].filter(
     ([, seconds]) => seconds >= SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
   )
+}
+
+/**
+ * Drop short Unknown segments sandwiched by the same named neighbour and merge
+ * those neighbours across the removed span.
+ *
+ * Why: the network timeline is contiguous (silence keeps the last speaker), so
+ * deleting a middle blip never opens a hole — the previous segment simply
+ * absorbs the time. We require matching neighbour *names* (not user ids) so a
+ * single person's floor stays intact when Meet briefly surfaces an unmapped
+ * stream. We do not guess when neighbours differ (`Alice → Unknown → Bob`):
+ * renaming would risk wrong attribution, and dropping without a sandwich would
+ * invent a gap in a contiguous timeline.
+ *
+ * Runs to a fixed point so flip-flop chains (`A → U → A → U → A`) collapse in
+ * successive passes.
+ */
+export function collapseShortUnknownSandwiches(
+  segments: DiarizationSegment[]
+): DiarizationSegment[] {
+  let current = normalize(segments).map((segment) => ({ ...segment }))
+  let changed = true
+  while (changed) {
+    changed = false
+    const next: DiarizationSegment[] = []
+    for (let index = 0; index < current.length; index++) {
+      const mid = current[index]
+      const prev = next[next.length - 1]
+      const after = current[index + 1]
+      if (
+        prev &&
+        after &&
+        mid.speaker === UNKNOWN_SPEAKER &&
+        mid.end_time - mid.start_time <= SHORT_UNKNOWN_MAX_SECONDS &&
+        prev.speaker === after.speaker &&
+        prev.speaker !== UNKNOWN_SPEAKER &&
+        prev.end_time === mid.start_time &&
+        mid.end_time === after.start_time
+      ) {
+        prev.end_time = after.end_time
+        index++
+        changed = true
+        continue
+      }
+      next.push({ ...mid })
+    }
+    current = next
+  }
+  return current
 }
 
 /**
@@ -268,5 +325,9 @@ export function assembleSpeakerTimeline(
       }
     }
   }
-  return { segments, filledBySource, sourceDissonance: dissonance }
+  return {
+    segments: collapseShortUnknownSandwiches(segments),
+    filledBySource,
+    sourceDissonance: dissonance
+  }
 }
