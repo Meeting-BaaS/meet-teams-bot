@@ -835,25 +835,27 @@ export class TeamsProvider implements MeetingProviderInterface {
       }
     }
 
-    // Check for "Continue without audio or video" that might appear AFTER joining (light interface)
+    // Check for "Continue without audio or video" that might appear AFTER joining (light interface).
+    // We are already confirmed in-meeting here, so this is a short best-effort sweep:
+    // the overlay is rare and clicking it post-join only dismisses a leftover prompt.
     try {
       console.log('🔄 Post-meeting check for "Continue without audio or video"...')
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 2; i++) {
         if (cancelCheck?.()) break
 
         const found = await clickWithInnerText(
           page,
           "button",
           "Continue without audio or video",
-          2,
+          1,
           true
         )
         if (found) {
           console.log('✅ Successfully clicked post-meeting "Continue without audio"')
-          await sleep(1500) // Give time for interface to update
+          await sleep(500) // Give time for interface to update
           break
         }
-        await sleep(800)
+        await sleep(300)
       }
     } catch (e) {
       console.warn('Post-meeting "Continue without audio" check failed:', e)
