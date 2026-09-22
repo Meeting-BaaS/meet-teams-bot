@@ -87,11 +87,13 @@ export class Streaming {
   // byte(s) across messages so only complete samples are ever decoded.
   private inboundRemainder: Buffer = Buffer.alloc(0)
 
-  // Wall-clock ms of the last injection arrival. Raw f32le input is timestamped
-  // purely by sample count, so FFmpeg cannot see pauses between WebSocket
-  // bursts; the writer below turns arrival gaps into silence (capped) so the
-  // sample-count timeline stays aligned with wall-clock time.
+  // Wall-clock ms of the last injection arrival, plus the audio duration of the
+  // frame it carried. Raw f32le input is timestamped purely by sample count, so
+  // FFmpeg cannot see pauses between WebSocket bursts; the writer below pads
+  // only the elapsed time the previous frame does not already cover, keeping the
+  // sample-count timeline aligned with wall-clock time without slowing it down.
   private inboundLastArrivalMs: number | null = null
+  private inboundLastFrameMs = 0
   private static readonly INJECTION_GAP_THRESHOLD_MS = 30
   private static readonly INJECTION_MAX_SILENCE_MS = 2000
 
@@ -721,9 +723,11 @@ export class Streaming {
   private createAudioStreamFromWebSocket = (input_ws: WebSocket) => {
     // Fresh stream (e.g. a dual-channel WebSocket reconnect attaching a new
     // handler on the same Streaming instance) must not inherit a stale partial
-    // sample from the previous connection, nor a stale arrival timestamp.
+    // sample from the previous connection, nor a stale arrival timestamp or
+    // frame duration.
     this.inboundRemainder = Buffer.alloc(0)
     this.inboundLastArrivalMs = null
+    this.inboundLastFrameMs = 0
 
     const stream = new Readable({
       read() {}
@@ -757,13 +761,16 @@ export class Streaming {
           this.inboundRemainder =
             alignedLen < buf.length ? Buffer.from(buf.subarray(alignedLen)) : Buffer.alloc(0)
 
-          // Preserve arrival timing: emit silence covering the pause since the
-          // previous arrival (capped, sub-threshold jitter ignored) before this
-          // chunk, so FFmpeg's sample-count timeline stays wall-clock aligned
-          // and the realtime sink stays fed during bursts.
+          // Preserve arrival timing: emit silence only for the elapsed time the
+          // preceding frame does not already cover. Raw f32le input carries no
+          // timestamps, so a stall (arrival later than the previous frame's
+          // audio duration) would otherwise leave the realtime sink unfed. A
+          // steady cadence (gap == previous frame duration) adds nothing, so the
+          // injected timeline cannot drift slower than wall-clock time.
           const gapMs = this.inboundLastArrivalMs === null ? 0 : now - this.inboundLastArrivalMs
           this.inboundLastArrivalMs = now
-          const silenceMs = Math.min(Math.max(gapMs, 0), Streaming.INJECTION_MAX_SILENCE_MS)
+          const excessMs = Math.max(gapMs - this.inboundLastFrameMs, 0)
+          const silenceMs = Math.min(excessMs, Streaming.INJECTION_MAX_SILENCE_MS)
           if (silenceMs >= Streaming.INJECTION_GAP_THRESHOLD_MS) {
             const silenceSamples = Math.floor((silenceMs / 1000) * this.sample_rate)
             if (silenceSamples > 0) {
@@ -772,6 +779,7 @@ export class Streaming {
           }
 
           const sampleCount = alignedLen / 2
+          this.inboundLastFrameMs = (sampleCount / this.sample_rate) * 1000
           const f32Array = new Float32Array(sampleCount)
           for (let i = 0; i < sampleCount; i++) {
             // Read Int16 LE explicitly — avoids ArrayBuffer alignment/offset

@@ -312,7 +312,7 @@ describe("Streaming injection arrival-gap silence", () => {
     await new Promise((resolve) => setImmediate(resolve))
   }
 
-  it("pads WebSocket arrival gaps with silence before the next chunk", async () => {
+  it("pads only the arrival gap the previous frame does not cover", async () => {
     createStreaming()
     const ws = mockWsInstances[0]!
     ws.open()
@@ -326,11 +326,31 @@ describe("Streaming injection arrival-gap silence", () => {
     ws.emit("message", pcmBuffer(240))
     await flush()
 
-    // 150ms gap -> floor(0.15 * 24000) = 3600 Float32 samples of silence,
-    // pushed ahead of the chunk.
-    expect(mockStdin.sizes).toEqual([960, 14400, 960])
+    // 150ms gap minus the preceding 10ms frame -> 140ms of real silence:
+    // floor(0.14 * 24000) = 3360 Float32 samples, pushed ahead of the chunk.
+    expect(mockStdin.sizes).toEqual([960, 13440, 960])
     expect(mockStdin.zeroWrites[1]).toBe(true)
     expect(mockStdin.zeroWrites[2]).toBe(false)
+  })
+
+  it("does not pad a steady cadence whose frames match the arrival interval", async () => {
+    createStreaming()
+    const ws = mockWsInstances[0]!
+    ws.open()
+
+    ws.emit("message", pcmBuffer(2400)) // 100ms of audio at 24kHz
+    await flush()
+    mockStdin.sizes.length = 0
+    mockStdin.zeroWrites.length = 0
+
+    jest.advanceTimersByTime(100)
+    ws.emit("message", pcmBuffer(2400))
+    await flush()
+
+    // 100ms gap == the preceding 100ms frame: no injected silence, so the
+    // injected timeline advances at real time instead of at half speed.
+    expect(mockStdin.sizes).toEqual([9600])
+    expect(mockStdin.zeroWrites).toEqual([false])
   })
 
   it("does not pad sub-threshold jitter", async () => {
@@ -342,7 +362,8 @@ describe("Streaming injection arrival-gap silence", () => {
     await flush()
     mockStdin.sizes.length = 0
 
-    jest.advanceTimersByTime(10)
+    // 35ms gap minus the 10ms frame leaves 25ms, under the 30ms threshold.
+    jest.advanceTimersByTime(35)
     ws.emit("message", pcmBuffer(240))
     await flush()
     expect(mockStdin.sizes).toEqual([960])
