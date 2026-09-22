@@ -17,6 +17,7 @@ import { S3Uploader } from "../utils/S3Uploader"
 import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
 import { SoundLevelMonitor } from "../utils/sound-level-monitor"
+import { buildVideoInputArgs, buildVideoOutputArgs } from "./video-source"
 
 const execAsync = promisify(exec)
 
@@ -419,25 +420,19 @@ export class ScreenRecorder extends EventEmitter {
     const timestamp = Date.now()
     const screenshotPattern = path.join(screenshotsPath, `${timestamp}_%4d.png`)
 
-    // Use the same recording flow for both audio-only and video modes
-    // Audio-only mode will just skip video upload at the end
+    // The video stream exists in every mode as the A/V reference for the sync,
+    // duration and trim math; audio_only just never uploads it (see ./video-source.ts).
     const tempDir = PathManager.getInstance().getTempPath()
     const rawVideoPath = path.join(tempDir, "raw.mp4")
     this.rawAudioPath = path.join(tempDir, "raw.flac")
 
-    args.push(
-      // === VIDEO INPUT ===
-      "-f",
-      "x11grab",
-      "-video_size",
-      `${res.width}x${res.captureHeight}`,
-      "-thread_queue_size",
-      "1024", // 1024 packets — ~34 s at 30 fps, generous without memory bloat
-      "-framerate",
-      "30",
-      "-i",
-      this.config.display,
+    // audio_only recordings never deliver video, so they skip screen capture
+    // and encode a negligible synthetic frame instead (see ./video-source.ts).
+    const audioOnly = GLOBAL.get().recording_mode === "audio_only"
 
+    args.push(...buildVideoInputArgs(audioOnly, res, this.config.display))
+
+    args.push(
       // === AUDIO INPUT ===
       "-f",
       "pulse",
@@ -453,45 +448,12 @@ export class ScreenRecorder extends EventEmitter {
       "-rtbufsize",
       "128k",
       "-i",
-      VIRTUAL_SPEAKER_MONITOR,
+      VIRTUAL_SPEAKER_MONITOR
+    )
 
-      // === OUTPUT 1: RAW VIDEO (no audio) ===
-      "-map",
-      "0:v:0",
-      "-c:v",
-      "libx264",
-      "-preset",
-      // veryfast: ~40% less encoder CPU than "fast" at the same crf, with
-      // near-identical visual quality on meeting content (mostly static
-      // talking heads / shared screens). Output is ~10-15% larger, which is
-      // cheap S3 vs compute: the encoder is the biggest steady CPU draw of
-      // the bot, and lower per-bot CPU lets more bots share a node.
-      "veryfast",
-      "-crf",
-      "23",
-      "-profile:v",
-      "main",
-      "-level",
-      "4.0",
-      "-pix_fmt",
-      "yuv420p",
-      "-g",
-      "20", // Keyframe every 20 frames (1 sec at 20fps) for precise trimming
-      "-keyint_min",
-      "20", // Force minimum keyframe interval
-      "-bf",
-      "0",
-      "-refs",
-      "1",
-      "-vf",
-      `crop=${res.width}:${res.height}:0:140`,
-      "-avoid_negative_ts",
-      "make_zero",
-      "-f",
-      "mp4",
-      "-y",
-      rawVideoPath,
+    args.push(...buildVideoOutputArgs(audioOnly, res, rawVideoPath))
 
+    args.push(
       // === OUTPUT 2: RAW AUDIO ===
       "-map",
       "1:a:0",
@@ -523,7 +485,7 @@ export class ScreenRecorder extends EventEmitter {
     // Compliance: audio_only customers explicitly opted out of visual capture —
     // never write image frames for them (previously screenshots were captured
     // AND uploaded in every mode; only the mp4 upload was skipped).
-    if (GLOBAL.get().recording_mode !== "audio_only") {
+    if (!audioOnly) {
       args.push(
         "-map",
         "0:v:0",

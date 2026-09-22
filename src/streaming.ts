@@ -87,6 +87,16 @@ export class Streaming {
   // byte(s) across messages so only complete samples are ever decoded.
   private inboundRemainder: Buffer = Buffer.alloc(0)
 
+  // Wall-clock ms of the last injection arrival, plus the audio duration of the
+  // frame it carried. Raw f32le input is timestamped purely by sample count, so
+  // FFmpeg cannot see pauses between WebSocket bursts; the writer below pads
+  // only the elapsed time the previous frame does not already cover, keeping the
+  // sample-count timeline aligned with wall-clock time without slowing it down.
+  private inboundLastArrivalMs: number | null = null
+  private inboundLastFrameMs = 0
+  private static readonly INJECTION_GAP_THRESHOLD_MS = 30
+  private static readonly INJECTION_MAX_SILENCE_MS = 2000
+
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
   private debugAudioBytesWritten = 0
@@ -584,6 +594,11 @@ export class Streaming {
     }
 
     this.isPaused = false
+    // Reset the arrival baseline and frame duration so the first frame after a
+    // resume starts a fresh timeline. Otherwise a pause with no inbound packets
+    // is measured as a gap and injected as silence (up to the 2s cap).
+    this.inboundLastArrivalMs = null
+    this.inboundLastFrameMs = 0
     this.processPausedChunks()
     console.log("[Streaming] Resumed")
   }
@@ -713,15 +728,24 @@ export class Streaming {
   private createAudioStreamFromWebSocket = (input_ws: WebSocket) => {
     // Fresh stream (e.g. a dual-channel WebSocket reconnect attaching a new
     // handler on the same Streaming instance) must not inherit a stale partial
-    // sample from the previous connection.
+    // sample from the previous connection, nor a stale arrival timestamp or
+    // frame duration.
     this.inboundRemainder = Buffer.alloc(0)
+    this.inboundLastArrivalMs = null
+    this.inboundLastFrameMs = 0
 
     const stream = new Readable({
       read() {}
     })
 
     input_ws.on("message", (message: RawData) => {
-      if (this.isPaused) return
+      const now = Date.now()
+      if (this.isPaused) {
+        // Dropped audio must not feed the timeline. resume() resets the timing
+        // state, so paused time (whether or not packets arrive) is never
+        // injected as silence.
+        return
+      }
 
       if (message instanceof Buffer) {
         try {
@@ -735,13 +759,35 @@ export class Streaming {
               : message
           const alignedLen = buf.length - (buf.length % 2)
           if (alignedLen === 0) {
+            // No complete sample yet, so no PCM is produced and the arrival
+            // baseline must NOT move: the next decoded frame has to measure its
+            // gap from the last frame that actually played, otherwise a
+            // fragmented frame hides the silence before it.
             this.inboundRemainder = Buffer.from(buf)
             return
           }
           this.inboundRemainder =
             alignedLen < buf.length ? Buffer.from(buf.subarray(alignedLen)) : Buffer.alloc(0)
 
+          // Preserve arrival timing: emit silence only for the elapsed time the
+          // preceding frame does not already cover. Raw f32le input carries no
+          // timestamps, so a stall (arrival later than the previous frame's
+          // audio duration) would otherwise leave the realtime sink unfed. A
+          // steady cadence (gap == previous frame duration) adds nothing, so the
+          // injected timeline cannot drift slower than wall-clock time.
+          const gapMs = this.inboundLastArrivalMs === null ? 0 : now - this.inboundLastArrivalMs
+          this.inboundLastArrivalMs = now
+          const excessMs = Math.max(gapMs - this.inboundLastFrameMs, 0)
+          const silenceMs = Math.min(excessMs, Streaming.INJECTION_MAX_SILENCE_MS)
+          if (silenceMs >= Streaming.INJECTION_GAP_THRESHOLD_MS) {
+            const silenceSamples = Math.floor((silenceMs * this.sample_rate) / 1000)
+            if (silenceSamples > 0) {
+              stream.push(Buffer.alloc(silenceSamples * 4))
+            }
+          }
+
           const sampleCount = alignedLen / 2
+          this.inboundLastFrameMs = (sampleCount * 1000) / this.sample_rate
           const f32Array = new Float32Array(sampleCount)
           for (let i = 0; i < sampleCount; i++) {
             // Read Int16 LE explicitly — avoids ArrayBuffer alignment/offset
