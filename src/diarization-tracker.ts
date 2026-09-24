@@ -1,7 +1,7 @@
 import { createWriteStream, type WriteStream } from "node:fs"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { assembleSpeakerTimeline, type TimelineSource } from "./speaker-timeline-assembler"
+import { assembleSpeakerTimeline, type TimelineSource, type UiSpeakingWindow } from "./speaker-timeline-assembler"
 import { type SpeakerData, UNKNOWN_SPEAKER } from "./types"
 import { PathManager } from "./utils/PathManager"
 
@@ -231,7 +231,8 @@ export class DiarizationTracker {
     resolveUserId?: UserIdResolver,
     fallbackSources?: TimelineSource[],
     botNames?: string[],
-    selfDeviceId?: string
+    selfDeviceId?: string,
+    uiSpeakingWindows?: UiSpeakingWindow[]
   ): Promise<void> {
     if (this.isEnded) {
       return
@@ -293,7 +294,7 @@ export class DiarizationTracker {
         ...(fallbackSources ?? [])
       ],
       meetingEndRel,
-      { botNames }
+      { botNames, uiSpeakingWindows }
     )
     if (sourceDissonance) {
       // An interceptor was wrong for the whole call. Counts only: names are PII.

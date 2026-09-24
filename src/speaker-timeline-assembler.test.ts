@@ -1,9 +1,11 @@
 import type { DiarizationSegment } from "./diarization-tracker"
 import {
   assembleSpeakerTimeline,
+  cleanupUnknownSegments,
   collapseShortUnknownSandwiches,
   SHORT_UNKNOWN_MAX_SECONDS,
-  SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS
+  SOURCE_DISSONANCE_MIN_SPEAKER_SECONDS,
+  type UiSpeakingWindow
 } from "./speaker-timeline-assembler"
 import { UNKNOWN_SPEAKER } from "./types"
 
@@ -69,11 +71,7 @@ describe("speaker attribution priority (including no STT)", () => {
         ],
         10
       )
-      expect(segments).toEqual([
-        { ...seg(name, 0, 3), source: "network" },
-        { ...seg("UI Guest", 3, 4, 2), source: "ui" },
-        { ...seg(name, 4, 10), source: "network" }
-      ])
+      expect(segments).toEqual([{ ...seg("UI Guest", 0, 10, 2), source: "ui" }])
     }
   })
 
@@ -182,10 +180,7 @@ describe("speaker attribution priority (including no STT)", () => {
       ],
       10
     )
-    expect(segments[1]).toEqual({
-      ...seg("Guest", 3, 5, 2),
-      source: "transcription"
-    })
+    expect(segments).toEqual([{ ...seg("Guest", 0, 10, 2), source: "transcription" }])
   })
 
   it("filters the recording bot before assessing UI ambiguity", () => {
@@ -357,10 +352,10 @@ describe("assembleSpeakerTimeline source dissonance", () => {
     )
     expect(sourceDissonance?.promotedSource).toBe("ui")
     expect(filledBySource.transcription).toBe(1)
-    expect(segments.find((s) => s.start_time === 1200)).toMatchObject({
+    expect(segments.find((s) => s.speaker === "Emanuele" && s.user_id === 3)).toMatchObject({
       speaker: "Emanuele",
-      end_time: 1395,
-      source: "transcription"
+      start_time: 600,
+      end_time: 1395
     })
     // Only the unobserved tail falls back to the collapsed primary.
     expect(segments.filter((s) => s.source === "network")).toEqual([
@@ -415,5 +410,80 @@ describe("assembleSpeakerTimeline source dissonance", () => {
       demotedSource: "network",
       promotedSource: "transcription"
     })
+  })
+})
+
+describe("cleanupUnknownSegments", () => {
+  const uiWindow = (
+    start: number,
+    end: number,
+    speakers: Array<{ name: string; user_id: number }>
+  ): UiSpeakingWindow => ({ start_time: start, end_time: end, speakers })
+
+  it("fills Unknown from sole UI speaker over a time-sliced window", () => {
+    const segments = [
+      seg("Alice", 0, 1),
+      seg(UNKNOWN_SPEAKER, 1, 4, 9),
+      seg("Bob", 4, 5, 2)
+    ]
+    const windows = [
+      uiWindow(1, 2, [{ name: "Alice", user_id: 1 }]),
+      uiWindow(2, 3, [{ name: "Bob", user_id: 2 }]),
+      uiWindow(3, 4, [])
+    ]
+    expect(cleanupUnknownSegments(segments, windows)).toEqual([
+      seg("Alice", 0, 2),
+      { ...seg("Bob", 2, 5, 2), source: "ui" }
+    ])
+  })
+
+  it("midpoint-splits when UI shows both neighbours", () => {
+    const segments = [
+      seg("Alice", 0, 1),
+      seg(UNKNOWN_SPEAKER, 1, 3, 9),
+      seg("Bob", 3, 4, 2)
+    ]
+    const windows = [
+      uiWindow(1, 3, [
+        { name: "Alice", user_id: 1 },
+        { name: "Bob", user_id: 2 }
+      ])
+    ]
+    expect(cleanupUnknownSegments(segments, windows)).toEqual([
+      seg("Alice", 0, 2),
+      { ...seg("Bob", 2, 4, 2), source: "network" }
+    ])
+  })
+
+  it("merges into nearest neighbour when UI has no coverage", () => {
+    const segments = [
+      seg("Alice", 0, 1),
+      seg(UNKNOWN_SPEAKER, 1, 2, 9),
+      seg("Bob", 2, 3, 2)
+    ]
+    expect(cleanupUnknownSegments(segments, [])).toEqual([
+      seg("Alice", 0, 2),
+      { ...seg("Bob", 2, 3, 2) }
+    ])
+  })
+
+  it("uses a different UI name for long same-neighbour Unknown", () => {
+    const segments = [
+      seg("Alice", 0, 1),
+      seg(UNKNOWN_SPEAKER, 1, 3, 9),
+      seg("Alice", 3, 4)
+    ]
+    const windows = [uiWindow(1, 3, [{ name: "Carol", user_id: 7 }])]
+    expect(cleanupUnknownSegments(segments, windows)).toEqual([
+      seg("Alice", 0, 1),
+      { ...seg("Carol", 1, 3, 7), source: "ui" },
+      seg("Alice", 3, 4)
+    ])
+  })
+
+  it("keeps Unknown when the call has no named neighbour", () => {
+    expect(cleanupUnknownSegments([seg(UNKNOWN_SPEAKER, 0, 5, 9)], [])).toEqual([
+      seg(UNKNOWN_SPEAKER, 0, 5, 9)
+    ])
   })
 })

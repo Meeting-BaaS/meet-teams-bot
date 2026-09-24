@@ -8,6 +8,7 @@ import type { ParticipantState } from "./state-machine/types"
 import { Streaming } from "./streaming"
 import { SpeakerAttributionShadowTracker } from "./speaker-attribution-shadow"
 import { type Participant, type SpeakerData, UNKNOWN_SPEAKER } from "./types"
+import type { UiSpeakingWindow } from "./speaker-timeline-assembler"
 import { PathManager } from "./utils/PathManager"
 import { PiiRedactor } from "./utils/PiiRedactor"
 import { isBotName, silenceBotSpeaker } from "./utils/speaker-attribution"
@@ -150,7 +151,8 @@ export class SpeakerManager {
               ? []
               : [GLOBAL.get().bot_name, instance.selfDisplayedName]
             ).filter((n): n is string => Boolean(n)),
-            GLOBAL.get().streaming_input ? undefined : instance.selfDeviceId
+            GLOBAL.get().streaming_input ? undefined : instance.selfDeviceId,
+            instance.buildUiSpeakingWindows(meetingStartTime, lastTimestamp)
           )
         }
       }
@@ -656,6 +658,45 @@ export class SpeakerManager {
         })
     }
     return segments
+  }
+
+  public buildUiSpeakingWindows(
+    meetingStartTime: number,
+    lastTimestamp: number
+  ): UiSpeakingWindow[] {
+    const windows: UiSpeakingWindow[] = []
+    for (let i = 0; i < this.shadowObservations.length; i++) {
+      const observation = this.shadowObservations[i]
+      const speakers: Array<{ name: string; user_id: number }> = []
+      for (const observed of observation.speakers.filter((s) => s.isSpeaking)) {
+        const resolvedName = observed.deviceId
+          ? this.deviceNames.get(observed.deviceId)
+          : undefined
+        const name =
+          !observed.name || observed.name === UNKNOWN_SPEAKER
+            ? (resolvedName ?? UNKNOWN_SPEAKER)
+            : observed.name
+        if (!name || name === UNKNOWN_SPEAKER) continue
+        speakers.push({
+          name,
+          user_id: this.resolveUiUserId(name, observed.deviceId)
+        })
+      }
+      const start = Math.max(0, (observation.t - meetingStartTime) / 1000)
+      const next =
+        this.shadowObservations[i + 1]?.t ??
+        (this.shadowBufferTruncated ? observation.lastSeen : lastTimestamp)
+      const end = Math.max(
+        0,
+        (Math.min(next, lastTimestamp, observation.lastSeen + SpeakerManager.SHADOW_OPEN_MAX_MS) -
+          meetingStartTime) /
+          1000
+      )
+      if (end > start) {
+        windows.push({ start_time: start, end_time: end, speakers })
+      }
+    }
+    return windows
   }
 
   /** Buffer fresh UI evidence on both the primary and shadow paths. */
