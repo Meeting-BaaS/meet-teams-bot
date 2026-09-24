@@ -84,7 +84,7 @@ describe("DiarizationTracker backfill", () => {
     expect(segments[1]).toMatchObject({ speaker: "Johnny", user_id: 3 })
   })
 
-  it("leaves a device the roster never named as Unknown rather than guessing", async () => {
+  it("absorbs an unresolved ghost device into the nearest named neighbour at finalize", async () => {
     const tracker = freshTracker()
 
     tracker.updateSpeaker(speech("dev-a", "Unknown", 1), MEETING_START)
@@ -95,8 +95,10 @@ describe("DiarizationTracker backfill", () => {
     )
 
     const segments = readSegments()
+    expect(segments).toHaveLength(1)
     expect(segments[0].speaker).toBe("Amr El Shimy")
-    expect(segments[1].speaker).toBe("Unknown")
+    expect(segments[0].start_time).toBe(1)
+    expect(segments[0].end_time).toBe(5)
   })
 
   it("repairs a churning-device speaker by stable user id when the device never resolves", async () => {

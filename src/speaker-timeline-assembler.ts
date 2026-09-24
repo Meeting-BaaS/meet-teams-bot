@@ -26,6 +26,12 @@ export const SOURCE_DISSONANCE_DISAGREEMENT_FACTOR = 3
  */
 export const SHORT_UNKNOWN_MAX_SECONDS = 0.5
 
+export interface UiSpeakingWindow {
+  start_time: number
+  end_time: number
+  speakers: Array<{ name: string; user_id: number }>
+}
+
 export interface SpeakerSourceDissonance {
   reason: "primary_dominated_challenger_multi_speaker"
   demotedSource: TimelineSourceKind
@@ -124,6 +130,7 @@ export function collapseShortUnknownSandwiches(
   segments: DiarizationSegment[]
 ): DiarizationSegment[] {
   let current = normalize(segments).map((segment) => ({ ...segment }))
+  let collapsed = 0
   let changed = true
   while (changed) {
     changed = false
@@ -144,6 +151,7 @@ export function collapseShortUnknownSandwiches(
       ) {
         prev.end_time = after.end_time
         index++
+        collapsed++
         changed = true
         continue
       }
@@ -151,7 +159,298 @@ export function collapseShortUnknownSandwiches(
     }
     current = next
   }
+  const remaining = current.filter((s) => s.speaker === UNKNOWN_SPEAKER).length
+  console.log(
+    `[UnknownCleanup] pass1_sandwich collapsed=${collapsed} remaining_unknown=${remaining}`
+  )
   return current
+}
+
+function namedSpeakersOf(window: UiSpeakingWindow): Array<{ name: string; user_id: number }> {
+  return window.speakers.filter((s) => s.name.trim() && s.name.trim() !== UNKNOWN_SPEAKER)
+}
+
+function coalesceAdjacent(segments: DiarizationSegment[]): DiarizationSegment[] {
+  const out: DiarizationSegment[] = []
+  for (const segment of normalize(segments)) {
+    const last = out[out.length - 1]
+    if (
+      last &&
+      last.speaker === segment.speaker &&
+      last.user_id === segment.user_id &&
+      last.end_time === segment.start_time
+    ) {
+      last.end_time = segment.end_time
+    } else {
+      out.push({ ...segment })
+    }
+  }
+  return out
+}
+
+function uiWindowsOverlapping(
+  start: number,
+  end: number,
+  windows: UiSpeakingWindow[]
+): UiSpeakingWindow[] {
+  return windows.filter((w) => w.end_time > start && w.start_time < end)
+}
+
+function cutPointsForUnknown(
+  start: number,
+  end: number,
+  windows: UiSpeakingWindow[]
+): number[] {
+  const points = new Set<number>([start, end])
+  for (const window of windows) {
+    if (window.start_time > start && window.start_time < end) points.add(window.start_time)
+    if (window.end_time > start && window.end_time < end) points.add(window.end_time)
+  }
+  return [...points].sort((a, b) => a - b)
+}
+
+function uiSpeakersAt(
+  time: number,
+  windows: UiSpeakingWindow[]
+): Array<{ name: string; user_id: number }> {
+  let hit: UiSpeakingWindow | undefined
+  for (const window of windows) {
+    if (window.start_time <= time && time < window.end_time) hit = window
+  }
+  return hit ? namedSpeakersOf(hit) : []
+}
+
+type SliceDecision =
+  | { reason: string; action: "fill"; speaker: string; user_id: number; source: "ui" | "network" }
+  | { reason: string; action: "midpoint" }
+  | { reason: string; action: "defer" }
+
+function decideUnknownSlice(
+  speakers: Array<{ name: string; user_id: number }>,
+  prev: DiarizationSegment | undefined,
+  next: DiarizationSegment | undefined
+): SliceDecision {
+  if (speakers.length === 0) {
+    return { reason: "no_ui", action: "defer" }
+  }
+  if (speakers.length === 1) {
+    return {
+      reason: "sole_ui",
+      action: "fill",
+      speaker: speakers[0].name,
+      user_id: speakers[0].user_id,
+      source: "ui"
+    }
+  }
+  const sameNeighbour =
+    Boolean(prev && next && isNamed(prev) && isNamed(next) && prev.speaker === next.speaker)
+  if (sameNeighbour && prev) {
+    const others = speakers.filter((s) => s.name !== prev.speaker)
+    if (others.length === 1) {
+      return {
+        reason: "same_neighbour_ui_other",
+        action: "fill",
+        speaker: others[0].name,
+        user_id: others[0].user_id,
+        source: "ui"
+      }
+    }
+    if (others.length === 0) {
+      return {
+        reason: "same_neighbour_merge",
+        action: "fill",
+        speaker: prev.speaker,
+        user_id: prev.user_id,
+        source: prev.source === "ui" ? "ui" : "network"
+      }
+    }
+    return { reason: "same_neighbour_multi_other", action: "defer" }
+  }
+  const hasPrev = Boolean(
+    prev && isNamed(prev) && speakers.some((s) => s.name === prev.speaker)
+  )
+  const hasNext = Boolean(
+    next && isNamed(next) && speakers.some((s) => s.name === next.speaker)
+  )
+  if (hasPrev && !hasNext && prev) {
+    return {
+      reason: "multi_prev_only",
+      action: "fill",
+      speaker: prev.speaker,
+      user_id: prev.user_id,
+      source: prev.source === "ui" ? "ui" : "network"
+    }
+  }
+  if (hasNext && !hasPrev && next) {
+    return {
+      reason: "multi_next_only",
+      action: "fill",
+      speaker: next.speaker,
+      user_id: next.user_id,
+      source: next.source === "ui" ? "ui" : "network"
+    }
+  }
+  if (hasPrev && hasNext) {
+    return { reason: "multi_both_neighbours", action: "midpoint" }
+  }
+  return { reason: "multi_neither", action: "defer" }
+}
+
+function fillUnknownsFromUi(
+  segments: DiarizationSegment[],
+  uiWindows: UiSpeakingWindow[]
+): DiarizationSegment[] {
+  const current = normalize(segments).map((segment) => ({ ...segment }))
+  const out: DiarizationSegment[] = []
+  let filled = 0
+  let sliceCount = 0
+  let skippedNoUi = 0
+
+  for (let index = 0; index < current.length; index++) {
+    const seg = current[index]
+    if (seg.speaker !== UNKNOWN_SPEAKER) {
+      out.push(seg)
+      continue
+    }
+    const prev = out[out.length - 1]
+    const next = current[index + 1]
+    const prevNamed = prev && isNamed(prev) ? prev : undefined
+    const nextNamed = next && isNamed(next) ? next : undefined
+    const overlapping = uiWindowsOverlapping(seg.start_time, seg.end_time, uiWindows)
+    const points = cutPointsForUnknown(seg.start_time, seg.end_time, overlapping)
+
+    for (let p = 0; p < points.length - 1; p++) {
+      const sliceStart = points[p]
+      const sliceEnd = points[p + 1]
+      if (sliceEnd <= sliceStart) continue
+      sliceCount++
+      const mid = (sliceStart + sliceEnd) / 2
+      const speakers = uiSpeakersAt(mid, overlapping)
+      const decision = decideUnknownSlice(speakers, prevNamed, nextNamed)
+      const sliceLabel = `slice=${p + 1}/${points.length - 1}`
+      const baseLog =
+        `[UnknownCleanup] decide t=${sliceStart.toFixed(3)}-${sliceEnd.toFixed(3)} ` +
+        `dur_ms=${Math.round((sliceEnd - sliceStart) * 1000)} orphan_id=${seg.user_id} ` +
+        `prev_id=${prevNamed?.user_id ?? "-"} next_id=${nextNamed?.user_id ?? "-"} ` +
+        `ui_speakers=${speakers.length} ${sliceLabel} reason=${decision.reason}`
+
+      if (decision.action === "fill") {
+        out.push({
+          speaker: decision.speaker,
+          user_id: decision.user_id,
+          start_time: sliceStart,
+          end_time: sliceEnd,
+          source: decision.source
+        })
+        filled++
+        console.log(`${baseLog} action=fill`)
+      } else if (decision.action === "midpoint" && prevNamed && nextNamed) {
+        const split = (sliceStart + sliceEnd) / 2
+        out.push({
+          speaker: prevNamed.speaker,
+          user_id: prevNamed.user_id,
+          start_time: sliceStart,
+          end_time: split,
+          source: prevNamed.source === "ui" ? "ui" : "network"
+        })
+        out.push({
+          speaker: nextNamed.speaker,
+          user_id: nextNamed.user_id,
+          start_time: split,
+          end_time: sliceEnd,
+          source: nextNamed.source === "ui" ? "ui" : "network"
+        })
+        filled += 2
+        console.log(`${baseLog} action=midpoint_split`)
+      } else {
+        out.push({
+          speaker: UNKNOWN_SPEAKER,
+          user_id: seg.user_id,
+          start_time: sliceStart,
+          end_time: sliceEnd,
+          source: seg.source
+        })
+        skippedNoUi++
+        console.log(`${baseLog} action=defer_nearest`)
+      }
+    }
+  }
+
+  const coalesced = coalesceAdjacent(out)
+  const remaining = coalesced.filter((s) => s.speaker === UNKNOWN_SPEAKER).length
+  console.log(
+    `[UnknownCleanup] pass2_ui filled=${filled} slices=${sliceCount} skipped_no_ui=${skippedNoUi} remaining_unknown=${remaining}`
+  )
+  return coalesced
+}
+
+function mergeNearestUnknowns(segments: DiarizationSegment[]): DiarizationSegment[] {
+  const current = normalize(segments).map((segment) => ({ ...segment }))
+  const out: DiarizationSegment[] = []
+  let merged = 0
+
+  for (let index = 0; index < current.length; index++) {
+    const seg = current[index]
+    if (seg.speaker !== UNKNOWN_SPEAKER) {
+      out.push(seg)
+      continue
+    }
+    const prev = out[out.length - 1]
+    const next = current[index + 1]
+    const prevOk = Boolean(prev && isNamed(prev) && prev.end_time === seg.start_time)
+    const nextOk = Boolean(next && isNamed(next) && seg.end_time === next.start_time)
+
+    if (!prevOk && !nextOk) {
+      out.push(seg)
+      console.log(
+        `[UnknownCleanup] decide t=${seg.start_time.toFixed(3)}-${seg.end_time.toFixed(3)} ` +
+          `dur_ms=${Math.round((seg.end_time - seg.start_time) * 1000)} orphan_id=${seg.user_id} ` +
+          `prev_id=- next_id=- ui_speakers=0 reason=no_neighbour action=keep_unknown`
+      )
+      continue
+    }
+
+    const mid = (seg.start_time + seg.end_time) / 2
+    const usePrev =
+      prevOk &&
+      (!nextOk ||
+        mid - (prev as DiarizationSegment).end_time <=
+          (next as DiarizationSegment).start_time - mid)
+
+    if (usePrev && prev) {
+      prev.end_time = seg.end_time
+      merged++
+      console.log(
+        `[UnknownCleanup] decide t=${seg.start_time.toFixed(3)}-${seg.end_time.toFixed(3)} ` +
+          `dur_ms=${Math.round((seg.end_time - seg.start_time) * 1000)} orphan_id=${seg.user_id} ` +
+          `prev_id=${prev.user_id} next_id=${nextOk && next ? next.user_id : "-"} ` +
+          `ui_speakers=0 reason=no_ui action=nearest_prev`
+      )
+    } else if (next) {
+      next.start_time = seg.start_time
+      merged++
+      console.log(
+        `[UnknownCleanup] decide t=${seg.start_time.toFixed(3)}-${seg.end_time.toFixed(3)} ` +
+          `dur_ms=${Math.round((seg.end_time - seg.start_time) * 1000)} orphan_id=${seg.user_id} ` +
+          `prev_id=${prevOk && prev ? prev.user_id : "-"} next_id=${next.user_id} ` +
+          `ui_speakers=0 reason=no_ui action=nearest_next`
+      )
+    }
+  }
+
+  const coalesced = coalesceAdjacent(out)
+  const remaining = coalesced.filter((s) => s.speaker === UNKNOWN_SPEAKER).length
+  console.log(
+    `[UnknownCleanup] pass3_nearest merged=${merged} remaining_unknown=${remaining}`
+  )
+  return coalesced
+}
+
+export function cleanupUnknownSegments(
+  segments: DiarizationSegment[],
+  uiWindows: UiSpeakingWindow[] = []
+): DiarizationSegment[] {
+  return mergeNearestUnknowns(fillUnknownsFromUi(segments, uiWindows))
 }
 
 /**
@@ -234,7 +533,7 @@ export function detectSourceDissonance(
 export function assembleSpeakerTimeline(
   sources: TimelineSource[],
   meetingEnd: number,
-  options?: { botNames?: string[] }
+  options?: { botNames?: string[]; uiSpeakingWindows?: UiSpeakingWindow[] }
 ): {
   segments: DiarizationSegment[]
   filledBySource: Partial<Record<TimelineSourceKind, number>>
@@ -326,7 +625,10 @@ export function assembleSpeakerTimeline(
     }
   }
   return {
-    segments: collapseShortUnknownSandwiches(segments),
+    segments: cleanupUnknownSegments(
+      collapseShortUnknownSandwiches(segments),
+      options?.uiSpeakingWindows ?? []
+    ),
     filledBySource,
     sourceDissonance: dissonance
   }
