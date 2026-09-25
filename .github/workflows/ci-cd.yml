@@ -161,8 +161,11 @@ jobs:
 
     if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.deploy_target != ''
 
-    # One deploy at a time per cluster, shared with meeting-baas-v2's pipeline so
-    # the two never run the controller against the same cluster concurrently.
+    # One deploy at a time from this repository. GitHub concurrency groups are scoped to
+    # a repository, so this does not serialise against meeting-baas-v2's deploys; it does
+    # not need to: on preprod the two repositories roll disjoint Helm releases (this one
+    # meet-teams-bots-v2 and web-based-zoom-bots-v2, the monorepo api-v2, job-v2 and
+    # zoom-bots-v2), and prod is only ever rolled by the monorepo's release.
     concurrency:
       group: cluster-deploy-${{ needs.prepare.outputs.environment }}
       cancel-in-progress: false
