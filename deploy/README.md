@@ -7,7 +7,7 @@
 | Event | What happens |
 |---|---|
 | PR to `preprod` or `v2-improvements` | type-check and unit tests (`ubuntu-latest`), CI script validation |
-| Push to `preprod` (a merged PR) | build `deploy/Dockerfile` at that commit, push `web-based-bots-v2:<date>-<sha>` to the preprod bots registry, roll the meet/teams pools on preprod (`meet-teams-bots-v2 upgrade`) |
+| Push to `preprod` (a merged PR) | build `deploy/Dockerfile` at that commit, push `web-based-bots-v2:<date>-<sha>` to the preprod bots registry, roll both browser-bot pools on preprod (`meet-teams-bots-v2 upgrade`, `web-based-zoom-bots-v2 upgrade`) |
 | Actions → Run workflow | same as a push, by hand |
 | `vX.Y.Z` tag | nothing here: the tag is written by the monorepo's release |
 
@@ -19,7 +19,7 @@ Prod is released from [meeting-baas-v2](https://github.com/Meeting-BaaS/meeting-
 NPM_TOKEN=<PAT with read:packages> ENVIRON=preprod .ci/scripts/build-image.sh --image-tag local
 ```
 
-The token only reaches the build as a BuildKit secret (the orchestrator install); it is never in a layer. `.ci/scripts/deploy.sh --service meet-teams-bots --environment preprod --image-tag <tag>` rolls preprod from a checkout of `kubernetes-config-private` (`DEPLOYMENT_DIR`, default `.ci/deployment` as made by `checkout-deployment.sh`).
+The token only reaches the build as a BuildKit secret (the orchestrator install); it is never in a layer. `.ci/scripts/deploy.sh --service web-based-bots --environment preprod --image-tag <tag>` rolls both pools on preprod from a checkout of `kubernetes-config-private` (`DEPLOYMENT_DIR`, default `.ci/deployment` as made by `checkout-deployment.sh`).
 
 ## Secrets and variables
 

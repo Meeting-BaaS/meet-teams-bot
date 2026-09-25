@@ -86,12 +86,12 @@ if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
   fi
 
   case "$INPUT_SERVICE" in
-    all|meet-teams-bots)
-      build_matrix='["meet-teams-bots"]'
-      deploy_target="meet-teams-bots"
+    all|web-based-bots)
+      build_matrix='["web-based-bots"]'
+      deploy_target="web-based-bots"
       ;;
     *)
-      echo "[ERROR] Unsupported manual deploy service: ${INPUT_SERVICE} (this repository deploys only 'meet-teams-bots')" >&2
+      echo "[ERROR] Unsupported manual deploy service: ${INPUT_SERVICE} (this repository deploys only 'web-based-bots')" >&2
       exit 1
       ;;
   esac
@@ -108,8 +108,8 @@ else
     case "$REF_NAME" in
       preprod)
         environment="preprod"
-        build_matrix='["meet-teams-bots"]'
-        deploy_target="meet-teams-bots"
+        build_matrix='["web-based-bots"]'
+        deploy_target="web-based-bots"
         image_tag="${INPUT_IMAGE_TAG:-$(make_image_tag)}"
         should_run="true"
         ;;

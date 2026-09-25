@@ -9,7 +9,7 @@ source ".ci/scripts/detect-env.sh"
 source ".ci/scripts/registry.sh"
 source ".ci/scripts/utils.sh"
 
-SERVICE="meet-teams-bots"
+SERVICE="web-based-bots"
 IMAGE_TAG="${IMAGE_TAG:-$(make_image_tag)}"
 
 while [[ $# -gt 0 ]]; do
@@ -29,18 +29,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$SERVICE" != "meet-teams-bots" ]]; then
-  echo "[ERROR] Unknown service: $SERVICE (this repository builds only 'meet-teams-bots')"
+if [[ "$SERVICE" != "web-based-bots" ]]; then
+  echo "[ERROR] Unknown service: $SERVICE (this repository builds only 'web-based-bots')"
   exit 1
 fi
 
-if [[ ! -f ".ci/meet-teams-bots.local-image" ]]; then
-  echo "[ERROR] Missing .ci/meet-teams-bots.local-image. Run build-image.sh first."
+if [[ ! -f ".ci/web-based-bots.local-image" ]]; then
+  echo "[ERROR] Missing .ci/web-based-bots.local-image. Run build-image.sh first."
   exit 1
 fi
 
-local_image="$(cat .ci/meet-teams-bots.local-image)"
-remote_image="$(get_image_repo meet-teams-bots)/${local_image}"
+local_image="$(cat .ci/web-based-bots.local-image)"
+remote_image="$(get_image_repo web-based-bots)/${local_image}"
 
 echo "[INFO] Tagging image:"
 echo "  local:  ${local_image}"
@@ -51,6 +51,6 @@ run_cmd docker tag "$local_image" "$remote_image"
 echo "[INFO] Pushing ${remote_image}"
 run_cmd docker push "$remote_image"
 
-echo "$remote_image" > .ci/meet-teams-bots.remote-image
+echo "$remote_image" > .ci/web-based-bots.remote-image
 
 echo "[SUCCESS] Push completed for service: $SERVICE"

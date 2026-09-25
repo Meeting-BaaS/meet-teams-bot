@@ -9,7 +9,7 @@ source ".ci/scripts/detect-env.sh"
 source ".ci/scripts/registry.sh"
 source ".ci/scripts/utils.sh"
 
-SERVICE="meet-teams-bots"
+SERVICE="web-based-bots"
 IMAGE_NAME="web-based-bots-v2"
 TARGET_ARCH="${TARGET_ARCH:-amd64}"
 IMAGE_TAG="${IMAGE_TAG:-$(make_image_tag)}"
@@ -35,8 +35,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "$SERVICE" != "meet-teams-bots" ]]; then
-  echo "[ERROR] Unknown service: $SERVICE (this repository builds only 'meet-teams-bots')"
+if [[ "$SERVICE" != "web-based-bots" ]]; then
+  echo "[ERROR] Unknown service: $SERVICE (this repository builds only 'web-based-bots')"
   exit 1
 fi
 
@@ -92,6 +92,6 @@ run_cmd docker buildx build \
   -f deploy/Dockerfile . \
   --tag="${IMAGE_NAME}:${IMAGE_TAG}"
 
-echo "${IMAGE_NAME}:${IMAGE_TAG}" > ".ci/meet-teams-bots.local-image"
+echo "${IMAGE_NAME}:${IMAGE_TAG}" > ".ci/web-based-bots.local-image"
 
 echo "[SUCCESS] Build completed: ${IMAGE_NAME}:${IMAGE_TAG}"

@@ -2,8 +2,8 @@ name: Meet/Teams bot CI/CD
 
 # This repository's own pipeline, same shape as the connector's: PRs are checked, a push
 # to `preprod` builds the cloud image (deploy/Dockerfile → web-based-bots-v2) from this
-# commit and rolls the meet/teams pools on preprod, and workflow_dispatch does the same by
-# hand. Prod is not released from here: a vX.Y.Z tag on meeting-baas-v2's main builds this
+# commit and rolls both browser-bot pools (meet/teams and web-based Zoom) on preprod, and
+# workflow_dispatch does the same by hand. Prod is not released from here: a vX.Y.Z tag on meeting-baas-v2's main builds this
 # repository's `v2-improvements` with the same Dockerfile, rolls every service, and writes
 # the tag back here.
 
@@ -115,7 +115,7 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           INPUT_ENVIRONMENT: ${{ inputs.environment }}
-          INPUT_SERVICE: meet-teams-bots
+          INPUT_SERVICE: web-based-bots
           INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
         run: .ci/scripts/resolve-pipeline-context.sh >> "$GITHUB_OUTPUT"
 
