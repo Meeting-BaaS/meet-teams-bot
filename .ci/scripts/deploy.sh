@@ -129,7 +129,7 @@ run_controller() {
 
 # One web-based-bots-v2 image, two pools — the same pair the monorepo's `web-based-bots`
 # target rolls.
-run_controller "web-based-bots-v2 upgrade"
+run_controller "meet-teams-bots-v2 upgrade"
 run_controller "web-based-zoom-bots-v2 upgrade"
 
 echo "[SUCCESS] Deployment completed for service: $SERVICE"
