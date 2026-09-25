@@ -334,10 +334,24 @@ cleanup() {
         kill -TERM "$XVFB_PID" 2>/dev/null
     fi
     
-    # Forward signal to SQS consumer process if it's still running
-    if [ -n "$SQS_CONSUMER_PID" ]; then
+    # Forward the signal to the orchestrator and give it time to finish or stop the bot it
+    # is running: leaving right away would kill in-flight bot work with the container.
+    # The wait is bounded (SHUTDOWN_GRACE_SECONDS, default 25) and must stay below the
+    # pod's terminationGracePeriodSeconds, or Kubernetes SIGKILLs everything anyway.
+    if [ -n "$SQS_CONSUMER_PID" ] && kill -0 "$SQS_CONSUMER_PID" 2>/dev/null; then
         echo "🛑 Forwarding signal to SQS consumer process (PID: $SQS_CONSUMER_PID)..."
         kill -TERM "$SQS_CONSUMER_PID" 2>/dev/null
+        grace="${SHUTDOWN_GRACE_SECONDS:-25}"
+        waited=0
+        while kill -0 "$SQS_CONSUMER_PID" 2>/dev/null && [ "$waited" -lt "$grace" ]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$SQS_CONSUMER_PID" 2>/dev/null; then
+            echo "⚠️ SQS consumer still running after ${grace}s, exiting anyway"
+        else
+            echo "✅ SQS consumer exited after ${waited}s"
+        fi
     fi
     
     echo "✅ Cleanup completed"
