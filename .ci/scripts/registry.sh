@@ -7,8 +7,8 @@ set -euo pipefail
 get_image_repo() {
   local service="${1:?service is required}"
 
-  if [[ "$service" != "meet-teams-bots" ]]; then
-    echo "[ERROR] Unknown service: $service (this repository builds only 'meet-teams-bots')" >&2
+  if [[ "$service" != "web-based-bots" ]]; then
+    echo "[ERROR] Unknown service: $service (this repository builds only 'web-based-bots')" >&2
     exit 1
   fi
 

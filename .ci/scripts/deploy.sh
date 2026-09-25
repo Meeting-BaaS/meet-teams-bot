@@ -6,14 +6,14 @@ cd "$ROOT_DIR"
 
 source ".ci/scripts/utils.sh"
 
-SERVICE="meet-teams-bots"
+SERVICE="web-based-bots"
 TARGET_ENVIRONMENT="${ENVIRON:-}"
 TARGET_IMAGE_TAG="${IMAGE_TAG:-}"
 DEPLOYMENT_DIR="${DEPLOYMENT_DIR:-.ci/deployment}"
 HOME_DIR="${HOME:-$ROOT_DIR/.ci/home}"
 
 usage() {
-  echo "Usage: .ci/scripts/deploy.sh --service meet-teams-bots --environment preprod --image-tag <tag>"
+  echo "Usage: .ci/scripts/deploy.sh --service web-based-bots --environment preprod --image-tag <tag>"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -52,8 +52,8 @@ if [[ -z "$TARGET_ENVIRONMENT" || -z "$TARGET_IMAGE_TAG" ]]; then
   exit 1
 fi
 
-if [[ "$SERVICE" != "meet-teams-bots" ]]; then
-  echo "[ERROR] Unsupported service: $SERVICE (this repository deploys only 'meet-teams-bots')"
+if [[ "$SERVICE" != "web-based-bots" ]]; then
+  echo "[ERROR] Unsupported service: $SERVICE (this repository deploys only 'web-based-bots')"
   exit 1
 fi
 
@@ -64,10 +64,10 @@ if [[ "$TARGET_ENVIRONMENT" != "preprod" ]]; then
   exit 1
 fi
 
-# The meet/teams pool chart is rolled by the same controller as every other service
-# (helm-charts, the nested submodule of the private deployment repo). DEPLOYMENT_DIR is
-# a checkout of that repo: CI makes one with checkout-deployment.sh; by hand, point it
-# at any clone you have.
+# Both browser-bot pools (meet/teams and web-based Zoom) run this image; they are rolled
+# by the same controller as every other service (helm-charts, the nested submodule of the
+# private deployment repo). DEPLOYMENT_DIR is a checkout of that repo: CI makes one with
+# checkout-deployment.sh; by hand, point it at any clone you have.
 case "$DEPLOYMENT_DIR" in
   /*) DEPLOYMENT_PATH="$DEPLOYMENT_DIR" ;;
   *) DEPLOYMENT_PATH="$ROOT_DIR/$DEPLOYMENT_DIR" ;;
@@ -106,21 +106,30 @@ bootstrap_spoker_profile() {
 
 bootstrap_spoker_profile
 
-command_text="meet-teams-bots-v2 upgrade"
+run_controller() {
+  local command_text="${1:?command is required}"
+  read -r -a command_args <<< "$command_text"
 
-echo "[INFO] Running deployment command: ${command_text}"
+  echo "[INFO] Running deployment command: ${command_text}"
 
-if is_dry_run; then
-  echo "[DRY-RUN] Would run: ENVIRON=${TARGET_ENVIRONMENT} IMAGE_TAG=${TARGET_IMAGE_TAG} SKIP_VALIDATION=1 KUBECONFIG=${KUBECONFIG_PATH} bash ./baas_controller.sh ${command_text}"
-else
+  if is_dry_run; then
+    echo "[DRY-RUN] Would run: ENVIRON=${TARGET_ENVIRONMENT} IMAGE_TAG=${TARGET_IMAGE_TAG} SKIP_VALIDATION=1 KUBECONFIG=${KUBECONFIG_PATH} bash ./baas_controller.sh ${command_text}"
+    return
+  fi
+
   (
     cd "$CONTROLLER_DIR"
     ENVIRON="$TARGET_ENVIRONMENT" \
     IMAGE_TAG="$TARGET_IMAGE_TAG" \
     SKIP_VALIDATION=1 \
     KUBECONFIG="$KUBECONFIG_PATH" \
-    bash ./baas_controller.sh meet-teams-bots-v2 upgrade
+    bash ./baas_controller.sh "${command_args[@]}"
   )
-fi
+}
+
+# One web-based-bots-v2 image, two pools — the same pair the monorepo's `web-based-bots`
+# target rolls.
+run_controller "web-based-bots-v2 upgrade"
+run_controller "web-based-zoom-bots-v2 upgrade"
 
 echo "[SUCCESS] Deployment completed for service: $SERVICE"
