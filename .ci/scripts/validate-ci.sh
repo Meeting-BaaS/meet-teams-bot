@@ -50,7 +50,7 @@ mkdir -p "$FAKE_DEPLOYMENT/deployment/helm-charts"
 touch "$FAKE_DEPLOYMENT/deployment/helm-charts/baas_controller.sh" "$FAKE_DEPLOYMENT/deployment/kubeconfig.yaml"
 deploy_output="$(DRY_RUN=true HOME="$ROOT_DIR/$FAKE_DEPLOYMENT/home" .ci/scripts/deploy.sh --service web-based-bots --environment preprod --image-tag dry-run-tag --deployment-dir "$FAKE_DEPLOYMENT/deployment")"
 rm -rf "$FAKE_DEPLOYMENT"
-printf '%s\n' "$deploy_output" | grep -Fq 'web-based-bots-v2 upgrade'
+printf '%s\n' "$deploy_output" | grep -Fq 'meet-teams-bots-v2 upgrade'
 if DRY_RUN=true .ci/scripts/deploy.sh --service web-based-bots --environment prod --image-tag dry-run-tag >/dev/null 2>&1; then
   echo "[ERROR] A prod deploy must be rejected here" >&2
   exit 1
