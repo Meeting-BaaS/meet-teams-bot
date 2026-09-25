@@ -18,3 +18,7 @@ build/**/**
 # Local test output — large, and never wanted in the image.
 recordings
 proxy-test-logs
+
+# Not part of the image
+.git
+deploy/bots-runtime/node_modules

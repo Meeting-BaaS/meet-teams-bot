@@ -1,0 +1,8 @@
+{
+  "name": "bots-runtime",
+  "private": true,
+  "description": "Runtime dependencies of the bot images: the orchestrator (which brings the voice-router sidecar) from GitHub Packages. Installed into /app/bots-runtime by the bot image (deploy/Dockerfile).",
+  "dependencies": {
+    "@meeting-baas/sqs-consumer": "^2.0.0"
+  }
+}

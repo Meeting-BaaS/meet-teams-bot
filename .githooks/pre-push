@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Reject pushes of branches that don't follow the naming convention, so bad names are
+# caught locally before they reach the remote (instead of failing later in CI).
+# Bypass in a genuine emergency with `git push --no-verify`.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+ZERO="0000000000000000000000000000000000000000"
+
+# stdin lines: <local ref> <local sha> <remote ref> <remote sha>
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  # Only validate branch creations/updates; skip tag pushes and branch deletions.
+  [[ "$local_ref" == refs/heads/* ]] || continue
+  [[ "$local_sha" == "$ZERO" ]] && continue
+
+  branch="${local_ref#refs/heads/}"
+
+  if ! BRANCH_NAME="$branch" GITHUB_EVENT_NAME=push GITHUB_REF_TYPE=branch \
+       bash .ci/scripts/git/validate-branch-name.sh >/dev/null 2>&1; then
+    echo "[pre-push] Branch '$branch' does not follow the naming convention; push rejected." >&2
+    echo "[pre-push] Use feature|fix|chore|feat|bugfix/<kebab-case>, e.g. feature/add-login." >&2
+    echo "[pre-push] (override with: git push --no-verify)" >&2
+    exit 1
+  fi
+done
+
+exit 0
