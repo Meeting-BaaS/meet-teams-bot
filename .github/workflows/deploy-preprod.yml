@@ -1,0 +1,60 @@
+name: Deploy to preprod
+
+# Merging to `v2-improvements` (or running this by hand) asks the monorepo pipeline to
+# build the web-based-bots image with THIS commit of meet-teams-bot and roll the meet/teams
+# pools on preprod, without bumping the submodule pointer there. The image tag ends in `-bot-<sha>` so it is easy to
+# tell apart on the cluster. Releases still build the committed pointer: bump it in the
+# monorepo once the change is merged.
+#
+# Uses the org secret CI_GITHUB_TOKEN (a classic PAT with the `repo` scope), shared with
+# the monorepo and the connector.
+
+on:
+  push:
+    branches:
+      - v2-improvements
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Monorepo service to build and roll (the meet/teams pools by default)"
+        required: true
+        default: meet-teams-bots
+        type: choice
+        options:
+          - meet-teams-bots
+          - web-based-bots
+          - web-based-zoom-bots
+      monorepo_ref:
+        description: "meeting-baas-v2 branch to run the pipeline from"
+        required: true
+        default: preprod
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-preprod
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Run the monorepo pipeline with this commit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger meeting-baas-v2 CI/CD
+        env:
+          GH_TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
+          SERVICE: ${{ inputs.service || 'meet-teams-bots' }}
+          MONOREPO_REF: ${{ inputs.monorepo_ref || 'preprod' }}
+        run: |
+          set -euo pipefail
+          echo "Building ${SERVICE} on preprod from meet-teams-bot ${GITHUB_SHA} (monorepo ${MONOREPO_REF})"
+          gh workflow run ci-cd.yml \
+            --repo Meeting-BaaS/meeting-baas-v2 \
+            --ref "${MONOREPO_REF}" \
+            -f environment=preprod \
+            -f service="${SERVICE}" \
+            -f meet_teams_bot_ref="${GITHUB_SHA}"
+          echo "Follow it at https://github.com/Meeting-BaaS/meeting-baas-v2/actions/workflows/ci-cd.yml"
