@@ -410,6 +410,15 @@ export class Streaming {
           if (this.debugAudioEnabled) {
             this.initDebugAudioFile()
           }
+
+          // Dual channel (input/output same URL): attach the injection reader
+          // only now that the socket is actually OPEN. Attaching it at setup
+          // time forked a play_stdin FFmpeg on every reconnect attempt, even
+          // ones that failed the upgrade (e.g. HTTP 530), each exiting with an
+          // empty output.
+          if (this.inputUrl === this.outputUrl) {
+            this.play_incoming_audio_chunks(this.output_ws)
+          }
         }
       })
 
@@ -424,11 +433,6 @@ export class Streaming {
           this.scheduleReconnect()
         }
       })
-
-      // Handle dual channel (input/output same URL)
-      if (this.inputUrl === this.outputUrl) {
-        this.play_incoming_audio_chunks(this.output_ws)
-      }
     } catch (error) {
       console.error("[Streaming] Failed to setup external output WebSocket:", formatError(error))
     }
@@ -440,28 +444,30 @@ export class Streaming {
   private setupExternalInputWS(): void {
     try {
       console.log(`[Streaming] Connecting to external input WebSocket: ${this.inputUrl}`)
-      this.input_ws = new WebSocket(this.inputUrl!)
+      const ws = new WebSocket(this.inputUrl!)
+      this.input_ws = ws
 
-      this.input_ws.on("open", () => {
+      ws.on("open", () => {
         console.log("[Streaming] External input WebSocket connected")
         // Reset reconnection state on successful connection
         this.isInputReconnecting = false
         this.inputReconnectAttempts = 0
+
+        // Attach only once connected so a failed attempt does not fork FFmpeg.
+        this.play_incoming_audio_chunks(ws)
       })
 
-      this.input_ws.on("error", (err: Error) => {
+      ws.on("error", (err: Error) => {
         console.error("[Streaming] External input WebSocket error:", formatError(err))
         this.scheduleInputReconnect()
       })
 
-      this.input_ws.on("close", () => {
+      ws.on("close", () => {
         console.log("[Streaming] External input WebSocket closed")
         if (this.isInitialized) {
           this.scheduleInputReconnect()
         }
       })
-
-      this.play_incoming_audio_chunks(this.input_ws)
     } catch (error) {
       console.error("[Streaming] Failed to setup external input WebSocket:", formatError(error))
       this.scheduleInputReconnect()
@@ -777,11 +783,18 @@ export class Streaming {
           // injected timeline cannot drift slower than wall-clock time.
           const gapMs = this.inboundLastArrivalMs === null ? 0 : now - this.inboundLastArrivalMs
           this.inboundLastArrivalMs = now
-          const excessMs = Math.max(gapMs - this.inboundLastFrameMs, 0)
+          const prevFrameMs = this.inboundLastFrameMs
+          const excessMs = Math.max(gapMs - prevFrameMs, 0)
           const silenceMs = Math.min(excessMs, Streaming.INJECTION_MAX_SILENCE_MS)
           if (silenceMs >= Streaming.INJECTION_GAP_THRESHOLD_MS) {
             const silenceSamples = Math.floor((silenceMs * this.sample_rate) / 1000)
             if (silenceSamples > 0) {
+              // Observable: how much silence each arrival gap injects. Frequent
+              // or large values mean the sender's pacing is jittery, not that the
+              // playback clock is drifting.
+              console.log(
+                `[Streaming] injection gap ${Math.round(gapMs)}ms vs frame ${Math.round(prevFrameMs)}ms -> inserting ${Math.round(silenceMs)}ms of silence`
+              )
               stream.push(Buffer.alloc(silenceSamples * 4))
             }
           }
