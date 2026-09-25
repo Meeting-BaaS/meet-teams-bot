@@ -1,0 +1,233 @@
+name: Meet/Teams bot CI/CD
+
+# This repository's own pipeline, same shape as the connector's: PRs are checked, a push
+# to `preprod` builds the cloud image (deploy/Dockerfile → web-based-bots-v2) from this
+# commit and rolls both browser-bot pools (meet/teams and web-based Zoom) on preprod, and
+# workflow_dispatch does the same by hand. Prod is not released from here: a vX.Y.Z tag on meeting-baas-v2's main builds this
+# repository's `v2-improvements` with the same Dockerfile, rolls every service, and writes
+# the tag back here.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+    branches:
+      - v2-improvements
+      - preprod
+
+  push:
+    branches:
+      - preprod
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment"
+        required: true
+        default: "preprod"
+        type: choice
+        options:
+          - preprod
+      image_tag:
+        description: "Optional custom image tag"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  # The image installs @meeting-baas/sqs-consumer from GitHub Packages with the run's token.
+  packages: read
+
+jobs:
+  # Type-check and unit tests on every event; the only job that needs Node, so it runs
+  # on a hosted runner and never touches the cluster. It reports on the PR but does not
+  # gate a preprod roll: preprod is where the bot is tested for real, and two suites
+  # (meet.test.ts under ts-jest, the Chromium DOM suites) predate this pipeline.
+  test:
+    name: Type-check and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.18.3
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.16.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        run: ./node_modules/typescript/bin/tsc --noEmit --skipLibCheck -p tsconfig.release.json
+
+      - name: Install the Chromium the DOM suites drive
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Unit tests
+        run: pnpm test
+
+  prepare:
+    name: Validate & prepare
+    # This repository is public: pull requests (which can come from forks) never touch the
+    # cluster runner; only pushes to preprod and manual runs do.
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || 'baas-k8s-runner' }}
+
+    outputs:
+      environment: ${{ steps.prepare.outputs.environment }}
+      image_tag: ${{ steps.prepare.outputs.image_tag }}
+      build_matrix: ${{ steps.prepare.outputs.build_matrix }}
+      deploy_target: ${{ steps.prepare.outputs.deploy_target }}
+      should_run: ${{ steps.prepare.outputs.should_run }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Make CI scripts executable
+        run: chmod +x .ci/scripts/*.sh .ci/scripts/git/*.sh
+
+      - name: Validate branch and PR target policy
+        if: github.event_name == 'pull_request'
+        env:
+          BRANCH_NAME: ${{ github.head_ref }}
+          PR_BASE_BRANCH: ${{ github.base_ref }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: bash .ci/scripts/git/validate-branch-name.sh
+
+      - name: Validate provider-agnostic scripts
+        run: .ci/scripts/validate-ci.sh
+
+      - name: Compute environment, services and image tag
+        id: prepare
+        if: github.event_name != 'pull_request'
+        env:
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_SERVICE: web-based-bots
+          INPUT_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: .ci/scripts/resolve-pipeline-context.sh >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build and push ${{ matrix.service }} image
+    runs-on: baas-k8s-runner
+    needs:
+      - prepare
+
+    if: needs.prepare.outputs.should_run == 'true'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJSON(needs.prepare.outputs.build_matrix) }}
+
+    env:
+      ENVIRON: ${{ needs.prepare.outputs.environment }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCW_SECRET_ACCESS_KEY }}
+      NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILDX_REGISTRY_CACHE: "true"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Make CI scripts executable
+        run: chmod +x .ci/scripts/*.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build and push image
+        run: .ci/scripts/build-and-push.sh --service "${{ matrix.service }}" --image-tag "$IMAGE_TAG"
+
+  deploy:
+    name: Deploy to ${{ needs.prepare.outputs.environment }}
+    runs-on: baas-k8s-runner
+    needs:
+      - prepare
+      - build-and-push
+
+    if: needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.deploy_target != ''
+
+    # One deploy at a time from this repository. GitHub concurrency groups are scoped to
+    # a repository, so this does not serialise against meeting-baas-v2's deploys; it does
+    # not need to: on preprod the two repositories roll disjoint Helm releases (this one
+    # meet-teams-bots-v2 and web-based-zoom-bots-v2, the monorepo api-v2, job-v2 and
+    # zoom-bots-v2), and prod is only ever rolled by the monorepo's release.
+    concurrency:
+      group: cluster-deploy-${{ needs.prepare.outputs.environment }}
+      cancel-in-progress: false
+
+    env:
+      ENVIRON: ${{ needs.prepare.outputs.environment }}
+      IMAGE_TAG: ${{ needs.prepare.outputs.image_tag }}
+      DEPLOY_TARGET: ${{ needs.prepare.outputs.deploy_target }}
+      GITHUB_ACCESS_TOKEN: ${{ secrets.CI_GITHUB_TOKEN }}
+      # Branch or tag of kubernetes-config-private to deploy with (organisation
+      # variable; defaults to v2 when unset).
+      DEPLOYMENT_REF: ${{ vars.DEPLOYMENT_REF }}
+      DEPLOYMENT_DIR: .ci/deployment
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Make CI scripts executable
+        run: chmod +x .ci/scripts/*.sh
+
+      - name: Check out the deployment repo
+        run: .ci/scripts/checkout-deployment.sh
+
+      - name: Set up Helm
+        run: |
+          set -euo pipefail
+          VER="v3.18.4"
+          case "$(uname -m)" in
+            x86_64) ARCH="amd64" ;;
+            aarch64 | arm64) ARCH="arm64" ;;
+            *) echo "[ERROR] Unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          FILE="helm-${VER}-linux-${ARCH}.tar.gz"
+          # Pinned release checksums (helm v3.18.4, from the official
+          # get.helm.sh .sha256sum files).
+          case "${ARCH}" in
+            amd64) EXPECTED="f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1" ;;
+            arm64) EXPECTED="c0a45e67eef0c7416a8a8c9e9d5d2d30d70e4f4d3f7bea5de28241fffa8f3b89" ;;
+          esac
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 \
+            -o "/tmp/${FILE}" "https://get.helm.sh/${FILE}"
+          ACTUAL="$(sha256sum "/tmp/${FILE}" | cut -d' ' -f1)"
+          if [[ "${ACTUAL}" != "${EXPECTED}" ]]; then
+            echo "[ERROR] Helm archive checksum mismatch: expected ${EXPECTED}, got ${ACTUAL}" >&2
+            exit 1
+          fi
+          tar -xzf "/tmp/${FILE}" -C /tmp
+          mkdir -p "${HOME}/bin"
+          mv "/tmp/linux-${ARCH}/helm" "${HOME}/bin/helm"
+          echo "${HOME}/bin" >> "${GITHUB_PATH}"
+          "${HOME}/bin/helm" version --short
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4
+
+      - name: Secure kubeconfig
+        run: chmod 600 .ci/deployment/kubeconfig.yaml
+
+      - name: Deploy
+        run: |
+          bash .ci/scripts/deploy.sh \
+            --service "$DEPLOY_TARGET" \
+            --environment "$ENVIRON" \
+            --image-tag "$IMAGE_TAG"

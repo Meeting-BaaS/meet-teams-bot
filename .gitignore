@@ -47,3 +47,10 @@ buildInfo.json
 # node_modules can be a symlink in worktrees; ignore the bare name too (the
 # trailing-slash pattern above only matches real directories).
 node_modules
+
+# CI working files (see .ci/)
+.ci/*.local-image
+.ci/*.remote-image
+.ci/home
+.ci/tmp-validate
+.ci/deployment
