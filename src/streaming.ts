@@ -87,15 +87,13 @@ export class Streaming {
   // byte(s) across messages so only complete samples are ever decoded.
   private inboundRemainder: Buffer = Buffer.alloc(0)
 
-  // Wall-clock ms of the last injection arrival, plus the audio duration of the
-  // frame it carried. Raw f32le input is timestamped purely by sample count, so
-  // FFmpeg cannot see pauses between WebSocket bursts; the writer below pads
-  // only the elapsed time the previous frame does not already cover, keeping the
-  // sample-count timeline aligned with wall-clock time without slowing it down.
-  private inboundLastArrivalMs: number | null = null
-  private inboundLastFrameMs = 0
-  private static readonly INJECTION_GAP_THRESHOLD_MS = 30
-  private static readonly INJECTION_MAX_SILENCE_MS = 2000
+  // FFmpeg reads raw PCM from stdin as fast as it can. Pace injection at a
+  // steady rate here, and emit silence when the input queue runs dry.
+  private static readonly INJECTION_FRAME_MS = 20
+  private static readonly INJECTION_START_BUFFER_MS = 80
+  private static readonly INJECTION_START_TIMEOUT_MS = 40
+  // ponytail: cap the per-bot FIFO at 5s; drop oldest audio on sustained overrun to bound memory and live latency.
+  private static readonly INJECTION_MAX_BUFFER_MS = 5000
 
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
@@ -594,11 +592,7 @@ export class Streaming {
     }
 
     this.isPaused = false
-    // Reset the arrival baseline and frame duration so the first frame after a
-    // resume starts a fresh timeline. Otherwise a pause with no inbound packets
-    // is measured as a gap and injected as silence (up to the 2s cap).
-    this.inboundLastArrivalMs = null
-    this.inboundLastFrameMs = 0
+    this.inboundRemainder = Buffer.alloc(0)
     this.processPausedChunks()
     console.log("[Streaming] Resumed")
   }
@@ -716,34 +710,198 @@ export class Streaming {
     const stdin = SoundContext.instance.play_stdin()
     const audio_stream = this.createAudioStreamFromWebSocket(input_ws)
 
-    audio_stream.on("data", (chunk) => {
-      stdin.write(chunk)
-    })
+    const frameSamples = Math.max(
+      1,
+      Math.round((this.sample_rate * Streaming.INJECTION_FRAME_MS) / 1000)
+    )
+    const frameBytes = frameSamples * 4
+    const startBufferBytes = Math.ceil(
+      (this.sample_rate * 4 * Streaming.INJECTION_START_BUFFER_MS) / 1000
+    )
+    const maxQueuedBytes = Math.floor(
+      (this.sample_rate * 4 * Streaming.INJECTION_MAX_BUFFER_MS) / 1000
+    )
+    const queue: Buffer[] = []
+    let queueOffset = 0
+    let queuedBytes = 0
+    let maxQueuedBytesSeen = 0
+    let inputSamples = 0
+    let outputSamples = 0
+    let silenceSamples = 0
+    let droppedSamples = 0
+    let backpressureCount = 0
+    let lastStatsLogTime = Date.now()
+    let startTimeout: NodeJS.Timeout | null = null
+    let pumpInterval: NodeJS.Timeout | null = null
+    let pumpStarted = false
+    let inputEnded = false
+    let waitingDrain = false
+    let finished = false
 
+    const finish = () => {
+      if (finished) return
+      finished = true
+      if (startTimeout) clearTimeout(startTimeout)
+      if (pumpInterval) clearInterval(pumpInterval)
+      if (!stdin.destroyed && !stdin.writableEnded) {
+        stdin.end()
+      }
+      console.info(
+        `[Streaming] Injection playout finished: in=${Math.round((inputSamples * 1000) / this.sample_rate)}ms out=${Math.round((outputSamples * 1000) / this.sample_rate)}ms silence=${Math.round((silenceSamples * 1000) / this.sample_rate)}ms dropped=${Math.round((droppedSamples * 1000) / this.sample_rate)}ms`
+      )
+    }
+
+    const logStats = () => {
+      const now = Date.now()
+      if (now - lastStatsLogTime < 5000) return
+      console.info(
+        `[Streaming] Injection: in=${Math.round((inputSamples * 1000) / this.sample_rate)}ms out=${Math.round((outputSamples * 1000) / this.sample_rate)}ms silence=${Math.round((silenceSamples * 1000) / this.sample_rate)}ms queue=${Math.round((queuedBytes * 1000) / (this.sample_rate * 4))}ms maxQueue=${Math.round((maxQueuedBytesSeen * 1000) / (this.sample_rate * 4))}ms dropped=${Math.round((droppedSamples * 1000) / this.sample_rate)}ms backpressure=${backpressureCount}`
+      )
+      inputSamples = 0
+      outputSamples = 0
+      silenceSamples = 0
+      droppedSamples = 0
+      backpressureCount = 0
+      maxQueuedBytesSeen = queuedBytes
+      lastStatsLogTime = now
+    }
+
+    const clearQueue = () => {
+      queue.length = 0
+      queueOffset = 0
+      queuedBytes = 0
+    }
+
+    const writeFrame = () => {
+      if (finished || waitingDrain) return
+      if (stdin.destroyed || stdin.writableEnded) {
+        finish()
+        return
+      }
+      if (this.isPaused) clearQueue()
+      if (inputEnded && queuedBytes === 0) {
+        finish()
+        return
+      }
+
+      const frame = Buffer.alloc(frameBytes)
+      let copiedBytes = 0
+      if (!this.isPaused) {
+        while (copiedBytes < frameBytes && queue.length > 0) {
+          const first = queue[0]
+          if (!first) break
+          const available = first.length - queueOffset
+          const copyBytes = Math.min(frameBytes - copiedBytes, available)
+          first.copy(frame, copiedBytes, queueOffset, queueOffset + copyBytes)
+          copiedBytes += copyBytes
+          queueOffset += copyBytes
+          queuedBytes -= copyBytes
+          if (queueOffset === first.length) {
+            queue.shift()
+            queueOffset = 0
+          }
+        }
+      }
+
+      outputSamples += frameSamples
+      silenceSamples += frameSamples - copiedBytes / 4
+      if (!stdin.write(frame)) {
+        waitingDrain = true
+        backpressureCount++
+        stdin.once("drain", () => {
+          waitingDrain = false
+        })
+      }
+      logStats()
+      if (inputEnded && queuedBytes === 0) finish()
+    }
+
+    const startPump = () => {
+      if (pumpStarted || finished) return
+      pumpStarted = true
+      if (startTimeout) {
+        clearTimeout(startTimeout)
+        startTimeout = null
+      }
+      console.info(
+        `[Streaming] Injection playout started: ${Streaming.INJECTION_FRAME_MS}ms frames, ${Streaming.INJECTION_START_BUFFER_MS}ms startup buffer`
+      )
+      writeFrame()
+      if (!finished) {
+        pumpInterval = setInterval(writeFrame, Streaming.INJECTION_FRAME_MS)
+      }
+    }
+
+    const enqueue = (chunk: Buffer) => {
+      if (finished || chunk.length === 0) return
+      inputSamples += chunk.length / 4
+
+      let incoming = chunk
+      if (incoming.length > maxQueuedBytes) {
+        const trimBytes = incoming.length - maxQueuedBytes
+        incoming = incoming.subarray(trimBytes)
+        droppedSamples += trimBytes / 4
+      }
+
+      let overflowBytes = Math.max(queuedBytes + incoming.length - maxQueuedBytes, 0)
+      while (overflowBytes > 0 && queue.length > 0) {
+        const first = queue[0]
+        if (!first) break
+        const available = first.length - queueOffset
+        const dropBytes = Math.min(overflowBytes, available)
+        queueOffset += dropBytes
+        queuedBytes -= dropBytes
+        droppedSamples += dropBytes / 4
+        overflowBytes -= dropBytes
+        if (queueOffset === first.length) {
+          queue.shift()
+          queueOffset = 0
+        }
+      }
+
+      queue.push(incoming)
+      queuedBytes += incoming.length
+      maxQueuedBytesSeen = Math.max(maxQueuedBytesSeen, queuedBytes)
+
+      if (!pumpStarted) {
+        if (queuedBytes >= startBufferBytes) {
+          startPump()
+        } else if (!startTimeout) {
+          startTimeout = setTimeout(startPump, Streaming.INJECTION_START_TIMEOUT_MS)
+        }
+      }
+      logStats()
+    }
+
+    audio_stream.on("data", enqueue)
     audio_stream.on("end", () => {
-      stdin.end()
+      inputEnded = true
+      if (startTimeout) {
+        clearTimeout(startTimeout)
+        startTimeout = null
+      }
+      if (!pumpStarted && queuedBytes > 0) {
+        startPump()
+      } else if (queuedBytes === 0) {
+        finish()
+      }
     })
+    stdin.on("error", finish)
+    stdin.on("close", finish)
   }
 
   private createAudioStreamFromWebSocket = (input_ws: WebSocket) => {
     // Fresh stream (e.g. a dual-channel WebSocket reconnect attaching a new
     // handler on the same Streaming instance) must not inherit a stale partial
-    // sample from the previous connection, nor a stale arrival timestamp or
-    // frame duration.
+    // sample from the previous connection.
     this.inboundRemainder = Buffer.alloc(0)
-    this.inboundLastArrivalMs = null
-    this.inboundLastFrameMs = 0
 
     const stream = new Readable({
       read() {}
     })
 
     input_ws.on("message", (message: RawData) => {
-      const now = Date.now()
       if (this.isPaused) {
-        // Dropped audio must not feed the timeline. resume() resets the timing
-        // state, so paused time (whether or not packets arrive) is never
-        // injected as silence.
         return
       }
 
@@ -759,35 +917,13 @@ export class Streaming {
               : message
           const alignedLen = buf.length - (buf.length % 2)
           if (alignedLen === 0) {
-            // No complete sample yet, so no PCM is produced and the arrival
-            // baseline must NOT move: the next decoded frame has to measure its
-            // gap from the last frame that actually played, otherwise a
-            // fragmented frame hides the silence before it.
             this.inboundRemainder = Buffer.from(buf)
             return
           }
           this.inboundRemainder =
             alignedLen < buf.length ? Buffer.from(buf.subarray(alignedLen)) : Buffer.alloc(0)
 
-          // Preserve arrival timing: emit silence only for the elapsed time the
-          // preceding frame does not already cover. Raw f32le input carries no
-          // timestamps, so a stall (arrival later than the previous frame's
-          // audio duration) would otherwise leave the realtime sink unfed. A
-          // steady cadence (gap == previous frame duration) adds nothing, so the
-          // injected timeline cannot drift slower than wall-clock time.
-          const gapMs = this.inboundLastArrivalMs === null ? 0 : now - this.inboundLastArrivalMs
-          this.inboundLastArrivalMs = now
-          const excessMs = Math.max(gapMs - this.inboundLastFrameMs, 0)
-          const silenceMs = Math.min(excessMs, Streaming.INJECTION_MAX_SILENCE_MS)
-          if (silenceMs >= Streaming.INJECTION_GAP_THRESHOLD_MS) {
-            const silenceSamples = Math.floor((silenceMs * this.sample_rate) / 1000)
-            if (silenceSamples > 0) {
-              stream.push(Buffer.alloc(silenceSamples * 4))
-            }
-          }
-
           const sampleCount = alignedLen / 2
-          this.inboundLastFrameMs = (sampleCount * 1000) / this.sample_rate
           const f32Array = new Float32Array(sampleCount)
           for (let i = 0; i < sampleCount; i++) {
             // Read Int16 LE explicitly — avoids ArrayBuffer alignment/offset

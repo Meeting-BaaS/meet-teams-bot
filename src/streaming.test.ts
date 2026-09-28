@@ -12,13 +12,18 @@ const mockStdin = {
   ended: false,
   sizes: [] as number[],
   zeroWrites: [] as boolean[],
+  firstSamples: [] as number[],
   write: (chunk?: Buffer) => {
     mockStdin.writes++
     if (chunk instanceof Buffer) {
       mockStdin.sizes.push(chunk.length)
       mockStdin.zeroWrites.push(chunk.every((b) => b === 0))
+      mockStdin.firstSamples.push(chunk.readFloatLE(0))
     }
+    return true
   },
+  on: () => mockStdin,
+  once: () => mockStdin,
   end: () => {
     mockStdin.ended = true
   }
@@ -113,8 +118,8 @@ jest.mock("node:child_process", () => ({ spawn: mockSpawn }))
 
 import { Streaming } from "./streaming"
 
-function createStreaming(input = "ws://in/input", output?: string) {
-  return new Streaming(input, output, 24000, "bot-123")
+function createStreaming(input = "ws://in/input", output?: string, sample_rate = 24000) {
+  return new Streaming(input, output, sample_rate, "bot-123")
 }
 
 /** Int16LE PCM buffer with `samples` samples of `value` amplitude */
@@ -136,6 +141,7 @@ describe("Streaming input WebSocket", () => {
     mockAudioDataHandlers.length = 0
     mockStdin.sizes.length = 0
     mockStdin.zeroWrites.length = 0
+    mockStdin.firstSamples.length = 0
   })
 
   afterEach(() => {
@@ -156,6 +162,7 @@ describe("Streaming input WebSocket", () => {
     ws.emit("message", pcmBuffer(100))
     // Flowing-mode 'data' events fire on the next tick.
     await new Promise((resolve) => setImmediate(resolve))
+    jest.advanceTimersByTime(40)
     expect(mockStdin.writes).toBeGreaterThan(0)
 
     ws.close()
@@ -215,6 +222,9 @@ describe("Streaming handshake start_time", () => {
     mockStdin.ended = false
     mockSpawn.mockClear()
     mockAudioDataHandlers.length = 0
+    mockStdin.sizes.length = 0
+    mockStdin.zeroWrites.length = 0
+    mockStdin.firstSamples.length = 0
   })
 
   afterEach(() => {
@@ -294,7 +304,7 @@ describe("Streaming handshake start_time", () => {
   })
 })
 
-describe("Streaming injection arrival-gap silence", () => {
+describe("Streaming injection playout", () => {
   beforeEach(() => {
     jest.useFakeTimers({ doNotFake: ["nextTick", "setImmediate"] })
     mockWsInstances.length = 0
@@ -302,6 +312,7 @@ describe("Streaming injection arrival-gap silence", () => {
     mockStdin.ended = false
     mockStdin.sizes.length = 0
     mockStdin.zeroWrites.length = 0
+    mockStdin.firstSamples.length = 0
   })
 
   afterEach(() => {
@@ -312,143 +323,88 @@ describe("Streaming injection arrival-gap silence", () => {
     await new Promise((resolve) => setImmediate(resolve))
   }
 
-  it("pads only the arrival gap the previous frame does not cover", async () => {
-    createStreaming()
-    const ws = mockWsInstances[0]!
+  it("paces a 400ms burst and supplies silence during a 490ms pause", async () => {
+    createStreaming("ws://in/input", undefined, 16000)
+    const ws = mockWsInstances[0]
+    if (!ws) throw new Error("Expected input WebSocket")
     ws.open()
 
-    ws.emit("message", pcmBuffer(240)) // 10ms of audio at 24kHz
-    await flush()
-    // First chunk: no silence, just the 240 Float32 samples.
-    expect(mockStdin.sizes).toEqual([960])
-
-    jest.advanceTimersByTime(150)
-    ws.emit("message", pcmBuffer(240))
+    // Ten 40ms input frames arrive in one burst.
+    for (let i = 0; i < 10; i++) {
+      ws.emit("message", pcmBuffer(640))
+    }
     await flush()
 
-    // 150ms gap minus the preceding 10ms frame -> 140ms of real silence:
-    // floor(0.14 * 24000) = 3360 Float32 samples, pushed ahead of the chunk.
-    expect(mockStdin.sizes).toEqual([960, 13440, 960])
-    expect(mockStdin.zeroWrites[1]).toBe(true)
-    expect(mockStdin.zeroWrites[2]).toBe(false)
-  })
-
-  it("does not pad a steady cadence whose frames match the arrival interval", async () => {
-    createStreaming()
-    const ws = mockWsInstances[0]!
-    ws.open()
-
-    ws.emit("message", pcmBuffer(2400)) // 100ms of audio at 24kHz
-    await flush()
-    mockStdin.sizes.length = 0
-    mockStdin.zeroWrites.length = 0
-
-    jest.advanceTimersByTime(100)
-    ws.emit("message", pcmBuffer(2400))
-    await flush()
-
-    // 100ms gap == the preceding 100ms frame: no injected silence, so the
-    // injected timeline advances at real time instead of at half speed.
-    expect(mockStdin.sizes).toEqual([9600])
+    // The burst is paced into 20ms FFmpeg writes, not dumped to stdin at once.
+    expect(mockStdin.sizes).toEqual([1280])
     expect(mockStdin.zeroWrites).toEqual([false])
+    jest.advanceTimersByTime(380)
+    expect(mockStdin.sizes).toHaveLength(20)
+    expect(mockStdin.sizes.every((size) => size === 1280)).toBe(true)
+    expect(mockStdin.zeroWrites.every((isZero) => !isZero)).toBe(true)
+
+    // Audio is finished after 400ms. The writer feeds silence through the
+    // remaining 90ms instead of waiting for the next WebSocket message.
+    jest.advanceTimersByTime(110)
+    expect(mockStdin.zeroWrites.slice(20)).toEqual([true, true, true, true, true])
+
+    ws.emit("message", pcmBuffer(640))
+    await flush()
+    jest.advanceTimersByTime(10)
+    expect(mockStdin.zeroWrites[25]).toBe(false)
+
+    ws.close()
+    await flush()
+    jest.advanceTimersByTime(20)
+    expect(mockStdin.ended).toBe(true)
   })
 
-  it("does not pad sub-threshold jitter", async () => {
-    createStreaming()
-    const ws = mockWsInstances[0]!
+  it("drops queued and incoming PCM while paused, then resumes with fresh audio", async () => {
+    const streaming = createStreaming("ws://in/input", undefined, 16000)
+    const ws = mockWsInstances[0]
+    if (!ws) throw new Error("Expected input WebSocket")
     ws.open()
-
-    ws.emit("message", pcmBuffer(240))
+    ws.emit("message", pcmBuffer(640))
+    ws.emit("message", pcmBuffer(640))
     await flush()
-    mockStdin.sizes.length = 0
-
-    // 35ms gap minus the 10ms frame leaves 25ms, under the 30ms threshold.
-    jest.advanceTimersByTime(35)
-    ws.emit("message", pcmBuffer(240))
-    await flush()
-    expect(mockStdin.sizes).toEqual([960])
-  })
-
-  it("caps padded silence at 2 seconds", async () => {
-    createStreaming()
-    const ws = mockWsInstances[0]!
-    ws.open()
-
-    ws.emit("message", pcmBuffer(240))
-    await flush()
-    mockStdin.sizes.length = 0
-    mockStdin.zeroWrites.length = 0
-
-    jest.advanceTimersByTime(5000)
-    ws.emit("message", pcmBuffer(240))
-    await flush()
-
-    // 2s cap: 48000 Float32 samples, then the chunk.
-    expect(mockStdin.sizes).toEqual([192000, 960])
-    expect(mockStdin.zeroWrites[0]).toBe(true)
-  })
-
-  it("resets the gap clock on input reconnect", async () => {
-    createStreaming()
-    const ws0 = mockWsInstances[0]!
-    ws0.open()
-    ws0.emit("message", pcmBuffer(240))
-    await flush()
-    ws0.close()
-
-    jest.advanceTimersByTime(1000)
-    const ws1 = mockWsInstances[1]!
-    ws1.open()
-    ws1.emit("message", pcmBuffer(240))
-    await flush()
-
-    // The reconnect gap (close -> new socket) must not be padded into the
-    // first chunk of the fresh stream.
-    expect(mockStdin.sizes[mockStdin.sizes.length - 1]).toBe(960)
-  })
-
-  it("does not inject paused time as silence after a resume with no packets", async () => {
-    const streaming = createStreaming()
-    const ws = mockWsInstances[0]!
-    ws.open()
-
-    ws.emit("message", pcmBuffer(240)) // 10ms
-    await flush()
-    mockStdin.sizes.length = 0
-    mockStdin.zeroWrites.length = 0
+    expect(mockStdin.zeroWrites).toEqual([false])
 
     streaming.pause()
-    jest.advanceTimersByTime(5000) // paused with no inbound packets
-    streaming.resume()
-
-    ws.emit("message", pcmBuffer(240))
+    jest.advanceTimersByTime(20)
+    expect(mockStdin.zeroWrites[mockStdin.zeroWrites.length - 1]).toBe(true)
+    ws.emit("message", pcmBuffer(640))
     await flush()
+    jest.advanceTimersByTime(20)
+    expect(mockStdin.zeroWrites[mockStdin.zeroWrites.length - 1]).toBe(true)
 
-    // The 5s pause must not be replayed as silence: resume resets the timing
-    // state, so only the 10ms frame is written and no 2s-capped silence.
-    expect(mockStdin.sizes).toEqual([960])
+    streaming.resume()
+    ws.emit("message", pcmBuffer(640))
+    await flush()
+    jest.advanceTimersByTime(20)
+    expect(mockStdin.zeroWrites[mockStdin.zeroWrites.length - 1]).toBe(false)
+
+    ws.close()
+    await flush()
+    jest.advanceTimersByTime(20)
+    expect(mockStdin.ended).toBe(true)
   })
 
-  it("does not advance the arrival baseline for a partial sample", async () => {
+  it("keeps Int16 sample alignment across odd-length WebSocket messages", async () => {
     createStreaming()
-    const ws = mockWsInstances[0]!
+    const ws = mockWsInstances[0]
+    if (!ws) throw new Error("Expected input WebSocket")
     ws.open()
 
-    ws.emit("message", pcmBuffer(240)) // 10ms
-    await flush()
-    mockStdin.sizes.length = 0
-    mockStdin.zeroWrites.length = 0
-
-    jest.advanceTimersByTime(150)
-    ws.emit("message", Buffer.from([0x01])) // 1 byte, no complete sample
+    ws.emit("message", Buffer.from([0xe8]))
+    ws.emit("message", Buffer.from([0x03]))
+    ws.emit("message", pcmBuffer(1920))
     await flush()
 
-    jest.advanceTimersByTime(1)
-    ws.emit("message", pcmBuffer(240)) // completes the straddled sample
-    await flush()
+    expect(mockStdin.writes).toBeGreaterThan(0)
+    expect(mockStdin.firstSamples[0]).toBeCloseTo(1000 / 32768)
 
-    // Gap is measured from the last played frame (t=0, 10ms) to t=151, not
-    // from the 1-byte fragment: 151 - 10 = 141ms -> 3384 Float32 samples.
-    expect(mockStdin.sizes).toEqual([13536, 960])
+    ws.close()
+    await flush()
+    jest.advanceTimersByTime(100)
   })
 })
