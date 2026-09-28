@@ -40,7 +40,7 @@ importers:
         version: 4.5.0(axios@1.20.0)
       cloakbrowser:
         specifier: ^0.4.10
-        version: 0.4.13(playwright-core@1.55.1)
+        version: 0.4.13(playwright-core@1.60.0)
       dotenv:
         specifier: ^17.2.3
         version: 17.4.2
@@ -56,6 +56,9 @@ importers:
       pako:
         specifier: ^2.1.0
         version: 2.2.0
+      playwright-core:
+        specifier: 1.60.0
+        version: 1.60.0
       protobufjs:
         specifier: ^7.6.5
         version: 7.6.6
@@ -2560,6 +2563,11 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  playwright-core@1.60.0:
+    resolution: {integrity: sha512-9bW6zvX/m0lEbgTKJ6YppOKx8H3VOPBMOCFh2irXFOT4BbHgrx5hPjwJYLT40Lu+4qtD36qKc/Hn56StUW57IA==}
+    engines: {node: '>=18'}
+    hasBin: true
+
   playwright@1.55.1:
     resolution: {integrity: sha512-cJW4Xd/G3v5ovXtJJ52MAOclqeac9S/aGGgRzLabuF8TnIb6xHvMzKIa6JmrRzUkeXJgfL1MhukP0NK6l39h3A==}
     engines: {node: '>=18'}
@@ -4697,11 +4705,11 @@ snapshots:
       strip-ansi: 6.0.1
       wrap-ansi: 7.0.0
 
-  cloakbrowser@0.4.13(playwright-core@1.55.1):
+  cloakbrowser@0.4.13(playwright-core@1.60.0):
     dependencies:
       tar: 7.5.22
     optionalDependencies:
-      playwright-core: 1.55.1
+      playwright-core: 1.60.0
 
   clone@1.0.4: {}
 
@@ -6118,6 +6126,8 @@ snapshots:
       find-up: 4.1.0
 
   playwright-core@1.55.1: {}
+
+  playwright-core@1.60.0: {}
 
   playwright@1.55.1:
     dependencies:
