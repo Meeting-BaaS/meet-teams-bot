@@ -28,6 +28,7 @@
         "express": "^4.21.0",
         "https-proxy-agent": "^9.0.0",
         "pako": "^2.1.0",
+        "playwright-core": "1.60.0",
         "protobufjs": "^7.6.5",
         "proxy-chain": "^2.7.1",
         "ts-node": "^10.9.2",
