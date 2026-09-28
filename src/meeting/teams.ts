@@ -1290,13 +1290,25 @@ async function isRemovedFromTheMeeting(page: Page): Promise<boolean> {
     const raiseButton = page.locator('button#raisehands-button:has-text("Raise")')
     const buttonExists = (await raiseButton.count()) > 0
 
-    // console.log('raiseButton', JSON.stringify(raiseButton))
-    // console.log('buttonExists', JSON.stringify(buttonExists))
-    if (!buttonExists) {
-      console.log("no raise button found, Bot removed from the meeting")
-      return true
+    // The raise-hand button is the classic in-call indicator, but the light
+    // (anonymous/guest) interface does not always render it. Its absence alone
+    // must NOT be read as removal, or the bot leaves a meeting it is still in.
+    if (buttonExists) {
+      return false
     }
-    return false
+
+    // No raise button: only conclude removal when the shared in-meeting
+    // indicators are gone too.
+    const inMeeting = await teamsStateDetector.isInMeeting(page)
+    if (inMeeting.matched) {
+      console.log(
+        `no raise button but in-meeting indicators present (${inMeeting.count}/${TEAMS_STATE_CONFIG.inMeetingPattern.selectors.length}), not treating as removed`
+      )
+      return false
+    }
+
+    console.log("no raise button and no in-meeting indicators, Bot removed from the meeting")
+    return true
   } catch (error) {
     console.error("Error while checking meeting status:", formatError(error))
     return false
@@ -1380,15 +1392,20 @@ async function activateCamera(page: Page): Promise<void> {
 }
 
 async function isMicrophoneMuted(page: Page): Promise<boolean> {
-  // Teams shows unmute mic title when microphone is muted
-  const unmuteMicButton = page.locator('button[title="Unmute mic"]')
+  // Teams shows an "Unmute mic" control when muted and "Mute mic" when live.
+  // Match title OR aria-label: the light (anonymous/guest) interface sometimes
+  // only sets aria-label, and a false "not muted" is dangerous for a speaking
+  // bot (it would transmit nothing).
+  const unmuteMicButton = page.locator(
+    'button[title="Unmute mic"], button[aria-label^="Unmute mic"]'
+  )
   if ((await unmuteMicButton.count()) > 0) {
     console.log("[Teams] Microphone is muted")
     return true
   }
 
   // Teams shows mute mic title when microphone is not muted
-  const muteMicButton = page.locator('button[title="Mute mic"]')
+  const muteMicButton = page.locator('button[title="Mute mic"], button[aria-label^="Mute mic"]')
   if ((await muteMicButton.count()) > 0) {
     console.log("[Teams] Microphone is not muted")
     return false

@@ -70,6 +70,8 @@ class MockWebSocket {
   }
 }
 
+const mockSoundContextCreations = { count: 0 }
+
 jest.mock("ws", () => ({ WebSocket: MockWebSocket }))
 jest.mock("./config/env-vars", () => ({ envVars: {} }))
 jest.mock("./media_context", () => ({
@@ -77,6 +79,7 @@ jest.mock("./media_context", () => ({
     static instance: unknown
     constructor() {
       ;(this.constructor as unknown as { instance: unknown }).instance = this
+      mockSoundContextCreations.count++
     }
     play_stdin() {
       return mockStdin
@@ -136,6 +139,7 @@ describe("Streaming input WebSocket", () => {
     mockAudioDataHandlers.length = 0
     mockStdin.sizes.length = 0
     mockStdin.zeroWrites.length = 0
+    mockSoundContextCreations.count = 0
   })
 
   afterEach(() => {
@@ -146,6 +150,17 @@ describe("Streaming input WebSocket", () => {
     createStreaming()
     expect(mockWsInstances).toHaveLength(1)
     expect(mockWsInstances[0]?.url).toBe("ws://in/input")
+  })
+
+  it("does not fork the injection FFmpeg until the socket opens", () => {
+    createStreaming()
+    expect(mockWsInstances).toHaveLength(1)
+    // Nothing consuming audio before the connection is actually open: a failed
+    // upgrade (e.g. 530) must not spawn a play_stdin FFmpeg.
+    expect(mockSoundContextCreations.count).toBe(0)
+
+    mockWsInstances[0]!.open()
+    expect(mockSoundContextCreations.count).toBe(1)
   })
 
   it("pipes incoming PCM into the FFmpeg stdin and ends it when the socket closes", async () => {
