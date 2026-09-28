@@ -56,7 +56,6 @@
     },
     "overrides": {
         "playwright": "1.55.1",
-        "playwright-core": "1.55.1",
         "@playwright/test": "1.55.1",
         "@babel/core": "^7.29.7",
         "@smithy/config-resolver": "^4.4.0",
