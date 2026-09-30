@@ -359,6 +359,41 @@ describe("Streaming injection playout", () => {
     expect(mockStdin.ended).toBe(true)
   })
 
+  it("keeps 40ms PCM cadence and digital-silence frames flowing on separate sockets", async () => {
+    createStreaming("ws://in/input", "ws://out/output", 16000)
+    const input = mockWsInstances.find((ws) => ws.url === "ws://in/input")
+    const output = mockWsInstances.find((ws) => ws.url === "ws://out/output")
+    if (!input || !output) throw new Error("Expected separate input and output WebSockets")
+    input.open()
+    output.open()
+
+    const sendFrames = async (frame: Buffer, count: number) => {
+      for (let i = 0; i < count; i++) {
+        input.emit("message", frame)
+        await flush()
+        jest.advanceTimersByTime(40)
+      }
+    }
+
+    await sendFrames(pcmBuffer(640), 10)
+    expect(mockStdin.sizes.length).toBeGreaterThan(0)
+    expect(mockStdin.sizes.every((size) => size === 1280)).toBe(true)
+
+    const pauseStart = mockStdin.zeroWrites.length
+    await sendFrames(Buffer.alloc(1280), 12)
+    expect(mockStdin.zeroWrites.slice(pauseStart).some(Boolean)).toBe(true)
+
+    const resumeStart = mockStdin.zeroWrites.length
+    await sendFrames(pcmBuffer(640), 10)
+    expect(mockStdin.zeroWrites.slice(resumeStart).some((isZero) => !isZero)).toBe(true)
+
+    input.close()
+    output.close()
+    await flush()
+    jest.advanceTimersByTime(100)
+    expect(mockStdin.ended).toBe(true)
+  })
+
   it("drops queued and incoming PCM while paused, then resumes with fresh audio", async () => {
     const streaming = createStreaming("ws://in/input", undefined, 16000)
     const ws = mockWsInstances[0]
