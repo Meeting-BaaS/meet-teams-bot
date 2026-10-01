@@ -51,10 +51,14 @@ class Global {
    * @returns The normalized recording mode in snake_case format
    */
   private normalizeRecordingMode(
-    mode: RecordingMode
+    mode: RecordingMode,
+    meetingPlatform: MeetingParams["meeting_platform"]
   ): "speaker_view" | "gallery_view" | "audio_only" {
     switch (mode) {
-      case "gallery_view": // gallery_view maps to speaker_view as requested
+      case "gallery_view":
+        // Google Meet's browser recorder supports the tiled layout; keep the
+        // existing speaker-view fallback on platforms that do not.
+        return meetingPlatform === "meet" ? "gallery_view" : "speaker_view"
       case "speaker_view":
         return "speaker_view"
       case "audio_only":
@@ -88,7 +92,10 @@ class Global {
     const normalizedParams = {
       ...meetingParams,
       bot_name: disguisedName,
-      recording_mode: this.normalizeRecordingMode(meetingParams.recording_mode)
+      recording_mode: this.normalizeRecordingMode(
+        meetingParams.recording_mode,
+        meetingParams.meeting_platform
+      )
     }
 
     this.meetingParams = normalizedParams

@@ -316,6 +316,11 @@ export class MeetHtmlCleaner {
        *    (maintains aspect ratio, may show black bars if aspect ratios don't match)
        */
       function removeBlackBox(): void {
+        // Meet also marks tiled camera streams as roi-crop. Promoting the
+        // largest one to the viewport and hiding its siblings collapses the
+        // gallery into a single speaker tile.
+        if (recordingMode === "gallery_view") return
+
         const elements: NodeListOf<HTMLElement> = document.querySelectorAll(
           '[data-layout="roi-crop"]'
         )
