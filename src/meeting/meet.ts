@@ -1147,11 +1147,21 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
   return false
 }
 
-// Single-attempt layout change. Retry is owned by performCriticalSetupActions
-// so that dialog dismissal runs between each attempt (see GH #131). The
-// `attempt` parameter is passed in for logging only.
+/**
+ * Selects the requested Google Meet layout for one attempt.
+ *
+ * Retry is owned by performCriticalSetupActions so the dialog observer can be
+ * dismissed between attempts (see GH #131). A failed radio verification
+ * returns false, allowing that retry loop to try again.
+ *
+ * @param page - Google Meet page to configure
+ * @param attempt - Current attempt number, used for diagnostics
+ * @param maxAttempts - Total attempt count, used for diagnostics
+ * @returns Whether the requested layout radio was selected
+ */
 async function changeLayout(page: Page, attempt: number, maxAttempts: number): Promise<boolean> {
   console.log(`Starting layout change process (attempt ${attempt}/${maxAttempts})...`)
+  const layoutName = GLOBAL.get().recording_mode === "gallery_view" ? "Tiled" : "Spotlight"
 
   try {
     let inMeeting = await isInMeeting(page)
@@ -1200,23 +1210,66 @@ async function changeLayout(page: Page, attempt: number, maxAttempts: number): P
     )
     await changeLayoutItem.waitFor({ state: "visible", timeout: 3000 })
     await changeLayoutItem.click({ timeout: CLICK_TIMEOUT_MS })
-    await page.waitForSelector('label:has-text("Spotlight")', { state: "visible", timeout: 1000 })
+    await page.waitForSelector(`label:has-text("${layoutName}")`, {
+      state: "visible",
+      timeout: 1000
+    })
 
-    console.log("Looking for Spotlight option...")
-    const spotlightOption = page
+    console.log(`Looking for ${layoutName} option...`)
+    const layoutOption = page
       .locator(
         [
-          'label:has-text("Spotlight"):has(input[type="radio"])',
-          'label:has(input[name="preferences"]):has-text("Spotlight")',
-          'label:has(span:text-is("Spotlight"))'
+          `label:has-text("${layoutName}"):has(input[type="radio"])`,
+          `label:has(input[name="preferences"]):has-text("${layoutName}")`,
+          `label:has(span:text-is("${layoutName}"))`
         ].join(",")
       )
       .first()
-    await spotlightOption.waitFor({ state: "visible", timeout: 3000 })
-    await spotlightOption.click({ timeout: CLICK_TIMEOUT_MS })
+    await layoutOption.waitFor({ state: "visible", timeout: 3000 })
+
+    // Verify the actual radio state, not just the rendered label text. Meet's
+    // MDC radios can silently ignore a click on a non-activating child of the
+    // label, leaving the previous layout selected.
+    const layoutRadio = layoutOption.locator('input[name="preferences"]')
+
+    await layoutOption.click({ timeout: CLICK_TIMEOUT_MS })
+    let selected = await layoutRadio.isChecked()
+    if (!selected) {
+      console.warn(
+        `[Meet] Layout click did not select "${layoutName}" — dispatching native activation`
+      )
+      await layoutOption.evaluate((el) => {
+        const target = el as HTMLElement
+        for (const type of ["mousedown", "mouseup", "click"]) {
+          target.dispatchEvent(
+            new MouseEvent(type, { view: window, bubbles: true, cancelable: true })
+          )
+        }
+        target.click()
+      })
+      selected = await layoutRadio.isChecked()
+    }
+    if (!selected) {
+      console.error(`[Meet] Requested layout "${layoutName}" is still not selected`)
+      await closeAdjustViewDialogIfOpen(page)
+      return false
+    }
+    console.log(`[Meet] Requested layout radio is selected: ${layoutName}`)
     await page.waitForTimeout(300)
 
-    await clickOutsideModal(page)
+    // Close via the dialog's own Close button (the path the Meet layout
+    // switcher extensions use); clickOutsideModal remains the fallback.
+    await closeAdjustViewDialogIfOpen(page)
+
+    // Log the rendered tile geometry so a layout that failed to apply is
+    // visible in the run log instead of only in the recording.
+    const tiles = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("video")).map((v) => {
+        const r = v.getBoundingClientRect()
+        return `${Math.round(r.width)}x${Math.round(r.height)}`
+      })
+    )
+    console.log(`[Meet] Video tiles after layout change: ${tiles.join(", ") || "none"}`)
     return true
   } catch (error) {
     console.error(`Error in changeLayout attempt ${attempt}:`, formatError(error))

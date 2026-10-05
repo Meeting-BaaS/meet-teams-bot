@@ -1,4 +1,5 @@
 import { GLOBAL } from "./singleton"
+import type { MeetingParams } from "./types"
 
 describe("network diarization re-arm", () => {
   it("refuses to re-arm once the page-side interceptor was torn down", () => {
@@ -25,5 +26,25 @@ describe("network diarization re-arm", () => {
     expect(fresh.hasDiarizationFallbackTriggered()).toBe(false)
     expect(fresh.hasNetworkInterceptionSetupFailed()).toBe(false)
     expect(fresh.hasRearmedNetworkDiarization()).toBe(true)
+  })
+})
+
+describe("recording mode normalization", () => {
+  const recordingModeFor = (meeting_platform: "meet" | "teams" | "zoom") => {
+    const fresh = new (GLOBAL.constructor as new () => typeof GLOBAL)()
+    fresh.set({
+      meeting_url: "https://meet.google.com/abc-defg-hij",
+      bot_uuid: "00000000-0000-4000-8000-000000000001",
+      bot_name: "Gallery Test Bot",
+      meeting_platform,
+      recording_mode: "gallery_view"
+    } as unknown as MeetingParams)
+    return fresh.get().recording_mode
+  }
+
+  it("keeps gallery_view for Google Meet and falls back elsewhere", () => {
+    expect(recordingModeFor("meet")).toBe("gallery_view")
+    expect(recordingModeFor("teams")).toBe("speaker_view")
+    expect(recordingModeFor("zoom")).toBe("speaker_view")
   })
 })
