@@ -94,6 +94,7 @@ export class Streaming {
   private static readonly INJECTION_START_TIMEOUT_MS = 40
   // ponytail: cap the per-bot FIFO at 5s; drop oldest audio on sustained overrun to bound memory and live latency.
   private static readonly INJECTION_MAX_BUFFER_MS = 5000
+  private static readonly INJECTION_MAX_CATCH_UP_FRAMES = 5
 
   // Debug: Save streamed audio to file
   private debugAudioStream: fs.WriteStream | null = null
@@ -704,7 +705,14 @@ export class Streaming {
     this.pausedChunks = []
   }
 
-  // External audio injection (for bidirectional streaming)
+  /**
+   * Queues inbound PCM and paces fixed-size frames into FFmpeg stdin.
+   *
+   * Missing input is filled with silence, paused input is discarded, and
+   * playback deadlines are resynchronized after long stalls to bound latency.
+   *
+   * @param input_ws - WebSocket carrying raw Int16 PCM audio
+   */
   private play_incoming_audio_chunks = (input_ws: WebSocket) => {
     new SoundContext(this.sample_rate)
     const stdin = SoundContext.instance.play_stdin()
@@ -733,6 +741,8 @@ export class Streaming {
     let lastStatsLogTime = Date.now()
     let startTimeout: NodeJS.Timeout | null = null
     let pumpInterval: NodeJS.Timeout | null = null
+    let pumpStartedAt = 0
+    let framesWritten = 0
     let pumpStarted = false
     let inputEnded = false
     let waitingDrain = false
@@ -826,9 +836,37 @@ export class Streaming {
       console.info(
         `[Streaming] Injection playout started: ${Streaming.INJECTION_FRAME_MS}ms frames, ${Streaming.INJECTION_START_BUFFER_MS}ms startup buffer`
       )
-      writeFrame()
+      pumpStartedAt = performance.now()
+      framesWritten = 0
+
+      const tick = () => {
+        if (finished) return
+
+        const elapsedMs = performance.now() - pumpStartedAt
+        const dueFrames = Math.floor(elapsedMs / Streaming.INJECTION_FRAME_MS) + 1
+        let catchUpFrames = 0
+
+        while (
+          !finished &&
+          !waitingDrain &&
+          framesWritten < dueFrames &&
+          catchUpFrames < Streaming.INJECTION_MAX_CATCH_UP_FRAMES
+        ) {
+          writeFrame()
+          framesWritten++
+          catchUpFrames++
+        }
+
+        // Do not burst an unbounded backlog after a long event-loop stall or
+        // stdin drain. Drop stale deadlines and resume at the current cadence.
+        if (dueFrames - framesWritten > Streaming.INJECTION_MAX_CATCH_UP_FRAMES) {
+          framesWritten = dueFrames
+        }
+      }
+
+      tick()
       if (!finished) {
-        pumpInterval = setInterval(writeFrame, Streaming.INJECTION_FRAME_MS)
+        pumpInterval = setInterval(tick, Streaming.INJECTION_FRAME_MS / 2)
       }
     }
 

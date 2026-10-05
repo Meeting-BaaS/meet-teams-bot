@@ -39,7 +39,7 @@ class Global {
   private joinAttemptSuperseded = false
 
   /**
-   * Normalizes recording mode values to snake_case format.
+   * Normalizes a requested recording mode for its meeting platform.
    *
    * This function handles both PascalCase and snake_case values because:
    * 1. API requests come in snake_case format (e.g., "speaker_view")
@@ -47,8 +47,12 @@ class Global {
    * 3. The smart-rabbit consumer can handle both cases via #[serde(alias = "...")] attributes
    * 4. The recording server needs to handle both cases for consistency with the queue message format
    *
-   * @param mode - The recording mode value (can be either PascalCase or snake_case)
-   * @returns The normalized recording mode in snake_case format
+   * Google Meet supports the tiled gallery layout; other platforms currently
+   * fall back to speaker view when gallery view is requested.
+   *
+   * @param mode - Requested recording mode, in snake_case or PascalCase
+   * @param meetingPlatform - Platform that will render the recording
+   * @returns The platform-supported recording mode
    */
   private normalizeRecordingMode(
     mode: RecordingMode,

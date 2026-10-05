@@ -1147,9 +1147,18 @@ async function clickJoinCtaIfPresent(page: Page): Promise<boolean> {
   return false
 }
 
-// Single-attempt layout change. Retry is owned by performCriticalSetupActions
-// so that dialog dismissal runs between each attempt (see GH #131). The
-// `attempt` parameter is passed in for logging only.
+/**
+ * Selects the requested Google Meet layout for one attempt.
+ *
+ * Retry is owned by performCriticalSetupActions so the dialog observer can be
+ * dismissed between attempts (see GH #131). A failed radio verification
+ * returns false, allowing that retry loop to try again.
+ *
+ * @param page - Google Meet page to configure
+ * @param attempt - Current attempt number, used for diagnostics
+ * @param maxAttempts - Total attempt count, used for diagnostics
+ * @returns Whether the requested layout radio was selected
+ */
 async function changeLayout(page: Page, attempt: number, maxAttempts: number): Promise<boolean> {
   console.log(`Starting layout change process (attempt ${attempt}/${maxAttempts})...`)
   const layoutName = GLOBAL.get().recording_mode === "gallery_view" ? "Tiled" : "Spotlight"
@@ -1218,23 +1227,16 @@ async function changeLayout(page: Page, attempt: number, maxAttempts: number): P
       .first()
     await layoutOption.waitFor({ state: "visible", timeout: 3000 })
 
-    // Meet's MDC radios can silently ignore a click that lands on a
-    // non-activating child of the label, leaving the previous layout selected.
-    // Click, read back which radio is actually checked, and only trust the
-    // change once the wanted option is the checked one.
-    const checkedLayout = () =>
-      page.evaluate(() => {
-        const input = document.querySelector<HTMLInputElement>(
-          'input[name="preferences"]:checked'
-        )
-        return input?.closest("label")?.querySelector(".xo15nd")?.textContent?.trim() ?? null
-      })
+    // Verify the actual radio state, not just the rendered label text. Meet's
+    // MDC radios can silently ignore a click on a non-activating child of the
+    // label, leaving the previous layout selected.
+    const layoutRadio = layoutOption.locator('input[name="preferences"]')
 
     await layoutOption.click({ timeout: CLICK_TIMEOUT_MS })
-    let selected = await checkedLayout()
-    if (!selected?.includes(layoutName)) {
+    let selected = await layoutRadio.isChecked()
+    if (!selected) {
       console.warn(
-        `[Meet] Layout click did not select "${layoutName}" (checked: ${selected ?? "none"}) — dispatching native activation`
+        `[Meet] Layout click did not select "${layoutName}" — dispatching native activation`
       )
       await layoutOption.evaluate((el) => {
         const target = el as HTMLElement
@@ -1245,9 +1247,14 @@ async function changeLayout(page: Page, attempt: number, maxAttempts: number): P
         }
         target.click()
       })
-      selected = await checkedLayout()
+      selected = await layoutRadio.isChecked()
     }
-    console.log(`[Meet] Layout selected: ${selected ?? "none"} (wanted: ${layoutName})`)
+    if (!selected) {
+      console.error(`[Meet] Requested layout "${layoutName}" is still not selected`)
+      await closeAdjustViewDialogIfOpen(page)
+      return false
+    }
+    console.log(`[Meet] Requested layout radio is selected: ${layoutName}`)
     await page.waitForTimeout(300)
 
     // Close via the dialog's own Close button (the path the Meet layout
@@ -1256,7 +1263,6 @@ async function changeLayout(page: Page, attempt: number, maxAttempts: number): P
 
     // Log the rendered tile geometry so a layout that failed to apply is
     // visible in the run log instead of only in the recording.
-    await page.waitForTimeout(1000)
     const tiles = await page.evaluate(() =>
       Array.from(document.querySelectorAll("video")).map((v) => {
         const r = v.getBoundingClientRect()

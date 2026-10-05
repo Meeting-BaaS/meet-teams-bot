@@ -316,6 +316,7 @@ describe("Streaming injection playout", () => {
   })
 
   afterEach(() => {
+    jest.restoreAllMocks()
     jest.useRealTimers()
   })
 
@@ -356,6 +357,36 @@ describe("Streaming injection playout", () => {
     ws.close()
     await flush()
     jest.advanceTimersByTime(20)
+    expect(mockStdin.ended).toBe(true)
+  })
+
+  it("catches up to playback deadlines without an unbounded frame burst", async () => {
+    const monotonicNow = jest.spyOn(performance, "now").mockReturnValue(0)
+    createStreaming("ws://in/input", undefined, 16000)
+    const ws = mockWsInstances[0]
+    if (!ws) throw new Error("Expected input WebSocket")
+    ws.open()
+
+    // Two 40ms chunks reach the 80ms startup threshold and start the pump.
+    ws.emit("message", pcmBuffer(640))
+    ws.emit("message", pcmBuffer(640))
+    await flush()
+    expect(mockStdin.writes).toBe(1)
+
+    // Simulate an event-loop stall: many frames are due, but only five may be
+    // written in one callback. The scheduler then skips stale deadlines rather
+    // than continuing to accumulate latency.
+    monotonicNow.mockReturnValue(1000)
+    jest.advanceTimersByTime(10)
+    expect(mockStdin.writes).toBe(6)
+
+    // After resynchronizing, the next deadline produces one normal frame.
+    monotonicNow.mockReturnValue(1020)
+    jest.advanceTimersByTime(10)
+    expect(mockStdin.writes).toBe(7)
+
+    ws.close()
+    await flush()
     expect(mockStdin.ended).toBe(true)
   })
 
