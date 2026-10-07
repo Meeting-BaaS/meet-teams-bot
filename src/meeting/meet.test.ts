@@ -236,14 +236,19 @@ describe("MeetProvider.findEndMeeting", () => {
       expect(result).toBe(false)
     })
 
-    it("exits on 'No one else' normally after grace (no opts)", async () => {
+    it("exits on 'No one else' only once it has shown for everyone_left_timeout", async () => {
       const page = createMockPage({
         url: "https://meet.google.com/abc-defg-hij",
         content: "<html><body>No one else is here</body></html>",
       })
+      const now = jest.spyOn(Date, "now").mockReturnValue(1_000_000)
 
-      const result = await provider.findEndMeeting(page)
-      expect(result).toBe(true)
+      expect(await provider.findEndMeeting(page)).toBe(false)
+      now.mockReturnValue(1_029_000)
+      expect(await provider.findEndMeeting(page)).toBe(false)
+      now.mockReturnValue(1_030_000)
+      expect(await provider.findEndMeeting(page)).toBe(true)
+      now.mockRestore()
     })
   })
 

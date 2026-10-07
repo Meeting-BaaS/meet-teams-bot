@@ -11,6 +11,7 @@ import { establishBrowserSession } from "../../browser/browser-session"
 import { GLOBAL } from "../../singleton"
 import { formatError } from "../../utils/Logger"
 import { PathManager } from "../../utils/PathManager"
+import { setVirtualMicrophoneMuted } from "../../utils/virtual-microphone"
 import { MeetingEndReason, MeetingStateType, type StateExecuteResult } from "../types"
 import { BaseState } from "./base-state"
 
@@ -61,6 +62,9 @@ export class InitializationState extends BaseState {
           console.warn("Branding setup failed, continuing anyway:", error)
         })
       }
+
+      // Record-only bots must never be heard: silence the mic before the browser can open it.
+      await setVirtualMicrophoneMuted(!GLOBAL.get().streaming_input)
 
       // Setup browser - étape critique
       try {
