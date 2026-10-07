@@ -1422,7 +1422,9 @@ async function ensureMicrophoneOn(page: Page): Promise<void> {
 
 async function ensureMicrophoneOff(page: Page): Promise<void> {
   try {
-    if (await isMicrophoneOff(page)) return // already off
+    // Toggle only a mic confirmed live: Ctrl+D on an unknown state can unmute the bot.
+    const live = page.locator('button[aria-label="Turn off microphone"]')
+    if ((await isMicrophoneOff(page)) || (await live.count()) === 0) return
     console.log("[Meet] Microphone is on, disabling via keyboard shortcut (Ctrl+D)...")
     await toggleMicrophoneWithShortcut(page)
     console.log("[Meet] Microphone disable shortcut sent")
