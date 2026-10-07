@@ -468,14 +468,20 @@ export function teamsBrowserInterceptionLogic(
       for (const participant of participants) {
         const deviceId = rosterId(participant)
         if (!deviceId) continue
+        const previous = participantsByDeviceId.get(deviceId)
         const record = {
           deviceId,
           displayName: rosterName(participant),
-          status: participant.state === "active" ? 1 : 6,
+          // A delta without state keeps the last known status.
+          status:
+            participant.state == null && previous
+              ? previous.status
+              : participant.state === "inactive"
+                ? 6
+                : 1,
           isHost: participant.meetingRole === "organizer",
           isCurrentUser: !!currentUserId && deviceId === currentUserId
         }
-        const previous = participantsByDeviceId.get(deviceId)
         if (!previous || JSON.stringify(previous) !== JSON.stringify(record)) changed = true
         // Anchor the caption-fallback grace period to the first real roster (i.e.
         // actually in the call), not to script injection which runs pre-navigation.
@@ -1173,7 +1179,8 @@ export function teamsBrowserInterceptionLogic(
           }
         }
       }
-      const users = Array.from(byIdentity.values())
+      // Participants Teams marked inactive have left: drop them so the attendee count falls.
+      const users = Array.from(byIdentity.values()).filter((u) => u.status !== 6)
 
       // Only enqueue when the roster or speaking set actually changed — keeps the
       // pipeline (and logs) quiet during steady state.
