@@ -4,6 +4,7 @@ import { listenPage } from "../browser/page-logger"
 import { SimpleDialogObserver } from "../services/dialog-observer/simple-dialog-observer"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
 import { GLOBAL } from "../singleton"
+import { MEETING_CONSTANTS } from "../state-machine/constants"
 import { MeetingEndReason } from "../state-machine/types"
 import type { MeetingProviderInterface } from "../types"
 import { parseMeetingUrlFromJoinInfos } from "../urlParser/meetUrlParser"
@@ -84,6 +85,7 @@ export function assertOnMeetPage(page: Page, wasInMeeting = false): void {
 export class MeetProvider implements MeetingProviderInterface {
   // When the reconnect overlay was first seen; null once it clears.
   private reconnectOverlaySince: number | null = null
+  private aloneBannerSince: number | null = null
 
   async parseMeetingUrl(meeting_url: string) {
     return parseMeetingUrlFromJoinInfos(meeting_url)
@@ -582,16 +584,11 @@ export class MeetProvider implements MeetingProviderInterface {
           this.reconnectOverlaySince = null
         }
 
-        // "No one else" is an alone-signal that legitimately appears while the bot
-        // waits alone during the early grace period. When ignoreAloneSignals is set
-        // (grace-period check) we drop it so only definitive removal/ended screens
-        // — e.g. a host kicking the bot — count as the meeting ending.
         const endMessages = [
           "You've been removed",
           "we encountered a problem joining",
           "The call ended",
-          "Return to home",
-          ...(opts?.ignoreAloneSignals ? [] : ["No one else"])
+          "Return to home"
         ]
 
         const foundMessage = endMessages.find((msg) => content.includes(msg))
@@ -600,6 +597,22 @@ export class MeetProvider implements MeetingProviderInterface {
           console.log("End meeting detected through page content:", foundMessage)
           return true
         }
+
+        // "No one else" is an alone-signal: ignored during the grace period, held for everyone_left_timeout otherwise.
+        if (opts?.ignoreAloneSignals || !content.includes("No one else")) {
+          this.aloneBannerSince = null
+          return false
+        }
+        this.aloneBannerSince ??= Date.now()
+        const aloneForMs = Date.now() - this.aloneBannerSince
+        const timeoutSec =
+          GLOBAL.get().everyone_left_timeout ??
+          MEETING_CONSTANTS.DEFAULT_EVERYONE_LEFT_TIMEOUT_SECONDS
+        if (aloneForMs < timeoutSec * 1000) {
+          return false
+        }
+        console.log(`End meeting detected: "No one else" shown for ${Math.floor(aloneForMs / 1000)}s`)
+        return true
       }
       return false
     } catch (error) {

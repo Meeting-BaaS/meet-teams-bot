@@ -45,7 +45,12 @@ const getSpeakerCallbackCheckWindow = (): number => {
 }
 
 // How long the bot must be alone (no other attendees + no sound) before leaving
-const ALONE_IN_MEETING_TIMEOUT_MS = 30_000
+function getEveryoneLeftTimeoutMs(): number {
+  return (
+    (GLOBAL.get().everyone_left_timeout ??
+      MEETING_CONSTANTS.DEFAULT_EVERYONE_LEFT_TIMEOUT_SECONDS) * 1000
+  )
+}
 // Speaker observer is considered healthy if a callback was received within this window
 const SPEAKER_OBSERVER_HEALTH_WINDOW_MS = 10 * 60 * 1000 // 10 minutes
 // Don't activate alone-in-meeting within the first 5 minutes of recording.
@@ -1020,6 +1025,7 @@ export class RecordingState extends BaseState {
     const speakerObserverHealthy =
       lastCallbackTime !== null && now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
 
+    const aloneTimeoutMs = getEveryoneLeftTimeoutMs()
     const isAlone = attendeesCount <= 1 // Only the bot (or stale 0)
     const isSilent = currentSoundLevel <= SOUND_LEVEL_ACTIVITY_THRESHOLD
 
@@ -1028,12 +1034,12 @@ export class RecordingState extends BaseState {
       if (this.aloneInMeetingSince === null) {
         this.aloneInMeetingSince = now
         console.log(
-          `[alone-in-meeting] Bot appears to be alone (attendees=${attendeesCount}, sound=${currentSoundLevel.toFixed(2)}), starting ${ALONE_IN_MEETING_TIMEOUT_MS / 1000}s countdown`
+          `[alone-in-meeting] Bot appears to be alone (attendees=${attendeesCount}, sound=${currentSoundLevel.toFixed(2)}), starting ${aloneTimeoutMs / 1000}s countdown`
         )
       }
 
       const aloneForMs = now - this.aloneInMeetingSince
-      if (aloneForMs >= ALONE_IN_MEETING_TIMEOUT_MS) {
+      if (aloneForMs >= aloneTimeoutMs) {
         console.log(
           `[alone-in-meeting] Bot has been alone for ${Math.floor(aloneForMs / 1000)}s with no sound, leaving meeting`
         )
