@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@meeting-baas/sqs-consumer':
-        specifier: ^2.0.0
-        version: 2.0.0
+        specifier: ^2.0.1
+        version: 2.0.1
 
 packages:
 
@@ -116,8 +116,8 @@ packages:
     resolution: {integrity: sha512-cPGuDR5Uq/5Ofs59zuhnE4u3I6SDQSp80Y6YVT2xzFmJFlRNGGcbr1CTESp4qhCKagA0MJgnDv8G14CdegBNlg==, tarball: https://npm.pkg.github.com/download/@meeting-baas/shared-utils/1.0.0/726e70682e0871f579ecad35363f711b1ea347cc}
     engines: {node: '>=22.16.0', pnpm: '>=10.18.3'}
 
-  '@meeting-baas/sqs-consumer@2.0.0':
-    resolution: {integrity: sha512-Te23uHfA4W32XvkBc8OUEdbOgHWgEMqKZ0919cm0BCAQpd5zvSrtT4whfk6rYlTdvuVB9zDpDV+BZduXONWoMQ==, tarball: https://npm.pkg.github.com/download/@meeting-baas/sqs-consumer/2.0.0/955174aa3148aff2c2de05ce555f97402538c378}
+  '@meeting-baas/sqs-consumer@2.0.1':
+    resolution: {integrity: sha512-/KBpKlLHttIWeyizWhnJD7L5eOMaCi4RXsP5pQujdHhDWSV4Jx67kSIo+8LEgWXBrmEKU6gVrVQPgapXFoq/uA==, tarball: https://npm.pkg.github.com/download/@meeting-baas/sqs-consumer/2.0.1/0450cf1e39c455ca1f83ce2b12a08973a84b6229}
     engines: {node: '>=22.16.0', pnpm: '>=10.18.3'}
     hasBin: true
 
@@ -827,7 +827,7 @@ snapshots:
       - debug
       - supports-color
 
-  '@meeting-baas/sqs-consumer@2.0.0':
+  '@meeting-baas/sqs-consumer@2.0.1':
     dependencies:
       '@aws-sdk/client-s3': 3.1140.0
       '@aws-sdk/client-sqs': 3.1140.0

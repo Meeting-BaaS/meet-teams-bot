@@ -79,6 +79,7 @@ export const BotMessageSchema = object({
   waiting_room_timeout: number().int().positive().default(600),
   no_one_joined_timeout: number().int().positive().default(600),
   silence_timeout: number().int().positive().default(600),
+  everyone_left_timeout: number().int().positive().default(30),
   grace_period: number().int().nonnegative().default(0),
   max_recording_duration: number()
     .int()

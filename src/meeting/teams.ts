@@ -1379,24 +1379,37 @@ async function activateCamera(page: Page): Promise<void> {
   }
 }
 
-async function isMicrophoneMuted(page: Page): Promise<boolean> {
-  // Teams shows unmute mic title when microphone is muted
-  const unmuteMicButton = page.locator('button[title="Unmute mic"]')
-  if ((await unmuteMicButton.count()) > 0) {
+// Pre-join switch (aria-checked) and in-call button (title) for the bot's mic.
+const PREJOIN_MIC_SWITCH = '[data-tid="toggle-mute"], [role="switch"][aria-label="Microphone"]'
+const MIC_MUTED =
+  'button[title="Unmute mic"], [data-tid="toggle-mute"][aria-checked="false"], [role="switch"][aria-label="Microphone"][aria-checked="false"]'
+const MIC_LIVE =
+  'button[title="Mute mic"], [data-tid="toggle-mute"][aria-checked="true"], [role="switch"][aria-label="Microphone"][aria-checked="true"]'
+
+/** True when muted, false when live, null when no mic control is visible. */
+async function isMicrophoneMuted(page: Page): Promise<boolean | null> {
+  if ((await page.locator(MIC_MUTED).count()) > 0) {
     console.log("[Teams] Microphone is muted")
     return true
   }
-
-  // Teams shows mute mic title when microphone is not muted
-  const muteMicButton = page.locator('button[title="Mute mic"]')
-  if ((await muteMicButton.count()) > 0) {
+  if ((await page.locator(MIC_LIVE).count()) > 0) {
     console.log("[Teams] Microphone is not muted")
     return false
   }
+  console.warn("[Teams] Unable to determine microphone state")
+  return null
+}
 
-  // Default assumption if we cannot determine state
-  console.warn("[Teams] Unable to determine microphone state, assuming unmuted")
-  return false
+async function toggleMicrophone(page: Page): Promise<void> {
+  const prejoinSwitch = page.locator(PREJOIN_MIC_SWITCH).first()
+  if ((await prejoinSwitch.count()) > 0) {
+    await prejoinSwitch.click()
+    console.log("Microphone switch clicked (pre-join)")
+  } else {
+    await toggleMicrophoneWithShortcut(page)
+  }
+  // Give Teams a moment to apply the state change
+  await sleep(500)
 }
 
 async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
@@ -1411,28 +1424,26 @@ async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
 async function activateMicrophone(page: Page): Promise<void> {
   console.log("activating microphone")
   try {
-    if (!(await isMicrophoneMuted(page))) {
+    if ((await isMicrophoneMuted(page)) !== true) {
       return
     }
-    await toggleMicrophoneWithShortcut(page)
-
-    // Give Teams a moment to apply the state change
-    await sleep(500)
+    await toggleMicrophone(page)
   } catch (error) {
     console.error("Failed to activate microphone:", formatError(error))
   }
 }
 
+/** Mutes only a mic confirmed live — a blind toggle on an unknown state can unmute the bot. */
 async function deactivateMicrophone(page: Page): Promise<void> {
   console.log("deactivating microphone")
   try {
-    if (await isMicrophoneMuted(page)) {
-      return
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if ((await isMicrophoneMuted(page)) !== false) return
+      await toggleMicrophone(page)
     }
-    await toggleMicrophoneWithShortcut(page)
-
-    // Give Teams a moment to apply the state change
-    await sleep(500)
+    if ((await isMicrophoneMuted(page)) === false) {
+      console.warn("[Teams] Microphone still live after mute attempts")
+    }
   } catch (error) {
     console.error("Failed to deactivate microphone:", formatError(error))
   }
