@@ -1,9 +1,14 @@
 import { MeetingProvider } from '../types'
+import { parseTeamsMeetingUrl } from './teamsMeetingUrl'
 
 export function detectMeetingProvider(url: string): MeetingProvider {
-    if (url.includes('https://teams')) {
+    try {
+        parseTeamsMeetingUrl(url)
         return 'Teams'
-    } else if (url.includes('https://meet')) {
+    } catch {
+        // Not a supported Teams meeting; keep the existing Meet route.
+    }
+    if (url.includes('https://meet')) {
         return 'Meet'
     } else {
         throw new Error('Unsupported meeting provider')

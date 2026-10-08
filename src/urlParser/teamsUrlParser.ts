@@ -1,6 +1,7 @@
 import { GLOBAL } from '../singleton'
 import { MeetingEndReason } from '../state-machine/types'
 import { formatError } from '../utils/Logger'
+import { parseTeamsMeetingUrl } from '../utils/teamsMeetingUrl'
 
 interface TeamsUrlComponents {
     meetingId: string
@@ -32,9 +33,12 @@ function convertLightMeetingToStandard(url: URL): string {
             ...(organizerId ? { Oid: organizerId } : {}),
         }
 
-        return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${conversationId}/${messageId}?context=${encodeURIComponent(JSON.stringify(context))}&anon=true`
+        return `${url.origin}/v2/?meetingjoin=true#/l/meetup-join/${conversationId}/${messageId}?context=${encodeURIComponent(JSON.stringify(context))}&anon=true`
     } catch (e) {
-        console.error('🥕❌ Error converting light meeting URL:', formatError(e))
+        console.error(
+            '🥕❌ Error converting light meeting URL:',
+            formatError(e),
+        )
         GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
         throw new Error('Failed to convert Teams light meeting URL')
     }
@@ -58,18 +62,23 @@ function transformTeamsLink(originalLink: string): string {
         }
 
         // Extract the important parts from the original URL
-        const regex =
-            /https:\/\/teams\.microsoft\.com\/l\/meetup-join\/(.*?)\/(\d+)\?context=(.*?)(?:$|&)/
-        const match = originalLink.match(regex)
+        const joinUrl = url.hash.startsWith('#/l/meetup-join/')
+            ? new URL(url.hash.slice(1), url.origin)
+            : url
+        const match = joinUrl.pathname.match(
+            /^\/l\/meetup-join\/([^/]+)\/(\d+)$/,
+        )
+        const context = joinUrl.searchParams.get('context')
 
-        if (!match || match.length < 4) {
+        if (!match || !context) {
             return originalLink
         }
 
-        const [_, threadId, timestamp, context] = match
+        const [_, threadId, timestamp] = match
+        joinUrl.searchParams.set('anon', 'true')
 
         // Build the working link format
-        return `https://teams.microsoft.com/v2/?meetingjoin=true#/l/meetup-join/${threadId}/${timestamp}?context=${context}&anon=true`
+        return `${url.origin}/v2/?meetingjoin=true#/l/meetup-join/${threadId}/${timestamp}?${joinUrl.searchParams.toString()}`
     } catch (error) {
         console.error('Error transforming Teams link:', formatError(error))
         return originalLink
@@ -87,24 +96,11 @@ export function parseMeetingUrlFromJoinInfos(
 
         console.log('Parsing meeting URL:', meeting_url)
 
-        // Remove accidental shell escaping (backslashes before URL special chars)
-        meeting_url = meeting_url.replace(/\\([?=&])/g, '$1')
-
-        // Handle Google redirect URLs
-        if (meeting_url.startsWith('https://www.google.com/url')) {
-            const url = new URL(meeting_url)
-            meeting_url = url.searchParams.get('q') || meeting_url
-        }
-
-        // Decode URL if needed
-        if (meeting_url.startsWith('https%3A')) {
-            meeting_url = decodeURIComponent(meeting_url)
-        }
-
-        const url = new URL(meeting_url)
+        const url = parseTeamsMeetingUrl(meeting_url)
+        meeting_url = url.toString()
 
         // Handle teams.live.com URLs
-        if (url.hostname.includes('teams.live.com')) {
+        if (url.hostname === 'teams.live.com') {
             // Handle launcher/deep-link wrapper URLs
             // e.g. teams.live.com/dl/launcher/launcher.html?url=/_#/meet/123?p=abc&anon=true
             if (url.pathname.startsWith('/dl/launcher/')) {
@@ -114,7 +110,9 @@ export function parseMeetingUrlFromJoinInfos(
                     const pMatch = embeddedPath.match(/[?&]p=([^&]+)/)
                     if (meetMatch) {
                         const directUrl = `https://teams.live.com/meet/${meetMatch[1]}${pMatch ? `?p=${pMatch[1]}&anon=true` : '?anon=true'}`
-                        console.log(`Detected Teams launcher URL, resolved to: ${directUrl}`)
+                        console.log(
+                            `Detected Teams launcher URL, resolved to: ${directUrl}`,
+                        )
                         return {
                             meetingId: directUrl,
                             password: pMatch ? pMatch[1] : '',
@@ -122,7 +120,9 @@ export function parseMeetingUrlFromJoinInfos(
                     }
                 }
                 GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
-                throw new Error('Invalid Teams launcher URL: could not extract meeting info')
+                throw new Error(
+                    'Invalid Teams launcher URL: could not extract meeting info',
+                )
             }
 
             // Handle personal/free Teams light-meetings launcher URLs
@@ -134,20 +134,30 @@ export function parseMeetingUrlFromJoinInfos(
                     try {
                         const decoded = JSON.parse(atob(coords))
                         if (decoded.meetingCode) {
-                            const passcode = decoded.passcode || url.searchParams.get('p') || ''
+                            const passcode =
+                                decoded.passcode ||
+                                url.searchParams.get('p') ||
+                                ''
                             const directUrl = `https://teams.live.com/meet/${decoded.meetingCode}${passcode ? `?p=${passcode}&anon=true` : '?anon=true'}`
-                            console.log(`Detected Teams light-meetings launcher URL, resolved to: ${directUrl}`)
+                            console.log(
+                                `Detected Teams light-meetings launcher URL, resolved to: ${directUrl}`,
+                            )
                             return {
                                 meetingId: directUrl,
                                 password: passcode,
                             }
                         }
                     } catch (e) {
-                        console.error('Error parsing light-meetings coords:', formatError(e))
+                        console.error(
+                            'Error parsing light-meetings coords:',
+                            formatError(e),
+                        )
                     }
                 }
                 GLOBAL.setError(MeetingEndReason.InvalidMeetingUrl)
-                throw new Error('Invalid Teams light-meetings URL: could not extract meeting info from coords')
+                throw new Error(
+                    'Invalid Teams light-meetings URL: could not extract meeting info from coords',
+                )
             }
 
             const meetPath = url.pathname.split('/meet/')[1]
@@ -161,17 +171,17 @@ export function parseMeetingUrlFromJoinInfos(
             }
         }
 
-        // Handle teams.microsoft.com URLs
-        if (url.hostname.includes('teams.microsoft.com')) {
+        // The URL helper has validated the host and meeting shape.
+        if (url.hostname !== 'teams.live.com') {
             console.log(
-                `🥕🥕🥕 Detected teams.microsoft.com URL ${meeting_url}\n, transforming to more compatible format 🥕🥕🥕`,
+                `Detected Teams URL on ${url.hostname}, transforming to browser join format`,
             )
             // Transform the URL to the more compatible format
             const transformedUrl = transformTeamsLink(meeting_url)
             console.log('Using transformed Teams URL:', transformedUrl)
             return {
                 meetingId: transformedUrl,
-                password: '',
+                password: url.searchParams.get('p') || '',
             }
         }
 
