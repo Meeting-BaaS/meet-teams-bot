@@ -356,6 +356,8 @@ export class MeetHtmlCleaner {
              *    (maintains aspect ratio, may show black bars if aspect ratios don't match)
              */
             function removeBlackBox(): void {
+                // Gallery owns the tile layout; fullscreen cleanup would hide other attendees.
+                if (recordingMode === 'gallery_view') return
                 const elements: NodeListOf<HTMLElement> =
                     document.querySelectorAll('[data-layout="roi-crop"]')
                 if (elements.length === 0) {

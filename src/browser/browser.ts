@@ -2,8 +2,7 @@ import { BrowserContext } from '@playwright/test'
 import { GLOBAL } from '../singleton'
 import { formatError } from '../utils/Logger'
 
-// Chromium launch flags shared by both the CloakBrowser (Meet) and the official
-// Chrome (Teams/other) paths.
+// Chromium launch flags shared by the Meet and Teams CloakBrowser paths.
 function buildChromeArgs(
     windowWidth: number,
     windowHeight: number,
@@ -23,10 +22,7 @@ function buildChromeArgs(
         'TrustedScriptTypes',
         'TrustedHTML',
     ]
-    const disabledBlinkFeatures = [
-        'AutomationControlled',
-        'TrustedDOMTypes',
-    ]
+    const disabledBlinkFeatures = ['AutomationControlled', 'TrustedDOMTypes']
 
     return [
         // Window size and position - must match Xvfb display exactly
@@ -117,11 +113,20 @@ export async function openBrowser(
 
     const args = buildChromeArgs(windowWidth, windowHeight, proxyUrl)
     const platform = GLOBAL.get().meetingProvider
-    const gpuArgs = [
-        '--disable-gpu',
-        '--disable-software-rasterizer',
-        '--disable-gpu-compositing',
-    ]
+    // Meet needs a software WebGL backend; disabling both GPU and software
+    // rasterization leaves it without any usable GL context.
+    const gpuArgs =
+        platform === 'Meet'
+            ? [
+                  '--disable-gpu-compositing',
+                  '--in-process-gpu',
+                  '--enable-unsafe-swiftshader',
+              ]
+            : [
+                  '--disable-gpu',
+                  '--disable-software-rasterizer',
+                  '--disable-gpu-compositing',
+              ]
 
     try {
         console.log(

@@ -9,10 +9,20 @@
 /** biome-ignore-all lint/suspicious/noExplicitAny: browser-side bundle over untyped Teams/WebRTC internals. */
 
 // Type-only: erased, so the stringified bundle stays self-contained.
+import type {
+  OwnRosterExtractor,
+  RosterScopeResolver,
+  TeamsInterceptorScope
+} from "./meeting-scope"
 import type { SpeakerSetResolver, SpeakerTimelineRung } from "./speaker-timeline"
 
 /** @param resolveSpeakingSet - Passed in, not imported: this is stringified into the page. */
-export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetResolver) {
+export function teamsBrowserInterceptionLogic(
+  resolveSpeakingSet: SpeakerSetResolver,
+  resolveRosterScope: RosterScopeResolver,
+  extractOwnRoster: OwnRosterExtractor,
+  meetingScope: TeamsInterceptorScope
+) {
   try {
     if ((window as any).__teamsNetworkInterceptorInitialized === true) {
       console.warn("[Teams NetworkInterceptor] ⚠️ Already initialized, skipping duplicate")
@@ -122,10 +132,7 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
     // Teams streams an utterance as repeated partials then one final, all
     // describing the SAME speech, so partials extend the open interval instead
     // of opening new ones.
-    const captionIntervals = new Map<
-      string,
-      { startMs: number; endMs: number; open: boolean }[]
-    >()
+    const captionIntervals = new Map<string, { startMs: number; endMs: number; open: boolean }[]>()
     // Intervals older than this are dropped; only recent speech can be current.
     const CAPTION_INTERVAL_RETENTION_MS = 60000
     // Wall-clock arrival of the last caption result. The audio clock cannot tell
@@ -213,9 +220,168 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
       captionUnmatched: 0,
       captionsEnabled: false,
       // Caption interval overruling a live dsh — 0 on single-signal sessions.
-      rungCaptionOverDsh: 0
+      rungCaptionOverDsh: 0,
+      ownConversationKnown: false,
+      rosterScopeRejected: 0,
+      rosterScopeAggregate: 0,
+      rosterScopeUnplaceable: 0,
+      rosterScopeUnknown: 0,
+      rosterScopeStrictRelaxed: false,
+      rosterQuarantined: 0,
+      rosterVerifiedAdmitted: 0,
+      rosterAggregateExtracted: 0
     }
     const netDiag = (window as any).__teamsNetDiag
+
+    // ===== MEETING SCOPE =====
+    // Merge only roster payloads for the meeting this bot joined (see meeting-scope.ts).
+    const scope: TeamsInterceptorScope = meetingScope || {
+      conversationId: null,
+      isAuthenticated: false
+    }
+    let ownConversation: string | null = scope.conversationId
+    netDiag.ownConversationKnown = Boolean(ownConversation)
+
+    // Signed-in bots scope strictly, but relax if that leaves the roster empty.
+    const STRICT_ESCAPE_AFTER = 5
+    let strict = scope.isAuthenticated
+    let droppedWhileEmpty = 0
+
+    // A bare call GUID names no conversation; latching one would switch scoping off.
+    function namesAConversation(raw: string): boolean {
+      return (
+        resolveRosterScope({
+          own: raw,
+          isAuthenticated: false,
+          strict: false
+        }).reason !== "own-unknown"
+      )
+    }
+
+    // Latch the conversation from the live call when the join URL had none.
+    function learnOwnConversation(): void {
+      if (ownConversation) return
+      try {
+        const call = getActiveCall()
+        const raw = call?.threadId || call?.conversationId || call?.threadKey || call?.id
+        if (typeof raw !== "string" || !raw) return
+        if (!namesAConversation(raw)) return
+        ownConversation = raw
+        netDiag.ownConversationKnown = true
+        debug("🔒 meeting scope learned from active call", raw)
+        setTimeout(drainQuarantine, 0)
+      } catch {
+        // Teams internals unavailable — stay permissive.
+      }
+    }
+
+    // Held until our meeting is known, then replayed through admission.
+    const QUARANTINE_MAX = 100
+    const quarantine: Array<() => void> = []
+
+    function drainQuarantine(): void {
+      for (const replay of quarantine.splice(0)) {
+        try {
+          replay()
+        } catch {
+          // One bad payload must not block the rest.
+        }
+      }
+    }
+
+    function rosterVerdict(url: string | undefined, body: string | undefined) {
+      learnOwnConversation()
+      const verdict = resolveRosterScope({
+        own: ownConversation,
+        url,
+        body,
+        isAuthenticated: scope.isAuthenticated,
+        strict
+      })
+      if (verdict.reason === "own-unknown") netDiag.rosterScopeUnknown++
+      else if (verdict.reason === "aggregate") netDiag.rosterScopeAggregate++
+      else if (verdict.reason === "unplaceable") netDiag.rosterScopeUnplaceable++
+      if (!verdict.accept) netDiag.rosterScopeRejected++
+      return verdict
+    }
+
+    function hasOtherParticipants(): boolean {
+      for (const record of participantsByDeviceId.values()) {
+        if (!record.isCurrentUser) return true
+      }
+      return false
+    }
+
+    // Last resort, only while nobody but the bot has been recovered.
+    function countTowardStrictEscape(): void {
+      if (!strict || hasOtherParticipants()) return
+      droppedWhileEmpty++
+      if (droppedWhileEmpty < STRICT_ESCAPE_AFTER) return
+      strict = false
+      netDiag.rosterScopeStrictRelaxed = true
+      console.warn(
+        `${LOG} ⚠️ no participant besides the bot after dropping ${droppedWhileEmpty} roster payloads — relaxing to proven-foreign-only`
+      )
+      setTimeout(drainQuarantine, 0)
+    }
+
+    // The calling SDK's participants are scoped to the active call.
+    function activeCallParticipantIds(): Set<string> | null {
+      try {
+        const list = getActiveCall()?.participants
+        if (!list || typeof list.forEach !== "function") return null
+        const ids = new Set<string>()
+        list.forEach((participant: any) => {
+          if (typeof participant?.id === "string" && participant.id) {
+            ids.add(participant.id.toLowerCase())
+          }
+        })
+        return ids
+      } catch {
+        return null
+      }
+    }
+
+    function applyVerifiedParticipants(raw: any[]): number {
+      const ids = activeCallParticipantIds()
+      if (!ids || ids.size === 0) return 0
+      const verified = raw.filter((participant) => {
+        const id = rosterId(participant)
+        return typeof id === "string" && ids.has(id.toLowerCase())
+      })
+      if (verified.length === 0) return 0
+      netDiag.rosterVerifiedAdmitted += verified.length
+      applyParticipants(verified)
+      return verified.length
+    }
+
+    function admitRoster(
+      url: string | undefined,
+      text: string,
+      body: any,
+      raw: any[],
+      replay: () => void
+    ): void {
+      const verdict = rosterVerdict(url, text)
+      if (verdict.accept) {
+        applyParticipants(raw)
+        return
+      }
+      if (verdict.reason === "foreign") return
+
+      if (verdict.reason === "aggregate") {
+        const own = rosterArrayOf(extractOwnRoster(body, ownConversation))
+        if (own) {
+          netDiag.rosterAggregateExtracted++
+          applyParticipants(own)
+          return
+        }
+      } else if (verdict.reason === "own-unknown" && quarantine.length < QUARANTINE_MAX) {
+        netDiag.rosterQuarantined++
+        quarantine.push(replay)
+      }
+      if (applyVerifiedParticipants(raw) === 0) countTowardStrictEscape()
+    }
 
     // ===== TEAMS INTERNAL CALLING SDK (best-effort) =====
 
@@ -338,14 +504,19 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
       for (const participant of participants) {
         const deviceId = rosterId(participant)
         if (!deviceId) continue
+        const previous = participantsByDeviceId.get(deviceId)
         const record = {
           deviceId,
           displayName: rosterName(participant),
-          status: participant.state === "active" ? 1 : 6,
+          status:
+            participant.state == null && previous
+              ? previous.status
+              : participant.state === "inactive"
+                ? 6
+                : 1,
           isHost: participant.meetingRole === "organizer",
           isCurrentUser: !!currentUserId && deviceId === currentUserId
         }
-        const previous = participantsByDeviceId.get(deviceId)
         if (!previous || JSON.stringify(previous) !== JSON.stringify(record)) changed = true
         // Anchor the caption-fallback grace period to the first real roster (i.e.
         // actually in the call), not to script injection which runs pre-navigation.
@@ -362,8 +533,12 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
     function handleRosterUpdate(eventDataObject: any): void {
       try {
         const decodedBody = decodeWebSocketBody(eventDataObject.body)
-        const rawParticipants = Object.values<any>(decodedBody.participants || {})
-        applyParticipants(rawParticipants)
+        const raw = Object.values<any>(decodedBody?.participants || {})
+        if (raw.length === 0) return
+        // The trouter socket is per user, so it carries other meetings' deltas too.
+        admitRoster(eventDataObject?.url, JSON.stringify(decodedBody), decodedBody, raw, () =>
+          handleRosterUpdate(eventDataObject)
+        )
       } catch (error) {
         console.error(`${LOG} ❌ Error handling roster update:`, error)
       }
@@ -387,22 +562,40 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
       return null
     }
 
+    // A generic list only counts as a roster if its entries look like call participants.
+    function rosterArrayOf(body: any): any[] | null {
+      if (!body || typeof body !== "object") return null
+      const explicit =
+        participantsToArray(body.roster?.participants) ||
+        participantsToArray(body.participants?.value) ||
+        participantsToArray(body.participants)
+      if (explicit?.length) return explicit
+      for (const candidate of [body.roster, body.value, Array.isArray(body) ? body : null]) {
+        const list = participantsToArray(candidate)
+        if (list?.some(looksLikeParticipant)) return list
+      }
+      return null
+    }
+
+    function looksLikeParticipant(pp: any): boolean {
+      return (
+        !!pp &&
+        typeof pp === "object" &&
+        !!rosterId(pp) &&
+        !!rosterName(pp) &&
+        (pp.details != null || pp.endpoints != null || pp.state != null || pp.meetingRole != null)
+      )
+    }
+
     function tryHttpRoster(url: string, text: string): void {
       try {
         if (!text || text.indexOf("displayName") === -1) return
         const body = JSON.parse(text)
-        // The HTTP snapshot nests the roster as { roster: { participants: {mri: {...}} } };
-        // other endpoints use top-level participants / value. Handle all as object-or-array.
-        const raw =
-          participantsToArray(body?.roster?.participants) ||
-          participantsToArray(body?.participants) ||
-          participantsToArray(body?.value) ||
-          participantsToArray(body?.participants?.value) ||
-          (Array.isArray(body) ? body : null)
-        if (raw && raw.length) {
-          netDiag.httpRosterHits++
-          applyParticipants(raw)
-        }
+        // Only a real roster is scope-checked, so unrelated responses never reach the escape.
+        const raw = rosterArrayOf(body)
+        if (!raw) return
+        netDiag.httpRosterHits++
+        admitRoster(url, text, body, raw, () => tryHttpRoster(url, text))
       } catch {
         // not JSON — ignore
       }
@@ -872,6 +1065,7 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
 
     function pollReceivers(): void {
       if ((window as any).__teamsNetworkInterceptorStopped) return
+      learnOwnConversation()
 
       const speakingParticipantIds = new Set<string>()
       let mappedCsrcThisPoll = false
@@ -1037,7 +1231,8 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
           }
         }
       }
-      const users = Array.from(byIdentity.values())
+      // Inactive roster entries must not hold the meeting open.
+      const users = Array.from(byIdentity.values()).filter((u) => u.status !== 6)
 
       // Only enqueue when the roster or speaking set actually changed — keeps the
       // pipeline (and logs) quiet during steady state.
@@ -1104,7 +1299,8 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
     // client's HTTP snapshot, not just the socket deltas. Wrap-and-forward only — the
     // original response is returned untouched; we read a clone.
     {
-      const rosterUrlRe = /callagent|conversation|roster|participant|calling|skype|flightproxy|\/csa\/|\/api\//i
+      const rosterUrlRe =
+        /callagent|conversation|roster|participant|calling|skype|flightproxy|\/csa\/|\/api\//i
       try {
         const origFetch = (window.fetch as any).bind(window)
         ;(window as any).fetch = function (...args: any[]) {
@@ -1244,7 +1440,12 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
         // visible in this context under CloakBrowser.
         try {
           const q = (window as any).__teamsSpeakerQueue as any[]
-          q.push({ users: [], timestamp: Date.now(), source: "roster", audioPathDead: true })
+          q.push({
+            users: [],
+            timestamp: Date.now(),
+            source: "roster",
+            audioPathDead: true
+          })
         } catch {
           // ignore
         }
@@ -1263,16 +1464,19 @@ export function teamsBrowserInterceptionLogic(resolveSpeakingSet: SpeakerSetReso
     ;(window as any).__teamsNetworkBroadcastNow = () => {
       try {
         callbackBoundAt = Date.now()
-        diag(`callback bound — audio-path watchdog armed (${participantsByDeviceId.size} participants in roster)`)
+        diag(
+          `callback bound — audio-path watchdog armed (${participantsByDeviceId.size} participants in roster)`
+        )
         // Force the current snapshot into the queue even if the speaking key
         // hasn't changed since the last (possibly pre-bind) enqueue.
         lastSpeakingLogKey = ""
-        broadcastSpeakerUpdate(csrcAvailable ? "audio" : dominantSpeakerStreamId ? "audio" : "roster")
+        broadcastSpeakerUpdate(
+          csrcAvailable ? "audio" : dominantSpeakerStreamId ? "audio" : "roster"
+        )
       } catch (e) {
         console.error(`${LOG} ❌ Replay broadcast failed:`, e)
       }
     }
-
     ;(window as any).__teamsStopNetworkInterception = () => {
       clearInterval(watchdogInterval)
       ;(window as any).__teamsNetworkInterceptorStopped = true

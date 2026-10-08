@@ -82,7 +82,7 @@ export type MeetingParams = {
         // The number of seconds after which the bot will automatically leave the call, if it has joined the meeting but no other participant has joined.
         noone_joined_timeout: number
         // The number of seconds after which the bot will automatically leave the call, if there were other participants in the call who have all left.
-        // everyone_left_timeout?: number
+        everyone_left_timeout?: number
         // The number of seconds after which the bot will automatically leave the call, if it has joined the call but not started recording.
         // in_call_not_recording_timeout?: number
         // The number of seconds after which the bot will automatically leave the call, if it has joined the call and started recording it. This can be used to enforce a maximum recording time limit for a bot. There is no default value for this parameter, meaning a bot will continue to record for as long as the meeting lasts.
@@ -124,6 +124,7 @@ export type SpeakerData = {
     id: number
     timestamp: number
     isSpeaking: boolean
+    isSelf?: boolean
     /**
      * Network device this speech belongs to, when known. Carried so a
      * diarization segment opened before the roster resolved can be repaired

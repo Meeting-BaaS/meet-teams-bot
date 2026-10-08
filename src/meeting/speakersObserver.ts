@@ -7,8 +7,11 @@ export class SpeakersObserver {
     private meetingProvider: MeetingProvider
     private observer: MeetSpeakersObserver | TeamsSpeakersObserver | null = null
     private isObserving: boolean = false
-    private retryCount: number = 0
-    private maxRetries: number = 3
+    private readonly maxRetries = 3
+    private startup?: Promise<void>
+    private stopping?: Promise<void>
+    private generation = 0
+    private cancelRetry?: () => void
 
     constructor(meetingProvider: MeetingProvider) {
         this.meetingProvider = meetingProvider
@@ -20,6 +23,8 @@ export class SpeakersObserver {
         botName: string,
         onSpeakersChange: (speakers: SpeakerData[]) => void,
     ): Promise<void> {
+        if (this.stopping) await this.stopping
+        if (this.startup) return this.startup
         if (this.isObserving) {
             console.warn('[SpeakersObserver] Already running')
             return
@@ -55,58 +60,93 @@ export class SpeakersObserver {
                 )
         }
 
-        if (this.observer) {
+        const observer = this.observer!
+        const generation = ++this.generation
+        const startup = this.startWithRetries(observer, generation)
+            .then(() => {
+                if (generation !== this.generation || !this.isObserving) {
+                    throw new Error('Observer startup cancelled')
+                }
+            })
+            .finally(() => {
+                if (this.startup === startup) this.startup = undefined
+            })
+        this.startup = startup
+        return startup
+    }
+
+    private async startWithRetries(
+        observer: MeetSpeakersObserver | TeamsSpeakersObserver,
+        generation: number,
+    ): Promise<void> {
+        for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
             try {
-                await this.observer.startObserving()
+                if (generation !== this.generation)
+                    throw new Error('Observer startup cancelled')
+                await observer.startObserving()
+                if (generation !== this.generation)
+                    throw new Error('Observer startup cancelled')
                 this.isObserving = true
-                this.retryCount = 0
                 console.log(
                     `[SpeakersObserver] ✅ Started for ${this.meetingProvider}`,
                 )
+                return
             } catch (error) {
+                await this.stopObserver(observer)
+                if (generation !== this.generation) throw error
                 console.warn(
-                    `[SpeakersObserver] Failed to initialize (attempt ${this.retryCount + 1}/${this.maxRetries}):`,
+                    `[SpeakersObserver] Failed to initialize (attempt ${attempt + 1}/${this.maxRetries + 1}):`,
                     error,
                 )
-
-                // Retry logic - same as before
-                if (this.retryCount < this.maxRetries) {
-                    this.retryCount++
-                    setTimeout(() => {
-                        console.log(
-                            `[SpeakersObserver] Retrying (attempt ${this.retryCount}/${this.maxRetries})...`,
-                        )
-                        this.startObserving(
-                            page,
-                            recordingMode,
-                            botName,
-                            onSpeakersChange,
-                        )
-                    }, 5000)
-                } else {
-                    console.error(
-                        `[SpeakersObserver] Max retries (${this.maxRetries}) reached. Giving up.`,
-                    )
+                if (attempt === this.maxRetries) {
                     this.isObserving = false
                     this.observer = null
+                    throw error
                 }
+                await new Promise<void>((resolve) => {
+                    const timer = setTimeout(() => {
+                        this.cancelRetry = undefined
+                        resolve()
+                    }, 5000)
+                    this.cancelRetry = () => {
+                        clearTimeout(timer)
+                        this.cancelRetry = undefined
+                        resolve()
+                    }
+                })
             }
         }
     }
 
-    public stopObserving(): void {
-        if (!this.isObserving || !this.observer) {
-            return
+    private async stopObserver(
+        observer: MeetSpeakersObserver | TeamsSpeakersObserver | null,
+    ): Promise<void> {
+        try {
+            await observer?.stopObserving()
+        } catch (error) {
+            // Cleanup must neither mask a startup failure nor reject an
+            // intentionally fire-and-forget stop from the pause path.
+            console.warn('[SpeakersObserver] Cleanup failed:', error)
         }
+    }
 
-        console.log(
-            `[SpeakersObserver] Stopping for ${this.meetingProvider}...`,
-        )
-        this.observer.stopObserving()
+    public stopObserving(): Promise<void> {
+        if (this.stopping) return this.stopping
+        ++this.generation
+        this.cancelRetry?.()
+        const observer = this.observer
         this.observer = null
         this.isObserving = false
-        this.retryCount = 0
-        console.log(`[SpeakersObserver] ✅ Stopped for ${this.meetingProvider}`)
+        const stopping = Promise.all([
+            this.stopObserver(observer),
+            this.startup?.catch(() => {}),
+        ])
+            .then(() => {})
+            .finally(() => {
+                if (this.stopping === stopping) this.stopping = undefined
+            })
+        this.stopping = stopping
+        return stopping
     }
 
     public isCurrentlyObserving(): boolean {

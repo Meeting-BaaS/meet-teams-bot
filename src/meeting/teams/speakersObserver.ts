@@ -1,13 +1,31 @@
-import { Page } from '@playwright/test'
-import { RecordingMode, SpeakerData } from '../../types'
+import type { Page } from '@playwright/test'
 import { HtmlSnapshotService } from '../../services/html-snapshot-service'
+import type { RecordingMode } from '../../types'
+import type { SpeakerData } from '../../speaker-id'
+import { resolveTeamsTileName } from './participant-name'
+
+declare global {
+    interface Window {
+        teamsObserverCleanup: () => void
+        teamsSpeakersChanged: (speakers: SpeakerData[]) => void
+    }
+}
 
 export class TeamsSpeakersObserver {
+    private static bindings = new WeakMap<
+        Page,
+        {
+            owner: TeamsSpeakersObserver | null
+            ready: Promise<void>
+        }
+    >()
     private page: Page
     private recordingMode: RecordingMode
     private botName: string
     private onSpeakersChange: (speakers: SpeakerData[]) => void
-    private isObserving: boolean = false
+    private isObserving = false
+    private startup?: Promise<void>
+    private generation = 0
 
     // EXACT SAME CONSTANTS AS EXTENSION
     private readonly SPEAKER_LATENCY = 1500 // ms
@@ -28,60 +46,83 @@ export class TeamsSpeakersObserver {
     }
 
     public async startObserving(): Promise<void> {
+        if (this.startup) return this.startup
         if (this.isObserving) {
             console.warn('[Teams] Already observing')
             return
         }
 
-        console.log('[Teams] Starting speaker observation...')
+        const generation = ++this.generation
+        const startup = this.initialize(generation).finally(() => {
+            if (this.startup === startup) this.startup = undefined
+        })
+        this.startup = startup
+        return startup
+    }
 
-        // Browser console logs are handled by centralized page-logger in base-state.ts
-
-        // Expose callback function to the page
-        await this.page.exposeFunction(
-            'teamsSpekersChanged',
-            async (speakers: SpeakerData[]) => {
-                try {
-                    console.log(
-                        `[Teams] 📞 CALLBACK RECEIVED: ${speakers.length} speakers from browser`,
-                    )
-                    this.onSpeakersChange(speakers)
-                    console.log(
-                        `[Teams] ✅ onSpeakersChange callback completed`,
-                    )
-                } catch (error) {
-                    console.error(
-                        '[Teams] ❌ Error in speakers callback:',
-                        error,
-                    )
-                }
-            },
-        )
+    private async initialize(generation: number): Promise<void> {
+        // Bind once per Page; retries and pause/resume replace the recipient,
+        // not the Playwright binding (which survives document navigation).
+        let binding = TeamsSpeakersObserver.bindings.get(this.page)
+        if (!binding) {
+            binding = { owner: this, ready: Promise.resolve() }
+            const registered = binding
+            TeamsSpeakersObserver.bindings.set(this.page, registered)
+            registered.ready = this.page
+                .exposeFunction(
+                    'teamsSpeakersChanged',
+                    async (speakers: SpeakerData[]) => {
+                        await registered.owner?.onSpeakersChange(speakers)
+                    },
+                )
+                .catch((error) => {
+                    if (
+                        TeamsSpeakersObserver.bindings.get(this.page) ===
+                        registered
+                    ) {
+                        TeamsSpeakersObserver.bindings.delete(this.page)
+                    }
+                    throw error
+                })
+        }
+        binding.owner = this
+        await binding.ready
+        if (generation !== this.generation)
+            throw new Error('Observer startup cancelled')
 
         // Inject EXACT SAME LOGIC as extension but via Playwright
         await this.page.evaluate(
-            ({
-                recordingMode,
-                botName,
+            async ({
+                //botName, // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
                 speakerLatency,
                 mutationDebounce,
                 checkInterval,
                 freezeTimeout,
+                resolveTileNameSource,
             }) => {
+                window.teamsObserverCleanup?.()
                 console.log(
                     '[Teams-Browser] Setting up observation - EXACT EXTENSION LOGIC',
                 )
 
                 // EXACT SAME VARIABLES AS EXTENSION
-                let CUR_SPEAKERS = new Map<string, boolean>()
-                let checkSpeakersTimeout: any = null
+                const CUR_SPEAKERS = new Map<string, string>()
+                let checkSpeakersTimeout: NodeJS.Timeout | null = null
                 let lastMutationTime = Date.now()
                 let MUTATION_OBSERVER: MutationObserver | null = null
-                let periodicCheck: any = null
+                let periodicCheck: NodeJS.Timeout | null = null
+                let stopped = false
+                const cleanup = () => {
+                    stopped = true
+                    MUTATION_OBSERVER?.disconnect()
+                    if (checkSpeakersTimeout) clearTimeout(checkSpeakersTimeout)
+                    if (periodicCheck) clearInterval(periodicCheck)
+                }
+                window.teamsObserverCleanup = cleanup
 
                 // EXACT SAME getDocumentRoot as extension
                 function getDocumentRoot(): Document {
-                    for (let iframe of document.querySelectorAll('iframe')) {
+                    for (const iframe of document.querySelectorAll('iframe')) {
                         try {
                             const doc =
                                 iframe.contentDocument ||
@@ -89,40 +130,47 @@ export class TeamsSpeakersObserver {
                             if (doc) {
                                 return doc
                             }
-                        } catch (e) {
+                        } catch (_e) {
                             // Iframe access denied - cross-origin
                         }
                     }
                     return document
                 }
 
-                // Display name for a v2 tile. aria-label first (older builds),
-                // else the data-tid, which on the current client holds the
-                // display name. Never return an email — some builds put the
-                // address in data-tid and that is PII, not a name. A trailing
-                // "(Guest)" is part of Teams' label, not the person's name, and
-                // is stripped so it matches the caption author text.
+                const resolveName = new Function(
+                    `return ${resolveTileNameSource}`,
+                )() as (parts: {
+                    nametags?: Array<string | null | undefined>
+                    dataTid?: string | null
+                    ariaLabel?: string | null
+                }) => string
+
+                // Teams puts the display name on the tile's data-tid and nametag, and only
+                // appends its account badges ("External unfamiliar") to aria-label.
                 function resolveTileName(element: Element): string {
-                    const aria = element
-                        .getAttribute('aria-label')
-                        ?.split(',')[0]
-                        ?.trim()
-                    if (aria) return aria
-                    const tid = element.getAttribute('data-tid')?.trim() || ''
-                    if (!tid || tid.includes('@')) return ''
-                    return tid.replace(/\s*\(Guest\)\s*$/i, '').trim()
+                    const nametags = [
+                        ...element.querySelectorAll(
+                            '[data-tid="participant-info-nametag"]',
+                        ),
+                    ].map((node) => node.textContent)
+                    return resolveName({
+                        nametags,
+                        dataTid: element.getAttribute('data-tid'),
+                        ariaLabel: element.getAttribute('aria-label'),
+                    })
                 }
 
-                // ── Caption-derived speaking signal ─────────────────────────
-                // The current Teams client exposes NO per-participant speaking
-                // state in the DOM: voice-level-stream-outline is an empty div
-                // with a constant class list and data-is-speaking was removed.
-                // Live captions are the only per-speaker signal left, and they
-                // survive server-mixed audio. We read the caption list the
-                // client already renders and attribute the newest entry to
-                // whichever known participant it names. Matching is on the
-                // entry's text against the roster (not an inner data-tid) so it
-                // survives Fluent rotating class / tid hashes.
+                // ── Caption-derived speaking signal ────────────────────────────────
+                // The current Teams client exposes NO per-participant speaking state in
+                // the DOM: voice-level-stream-outline is an empty div with a constant
+                // class list and data-is-speaking was removed. Live captions are the only
+                // per-speaker signal left, and they survive server-mixed audio. We read
+                // the caption list the client already renders and attribute the newest
+                // entry to whichever known participant it names.
+                //
+                // Matching is done on the entry's text against the roster rather than on
+                // an inner data-tid, so it does not break when Fluent rotates class or
+                // tid hashes — the author name is the stable part.
                 const CAPTION_SPEAKING_WINDOW_MS = 2500
                 const captionSpeakingUntil = new Map<string, number>()
                 let lastCaptionSignature = ''
@@ -136,15 +184,16 @@ export class TeamsSpeakersObserver {
                         documentRoot.querySelector(
                             '[data-tid="closed-caption-renderer-wrapper"]',
                         ) ||
-                        documentRoot.querySelector('[aria-label="Live Captions"]')
+                        documentRoot.querySelector(
+                            '[aria-label="Live Captions"]',
+                        )
                     return list instanceof HTMLElement
                         ? list.innerText || list.textContent || ''
                         : ''
                 }
 
-                // Refresh the caption-derived speaking set. Called once per
-                // collection pass so every tile in that pass sees a consistent
-                // view.
+                // Refresh the caption-derived speaking set. Called once per collection
+                // pass so every tile in that pass sees a consistent view.
                 function refreshCaptionSpeaking(knownNames: string[]): void {
                     const text = captionListText()
                     if (!text || text === lastCaptionSignature) return
@@ -162,7 +211,7 @@ export class TeamsSpeakersObserver {
                     for (const name of knownNames) {
                         if (!name) continue
                         // Unanchored substring search misattributes when one name
-                        // contains another ("Jon" inside "Jonny", which return the
+                        // contains another ("Jon" inside "Bob", which return the
                         // same lastIndexOf and let the shorter name win on the
                         // tie). Require a non-word character (or end of text) after
                         // the match so an embedded name does not match, and on a
@@ -181,8 +230,7 @@ export class TeamsSpeakersObserver {
                         }
                         if (
                             at > newestAt ||
-                            (at === newestAt &&
-                                name.length > newestName.length)
+                            (at === newestAt && name.length > newestName.length)
                         ) {
                             newestAt = at
                             newestName = name
@@ -206,10 +254,9 @@ export class TeamsSpeakersObserver {
                     return true
                 }
 
-                // Turn on live captions so the signal above exists at all.
-                // Idempotent and best-effort: without the network interceptor
-                // injected, nothing else enables them, and this path has to
-                // stand alone.
+                // Turn on live captions so the signal above exists at all. Idempotent and
+                // best-effort: without the network interceptor injected, nothing else
+                // enables them, and this path has to stand alone.
                 let captionsRequested = false
                 // Bound the DOM caption activation. Each pass through the More →
                 // Language and speech menu counts as an attempt BEFORE clicking,
@@ -220,6 +267,20 @@ export class TeamsSpeakersObserver {
                 const CAPTION_MAX_ATTEMPTS = 8
                 const CAPTION_RETRY_MS = 3000
                 function ensureCaptionsOn(): void {
+                    // Node-side pause only stops forwarding; the browser's
+                    // caption gate still runs and must remain the sole owner.
+                    const network = window as Window & {
+                        __teamsNetworkInterceptorInitialized?: boolean
+                        __teamsNetworkInterceptorStopped?: boolean
+                        __teamsStopNetworkInterception?: () => void
+                    }
+                    if (
+                        network.__teamsNetworkInterceptorInitialized === true &&
+                        typeof network.__teamsStopNetworkInterception ===
+                            'function' &&
+                        network.__teamsNetworkInterceptorStopped !== true
+                    )
+                        return
                     if (captionsRequested) return
                     try {
                         const documentRoot = getDocumentRoot()
@@ -287,7 +348,8 @@ export class TeamsSpeakersObserver {
                             documentRoot.querySelector(
                                 '[id="callingButtons-showMoreBtn"]',
                             )
-                        if (moreButton instanceof HTMLElement) moreButton.click()
+                        if (moreButton instanceof HTMLElement)
+                            moreButton.click()
                     } catch (_e) {
                         // control absent or not clickable — leave captions off
                     }
@@ -295,7 +357,6 @@ export class TeamsSpeakersObserver {
 
                 // EXACT SAME getSpeakerFromDocument as extension + DEBUG
                 function getSpeakerFromDocument(
-                    recordingMode: string,
                     timestamp: number,
                 ): SpeakerData[] {
                     const documentRoot = getDocumentRoot()
@@ -339,10 +400,9 @@ export class TeamsSpeakersObserver {
                         return []
                     }
 
-                    // Captions are the only per-speaker signal the current v2
-                    // client exposes, so make sure they are on and refresh the
-                    // derived speaking set once per pass (before the tiles below
-                    // read it, so they all see the same view).
+                    // Captions are the only per-speaker signal this client exposes, so make
+                    // sure they are on and refresh the derived speaking set once per pass
+                    // (before the tiles below read it, so they all see the same view).
                     ensureCaptionsOn()
                     const knownNames: string[] = []
                     speakerElements.forEach((el) => {
@@ -350,6 +410,13 @@ export class TeamsSpeakersObserver {
                         if (n) knownNames.push(n)
                     })
                     refreshCaptionSpeaking(knownNames)
+                    console.log(
+                        `[TEAMS-DEBUG] caption-derived speakers: ${
+                            knownNames
+                                .filter((n) => captionSaysSpeaking(n))
+                                .join(', ') || 'none'
+                        }`,
+                    )
 
                     const speakers = Array.from(speakerElements)
                         .filter((element) => {
@@ -359,11 +426,29 @@ export class TeamsSpeakersObserver {
                             const height = htmlEl.clientHeight
                             return width > 0 && height > 0
                         })
-                        .map((element, index) => {
+                        .map((element, index): SpeakerData | undefined => {
                             console.log(
                                 `[TEAMS-DEBUG] Processing visible element ${index}`,
                             )
 
+                            const idHolder =
+                                element.closest('[data-participant-id]') ??
+                                element.querySelector('[data-participant-id]')
+                            const deviceId =
+                                idHolder?.getAttribute('data-participant-id') ??
+                                undefined
+                            const isSelf =
+                                element.getAttribute('data-is-self') ===
+                                    'true' ||
+                                element.getAttribute('data-tid') ===
+                                    'self-video' ||
+                                Array.from(
+                                    element.querySelectorAll('span'),
+                                ).some((span) =>
+                                    /^(?:\(You\)|You)$/.test(
+                                        span.textContent?.trim() ?? '',
+                                    ),
+                                )
                             const htmlEl = element as HTMLElement
                             const speakerSize = `${htmlEl.clientWidth}x${htmlEl.clientHeight}`
                             console.log(
@@ -372,7 +457,9 @@ export class TeamsSpeakersObserver {
 
                             if (element.hasAttribute('data-cid')) {
                                 // old teams - EXACT SAME AS EXTENSION
-                                const name = getParticipantName(element)
+                                const name = isBlacklistedTile(element)
+                                    ? ''
+                                    : resolveTileName(element)
                                 console.log(
                                     `[TEAMS-DEBUG] Old teams - found name of length: "${name.length}"`,
                                 )
@@ -386,17 +473,20 @@ export class TeamsSpeakersObserver {
                                             name,
                                             id: 0,
                                             timestamp,
+                                            deviceId,
+                                            isSelf,
                                             isSpeaking: false,
                                         }
-                                    } else {
-                                        return {
-                                            name,
-                                            id: 0,
-                                            timestamp,
-                                            isSpeaking: checkIfSpeaking(
-                                                element as HTMLElement,
-                                            ),
-                                        }
+                                    }
+                                    return {
+                                        name,
+                                        id: 0,
+                                        timestamp,
+                                        deviceId,
+                                        isSelf,
+                                        isSpeaking: checkIfSpeaking(
+                                            element as HTMLElement,
+                                        ),
                                     }
                                 }
                             } else if (
@@ -404,10 +494,7 @@ export class TeamsSpeakersObserver {
                                 element.getAttribute('data-tid') === 'menur1j'
                             ) {
                                 //live platform: Handle live platform - EXACT SAME AS EXTENSION
-                                const name =
-                                    element
-                                        .getAttribute('aria-label')
-                                        ?.split(',')[0] || ''
+                                const name = resolveTileName(element)
                                 console.log(
                                     `[TEAMS-DEBUG] Live platform - found name of length: "${name.length}"`,
                                 )
@@ -432,25 +519,21 @@ export class TeamsSpeakersObserver {
                                         name,
                                         id: 0,
                                         timestamp,
+                                        deviceId,
+                                        isSelf,
                                         isSpeaking,
                                     }
                                 }
                             } else {
-                                // new teams (v2): tiles are
-                                // [data-stream-type="Video"]. aria-label is ABSENT
-                                // on the current client — the display name is on
-                                // data-tid ("Amr El Shimy", "Jonny (Guest)").
-                                // Reading only aria-label skipped every tile, so
-                                // the observer reported zero participants and the
-                                // timeline came back empty. data-tid can hold a
-                                // raw email on some builds, which must never be
-                                // used as a display name (PII) — resolveTileName
-                                // takes it only when it does not look like an
-                                // address.
+                                // new teams (v2): tiles are [data-stream-type="Video"].
+                                // aria-label is ABSENT on the current client — the display name is
+                                // on data-tid ("Alice", "Bob (Guest)"). Reading only
+                                // aria-label skipped every tile, so the observer reported zero
+                                // participants and the timeline came back empty.
+                                // data-tid can hold a raw email on some builds, which must never be
+                                // used as a display name (PII) — so take it only when it does not
+                                // look like an address.
                                 const name = resolveTileName(element)
-                                console.log(
-                                    `[TEAMS-DEBUG] New teams - found name of length: "${name.length}"`,
-                                )
                                 if (name) {
                                     const micPath = element.querySelector(
                                         'g.ui-icon__outline path',
@@ -463,14 +546,11 @@ export class TeamsSpeakersObserver {
                                         element.querySelector(
                                             '[data-tid="voice-level-stream-outline"]',
                                         )
-                                    // v2 used to expose the active speaker via
-                                    // data-is-speaking here. On the current client
-                                    // that attribute is gone and the outline is an
-                                    // empty div with a constant class list, so this
-                                    // check can only ever return false — the
-                                    // captions fallback below is what actually
-                                    // carries speech. Kept for older clients that
-                                    // still populate it.
+                                    // v2 used to expose the active speaker via data-is-speaking here.
+                                    // On the current client that attribute is gone and the outline is
+                                    // an empty div with a constant class list, so this check can only
+                                    // ever return false — the captions fallback below is what actually
+                                    // carries speech. Kept for older clients that still populate it.
                                     const speakingAttr =
                                         voiceLevelIndicator?.getAttribute(
                                             'data-is-speaking',
@@ -488,6 +568,8 @@ export class TeamsSpeakersObserver {
                                         name,
                                         id: 0,
                                         timestamp,
+                                        deviceId,
+                                        isSelf,
                                         isSpeaking:
                                             domSpeaking ||
                                             (!isMuted &&
@@ -517,6 +599,7 @@ export class TeamsSpeakersObserver {
 
                     return speakers
                 }
+
                 // EXACT SAME helper functions as extension
                 function checkIfSpeaking(element: HTMLElement): boolean {
                     let isSpeaking: boolean = checkElementAndPseudo(element)
@@ -540,7 +623,7 @@ export class TeamsSpeakersObserver {
                         el.getAttribute('data-tid') ===
                         'participant-speaker-ring'
                     ) {
-                        return parseFloat(style.opacity) === 1
+                        return Number.parseFloat(style.opacity) === 1
                     }
 
                     // New teams - EXACT SAME AS EXTENSION
@@ -555,7 +638,9 @@ export class TeamsSpeakersObserver {
                         const borderColor =
                             beforeStyle.borderColor ||
                             beforeStyle.borderTopColor
-                        const borderOpacity = parseFloat(beforeStyle.opacity)
+                        const borderOpacity = Number.parseFloat(
+                            beforeStyle.opacity,
+                        )
                         return (
                             hasVdiFrameClass ||
                             (isBlueish(borderColor) && borderOpacity === 1)
@@ -572,8 +657,8 @@ export class TeamsSpeakersObserver {
                             'vdi-frame-occlusion',
                         )
                         const borderOpacity =
-                            parseFloat(beforeStyle.opacity) ||
-                            parseFloat(borderStyle.opacity)
+                            Number.parseFloat(beforeStyle.opacity) ||
+                            Number.parseFloat(borderStyle.opacity)
                         const borderColor =
                             beforeStyle.borderColor ||
                             beforeStyle.borderTopColor ||
@@ -589,29 +674,47 @@ export class TeamsSpeakersObserver {
 
                 function isBlueish(color: string): boolean {
                     // EXACT SAME AS EXTENSION
-                    color = color.toLowerCase().trim()
+                    const colorLower = color.toLowerCase().trim()
 
                     let rgb: number[] | null = null
 
                     // Check and extract RGB values from hex format
-                    if (color.startsWith('#')) {
+                    if (colorLower.startsWith('#')) {
                         // Handle short hex format (e.g., #fff)
-                        if (color.length === 4) {
-                            const r = parseInt(color[1] + color[1], 16)
-                            const g = parseInt(color[2] + color[2], 16)
-                            const b = parseInt(color[3] + color[3], 16)
+                        if (colorLower.length === 4) {
+                            const r = Number.parseInt(
+                                colorLower[1] + colorLower[1],
+                                16,
+                            )
+                            const g = Number.parseInt(
+                                colorLower[2] + colorLower[2],
+                                16,
+                            )
+                            const b = Number.parseInt(
+                                colorLower[3] + colorLower[3],
+                                16,
+                            )
                             rgb = [r, g, b]
                         }
                         // Handle long hex format (e.g., #ffffff)
-                        else if (color.length === 7) {
-                            const r = parseInt(color.slice(1, 3), 16)
-                            const g = parseInt(color.slice(3, 5), 16)
-                            const b = parseInt(color.slice(5, 7), 16)
+                        else if (colorLower.length === 7) {
+                            const r = Number.parseInt(
+                                colorLower.slice(1, 3),
+                                16,
+                            )
+                            const g = Number.parseInt(
+                                colorLower.slice(3, 5),
+                                16,
+                            )
+                            const b = Number.parseInt(
+                                colorLower.slice(5, 7),
+                                16,
+                            )
                             rgb = [r, g, b]
                         }
                     } else {
                         // Try to extract RGB values from "rgb" or "rgba" format
-                        const match = color.match(/\d+/g)
+                        const match = colorLower.match(/\d+/g)
                         if (match && match.length >= 3) {
                             rgb = match.map(Number).slice(0, 3)
                         }
@@ -631,32 +734,12 @@ export class TeamsSpeakersObserver {
                     return false
                 }
 
-                function getParticipantName(name: Element): string {
-                    // EXACT SAME AS EXTENSION
-                    const nameBlackList = ['Content shared by', 'Leaving...']
-                    const toSplitOn = [
-                        ', video is on,',
-                        ', muted,',
-                        ', Context menu is available',
-                        '(Unverified)',
-                        'left the meeting',
-                        'Leaving...',
-                    ]
-
-                    const ariaLabel = name.getAttribute('aria-label') || ''
-                    let result: string = ariaLabel
-
-                    for (const blackListed of nameBlackList) {
-                        if (ariaLabel.includes(blackListed)) {
-                            return ''
-                        }
-                    }
-
-                    for (const splitTerm of toSplitOn) {
-                        result = result.split(splitTerm)[0]
-                    }
-
-                    return result
+                // Tiles that show content or a leaving participant carry no usable name.
+                function isBlacklistedTile(element: Element): boolean {
+                    const ariaLabel = element.getAttribute('aria-label') || ''
+                    return ['Content shared by', 'Leaving...'].some((entry) =>
+                        ariaLabel.includes(entry),
+                    )
                 }
 
                 // SHARED CRITICAL LOGIC from speakersUtils
@@ -667,7 +750,7 @@ export class TeamsSpeakersObserver {
                     if (map1.size !== map2.size) {
                         return false
                     }
-                    for (let [key, value] of map1) {
+                    for (const [key, value] of map1) {
                         if (!map2.has(key) || map2.get(key) !== value) {
                             return false
                         }
@@ -676,28 +759,35 @@ export class TeamsSpeakersObserver {
                 }
 
                 // SHARED CRITICAL checkSpeakers logic
-                async function checkSpeakers() {
+                let lastHeartbeat = 0
+                async function checkSpeakers(initial = false) {
+                    if (stopped) return
                     try {
                         const timestamp = Date.now() - speakerLatency
-                        let currentSpeakersList = getSpeakerFromDocument(
-                            recordingMode,
-                            timestamp,
-                        )
+                        const currentSpeakersList =
+                            getSpeakerFromDocument(timestamp)
 
                         // Filter out bot - EXACT SAME AS EXTENSION
-                        currentSpeakersList = currentSpeakersList.filter(
-                            (speaker) => speaker.name !== botName,
-                        )
+                        // COMMENTED OUT: Keep bot in speakers for consistency with network speaker separation
+                        // currentSpeakersList = currentSpeakersList.filter((speaker) => speaker.name !== botName)
 
-                        let new_speakers = new Map(
+                        const new_speakers = new Map(
                             currentSpeakersList.map((elem) => [
-                                elem.name,
-                                elem.isSpeaking,
+                                elem.deviceId ?? elem.name,
+                                JSON.stringify([
+                                    elem.name,
+                                    elem.isSpeaking,
+                                    elem.deviceId ?? null,
+                                    elem.isSelf === true,
+                                ]),
                             ]),
                         )
 
                         // Send data only when a speakers change state is detected - EXACT SAME AS EXTENSION
-                        if (!areMapsEqual(CUR_SPEAKERS, new_speakers)) {
+                        if (
+                            !areMapsEqual(CUR_SPEAKERS, new_speakers) ||
+                            Date.now() - lastHeartbeat >= 5000
+                        ) {
                             console.log(
                                 `[TEAMS-DEBUG-CHANGE] Speakers changed - ${currentSpeakersList.length} total`,
                             )
@@ -711,35 +801,38 @@ export class TeamsSpeakersObserver {
 
                             // CRITICAL: Call the callback
                             console.log(
-                                '[TEAMS-DEBUG-CALLBACK] Calling teamsSpekersChanged',
+                                '[TEAMS-DEBUG-CALLBACK] Calling teamsSpeakersChanged',
                             )
-                            await (window as any).teamsSpekersChanged(
+                            await window.teamsSpeakersChanged(
                                 currentSpeakersList,
                             )
+                            lastHeartbeat = Date.now()
 
                             // CRITICAL: Update current speakers AFTER calling callback
                             CUR_SPEAKERS.clear()
-                            new_speakers.forEach((value, key) =>
-                                CUR_SPEAKERS.set(key, value),
-                            )
+                            new_speakers.forEach((value, key) => {
+                                CUR_SPEAKERS.set(key, value)
+                            })
                             console.log(
                                 '[TEAMS-DEBUG-UPDATE] Speakers state updated',
                             )
                         }
                     } catch (e) {
                         console.error('[Teams] Error in checkSpeakers:', e)
+                        if (initial) throw e
                     }
                 }
 
                 // EXACT SAME MutationObserver setup as extension
-                MUTATION_OBSERVER = new MutationObserver(function () {
+                MUTATION_OBSERVER = new MutationObserver(() => {
+                    if (stopped) return
                     if (checkSpeakersTimeout !== null) {
                         clearTimeout(checkSpeakersTimeout)
                     }
 
                     lastMutationTime = Date.now()
 
-                    checkSpeakersTimeout = window.setTimeout(() => {
+                    checkSpeakersTimeout = setTimeout(() => {
                         checkSpeakers()
                         checkSpeakersTimeout = null
                     }, mutationDebounce)
@@ -755,7 +848,14 @@ export class TeamsSpeakersObserver {
                             attributes: true,
                             childList: true,
                             subtree: true,
-                            attributeFilter: ['style', 'class'],
+                            attributeFilter: [
+                                'style',
+                                'class',
+                                'aria-label',
+                                'data-participant-id',
+                                'data-is-self',
+                                'data-is-speaking',
+                            ],
                         })
 
                         console.log(
@@ -775,39 +875,17 @@ export class TeamsSpeakersObserver {
                 // EXACT SAME observeSpeakers logic as extension - NO DUPLICATION
                 async function observeSpeakers() {
                     try {
-                        // EXACT SAME as extension: Initial check for speakers already talking
-                        // But only send if isSpeaking === true (like extension)
-                        const currentSpeakersList = getSpeakerFromDocument(
-                            recordingMode,
-                            Date.now() - speakerLatency,
-                        ).filter(
-                            (speaker) =>
-                                speaker.name !== botName &&
-                                speaker.isSpeaking === true,
-                        )
-
-                        if (currentSpeakersList.length > 0) {
-                            console.log(
-                                `[TEAMS-DEBUG-INIT] Found ${currentSpeakersList.length} speakers already talking`,
-                            )
-                            await (window as any).teamsSpekersChanged(
-                                currentSpeakersList,
-                            )
-                            // Initialize CUR_SPEAKERS with ALL speakers (speaking and not speaking)
-                            const allSpeakers = getSpeakerFromDocument(
-                                recordingMode,
-                                Date.now() - speakerLatency,
-                            ).filter((speaker) => speaker.name !== botName)
-                            CUR_SPEAKERS.clear()
-                            allSpeakers.forEach((elem) =>
-                                CUR_SPEAKERS.set(elem.name, elem.isSpeaking),
+                        if (!(await setupMutationObserver())) {
+                            throw new Error(
+                                'Teams mutation observer initialization failed',
                             )
                         }
-
-                        await setupMutationObserver()
+                        await checkSpeakers(true)
+                        if (stopped) return
 
                         // EXACT SAME periodic check as extension
                         periodicCheck = setInterval(async () => {
+                            if (stopped) return
                             if (document.visibilityState !== 'hidden') {
                                 if (
                                     Date.now() - lastMutationTime >
@@ -822,23 +900,6 @@ export class TeamsSpeakersObserver {
                             }
                         }, checkInterval)
 
-                        // Cleanup function
-                        ;(window as any).teamsObserverCleanup = () => {
-                            console.log('[Teams-Browser] Cleaning up observer')
-                            if (MUTATION_OBSERVER) {
-                                MUTATION_OBSERVER.disconnect()
-                            }
-                            if (checkSpeakersTimeout) {
-                                clearTimeout(checkSpeakersTimeout)
-                            }
-                            if (periodicCheck) {
-                                clearInterval(periodicCheck)
-                            }
-                        }
-
-                        // CRITICAL: Initial check like in extension
-                        checkSpeakers()
-
                         console.log(
                             '[Teams-Browser] Observer setup complete - EXACT EXTENSION LOGIC',
                         )
@@ -847,12 +908,13 @@ export class TeamsSpeakersObserver {
                             '[Teams-Browser] Failed to initialize observer:',
                             e,
                         )
-                        setTimeout(observeSpeakers, 5000)
+                        cleanup()
+                        throw e
                     }
                 }
 
                 // Initialize - EXACT SAME AS EXTENSION
-                observeSpeakers()
+                await observeSpeakers()
             },
             {
                 recordingMode: this.recordingMode,
@@ -861,36 +923,43 @@ export class TeamsSpeakersObserver {
                 mutationDebounce: this.MUTATION_DEBOUNCE,
                 checkInterval: this.CHECK_INTERVAL,
                 freezeTimeout: this.FREEZE_TIMEOUT,
+                // One implementation, unit-tested in participant-name.test.ts.
+                resolveTileNameSource: resolveTeamsTileName.toString(),
             },
         )
 
+        if (generation !== this.generation)
+            throw new Error('Observer startup cancelled')
         this.isObserving = true
         console.log('[Teams] ✅ Observer started successfully')
 
         // Capture DOM state after Speakers Observer is started
-        const htmlSnapshot = HtmlSnapshotService.getInstance()
-        await htmlSnapshot.captureSnapshot(
-            this.page,
-            'teams_speaker_observer_started',
-        )
+        try {
+            await HtmlSnapshotService.getInstance().captureSnapshot(
+                this.page,
+                'teams_speaker_observer_started',
+            )
+        } catch (error) {
+            console.warn('[Teams] Observer snapshot failed:', error)
+        }
     }
 
-    public stopObserving(): void {
-        if (!this.isObserving) {
-            return
-        }
-
-        console.log('[Teams] Stopping observation...')
-
-        this.page
-            ?.evaluate(() => {
-                if ((window as any).teamsObserverCleanup) {
-                    ;(window as any).teamsObserverCleanup()
+    public async stopObserving(): Promise<void> {
+        ++this.generation
+        this.isObserving = false
+        const binding = TeamsSpeakersObserver.bindings.get(this.page)
+        if (binding?.owner === this) binding.owner = null
+        await this.startup?.catch(() => {})
+        // An old instance must not stop a replacement observer on this Page.
+        if (TeamsSpeakersObserver.bindings.get(this.page)?.owner) return
+        await this.page
+            .evaluate(() => {
+                if (window.teamsObserverCleanup) {
+                    window.teamsObserverCleanup()
                 }
             })
             .catch((e) => console.error('[Teams] Error cleaning up:', e))
 
-        this.isObserving = false
         console.log('[Teams] ✅ Observer stopped')
     }
 }

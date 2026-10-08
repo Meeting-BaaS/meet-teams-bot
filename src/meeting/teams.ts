@@ -26,26 +26,26 @@ const teamsStateDetector = createStateDetector(TEAMS_STATE_CONFIG)
  * must treat null as "unknown", not as an error status.
  */
 async function probeUrlStatus(url: string): Promise<number | null> {
-  try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 10000)
     try {
-      const response = await fetch(url, {
-        method: "GET",
-        redirect: "follow",
-        signal: controller.signal
-      })
-      return response.status
-    } finally {
-      clearTimeout(timeout)
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 10000)
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                redirect: 'follow',
+                signal: controller.signal,
+            })
+            return response.status
+        } finally {
+            clearTimeout(timeout)
+        }
+    } catch (probeError) {
+        console.warn(
+            '[Teams] URL status probe failed:',
+            probeError instanceof Error ? probeError.message : probeError,
+        )
+        return null
     }
-  } catch (probeError) {
-    console.warn(
-      "[Teams] URL status probe failed:",
-      probeError instanceof Error ? probeError.message : probeError
-    )
-    return null
-  }
 }
 
 export class TeamsProvider implements MeetingProviderInterface {
@@ -256,7 +256,9 @@ export class TeamsProvider implements MeetingProviderInterface {
         // (~41s later), and that whole window was being recorded showing the raw
         // Teams UI.
         try {
-            const { setupTeamsCleanupStyles } = await import('./teams/htmlCleaner')
+            const { setupTeamsCleanupStyles } = await import(
+                './teams/htmlCleaner'
+            )
             await setupTeamsCleanupStyles(page)
         } catch (error) {
             console.error(
@@ -272,7 +274,10 @@ export class TeamsProvider implements MeetingProviderInterface {
             const { setupTeamsNetworkInterceptionScripts } = await import(
                 './teams/network-interception'
             )
-            const success = await setupTeamsNetworkInterceptionScripts(page)
+            const success = await setupTeamsNetworkInterceptionScripts(
+                page,
+                link,
+            )
             if (!success) {
                 console.warn(
                     '[Teams] ⚠️ Failed to setup network speaker interception scripts',
@@ -895,12 +900,30 @@ async function clickWithInnerText(
                     humanizeActive &&
                     (await clickButtonHumanized(page, htmlType, innerText))
                 if (!humanized) {
-                    await page.evaluate(
+                    continueButton = await page.evaluate(
                         ({ innerText, htmlType }) => {
-                            const el = Array.from(
-                                document.querySelectorAll(htmlType),
-                            ).find((e) => e.textContent?.trim() === innerText)
-                            ;(el as HTMLElement | undefined)?.click()
+                            const documents: Document[] = [document]
+                            try {
+                                const frameDoc =
+                                    document.querySelector(
+                                        'iframe',
+                                    )?.contentDocument
+                                if (frameDoc) documents.unshift(frameDoc)
+                            } catch {
+                                // Cross-origin frames are inaccessible; the page can still have the CTA.
+                            }
+                            for (const doc of documents) {
+                                const el = Array.from(
+                                    doc.querySelectorAll(htmlType),
+                                ).find(
+                                    (e) => e.textContent?.trim() === innerText,
+                                )
+                                if (el) {
+                                    ;(el as HTMLElement).click()
+                                    return true
+                                }
+                            }
+                            return false
                         },
                         { innerText, htmlType },
                     )
@@ -1119,26 +1142,40 @@ async function activateCamera(page: Page): Promise<void> {
     }
 }
 
-async function isMicrophoneMuted(page: Page): Promise<boolean> {
+const PREJOIN_MIC_SWITCH =
+    '[data-tid="toggle-mute"], [role="switch"][aria-label="Microphone"]'
+const MIC_MUTED =
+    'button[title="Unmute mic"], [data-tid="toggle-mute"][aria-checked="false"], [role="switch"][aria-label="Microphone"][aria-checked="false"]'
+const MIC_LIVE =
+    'button[title="Mute mic"], [data-tid="toggle-mute"][aria-checked="true"], [role="switch"][aria-label="Microphone"][aria-checked="true"]'
+
+async function isMicrophoneMuted(page: Page): Promise<boolean | null> {
     // Teams shows unmute mic title when microphone is muted
-    const unmuteMicButton = page.locator('button[title="Unmute mic"]')
+    const unmuteMicButton = page.locator(MIC_MUTED)
     if ((await unmuteMicButton.count()) > 0) {
         console.log('[Teams] Microphone is muted')
         return true
     }
 
     // Teams shows mute mic title when microphone is not muted
-    const muteMicButton = page.locator('button[title="Mute mic"]')
+    const muteMicButton = page.locator(MIC_LIVE)
     if ((await muteMicButton.count()) > 0) {
         console.log('[Teams] Microphone is not muted')
         return false
     }
 
-    // Default assumption if we cannot determine state
-    console.warn(
-        '[Teams] Unable to determine microphone state, assuming unmuted',
-    )
-    return false
+    console.warn('[Teams] Unable to determine microphone state')
+    return null
+}
+
+async function toggleMicrophone(page: Page): Promise<void> {
+    const prejoinSwitch = page.locator(PREJOIN_MIC_SWITCH).first()
+    if ((await prejoinSwitch.count()) > 0) {
+        await prejoinSwitch.click()
+    } else {
+        await toggleMicrophoneWithShortcut(page)
+    }
+    await sleep(500)
 }
 
 async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
@@ -1153,13 +1190,10 @@ async function toggleMicrophoneWithShortcut(page: Page): Promise<void> {
 async function activateMicrophone(page: Page): Promise<void> {
     console.log('activating microphone')
     try {
-        if (!(await isMicrophoneMuted(page))) {
+        if ((await isMicrophoneMuted(page)) !== true) {
             return
         }
-        await toggleMicrophoneWithShortcut(page)
-
-        // Give Teams a moment to apply the state change
-        await sleep(500)
+        await toggleMicrophone(page)
     } catch (error) {
         console.error('Failed to activate microphone:', formatError(error))
     }
@@ -1168,13 +1202,14 @@ async function activateMicrophone(page: Page): Promise<void> {
 async function deactivateMicrophone(page: Page): Promise<void> {
     console.log('deactivating microphone')
     try {
-        if (await isMicrophoneMuted(page)) {
-            return
+        // A blind toggle on an unknown control state can unmute the bot.
+        for (let attempt = 0; attempt < 2; attempt++) {
+            if ((await isMicrophoneMuted(page)) !== false) return
+            await toggleMicrophone(page)
         }
-        await toggleMicrophoneWithShortcut(page)
-
-        // Give Teams a moment to apply the state change
-        await sleep(500)
+        if ((await isMicrophoneMuted(page)) === false) {
+            console.warn('[Teams] Microphone still live after mute attempts')
+        }
     } catch (error) {
         console.error('Failed to deactivate microphone:', formatError(error))
     }

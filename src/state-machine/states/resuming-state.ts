@@ -57,10 +57,19 @@ export class ResumingState extends BaseState {
 
                 const onSpeakersChange = async (speakers: any[]) => {
                     try {
-                        await SpeakerManager.getInstance().handleSpeakerUpdate(
-                            speakers,
-                            'ui-observer',
-                        )
+                        const platform = GLOBAL.get().meetingProvider
+                        if (platform === 'Meet' || platform === 'Teams') {
+                            await SpeakerManager.getInstance().handleUiBridgeUpdate(
+                                speakers,
+                                this.context.networkFallback?.isFallbackTriggered() ??
+                                    false,
+                            )
+                        } else {
+                            await SpeakerManager.getInstance().handleSpeakerUpdate(
+                                speakers,
+                                'ui-observer',
+                            )
+                        }
                     } catch (error) {
                         console.error(
                             'Error handling speaker update:',
@@ -106,7 +115,10 @@ export class ResumingState extends BaseState {
         try {
             await Promise.race([resumePromise(), timeoutPromise])
         } catch (error) {
-            console.error('Error or timeout in resumeRecording:', formatError(error))
+            console.error(
+                'Error or timeout in resumeRecording:',
+                formatError(error),
+            )
             throw error
         }
     }

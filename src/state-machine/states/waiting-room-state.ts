@@ -164,6 +164,7 @@ export class WaitingRoomState extends BaseState {
 
         const cancelCheck = () =>
             GLOBAL.getEndReason() === MeetingEndReason.ApiRequest ||
+            GLOBAL.getEndReason() === MeetingEndReason.LoginRequired ||
             GLOBAL.getEndReason() ===
                 MeetingEndReason.ExitingMeetingBeforeRecord
 

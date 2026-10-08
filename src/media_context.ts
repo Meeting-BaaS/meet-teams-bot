@@ -180,7 +180,7 @@ export class SoundContext extends MediaContext {
 
     // Return stdin and play sound to microphone
     public play_stdin(): internal.Writable {
-        // ffmpeg -f f32le -ar 48000 -ac 1 -i - -f alsa -acodec pcm_s16le "pulse:virtual_mic"
+        // Async resampling compensates drift between live PCM and the pulse sink.
         let args: string[] = []
         args.push(
             `-f`,
@@ -191,6 +191,8 @@ export class SoundContext extends MediaContext {
             `1`,
             `-i`,
             `-`,
+            `-af`,
+            `aresample=async=1:min_hard_comp=0.100:first_pts=0`,
             `-f`,
             `alsa`,
             `-acodec`,

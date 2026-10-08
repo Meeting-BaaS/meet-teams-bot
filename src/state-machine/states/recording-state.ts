@@ -31,7 +31,9 @@ import { MeetingStateMachine } from '../machine'
 const SOUND_LEVEL_ACTIVITY_THRESHOLD = 5
 
 // How long the bot must be alone (no other attendees + no sound) before leaving
-const ALONE_IN_MEETING_TIMEOUT_MS = 30_000
+const getEveryoneLeftTimeoutMs = (): number =>
+    (GLOBAL.get().automatic_leave.everyone_left_timeout ??
+        MEETING_CONSTANTS.DEFAULT_EVERYONE_LEFT_TIMEOUT_SECONDS) * 1000
 // Speaker observer is considered healthy if a callback was received within this window
 const SPEAKER_OBSERVER_HEALTH_WINDOW_MS = 10 * 60 * 1000 // 10 minutes
 // Don't activate alone-in-meeting within the first 5 minutes of recording.
@@ -183,7 +185,8 @@ export class RecordingState extends BaseState {
         console.info('Context state:', {
             hasPathManager: !!this.context.pathManager,
             hasStreamingService: !!this.context.streamingService,
-            isSoundLevelMonitorActive: SoundLevelMonitor.peekInstance()?.getIsActive() ?? false,
+            isSoundLevelMonitorActive:
+                SoundLevelMonitor.peekInstance()?.getIsActive() ?? false,
         })
 
         // Configure listeners
@@ -294,7 +297,7 @@ export class RecordingState extends BaseState {
             }
 
             const currentSoundLevel = monitor?.getCurrentSoundLevel() ?? 0
-            
+
             if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
                 // Mark that sound has been detected (ends noone_joined grace period)
                 if (!this.hasNoOneJoinedPeriodEnded) {
@@ -303,7 +306,7 @@ export class RecordingState extends BaseState {
                         `[checkEndConditions] First sound detected (${currentSoundLevel.toFixed(2)}), ending noone_joined_timeout grace period and enabling silence monitoring`,
                     )
                 }
-                
+
                 // State updates must run on every detection — only the log line
                 // is throttled. Keeping them inside the throttle let a stale
                 // silence marker survive brief resumed speech and get trimmed.
@@ -317,7 +320,7 @@ export class RecordingState extends BaseState {
                     )
                     this.lastSoundActivityLogTime = now
                 }
-                
+
                 // Reset the silence timer (this is the critical timer for automatic leave)
                 this.lastSoundActivity = now
                 // Anchor the network dwell to the first real sound so the
@@ -366,17 +369,25 @@ export class RecordingState extends BaseState {
             console.error('Error checking end conditions:', formatError(error))
 
             // If it's a timeout checking bot removal, verify with secondary check
-            const errorMessage = error instanceof Error ? error.message : String(error)
+            const errorMessage =
+                error instanceof Error ? error.message : String(error)
             if (errorMessage.includes('Bot removed check timeout')) {
                 // Secondary check: if we've received speaker callbacks recently,
                 // the page is still responsive - don't treat as bot removal
-                const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
-                const timeSinceLastCallback = lastCallbackTime ? Date.now() - lastCallbackTime : null
+                const lastCallbackTime =
+                    SpeakerManager.getInstance().getLastCallbackTime()
+                const timeSinceLastCallback = lastCallbackTime
+                    ? Date.now() - lastCallbackTime
+                    : null
                 const callbackCheckWindow = getSpeakerCallbackCheckWindow()
 
-                if (lastCallbackTime && timeSinceLastCallback !== null && timeSinceLastCallback < callbackCheckWindow) {
+                if (
+                    lastCallbackTime &&
+                    timeSinceLastCallback !== null &&
+                    timeSinceLastCallback < callbackCheckWindow
+                ) {
                     console.warn(
-                        `Bot removal check timed out, but received speaker callback ${timeSinceLastCallback}ms ago - page still responsive, not treating as bot removal`
+                        `Bot removal check timed out, but received speaker callback ${timeSinceLastCallback}ms ago - page still responsive, not treating as bot removal`,
                     )
                     return { shouldEnd: false }
                 }
@@ -386,13 +397,13 @@ export class RecordingState extends BaseState {
                 const currentSoundLevel = monitor?.getCurrentSoundLevel() ?? 0
                 if (currentSoundLevel > SOUND_LEVEL_ACTIVITY_THRESHOLD) {
                     console.warn(
-                        `Bot removal check timed out, but sound activity detected (${currentSoundLevel.toFixed(2)}) - page likely still active, not treating as bot removal`
+                        `Bot removal check timed out, but sound activity detected (${currentSoundLevel.toFixed(2)}) - page likely still active, not treating as bot removal`,
                     )
                     return { shouldEnd: false }
                 }
 
                 console.warn(
-                    `Bot removal check timed out and no recent speaker callbacks (last: ${timeSinceLastCallback ? `${Math.round(timeSinceLastCallback / 1000)}s ago` : 'never'}) - treating as bot removal`
+                    `Bot removal check timed out and no recent speaker callbacks (last: ${timeSinceLastCallback ? `${Math.round(timeSinceLastCallback / 1000)}s ago` : 'never'}) - treating as bot removal`,
                 )
                 return this.getBotRemovedReason()
             }
@@ -765,16 +776,26 @@ export class RecordingState extends BaseState {
             }
 
             const fallback = this.context.networkFallback
-            if (!fallback || fallback.isFallbackTriggered()) {
-                // Already retired (by a watchdog or a prior monitor decision),
-                // or no controller registered — nothing to do.
+            if (
+                !fallback ||
+                (fallback.isFallbackTriggered() &&
+                    this.context.speakersObserver?.isCurrentlyObserving())
+            ) {
                 return
             }
 
             console.log(
                 `[DiarizationHealth] [${platform}] 🔄 Triggering fallback to UI-based diarization after ${this.consecutiveStaleCount} consecutive stale events`,
             )
-            await fallback.requestFallback('diarization-stale')
+            // Observer retries must not block removal, pause, or timeout checks.
+            void fallback
+                .requestFallback('diarization-stale')
+                .catch((error) => {
+                    console.warn(
+                        '[DiarizationHealth] Fallback failed:',
+                        formatError(error),
+                    )
+                })
         } catch (error) {
             console.error(
                 '[DiarizationHealth] Error checking diarization health:',
@@ -856,10 +877,12 @@ export class RecordingState extends BaseState {
         } else {
             // Log when silence starts (0s) and then periodically every 30 seconds
             const timeSinceLastLog = now - this.lastNoSpeakerLogTime
-            const shouldLog = 
+            const shouldLog =
                 (silenceDurationSeconds === 0 && timeSinceLastLog >= 5000) || // Log once at 0s, but throttle to avoid spam (min 5s between logs)
-                (silenceDurationSeconds > 0 && silenceDurationSeconds % 30 === 0 && timeSinceLastLog >= 30000) // Then every 30s
-            
+                (silenceDurationSeconds > 0 &&
+                    silenceDurationSeconds % 30 === 0 &&
+                    timeSinceLastLog >= 30000) // Then every 30s
+
             if (shouldLog) {
                 console.log(
                     `[checkNoSpeaker] No speaker detected for ${silenceDurationSeconds}s / ${silenceTimeoutSeconds}s`,
@@ -913,28 +936,34 @@ export class RecordingState extends BaseState {
         }
 
         // Check if the speaker observer is healthy (received a callback recently)
-        const lastCallbackTime = SpeakerManager.getInstance().getLastCallbackTime()
+        const lastCallbackTime =
+            SpeakerManager.getInstance().getLastCallbackTime()
         const speakerObserverHealthy =
-            lastCallbackTime !== null && now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
+            lastCallbackTime !== null &&
+            now - lastCallbackTime < SPEAKER_OBSERVER_HEALTH_WINDOW_MS
 
         const isAlone = attendeesCount === 0 // v1 filters bot, so 0 = truly alone
         const isSilent = currentSoundLevel <= SOUND_LEVEL_ACTIVITY_THRESHOLD
+        const aloneTimeoutMs = getEveryoneLeftTimeoutMs()
 
         if (isAlone && isSilent && speakerObserverHealthy) {
             // Start or continue the "alone" countdown
             if (this.aloneInMeetingSince === null) {
                 this.aloneInMeetingSince = now
                 console.log(
-                    `[alone-in-meeting] Bot appears to be alone (attendees=${attendeesCount}, sound=${currentSoundLevel.toFixed(2)}), starting ${ALONE_IN_MEETING_TIMEOUT_MS / 1000}s countdown`,
+                    `[alone-in-meeting] Bot appears to be alone (attendees=${attendeesCount}, sound=${currentSoundLevel.toFixed(2)}), starting ${aloneTimeoutMs / 1000}s countdown`,
                 )
             }
 
             const aloneForMs = now - this.aloneInMeetingSince
-            if (aloneForMs >= ALONE_IN_MEETING_TIMEOUT_MS) {
+            if (aloneForMs >= aloneTimeoutMs) {
                 console.log(
                     `[alone-in-meeting] Bot has been alone for ${Math.floor(aloneForMs / 1000)}s with no sound, leaving meeting`,
                 )
-                return { shouldEnd: true, reason: MeetingEndReason.AllParticipantsLeft }
+                return {
+                    shouldEnd: true,
+                    reason: MeetingEndReason.AllParticipantsLeft,
+                }
             }
         } else {
             // Reset the countdown if conditions no longer met
@@ -944,7 +973,9 @@ export class RecordingState extends BaseState {
                     : !isSilent
                       ? `sound=${currentSoundLevel.toFixed(2)}`
                       : 'speaker observer unhealthy'
-                console.log(`[alone-in-meeting] Countdown reset (${resetReason})`)
+                console.log(
+                    `[alone-in-meeting] Countdown reset (${resetReason})`,
+                )
                 this.aloneInMeetingSince = null
             }
         }

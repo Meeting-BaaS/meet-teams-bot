@@ -79,7 +79,7 @@ export class PausedState extends BaseState {
 
             // Speakers observation paused
             if (this.context.speakersObserver) {
-                this.context.speakersObserver.stopObserving()
+                await this.context.speakersObserver.stopObserving()
                 console.log('Speakers observation paused')
             }
 
@@ -112,7 +112,10 @@ export class PausedState extends BaseState {
         try {
             await Promise.race([pausePromise(), timeoutPromise])
         } catch (error) {
-            console.error('Error or timeout in pauseRecording:', formatError(error))
+            console.error(
+                'Error or timeout in pauseRecording:',
+                formatError(error),
+            )
             throw error
         }
     }

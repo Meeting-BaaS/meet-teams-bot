@@ -41,6 +41,7 @@ class Global {
      */
     private normalizeRecordingMode(
         mode: RecordingMode,
+        platform: MeetingParams['meetingProvider'],
     ): 'speaker_view' | 'gallery_view' | 'audio_only' {
         switch (mode) {
             case 'speaker_view':
@@ -48,7 +49,7 @@ class Global {
                 return 'speaker_view'
             case 'gallery_view':
             case 'GalleryView':
-                return 'speaker_view' // gallery_view maps to speaker_view as requested
+                return platform === 'Meet' ? 'gallery_view' : 'speaker_view'
             case 'audio_only':
             case 'AudioOnly':
                 return 'audio_only'
@@ -82,6 +83,7 @@ class Global {
             ...meetingParams,
             recording_mode: this.normalizeRecordingMode(
                 meetingParams.recording_mode,
+                meetingParams.meetingProvider,
             ),
         }
 

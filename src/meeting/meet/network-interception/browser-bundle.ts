@@ -192,12 +192,82 @@ export function browserInterceptionLogic(schema: any[]) {
         })
     }
 
+    // ===== CONFERENCE SCOPE =====
+    // Device ids are `spaces/<space>/devices/<n>`: pin our space, drop users from any other.
+    let ownSpace: string | null = null
+    // Set once ownSpace comes from the bot's own device record, not a majority guess.
+    let ownSpaceIsAuthoritative = false
+    let foreignSpaceUsers = 0
+
+    function spaceOf(deviceId: unknown): string | null {
+      if (typeof deviceId !== "string") return null
+      const match = deviceId.match(/^spaces\/([^/]+)\//)
+      return match ? match[1] : null
+    }
+
+    function isSelfRecord(user: any): boolean {
+      return user?.isCurrentUserString === "true" || user?.isCurrentUserString === "1"
+    }
+
     function updateUsers(userManager: any, users: any[]) {
-      users
-        .filter((u) => u?.deviceId)
-        .forEach((user) => {
-          userManager.allUsersMap.set(user.deviceId, user)
-        })
+      const rostered = users.filter((u) => u?.deviceId)
+
+      if (!ownSpaceIsAuthoritative) {
+        let selfSpace: string | null = null
+        for (const user of rostered) {
+          if (!isSelfRecord(user)) continue
+          const space = spaceOf(user.deviceId)
+          if (space) {
+            selfSpace = space
+            break
+          }
+        }
+
+        if (selfSpace) {
+          if (ownSpace && ownSpace !== selfSpace) {
+            // The provisional pin was wrong; purge users admitted under it.
+            let purged = 0
+            for (const deviceId of [...userManager.allUsersMap.keys()]) {
+              const space = spaceOf(deviceId)
+              if (space && space !== selfSpace) {
+                userManager.allUsersMap.delete(deviceId)
+                purged++
+              }
+            }
+            console.warn(
+              `[NetworkInterceptor] 🔒 re-pinned the conference from the bot's own device (dropped ${purged} user(s) admitted under the provisional pin)`
+            )
+          }
+          ownSpace = selfSpace
+          ownSpaceIsAuthoritative = true
+        } else if (!ownSpace) {
+          // No self record yet: provisionally pin the majority space.
+          const counts = new Map<string, number>()
+          for (const user of rostered) {
+            const space = spaceOf(user.deviceId)
+            if (space) counts.set(space, (counts.get(space) ?? 0) + 1)
+          }
+          let best = 0
+          for (const [space, count] of counts) {
+            if (count > best) {
+              best = count
+              ownSpace = space
+            }
+          }
+        }
+      }
+
+      for (const user of rostered) {
+        const space = spaceOf(user.deviceId)
+        if (ownSpace && space && space !== ownSpace) {
+          foreignSpaceUsers++
+          console.warn(
+            `[NetworkInterceptor] 🔒 dropped a user from another conference (${foreignSpaceUsers} so far)`
+          )
+          continue
+        }
+        userManager.allUsersMap.set(user.deviceId, user)
+      }
     }
 
     function getAllUsers(userManager: any) {
@@ -229,10 +299,7 @@ export function browserInterceptionLogic(schema: any[]) {
     // otherwise reassign an SSRC to the wrong participant.
     function harvestSsrcFromDom(userManager: any): void {
       const now = Date.now()
-      if (
-        userManager.__lastDomSsrcHarvest &&
-        now - userManager.__lastDomSsrcHarvest < 500
-      ) {
+      if (userManager.__lastDomSsrcHarvest && now - userManager.__lastDomSsrcHarvest < 500) {
         return
       }
       userManager.__lastDomSsrcHarvest = now
@@ -375,7 +442,8 @@ export function browserInterceptionLogic(schema: any[]) {
       return audioData.some((v) => Math.abs(v) > 0.001)
     }
 
-    // Find users with audio levels from contributing sources
+    // Rank every audible source, including unresolved SSRCs (`user` null), so an
+    // unnameable speaker can't hand every turn to the nameable one.
     function getUsersWithAudio(contributingSources: any[], userManager: any): any[] {
       return contributingSources
         .map((source) => ({
@@ -384,8 +452,14 @@ export function browserInterceptionLogic(schema: any[]) {
           timestamp: source.timestamp,
           user: getUserByStreamId(userManager, source.source.toString())
         }))
-        .filter((x) => x.user && x.audioLevel > 0.05)
+        .filter((x) => x.audioLevel > 0.05)
         .sort((a, b) => b.audioLevel - a.audioLevel)
+    }
+
+    // An unresolved SSRC is keyed by the SSRC itself, surfacing as its own "Unknown".
+    function speakingDeviceOf(entry: any): string | null {
+      if (!entry) return null
+      return entry.user ? entry.user.deviceId : String(entry.ssrc)
     }
 
     // Build user state list with speaking status
@@ -429,7 +503,6 @@ export function browserInterceptionLogic(schema: any[]) {
       console.error(
         `[NetworkInterceptor] 📤 Sending failure signal: track=${track.id}, reason=${reason}, state=${track.readyState}`
       )
-
       ;(window as any).onNetworkSpeakerUpdate({
         users: [],
         timestamp: Date.now(),
@@ -460,6 +533,19 @@ export function browserInterceptionLogic(schema: any[]) {
       const allUsers = getAllUsers(userManager)
       const filteredUsers = filterActiveUsers(allUsers)
       const users = buildUserStateList(filteredUsers, speakingDeviceId, audioLevel)
+
+      // Audible but not rostered: emit as Unknown so the last speaker doesn't keep the turn.
+      if (speakingDeviceId && !users.some((u: any) => u.deviceId === speakingDeviceId)) {
+        users.push({
+          deviceId: speakingDeviceId,
+          name: "Unknown",
+          isCurrentUser: false,
+          isSpeaking: true,
+          status: 1,
+          isHost: false,
+          audioLevel
+        })
+      }
 
       // Calls the Node-side callback exposed via Playwright"s exposeFunction (see network-interception/index.ts)
       // This crosses the browser/Node boundary → triggers NetworkSpeakerLogger.handleNetworkPayload
@@ -527,8 +613,7 @@ export function browserInterceptionLogic(schema: any[]) {
         users.push({
           deviceId: user?.deviceId ?? dev,
           name: user ? decodeUserName(user) : "Unknown",
-          isCurrentUser:
-            user?.isCurrentUserString === "true" || user?.isCurrentUserString === "1",
+          isCurrentUser: user?.isCurrentUserString === "true" || user?.isCurrentUserString === "1",
           isSpeaking: true,
           status: user?.status ?? 1,
           isHost: user?.isHost === 1,
@@ -677,8 +762,8 @@ export function browserInterceptionLogic(schema: any[]) {
                     // DEBUG: Log speaker detection only when speaker changes (reduces noise significantly)
                     // The speaker change log below will handle the important state changes
 
-                    if (loudestSpeaker?.user) {
-                      const currentSpeakerId = loudestSpeaker.user.deviceId
+                    const currentSpeakerId = speakingDeviceOf(loudestSpeaker)
+                    if (currentSpeakerId) {
                       // Only broadcast if speaker changed
                       if (currentSpeakerId !== lastBroadcastedSpeakerId) {
                         console.error(
@@ -1043,8 +1128,8 @@ export function browserInterceptionLogic(schema: any[]) {
 
         const usersWithAudioLevels = getUsersWithAudio(freshSources, userManager)
         const loudestSpeaker = usersWithAudioLevels[0]
-        if (loudestSpeaker?.user) {
-          const currentSpeakerId = loudestSpeaker.user.deviceId
+        const currentSpeakerId = speakingDeviceOf(loudestSpeaker)
+        if (currentSpeakerId) {
           if (currentSpeakerId !== lastBroadcastedSpeakerId) {
             console.error(
               `[NetworkInterceptor] 🎤 Speaker changed (csrc sample): ${lastBroadcastedSpeakerId || "none"} → ${currentSpeakerId} (audioLevel: ${loudestSpeaker.audioLevel})`
@@ -1052,7 +1137,12 @@ export function browserInterceptionLogic(schema: any[]) {
             lastBroadcastedSpeakerId = currentSpeakerId
             speakingState.clear()
             speakingState.set(currentSpeakerId, true)
-            broadcastSpeakerUpdate(userManager, currentSpeakerId, loudestSpeaker.audioLevel, "audio")
+            broadcastSpeakerUpdate(
+              userManager,
+              currentSpeakerId,
+              loudestSpeaker.audioLevel,
+              "audio"
+            )
           }
         } else if (lastBroadcastedSpeakerId !== null) {
           // Fresh packets but nobody above the audio-level threshold — mirrors
@@ -1137,7 +1227,6 @@ export function browserInterceptionLogic(schema: any[]) {
 
       console.error("[NetworkInterceptor] ✅ Network interception stopped")
     }
-
     ;(window as any).triggerNetworkBroadcast = broadcastCurrentState
 
     const messageDecoders = createDecoders(schema)
@@ -1270,7 +1359,9 @@ export function browserInterceptionLogic(schema: any[]) {
     function harvestDeviceMappings(buf: Uint8Array, um: any, depth: number): void {
       if (depth > 12) return
       const parseLevel = (b: Uint8Array): { [f: number]: { wt: number; bytes?: Uint8Array }[] } => {
-        const fields: { [f: number]: { wt: number; bytes?: Uint8Array }[] } = {}
+        const fields: {
+          [f: number]: { wt: number; bytes?: Uint8Array }[]
+        } = {}
         let pos = 0
         while (pos < b.length) {
           let tag = 0
@@ -1302,7 +1393,10 @@ export function browserInterceptionLogic(schema: any[]) {
               if (s2 > 70) return fields
             } while (y & 0x80)
             if (pos + len > b.length) return fields
-            ;(fields[field] ||= []).push({ wt, bytes: b.subarray(pos, pos + len) })
+            ;(fields[field] ||= []).push({
+              wt,
+              bytes: b.subarray(pos, pos + len)
+            })
             pos += len
           } else if (wt === 1) {
             pos += 8
@@ -1364,7 +1458,10 @@ export function browserInterceptionLogic(schema: any[]) {
       if (typeof decode !== "function" || !pako || typeof pako.inflate !== "function") {
         return
       }
-      let participants: Array<{ deviceId: string; speaking: boolean }> | null
+      let participants: Array<{
+        deviceId: string
+        speaking: boolean
+      }> | null
       try {
         participants = decode(rawData, pako.inflate)
       } catch {
@@ -1442,12 +1539,11 @@ export function browserInterceptionLogic(schema: any[]) {
             // those instead of inflating and logging a decode error per message
             // for the whole session. Match the full gzip signature (0x1f 0x8b),
             // not just the first byte, and validate the zlib header checksum.
-            const isGzip =
-              rawData.length >= 2 && rawData[0] === 0x1f && rawData[1] === 0x8b
+            const isGzip = rawData.length >= 2 && rawData[0] === 0x1f && rawData[1] === 0x8b
             const isZlib =
               rawData.length >= 2 &&
               rawData[0] === 0x78 &&
-              (((rawData[0] << 8) | rawData[1]) % 31 === 0)
+              ((rawData[0] << 8) | rawData[1]) % 31 === 0
             if (!isGzip && !isZlib) {
               return
             }

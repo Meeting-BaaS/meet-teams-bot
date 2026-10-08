@@ -12,6 +12,7 @@ import {
 } from '../types'
 import { BaseState } from './base-state'
 import { formatError } from '../../utils/Logger'
+import { setVirtualMicrophoneMuted } from '../../utils/virtual-microphone'
 
 export class InitializationState extends BaseState {
     async execute(): StateExecuteResult {
@@ -34,6 +35,8 @@ export class InitializationState extends BaseState {
                     )
                 })
             }
+
+            await setVirtualMicrophoneMuted(!GLOBAL.get().streaming_input)
 
             // Setup browser - étape critique
             try {

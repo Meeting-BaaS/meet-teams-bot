@@ -29,6 +29,46 @@ export class SimpleDialogObserver {
      * so it doesn't race with intentional Playwright interactions on dialogs we opened.
      */
     private static _paused = false
+    protected static readonly MAX_DISMISS_ATTEMPTS = 3
+    protected dismissAttempts = new Map<string, number>()
+    protected abandonedPatterns = new Set<string>()
+    protected snapshottedPatterns = new Set<string>()
+
+    protected isAbandoned(name: string): boolean {
+        return this.abandonedPatterns.has(name)
+    }
+
+    protected recordDismissFailure(name: string): void {
+        const attempts = (this.dismissAttempts.get(name) ?? 0) + 1
+        this.dismissAttempts.set(name, attempts)
+        if (attempts >= SimpleDialogObserver.MAX_DISMISS_ATTEMPTS) {
+            this.abandonedPatterns.add(name)
+            console.warn(
+                `[SimpleDialogObserver] Dismiss budget exhausted: ${name}`,
+            )
+        }
+    }
+
+    protected async confirmDismissed(
+        modal: Pick<Locator, 'isVisible'>,
+        timeouts: DismissTimeouts,
+    ): Promise<boolean> {
+        const deadline = Date.now() + Math.max(timeouts.PAGE_TIMEOUT, 500)
+        while (Date.now() < deadline) {
+            try {
+                if (
+                    !(await modal.isVisible({
+                        timeout: timeouts.VISIBLE_TIMEOUT,
+                    }))
+                )
+                    return true
+            } catch {
+                return false
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+        return false
+    }
 
     /**
      * Instance flag to prevent overlapping observer cycles.
@@ -56,12 +96,17 @@ export class SimpleDialogObserver {
      * dialogs before intentional UI interactions (e.g. layout change).
      */
     async dismissVisibleDialogs(): Promise<DialogObserverResult> {
-        if (!this.context.playwrightPage || this.context.playwrightPage.isClosed()) {
+        if (
+            !this.context.playwrightPage ||
+            this.context.playwrightPage.isClosed()
+        ) {
             return { found: false, dismissed: false, modalType: null }
         }
 
         try {
-            const result = await this.checkAndDismissModals(this.context.playwrightPage)
+            const result = await this.checkAndDismissModals(
+                this.context.playwrightPage,
+            )
             if (result.found) {
                 console.info(
                     `[SimpleDialogObserver] Manual dismiss: ${result.modalType} - ${result.dismissed ? 'dismissed' : 'found but not dismissed'}`,
@@ -69,7 +114,9 @@ export class SimpleDialogObserver {
             }
             return result
         } catch (error) {
-            console.error(`[SimpleDialogObserver] Error in manual dismiss: ${error}`)
+            console.error(
+                `[SimpleDialogObserver] Error in manual dismiss: ${error}`,
+            )
             return { found: false, dismissed: false, modalType: null }
         }
     }
@@ -186,6 +233,13 @@ export class SimpleDialogObserver {
             // IMPORTANT: Order matters! More specific patterns must come before generic ones
             // to avoid misidentification (e.g., transcription modal matching camera_permission)
             const modalPatterns = [
+                {
+                    name: 'keep_waiting_prompt',
+                    selector:
+                        'div[role="dialog"]:has-text("waiting a long time"):has(button)',
+                    buttonTexts: ['Keep waiting'],
+                    exitByEscape: false,
+                },
                 // People hover dialog (new UI Dec 2025) - dismiss with Escape
                 {
                     name: 'people_hover_dialog',
@@ -247,7 +301,14 @@ export class SimpleDialogObserver {
                     name: 'camera_permission',
                     selector:
                         'div[role="dialog"]:has-text("camera"):has(button), div[role="dialog"]:has-text("microphone"):has(button)',
-                    buttonTexts: ['Allow', 'Block', 'Got it', 'OK', 'Join now'],
+                    buttonTexts: [
+                        'Allow',
+                        'Block',
+                        'Got it',
+                        'OK',
+                        'Join now',
+                        'Close',
+                    ],
                     exitByEscape: true,
                 },
                 // Generic dismiss modals (fallback)
@@ -267,6 +328,7 @@ export class SimpleDialogObserver {
             ]
 
             for (const pattern of modalPatterns) {
+                let attemptedDismiss = false
                 try {
                     const modal = page.locator(pattern.selector)
                     const isVisible = await modal.isVisible({
@@ -274,7 +336,17 @@ export class SimpleDialogObserver {
                     })
 
                     if (!isVisible) {
+                        this.dismissAttempts.delete(pattern.name)
+                        this.abandonedPatterns.delete(pattern.name)
+                        this.snapshottedPatterns.delete(pattern.name)
                         continue
+                    }
+                    if (this.isAbandoned(pattern.name)) {
+                        return {
+                            found: true,
+                            dismissed: false,
+                            modalType: pattern.name,
+                        }
                     }
 
                     console.info(
@@ -282,13 +354,16 @@ export class SimpleDialogObserver {
                     )
 
                     // Capture DOM state before attempting to dismiss modal
-                    const htmlSnapshot = HtmlSnapshotService.getInstance()
-                    await htmlSnapshot.captureSnapshot(
-                        page,
-                        `dialog_observer_before_dismiss_attempt_${pattern.name}`,
-                    )
+                    if (!this.snapshottedPatterns.has(pattern.name)) {
+                        this.snapshottedPatterns.add(pattern.name)
+                        await HtmlSnapshotService.getInstance().captureSnapshot(
+                            page,
+                            `dialog_observer_before_dismiss_attempt_${pattern.name}`,
+                        )
+                    }
 
                     // Try to dismiss the modal by clicking appropriate buttons
+                    attemptedDismiss = true
                     let dismissed = await this.tryDismissModal(
                         modal,
                         pattern.buttonTexts,
@@ -304,7 +379,10 @@ export class SimpleDialogObserver {
                     }
 
                     if (dismissed) {
-                        await page.waitForTimeout(timeouts.PAGE_TIMEOUT)
+                        dismissed = await this.confirmDismissed(modal, timeouts)
+                    }
+                    if (dismissed) {
+                        this.dismissAttempts.delete(pattern.name)
                         return {
                             found: true,
                             dismissed: true,
@@ -313,6 +391,7 @@ export class SimpleDialogObserver {
                         }
                     }
 
+                    this.recordDismissFailure(pattern.name)
                     return {
                         found: true,
                         dismissed: false,
@@ -320,6 +399,8 @@ export class SimpleDialogObserver {
                         detectionMethod: 'simple_google_meet',
                     }
                 } catch (error) {
+                    if (attemptedDismiss)
+                        this.recordDismissFailure(pattern.name)
                     console.warn(
                         `[SimpleDialogObserver] Error with pattern ${pattern.name}: ${error}`,
                     )
@@ -388,7 +469,9 @@ export class SimpleDialogObserver {
                     )
                     await button
                         .first()
-                        .evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
+                        .evaluate((el: HTMLElement) => el.click(), {
+                            timeout: timeouts.CLICK_TIMEOUT,
+                        })
                     return true
                 }
 
@@ -409,14 +492,14 @@ export class SimpleDialogObserver {
                     )
                     await button
                         .first()
-                        .evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
+                        .evaluate((el: HTMLElement) => el.click(), {
+                            timeout: timeouts.CLICK_TIMEOUT,
+                        })
                     return true
                 }
 
                 // Try span content (for Material Design buttons)
-                button = modal.locator(
-                    `button span:has-text("${buttonText}")`,
-                )
+                button = modal.locator(`button span:has-text("${buttonText}")`)
                 buttonCount = await button.count()
 
                 if (
@@ -430,16 +513,17 @@ export class SimpleDialogObserver {
                     )
                     // Navigate to parent button element and click via evaluate
                     const parentButton = button.first().locator('xpath=..')
-                    await parentButton.evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
+                    await parentButton.evaluate(
+                        (el: HTMLElement) => el.click(),
+                        { timeout: timeouts.CLICK_TIMEOUT },
+                    )
                     return true
                 }
 
                 // Try aria-label (for icon-only buttons like Meet's "Close" X on the
                 // Adjust view dialog, which has aria-label="Close" but no visible text).
                 // Case-insensitive to tolerate Meet UI variants.
-                button = modal.locator(
-                    `button[aria-label="${buttonText}" i]`,
-                )
+                button = modal.locator(`button[aria-label="${buttonText}" i]`)
                 buttonCount = await button.count()
 
                 if (
@@ -453,7 +537,9 @@ export class SimpleDialogObserver {
                     )
                     await button
                         .first()
-                        .evaluate((el: HTMLElement) => el.click(), { timeout: timeouts.CLICK_TIMEOUT })
+                        .evaluate((el: HTMLElement) => el.click(), {
+                            timeout: timeouts.CLICK_TIMEOUT,
+                        })
                     return true
                 }
             } catch (error) {

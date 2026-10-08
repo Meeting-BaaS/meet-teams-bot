@@ -7,6 +7,7 @@ import { HtmlSnapshotService } from '../services/html-snapshot-service'
 import { SimpleDialogObserver } from '../services/dialog-observer/simple-dialog-observer'
 import { ScreenRecorderManager } from '../recording/ScreenRecorder'
 import { GLOBAL } from '../singleton'
+import { MEETING_CONSTANTS } from '../state-machine/constants'
 import { parseMeetingUrlFromJoinInfos } from '../urlParser/meetUrlParser'
 import { sleep } from '../utils/sleep'
 import { formatError } from '../utils/Logger'
@@ -22,6 +23,7 @@ import {
 const meetStateDetector = createStateDetector(MEET_STATE_CONFIG)
 const ENTRY_MESSAGE_TIMEOUT = 2000
 const GRACE_PERIOD_MS = 1000 // Grace period after leaving waiting room before checking if in meeting
+const RECONNECT_OVERLAY_GRACE_PERIOD_MS = 40_000
 
 /**
  * Checks that the page is still on meet.google.com.
@@ -59,6 +61,8 @@ export class MeetProvider implements MeetingProviderInterface {
     // before the scheduled-time wait and still join on time. Stays false when
     // joinMeeting() is called standalone, in which case it does prep itself.
     private joinPrepared = false
+    private reconnectOverlaySince: number | null = null
+    private aloneBannerSince: number | null = null
 
     async parseMeetingUrl(meeting_url: string) {
         return parseMeetingUrlFromJoinInfos(meeting_url)
@@ -198,7 +202,9 @@ export class MeetProvider implements MeetingProviderInterface {
                     MeetingEndReason.CannotJoinMeeting,
                     `Google Meet returned HTTP ${response.status()} - service unavailable`,
                 )
-                throw new Error(`Google Meet page returned HTTP ${response.status()}`)
+                throw new Error(
+                    `Google Meet page returned HTTP ${response.status()}`,
+                )
             }
 
             // Check for page freeze after goto (same as Teams)
@@ -248,7 +254,9 @@ export class MeetProvider implements MeetingProviderInterface {
             console.error('openMeetingPage error:', formatError(error))
             // Mark as retryable - bot hasn't joined yet, so retrying is safe
             // Worst case: 3 attempts (1 initial + 2 retries) before giving up
-            console.log('🔄 Error occurred before joining - marking as retryable')
+            console.log(
+                '🔄 Error occurred before joining - marking as retryable',
+            )
             GLOBAL.setShouldRetry(true)
             throw error
         }
@@ -260,10 +268,7 @@ export class MeetProvider implements MeetingProviderInterface {
     // scheduled-time wait (see WaitingRoomState.waitForAcceptance) — the ~40-50s
     // of humanisation is absorbed into the early window and the bot still joins
     // on time. Safe to call standalone; joinMeeting() runs it itself if skipped.
-    async prepareJoin(
-        page: Page,
-        cancelCheck: () => boolean,
-    ): Promise<void> {
+    async prepareJoin(page: Page, cancelCheck: () => boolean): Promise<void> {
         // Capture DOM state before starting join process
         const htmlSnapshot = HtmlSnapshotService.getInstance()
         await htmlSnapshot.captureSnapshot(page, 'meet_join_meeting_start')
@@ -280,7 +285,9 @@ export class MeetProvider implements MeetingProviderInterface {
         // the shorter pattern and skip the retry flag).
         if (await notAcceptedInMeeting(page)) {
             GLOBAL.setShouldRetry(true)
-            throw new Error('Bot not accepted into meeting - denied at page load')
+            throw new Error(
+                'Bot not accepted into meeting - denied at page load',
+            )
         }
 
         // Allow an early stop request to short-circuit before any interaction.
@@ -294,7 +301,12 @@ export class MeetProvider implements MeetingProviderInterface {
 
         console.log(
             'useWithoutAccountClicked:',
-            await clickWithInnerText(page, 'span', ['Use without an account'], 2),
+            await clickWithInnerText(
+                page,
+                'span',
+                ['Use without an account'],
+                2,
+            ),
         )
 
         // Hybrid retry strategy: fast path for first 5 attempts, exponential backoff for last 5
@@ -357,7 +369,9 @@ export class MeetProvider implements MeetingProviderInterface {
 
             // Final stop check before the irreversible join button click
             if (cancelCheck()) {
-                console.log('Stop request detected before clicking Join — aborting')
+                console.log(
+                    'Stop request detected before clicking Join — aborting',
+                )
                 GLOBAL.setError(MeetingEndReason.ExitingMeetingBeforeRecord)
                 throw new Error('Bot stopped before joining meeting')
             }
@@ -491,17 +505,36 @@ export class MeetProvider implements MeetingProviderInterface {
                 // host removed bot and Google redirected), treat as meeting ended.
                 const url = page.url()
                 if (url && !url.includes('meet.google.com')) {
-                    console.log('End meeting detected through URL redirect:', url)
+                    console.log(
+                        'End meeting detected through URL redirect:',
+                        url,
+                    )
                     return true
                 }
 
                 const content = await page.content()
+                // The reconnect overlay contains "Return to home" too. Allow
+                // Meet to recover before treating that link as a meeting end.
+                if (
+                    content.includes('Trying to reconnect') ||
+                    content.includes('You lost your network connection')
+                ) {
+                    this.reconnectOverlaySince ??= Date.now()
+                    this.aloneBannerSince = null
+                    if (
+                        Date.now() - this.reconnectOverlaySince <
+                        RECONNECT_OVERLAY_GRACE_PERIOD_MS
+                    ) {
+                        return false
+                    }
+                } else {
+                    this.reconnectOverlaySince = null
+                }
                 const endMessages = [
                     "You've been removed",
                     'we encountered a problem joining',
                     'The call ended',
                     'Return to home',
-                    'No one else',
                 ]
 
                 const foundMessage = endMessages.find((msg) =>
@@ -515,6 +548,19 @@ export class MeetProvider implements MeetingProviderInterface {
                     )
                     return true
                 }
+                // Before any human joins, RecordingState owns noone_joined_timeout.
+                if (
+                    !content.includes('No one else') ||
+                    GLOBAL.getParticipantNames().length === 0
+                ) {
+                    this.aloneBannerSince = null
+                    return false
+                }
+                this.aloneBannerSince ??= Date.now()
+                const timeoutSec =
+                    GLOBAL.get().automatic_leave.everyone_left_timeout ??
+                    MEETING_CONSTANTS.DEFAULT_EVERYONE_LEFT_TIMEOUT_SECONDS
+                return Date.now() - this.aloneBannerSince >= timeoutSec * 1000
             }
             return false
         } catch (error) {
@@ -534,7 +580,9 @@ export class MeetProvider implements MeetingProviderInterface {
  */
 async function openPeoplePanelWithShortcut(page: Page): Promise<boolean> {
     try {
-        console.log('Opening People panel with keyboard shortcut (Ctrl+Alt+P)...')
+        console.log(
+            'Opening People panel with keyboard shortcut (Ctrl+Alt+P)...',
+        )
 
         // Press Ctrl+Alt+P to open People panel
         await page.keyboard.press('Control+Alt+KeyP')
@@ -551,7 +599,10 @@ async function openPeoplePanelWithShortcut(page: Page): Promise<boolean> {
         try {
             await findShowEveryOne(page, true, () => false)
         } catch (fallbackError) {
-            console.error('Fallback method also failed:', formatError(fallbackError))
+            console.error(
+                'Fallback method also failed:',
+                formatError(fallbackError),
+            )
         }
         return false // Return false since shortcut failed, fallback attempted
     }
@@ -721,7 +772,9 @@ export async function sendEntryMessage(
     try {
         // OPTIMIZATION: Use keyboard shortcut to open chat (Ctrl+Alt+c)
         // Much faster than finding and clicking the button
-        console.log('Opening chat window with keyboard shortcut (Ctrl+Alt+c)...')
+        console.log(
+            'Opening chat window with keyboard shortcut (Ctrl+Alt+c)...',
+        )
         await page.keyboard.press('Control+Alt+KeyC')
         await page.waitForTimeout(200) // Brief wait for chat to open
 
@@ -734,7 +787,9 @@ export async function sendEntryMessage(
             })
             chatOpened = true
         } catch (e) {
-            console.log('Chat did not open with shortcut, trying button fallback...')
+            console.log(
+                'Chat did not open with shortcut, trying button fallback...',
+            )
             // Fallback: Try to find and click chat button using evaluate() to bypass visibility check
             // (HTML cleaner may hide the button, but it's still in the DOM)
             try {
@@ -752,7 +807,9 @@ export async function sendEntryMessage(
                 if (count > 0) {
                     // Use evaluate() to click directly, bypassing Playwright's visibility check
                     // (HTML cleaner may hide the button, but it's still in the DOM)
-                    await chatButton.first().evaluate((el: HTMLElement) => el.click())
+                    await chatButton
+                        .first()
+                        .evaluate((el: HTMLElement) => el.click())
                     await page.waitForTimeout(200)
                     await page.waitForSelector(CHAT_TEXTAREA_SELECTOR, {
                         state: 'visible',
@@ -761,7 +818,10 @@ export async function sendEntryMessage(
                     chatOpened = true
                 }
             } catch (fallbackError) {
-                console.error('Chat button fallback also failed:', formatError(fallbackError))
+                console.error(
+                    'Chat button fallback also failed:',
+                    formatError(fallbackError),
+                )
             }
         }
 
@@ -1153,7 +1213,9 @@ async function performCriticalSetupActions(
                     await dialogObserver.dismissVisibleDialogs()
                 }
                 if (await changeLayout(page, attempt, maxAttempts)) {
-                    console.log(`Layout change successful on attempt ${attempt}`)
+                    console.log(
+                        `Layout change successful on attempt ${attempt}`,
+                    )
                     break
                 }
                 if (attempt < maxAttempts) {
@@ -1177,6 +1239,8 @@ async function changeLayout(
     attempt: number,
     maxAttempts: number,
 ): Promise<boolean> {
+    const layoutName =
+        GLOBAL.get().recording_mode === 'gallery_view' ? 'Tiled' : 'Spotlight'
     console.log(
         `Starting layout change process (attempt ${attempt}/${maxAttempts})...`,
     )
@@ -1230,7 +1294,7 @@ async function changeLayout(
         await changeLayoutItem.click({ timeout: CLICK_TIMEOUT_MS })
 
         // OPTIMIZATION: Wait for layout menu to appear instead of fixed timeout
-        await page.waitForSelector('label:has-text("Spotlight")', {
+        await page.waitForSelector(`label:has-text("${layoutName}")`, {
             state: 'visible',
             timeout: 1000,
         })
@@ -1240,25 +1304,45 @@ async function changeLayout(
         // if (!(await isInMeeting(page))) { ... }  // REMOVED
 
         // 3. Click Spotlight option
-        console.log('Looking for Spotlight option...')
+        console.log(`Looking for ${layoutName} option...`)
         const spotlightOption = page
             .locator(
                 [
-                    'label:has-text("Spotlight"):has(input[type="radio"])',
-                    'label:has(input[name="preferences"]):has-text("Spotlight")',
-                    'label:has(span:text-is("Spotlight"))',
+                    `label:has-text("${layoutName}"):has(input[type="radio"])`,
+                    `label:has(input[name="preferences"]):has-text("${layoutName}")`,
+                    `label:has(span:text-is("${layoutName}"))`,
                 ].join(','),
             )
             .first() // Use first() to handle cases where multiple Spotlight labels exist
         await spotlightOption.waitFor({ state: 'visible', timeout: 3000 })
         await spotlightOption.click({ timeout: CLICK_TIMEOUT_MS })
+        const layoutRadio = spotlightOption.locator('input[name="preferences"]')
+        if (!(await layoutRadio.isChecked())) {
+            await spotlightOption.evaluate((el) => {
+                const target = el as HTMLElement
+                for (const type of ['mousedown', 'mouseup', 'click']) {
+                    target.dispatchEvent(
+                        new MouseEvent(type, {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                        }),
+                    )
+                }
+                target.click()
+            })
+        }
+        if (!(await layoutRadio.isChecked())) {
+            await closeAdjustViewDialogIfOpen(page)
+            return false
+        }
 
         // OPTIMIZATION: Wait for layout to change instead of fixed timeout
         await page.waitForTimeout(300) // Reduced from 500ms
         // OPTIMIZATION: Remove redundant isInMeeting check
         // if (!(await isInMeeting(page))) { ... }  // REMOVED
 
-        await clickOutsideModal(page)
+        await closeAdjustViewDialogIfOpen(page)
         return true
     } catch (error) {
         console.error(
@@ -1406,9 +1490,7 @@ async function deactivateCamera(page: Page): Promise<boolean> {
     console.log('Deactivating camera...')
     try {
         // Look for the camera button that's turned on
-        const cameraButton = page.locator(
-            'div[aria-label="Turn off camera"]',
-        )
+        const cameraButton = page.locator('div[aria-label="Turn off camera"]')
         if ((await cameraButton.count()) > 0) {
             await cameraButton.click()
             console.log('Camera deactivated successfully')

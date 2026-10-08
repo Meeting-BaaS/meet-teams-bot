@@ -60,7 +60,7 @@ describe("DiarizationTracker backfill", () => {
       )
       .then(() => {
         const segments = readSegments()
-        expect(segments).toHaveLength(3)
+        expect(segments).toHaveLength(1)
         expect(segments.every((s) => s.speaker === "Amr El Shimy")).toBe(true)
         expect(segments.every((s) => s.user_id === 2)).toBe(true)
       })
@@ -75,18 +75,19 @@ describe("DiarizationTracker backfill", () => {
     tracker.updateSpeaker(speech("dev-b", "Unknown", 4), MEETING_START)
 
     await tracker.end(MEETING_START + 6000, MEETING_START, (deviceId) =>
-      deviceId === "dev-a"
-        ? { name: "Amr El Shimy", userId: 2 }
-        : { name: "Johnny", userId: 3 }
+      deviceId === "dev-a" ? { name: "Amr El Shimy", userId: 2 } : { name: "Johnny", userId: 3 }
     )
 
     const segments = readSegments()
     expect(segments).toHaveLength(2)
-    expect(segments[0]).toMatchObject({ speaker: "Amr El Shimy", user_id: 2 })
+    expect(segments[0]).toMatchObject({
+      speaker: "Amr El Shimy",
+      user_id: 2
+    })
     expect(segments[1]).toMatchObject({ speaker: "Johnny", user_id: 3 })
   })
 
-  it("leaves a device the roster never named as Unknown rather than guessing", async () => {
+  it("backfills an unresolved ghost from its contiguous named neighbour", async () => {
     const tracker = freshTracker()
 
     tracker.updateSpeaker(speech("dev-a", "Unknown", 1), MEETING_START)
@@ -98,7 +99,8 @@ describe("DiarizationTracker backfill", () => {
 
     const segments = readSegments()
     expect(segments[0].speaker).toBe("Amr El Shimy")
-    expect(segments[1].speaker).toBe("Unknown")
+    expect(segments).toHaveLength(1)
+    expect(segments[0].end_time).toBe(5)
   })
 
   it("repairs a churning-device speaker by stable user id when the device never resolves", async () => {
@@ -127,7 +129,7 @@ describe("DiarizationTracker backfill", () => {
     )
 
     const segments = readSegments()
-    expect(segments).toHaveLength(3)
+    expect(segments).toHaveLength(1)
     expect(segments.every((s) => s.speaker === "Real Speaker")).toBe(true)
     expect(segments.every((s) => s.user_id === 5)).toBe(true)
   })
@@ -175,10 +177,7 @@ describe("DiarizationTracker health activity clock", () => {
     tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
     tracker.noteActivity(speech("dev-a", "Amr El Shimy", 315), MEETING_START)
 
-    const status = tracker.hasActiveOrRecentSegment(
-      MEETING_START,
-      MEETING_START + 320_000
-    )
+    const status = tracker.hasActiveOrRecentSegment(MEETING_START, MEETING_START + 320_000)
     expect(status.hasActive).toBe(true)
     expect(status.status).not.toBe("stale")
   })
@@ -191,10 +190,7 @@ describe("DiarizationTracker health activity clock", () => {
     // path can be retired after it stops producing.
     tracker.updateSpeaker(speech("dev-a", "Amr El Shimy", 1), MEETING_START)
 
-    const status = tracker.hasActiveOrRecentSegment(
-      MEETING_START,
-      MEETING_START + 320_000
-    )
+    const status = tracker.hasActiveOrRecentSegment(MEETING_START, MEETING_START + 320_000)
     expect(status.status).toBe("stale")
   })
 
@@ -206,10 +202,7 @@ describe("DiarizationTracker health activity clock", () => {
     // fresh — attribution stays per-speaker.
     tracker.noteActivity(speech("dev-b", "Jonny", 315), MEETING_START)
 
-    const status = tracker.hasActiveOrRecentSegment(
-      MEETING_START,
-      MEETING_START + 320_000
-    )
+    const status = tracker.hasActiveOrRecentSegment(MEETING_START, MEETING_START + 320_000)
     expect(status.status).toBe("stale")
   })
 })

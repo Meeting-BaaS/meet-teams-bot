@@ -3,6 +3,12 @@
 
 import type { Page } from "@playwright/test"
 import { teamsBrowserInterceptionLogic } from "./browser-bundle"
+import {
+  deriveMeetingScope,
+  extractOwnRoster,
+  resolveRosterScope,
+  type TeamsInterceptorScope
+} from "./meeting-scope"
 import { resolveSpeakingSet } from "./speaker-timeline"
 
 export type { NetworkPayload, NetworkUser } from "./types"
@@ -50,7 +56,18 @@ function forwardInterceptorConsole(page: Page): void {
   })
 }
 
-export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<boolean> {
+export function buildTeamsInterceptorScope(
+  joinUrl: string,
+  isAuthenticated = false
+): TeamsInterceptorScope {
+  return { ...deriveMeetingScope(joinUrl), isAuthenticated }
+}
+
+export async function setupTeamsNetworkInterceptionScripts(
+  page: Page,
+  joinUrl = "",
+  isAuthenticated = false
+): Promise<boolean> {
   try {
     forwardInterceptorConsole(page)
     const pakoPath = require.resolve("pako/dist/pako.min.js")
@@ -61,6 +78,7 @@ export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<
     return false
   }
 
+  const scope = buildTeamsInterceptorScope(joinUrl, isAuthenticated)
   const script = `
         (function() {
             try {
@@ -69,7 +87,7 @@ export async function setupTeamsNetworkInterceptionScripts(page: Page): Promise<
                     console.error("[Teams NetworkInterceptor] pako dependency not loaded");
                 }
                 // As source: the stringified bundle cannot import it.
-                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()});
+                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()}, ${resolveRosterScope.toString()}, ${extractOwnRoster.toString()}, ${JSON.stringify(scope)});
             } catch (e) {
                 console.error("[Teams NetworkInterceptor] Initialization error:", e);
             }

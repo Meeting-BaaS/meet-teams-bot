@@ -22,8 +22,13 @@ import { formatError } from '../../utils/Logger'
 import { sendEntryMessage } from '../../meeting/meet'
 import { verifyMeetAudioCapture } from '../../meeting/meet/audio-capture'
 
-export class InCallState extends BaseState implements NetworkFallbackController {
-    private isStartingUIObserver = false
+export class InCallState
+    extends BaseState
+    implements NetworkFallbackController
+{
+    private uiObserverStartup?: Promise<void>
+    private lastUiObservationAttemptAt = 0
+    private uiRecoveryAttempts = 0
     private teamsNetworkFallbackTriggered: boolean = false
     private meetNetworkFallbackTriggered: boolean = false
     // Set once ANY fallback is requested (including by the diarization health
@@ -36,20 +41,31 @@ export class InCallState extends BaseState implements NetworkFallbackController 
 
     async execute(): StateExecuteResult {
         const startTime = Date.now()
-        console.info(`[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`)
+        console.info(
+            `[InCallState] Starting execute() at ${new Date(startTime).toISOString()}`,
+        )
 
         try {
             // Quick check: if stop was already requested before entering InCall, skip setup entirely
-            if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
-                console.info(`[InCallState] Stop already requested — skipping setup`)
-                return this.handleError(new Error('Stop requested before recording setup'))
+            if (
+                GLOBAL.getEndReason() ===
+                MeetingEndReason.ExitingMeetingBeforeRecord
+            ) {
+                console.info(
+                    `[InCallState] Stop already requested — skipping setup`,
+                )
+                return this.handleError(
+                    new Error('Stop requested before recording setup'),
+                )
             }
 
             // Start with global timeout for setup
             await Promise.race([this.setupRecording(), this.createTimeout()])
 
             const duration = Date.now() - startTime
-            console.info(`[InCallState] Setup completed successfully in ${duration}ms`)
+            console.info(
+                `[InCallState] Setup completed successfully in ${duration}ms`,
+            )
             return this.transition(MeetingStateType.Recording)
         } catch (error) {
             const duration = Date.now() - startTime
@@ -123,13 +139,12 @@ export class InCallState extends BaseState implements NetworkFallbackController 
         // Make HTML cleanup and speaker observation non-blocking so as to avoid
         // aborting a valid recording when Teams' page is slow, broken, or
         // unresponsive during setup. RecordingState owns leave decisions.
-        void this.startHtmlCleaning()
-            .catch((error) =>
-                console.error(
-                    'HTML cleanup failed (non-fatal, continuing):',
-                    formatError(error),
-                ),
-            )
+        void this.startHtmlCleaning().catch((error) =>
+            console.error(
+                'HTML cleanup failed (non-fatal, continuing):',
+                formatError(error),
+            ),
+        )
 
         void this.startSpeakersObservation().catch((error) =>
             console.error(
@@ -141,16 +156,18 @@ export class InCallState extends BaseState implements NetworkFallbackController 
         // OPTIMIZATION: Move entry message and audio verification to async (non-blocking)
         // These run after video is surfaced and recording has started
         this.performNonBlockingActions().catch((err) => {
-            console.error(
-                'Error in non-blocking actions:',
-                formatError(err),
-            )
+            console.error('Error in non-blocking actions:', formatError(err))
         })
 
         // Final gate: if a stop request arrived during setup, bail out
         // before firing the recording event and transitioning to Recording state
-        if (GLOBAL.getEndReason() === MeetingEndReason.ExitingMeetingBeforeRecord) {
-            throw new Error('Stop requested during recording setup — exiting before record')
+        if (
+            GLOBAL.getEndReason() ===
+            MeetingEndReason.ExitingMeetingBeforeRecord
+        ) {
+            throw new Error(
+                'Stop requested during recording setup — exiting before record',
+            )
         }
 
         // Notify that recording has started
@@ -227,6 +244,12 @@ export class InCallState extends BaseState implements NetworkFallbackController 
                     console.log(
                         '✅ Network-based speaker detection enabled for Teams',
                     )
+                    void this.startUIBasedObservation().catch((error) => {
+                        console.warn(
+                            '[SpeakerBridge] Teams UI bridge failed:',
+                            formatError(error),
+                        )
+                    })
                     return
                 }
             } catch (error) {
@@ -355,9 +378,7 @@ export class InCallState extends BaseState implements NetworkFallbackController 
         const meetNetworkInterception = await import(
             '../../meeting/meet/network-interception'
         )
-        const onNetworkSpeakersChange = async (
-            payload: MeetNetworkPayload,
-        ) => {
+        const onNetworkSpeakersChange = async (payload: MeetNetworkPayload) => {
             try {
                 // A track-level failure retires the whole network path on v1:
                 // there is no stale-diarization monitor here to arbitrate, so
@@ -522,37 +543,46 @@ export class InCallState extends BaseState implements NetworkFallbackController 
     }
 
     private async startUIBasedObservation(): Promise<void> {
-        if (this.isStartingUIObserver) {
-            console.log('UI speakers observer startup already in progress')
-            return
-        }
+        if (this.context.isPaused || GLOBAL.getEndReason()) return
+        if (this.uiObserverStartup) return this.uiObserverStartup
         // Already running (e.g. started as the Meet bridge, now re-requested by
         // the watchdog fallback) — don't spin up a second observer.
-        if (this.context.speakersObserver) {
+        if (this.context.speakersObserver?.isCurrentlyObserving()) {
             console.log('UI speakers observer already running')
             return
         }
 
-        this.isStartingUIObserver = true
+        this.lastUiObservationAttemptAt = Date.now()
+        this.uiObserverStartup = this.startUIObserver().finally(() => {
+            this.uiObserverStartup = undefined
+        })
+        return this.uiObserverStartup
+    }
 
+    private async startUIObserver(): Promise<void> {
         try {
             // Create and start integrated speakers observer
             const speakersObserver = new SpeakersObserver(
                 GLOBAL.get().meetingProvider,
             )
 
-            // Callback to handle speakers changes. On Meet the observer may run
-            // as an early-window BRIDGE alongside a live network path, so route
-            // it through the arbiter: it feeds diarization only until the
-            // network path reports its first speaker (or the network path is
-            // retired by the watchdog, in which case this observer is primary).
-            // Teams has its own pause-based fallback and feeds directly.
+            // Both browser platforms keep UI evidence live while network
+            // attribution starts up; the manager arbitrates the two sources.
             const onSpeakersChange = async (speakers: any[]) => {
+                if (
+                    this.context.isPaused ||
+                    GLOBAL.getEndReason() ||
+                    this.context.speakersObserver !== speakersObserver
+                )
+                    return
                 try {
-                    if (GLOBAL.get().meetingProvider === 'Meet') {
+                    const platform = GLOBAL.get().meetingProvider
+                    if (platform === 'Meet' || platform === 'Teams') {
                         await SpeakerManager.getInstance().handleUiBridgeUpdate(
                             speakers,
-                            this.meetNetworkFallbackTriggered,
+                            platform === 'Meet'
+                                ? this.meetNetworkFallbackTriggered
+                                : this.teamsNetworkFallbackTriggered,
                         )
                     } else {
                         await SpeakerManager.getInstance().handleSpeakerUpdate(
@@ -568,6 +598,8 @@ export class InCallState extends BaseState implements NetworkFallbackController 
                 }
             }
 
+            // Publish pending startup so pause can cancel this same observer.
+            this.context.speakersObserver = speakersObserver
             await speakersObserver.startObserving(
                 this.context.playwrightPage,
                 GLOBAL.get().recording_mode,
@@ -575,8 +607,14 @@ export class InCallState extends BaseState implements NetworkFallbackController 
                 onSpeakersChange,
             )
 
-            // Store the observer in context for cleanup later
-            this.context.speakersObserver = speakersObserver
+            if (
+                this.context.isPaused ||
+                GLOBAL.getEndReason() ||
+                this.context.speakersObserver !== speakersObserver
+            ) {
+                await speakersObserver.stopObserving()
+                return
+            }
 
             console.log('Integrated speakers observer started successfully')
         } catch (error) {
@@ -585,8 +623,6 @@ export class InCallState extends BaseState implements NetworkFallbackController 
                 error,
             )
             throw error
-        } finally {
-            this.isStartingUIObserver = false
         }
     }
 
@@ -613,6 +649,24 @@ export class InCallState extends BaseState implements NetworkFallbackController 
      */
     public async requestFallback(reason: string): Promise<void> {
         if (this.isFallbackTriggered()) {
+            // Keep retirement permanent, but allow bounded recovery of failed UI startup.
+            if (
+                this.context.speakersObserver?.isCurrentlyObserving() ||
+                this.uiObserverStartup ||
+                this.uiRecoveryAttempts >= 3 ||
+                Date.now() - this.lastUiObservationAttemptAt < 30_000
+            )
+                return
+            this.uiRecoveryAttempts++
+            this.lastUiObservationAttemptAt = Date.now()
+            try {
+                await this.startUIBasedObservation()
+            } catch (error) {
+                console.warn(
+                    '[NetworkFallback] UI recovery failed:',
+                    formatError(error),
+                )
+            }
             return
         }
         this.diarizationFallbackRequested = true
