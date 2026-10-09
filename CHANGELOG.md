@@ -8,10 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Chopped/garbled recordings (~80ms of exact silence every ~170ms, for minutes
+  at a time, mostly Teams): Chromium's audio output callback dropped from 8192
+  frames back to 2048, with xrun headroom moved to a 200ms PulseAudio target
+  latency on Chromium's playback stream. Both are env-tunable
+  (`CHROME_AUDIO_BUFFER_SIZE`, `CHROME_PULSE_LATENCY_MSEC`); `8192` restores the
+  old behaviour.
 - V8 heap cap for large meetings (`--max-old-space-size=4096`) was passed as a
   bare Chromium argument and silently ignored; now passed via `--js-flags`.
 
 ### Added
+- `[AudioHoles]` end-of-recording check on the raw recorder audio: logs hole
+  count, per-minute counts and the chopped window, so chopped capture is
+  measurable per bot instead of reported by ear.
 - Initial open source release
 - Comprehensive documentation and README
 - Contributing guidelines

@@ -17,6 +17,7 @@ import { S3Uploader } from "../utils/S3Uploader"
 import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
 import { SoundLevelMonitor } from "../utils/sound-level-monitor"
+import { detectAudioHoles } from "./audio-holes"
 import { buildVideoInputArgs, buildVideoOutputArgs } from "./video-source"
 
 const execAsync = promisify(exec)
@@ -1355,9 +1356,15 @@ export class ScreenRecorder extends EventEmitter {
   private async handleSuccessfulRecording(): Promise<void> {
     console.log("Native recording completed")
 
+    // Detect chopped capture (exact-zero holes in speech) on the raw recorder
+    // output. Runs alongside sync/merge (the open fd survives any later rename/
+    // unlink of raw.flac) and never fails the recording.
+    const audioHolesCheck = this.logAudioHoles()
+
     try {
       // Sync and merge separate audio/video files
       await this.syncAndMergeFiles()
+      await audioHolesCheck
 
       // The merged output now exists on disk. Record the finalize marker
       // IMMEDIATELY — before the upload / S3Uploader-availability guard — so the
@@ -1400,6 +1407,27 @@ export class ScreenRecorder extends EventEmitter {
 
       // Re-throw the error so it propagates to the caller
       throw error
+    }
+  }
+
+  private async logAudioHoles(): Promise<void> {
+    if (!this.rawAudioPath || !fs.existsSync(this.rawAudioPath)) return
+    try {
+      const result = await detectAudioHoles(this.rawAudioPath)
+      const window =
+        result.choppedFromSeconds !== null && result.choppedToSeconds !== null
+          ? ` chopped_from=${result.choppedFromSeconds.toFixed(1)}s chopped_to=${result.choppedToSeconds.toFixed(1)}s`
+          : ""
+      const line =
+        `[AudioHoles] chopped=${result.chopped} holes=${result.holes} max_per_min=${result.maxHolesPerMinute}` +
+        `${window} duration=${result.durationSeconds.toFixed(1)}s (raw recorder timeline)`
+      if (result.chopped) {
+        console.warn(`⚠️ ${line} per_min=${JSON.stringify(result.holesPerMinute)}`)
+      } else {
+        console.log(line)
+      }
+    } catch (error) {
+      console.warn("[AudioHoles] detection skipped:", formatError(error))
     }
   }
 

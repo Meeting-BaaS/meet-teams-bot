@@ -93,6 +93,16 @@ export const envVars = cleanEnv(process.env, {
   // here; consumed/re-exported via config/retry-config.ts, the single retry-count
   // source (total-budget math lives there).
   IN_PROCESS_RETRY_MAX: num({ default: 2 }),
+  // Chromium audio OUTPUT callback size in frames (--audio-buffer-size). Kept
+  // small: Chromium zero-fills whatever part of a callback its renderer source
+  // can't supply, and at 8192 (~170ms) Teams intermittently supplied ~half of
+  // each request -> 80ms exact-zero holes every 170ms for minutes at a time.
+  CHROME_AUDIO_BUFFER_SIZE: num({ default: 2048 }),
+  // PulseAudio target latency for Chromium's playback stream only (libpulse
+  // PULSE_LATENCY_MSEC). This, not a large callback, is the xrun headroom
+  // against CPU contention. Not exported globally: every libpulse client reads
+  // it, including the live-stream FFmpeg, whose latency must stay low.
+  CHROME_PULSE_LATENCY_MSEC: num({ default: 200 }),
   POD_NAME: str({ default: "" }),
   NODE_NAME: str({ default: "" })
 })
