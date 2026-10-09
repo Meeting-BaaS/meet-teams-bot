@@ -63,7 +63,7 @@ afterEach(async () => {
   await fs.rm(mockRoot.path, { recursive: true, force: true })
 })
 
-it("requires an explicit per-bot Teams request", () => {
+it("requires the API's trusted Teams marker", () => {
   expect(audioDiagnosticsEnabled("teams", null)).toBe(false)
   expect(audioDiagnosticsEnabled("teams", {})).toBe(false)
   expect(audioDiagnosticsEnabled("teams", { __meeting_baas_debug: { AUDIO_DIAGNOSTICS: false } })).toBe(false)

@@ -1,4 +1,4 @@
-/** Customer-visible per-bot opt-in, persisted by the API in a reserved extra key. */
+/** Internal marker added by the API for Teams bots from configured teams. */
 export function audioDiagnosticsEnabled(platform: string, extra: unknown): boolean {
   if (platform !== "teams" || !extra || typeof extra !== "object" || Array.isArray(extra)) return false
   const debug = (extra as Record<string, unknown>).__meeting_baas_debug

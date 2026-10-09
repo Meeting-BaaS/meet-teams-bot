@@ -4,22 +4,19 @@ Diagnostics do not fix audio or reconstruct missing telemetry from old recording
 They compare the stages of the next **approved in2dialog recording**. No new bot,
 meeting participant, audio injection, WebSocket server, or dependency is needed.
 
-## Enable for one bot
+## Enable for a team
 
-Add this to the normal bot-create request (also accepted when creating a scheduled bot):
+Diagnostics are controlled by `AUDIO_DIAGNOSTICS_TEAM_IDS`, a comma-separated
+list of team IDs set on the API server and job runners. Production sets it to
+`3447` for the in2dialog team; empty/unset means off. No request change is needed.
+The API adds an internal marker only to Teams bot messages from listed teams,
+across immediate, batch, scheduled, and calendar bots.
 
-```json
-{
-  "debug": { "AUDIO_DIAGNOSTICS": true }
-}
-```
-
-Diagnostics are off when the field is omitted or false, and are currently Teams-only.
-This explicitly captures extra temporary meeting audio, so use it only with the
-meeting owner's approval. The root `debug` object is validated; caller-supplied
-`extra` metadata cannot enable diagnostics. The flag travels with each bot request;
-no worker allowlist or scheduling race is required. Existing workers need the new
-image; this change does not deploy anything.
+Only the API can add the marker; caller-supplied `extra` metadata cannot enable
+capture. This stores an additional bounded temporary copy of meeting audio, so
+team-level enablement requires approval for every affected meeting. The API
+allowlist and worker changes must both be deployed; these PRs do not deploy
+anything.
 
 ## Evidence
 
@@ -60,8 +57,8 @@ also deletes diagnostic audio; they are not hidden in a separate logs bucket.
 
 **Any recording pause permanently discards the extra captures for that bot.**
 Paused speech must not be retained via an intermediate file. Diagnostics do not
-restart on resume. Validate diagnostics in preprod first; then select a small
-approved in2dialog canary, not all customer traffic.
+restart on resume. Validate in preprod first, then enable only after the team
+has approved capture for all of its Teams meetings.
 
 ## Analyze a naturally occurring defect
 
