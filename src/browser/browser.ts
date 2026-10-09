@@ -355,7 +355,11 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
     // ========================================
     "--use-pulseaudio", // Force Chromium to use PulseAudio
     "--enable-audio-service-sandbox=false", // Disable audio service sandbox for virtual devices
-    "--audio-buffer-size=8192", // ~170ms at 48kHz — absorbs CPU contention xruns
+    // Output callback size. Chromium zero-fills the part of a callback its
+    // renderer source can't supply (pulse_output.cc ZeroFramesPartial); at 8192
+    // (~170ms) Teams bots recorded 80ms exact-zero holes every 170ms for
+    // minutes at a time. Xrun headroom comes from CHROME_PULSE_LATENCY_MSEC.
+    `--audio-buffer-size=${envVars.CHROME_AUDIO_BUFFER_SIZE}`,
     "--autoplay-policy=no-user-gesture-required", // Allow autoplay for meeting platforms
 
     // WebRTC optimizations (required for meeting audio/video capture)
@@ -469,6 +473,9 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
       : []
   try {
     console.log(`Launching CloakBrowser persistent context (${platform})...`)
+    console.log(
+      `[Browser] Audio output: buffer=${envVars.CHROME_AUDIO_BUFFER_SIZE} frames, pulse latency=${envVars.CHROME_PULSE_LATENCY_MSEC}ms`
+    )
 
     const dynamicImport = new Function("specifier", "return import(specifier)")
     const { launchPersistentContext } = await dynamicImport("cloakbrowser")
@@ -481,6 +488,12 @@ async function openCloakBrowser(proxyUrl?: string | null): Promise<{ browser: Br
       humanize: true,
       ...(proxyUrl ? { proxy: proxyUrl } : {}),
       args: [...sharedArgs, ...gpuArgs, ...localMediaArgs],
+      // Playwright REPLACES the child env, so pass the full process env. The
+      // PulseAudio target latency is scoped to Chromium only: every libpulse
+      // client reads PULSE_LATENCY_MSEC, including the live-stream FFmpeg.
+      launchOptions: {
+        env: { ...process.env, PULSE_LATENCY_MSEC: String(envVars.CHROME_PULSE_LATENCY_MSEC) }
+      },
       contextOptions: {
         permissions: ["microphone", "camera"],
         ignoreHTTPSErrors: true,
