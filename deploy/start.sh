@@ -63,6 +63,23 @@ export XDG_RUNTIME_DIR=/root/.config/pulse
 # Create PulseAudio runtime directory
 mkdir -p $PULSE_RUNTIME_PATH
 
+# Configure PulseAudio daemon before start: native 48 kHz matching the
+# AUDIO_SAMPLE_RATE used by the ScreenRecorder so FFmpeg does a passthrough (no
+# 44100->48000 non-integer resample that, combined with aresample=async=1,
+# warbles/clicks under capture jitter). Larger fragment count/size gives
+# PulseAudio headroom against xruns under x264 + Chromium load.
+# Ported from the standalone image's Dockerfile entrypoint — the cloud image
+# was starting PulseAudio with distro defaults (44.1 kHz, 4x25ms buffer,
+# speex-float-1), re-creating the conditions the July 2026 audio fixes removed.
+mkdir -p /etc/pulse
+cat > /etc/pulse/daemon.conf <<PULSECONF
+default-sample-rate = 48000
+default-sample-format = s16le
+default-fragments = 12
+default-fragment-size-msec = 10
+resample-method = speex-float-3
+PULSECONF
+
 # Start PulseAudio daemon for this pod
 echo "🎤 Starting PulseAudio daemon..."
 pkill pulseaudio 2>/dev/null || true
@@ -155,6 +172,17 @@ if pactl set-default-sink $VIRTUAL_SPEAKER 2>/dev/null; then
 else
     echo "  ⚠️ Failed to set default sink to $VIRTUAL_SPEAKER"
 fi
+
+# Optimize audio quality and latency (ported from the standalone image's
+# Dockerfile entrypoint; see the daemon.conf block in Section 1).
+pactl set-sink-volume $VIRTUAL_SPEAKER 100% 2>/dev/null || echo '[pulse] failed to set virtual speaker volume' >&2
+# 10ms latency offset gives PulseAudio buffer headroom against CPU
+# contention (x264 CPA bursts) — recording doesn't need sub-ms latency.
+pactl set-sink-latency-offset $VIRTUAL_SPEAKER 10000 2>/dev/null || echo '[pulse] failed to set sink latency-offset — may be unsupported on this PulseAudio version' >&2
+pactl set-source-latency-offset $VIRTUAL_SPEAKER.monitor 10000 2>/dev/null || echo '[pulse] failed to set source-monitor latency-offset — may be unsupported on this PulseAudio version' >&2
+# speex-float-3 balances quality and CPU (vs speex-float-10) — speech audio is
+# not perceptibly different and the lower CPU leaves headroom for x264 encoding.
+pactl set-sink-resample-method $VIRTUAL_SPEAKER speex-float-3 2>/dev/null || true
 
 # ===================================================================
 # Section 3: Setup Virtual Display (Pure Pod Approach)
