@@ -1364,7 +1364,6 @@ export class ScreenRecorder extends EventEmitter {
     try {
       // Sync and merge separate audio/video files
       await this.syncAndMergeFiles()
-      await audioHolesCheck
 
       // The merged output now exists on disk. Record the finalize marker
       // IMMEDIATELY — before the upload / S3Uploader-availability guard — so the
@@ -1372,6 +1371,10 @@ export class ScreenRecorder extends EventEmitter {
       // From here a crash/eviction must NOT requeue (that would re-record); the
       // S3Uploader EFS-fallback + reconciliation job salvage any upload failure.
       GLOBAL.markRecordingFinalized()
+
+      // Log-only, never rejects — awaited after the marker so a slow decode
+      // can't widen the crash-before-finalize (requeue) window.
+      await audioHolesCheck
 
       // Auto-upload if not serverless and wait for completion
       if (!GLOBAL.isServerless()) {
