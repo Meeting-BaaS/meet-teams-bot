@@ -25,6 +25,11 @@ export const envVars = cleanEnv(process.env, {
   DISPLAY: str({ default: ":99" }),
   VIRTUAL_SPEAKER_MONITOR: str({ default: "virtual_speaker.monitor" }),
   VIRTUAL_MIC: str({ default: "virtual_mic" }),
+  // Sink the bot WRITES injected/played mic audio into. Its monitor is the
+  // master of the VIRTUAL_MIC source, so this is the bot's outgoing-mic input —
+  // kept separate from VIRTUAL_MIC (which Chrome READS) to avoid the
+  // speaker→mic loopback. See the null-sink topology in the Dockerfile.
+  VIRTUAL_MIC_SINK: str({ default: "virtual_mic_input" }),
   VIRTUAL_SPEAKER: str({ default: "virtual_speaker" }),
   VIDEO_DEVICE: str({ default: "/dev/video10" }),
   EFS_MOUNT_POINT: str({ default: "/mnt/efs" }),
