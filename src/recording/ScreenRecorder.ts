@@ -4,6 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { promisify } from "node:util"
 import type { Page } from "@playwright/test"
+import { audioDiagnosticsEnabled } from "../config/audio-diagnostics"
 import { envVars } from "../config/env-vars"
 import { storageBuckets } from "../config/storage"
 import { HtmlSnapshotService } from "../services/html-snapshot-service"
@@ -18,6 +19,7 @@ import { generateSyncSignal } from "../utils/SyncSignal"
 import { sleep } from "../utils/sleep"
 import { SoundLevelMonitor } from "../utils/sound-level-monitor"
 import { detectAudioHoles } from "./audio-holes"
+import { AudioDiagnostics } from "./audio-diagnostics"
 import { buildVideoInputArgs, buildVideoOutputArgs } from "./video-source"
 
 const execAsync = promisify(exec)
@@ -137,6 +139,7 @@ export class ScreenRecorder extends EventEmitter {
   private soundMonitorRemainder: Buffer = Buffer.alloc(0)
   private lastAudioDiagAt = 0
   private audioDiagCount = 0
+  private audioDiagnostics: AudioDiagnostics | null = null
 
   constructor(config: Partial<ScreenRecordingConfig> = {}) {
     super()
@@ -166,6 +169,7 @@ export class ScreenRecorder extends EventEmitter {
 
   public async startRecording(page: Page): Promise<void> {
     if (this.isRecording) {
+      this.audioDiagnostics?.setPage(page)
       // Already recording — no-op instead of throwing. The in-process retry loop
       // relaunches the browser but the x11grab recording spans it (it captures the
       // Xvfb display, not the page), so a second start is expected. Throwing here
@@ -241,6 +245,15 @@ export class ScreenRecorder extends EventEmitter {
       this.setupProcessMonitoring()
       this.setupSoundLevelMonitoring()
       this.setupFileSizeMonitoring()
+      const params = GLOBAL.get()
+      if (audioDiagnosticsEnabled(params.meeting_platform, params.extra)) {
+        try {
+          this.audioDiagnostics = new AudioDiagnostics()
+          this.audioDiagnostics.start(page, ffmpegArgs, this.recordingStartTime, this.rawAudioPath, this.ffmpegProcess.pid)
+        } catch {
+          console.warn("[AudioDiagnostics] unavailable; normal recording continues")
+        }
+      }
 
       await sleep(FLASH_SCREEN_SLEEP_TIME)
       if (page.isClosed()) {
@@ -270,6 +283,7 @@ export class ScreenRecorder extends EventEmitter {
       })
     } catch (error) {
       console.error("Failed to start native recording:", formatError(error))
+      void this.audioDiagnostics?.stop()
       this.isRecording = false
       // If an end_reason is already set, the state machine has committed to failing
       // for a real reason (botNotAccepted, exitingMeetingBeforeRecord, etc.).
@@ -538,6 +552,13 @@ export class ScreenRecorder extends EventEmitter {
 
     this.ffmpegProcess.on("exit", async (code) => {
       console.log(`FFmpeg exited with code ${code}`)
+      if (this.audioDiagnostics) {
+        const context = MeetingStateMachine.instance?.getContext()
+        if (context && (context.currentPauseStart !== null || context.pauseWindows.length > 0)) {
+          this.discardAudioDiagnostics()
+        }
+        await this.audioDiagnostics.retainRecorderAudio(this.rawAudioPath)
+      }
 
       // Consider recording successful if:
       // - Exit code 0 (normal completion)
@@ -549,6 +570,7 @@ export class ScreenRecorder extends EventEmitter {
         try {
           await this.handleSuccessfulRecording()
         } catch (error) {
+          await this.audioDiagnostics?.finish()
           console.error(
             "❌ Error in handleSuccessfulRecording:",
             error instanceof Error ? error.message : error
@@ -559,6 +581,8 @@ export class ScreenRecorder extends EventEmitter {
       } else {
         console.warn(`⚠️ Recording failed - unexpected exit code: ${code}`)
       }
+
+      await this.audioDiagnostics?.finish()
 
       this.isRecording = false
       this.cleanupProcess()
@@ -1254,7 +1278,12 @@ export class ScreenRecorder extends EventEmitter {
     })
   }
 
+  public discardAudioDiagnostics(): void {
+    void this.audioDiagnostics?.discard()
+  }
+
   private cleanupProcess(): void {
+    void this.audioDiagnostics?.stop()
     // Log memory usage before cleanup
     this.logMemoryUsage("Before cleanup")
 
@@ -1567,6 +1596,16 @@ export class ScreenRecorder extends EventEmitter {
 
     // 4. Calculate audio padding needed (can be negative for trimming)
     const audioPadding = syncResult.videoTimestamp - syncResult.audioTimestamp
+    this.audioDiagnostics?.setAlignment({
+      meeting_start_ms: this.meetingStartTime,
+      sync_signal_ms: this.syncSignalTimestamp,
+      audio_beep_wall_ms: this.audioBeepWallMs,
+      video_flash_wall_ms: this.videoFlashWallMs,
+      start_trim_seconds: calcOffsetVideo,
+      audio_padding_seconds: audioPadding,
+      startup_delay_seconds: startupDelaySec,
+      sync_confidence: syncResult.confidence
+    })
 
     console.log(`🔇 Audio padding needed: ${audioPadding.toFixed(3)}s`)
 

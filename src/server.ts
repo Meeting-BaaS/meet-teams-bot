@@ -3,6 +3,7 @@ import { switchToPausedBranding, switchToRecordingBranding } from "./branding"
 import { ChatManager } from "./chat-manager"
 import { envVars } from "./config/env-vars"
 import { Events } from "./events"
+import { ScreenRecorderManager } from "./recording/ScreenRecorder"
 import { GLOBAL } from "./singleton"
 import { MeetingStateMachine } from "./state-machine/machine"
 import { MeetingEndReason, MeetingStateType } from "./state-machine/types"
@@ -115,6 +116,7 @@ export async function server() {
 
         // Record pause start timestamp
         context.currentPauseStart = Date.now()
+        ScreenRecorderManager.getInstance().discardAudioDiagnostics()
         console.log(`[Server] Recording paused at ${context.currentPauseStart}`)
 
         // Send status webhook
