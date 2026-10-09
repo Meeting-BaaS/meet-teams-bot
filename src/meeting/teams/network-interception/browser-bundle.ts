@@ -16,12 +16,60 @@ import type {
 } from "./meeting-scope"
 import type { SpeakerSetResolver, SpeakerTimelineRung } from "./speaker-timeline"
 
+/** Self-contained: passed as source into the browser, just like the roster resolvers. */
+export async function readTeamsInboundAudioStats(
+  receivers: Array<{ id: number; receiver: RTCRtpReceiver }>
+) {
+  const fields = [
+    "packetsReceived", "packetsLost", "bytesReceived", "jitter",
+    "concealedSamples", "silentConcealedSamples", "concealmentEvents",
+    "totalSamplesReceived", "jitterBufferDelay", "jitterBufferEmittedCount",
+    "insertedSamplesForDeceleration", "removedSamplesForAcceleration",
+    "audioLevel", "totalAudioEnergy", "totalSamplesDuration"
+  ]
+  const active = receivers.filter(({ receiver }) => receiver.track?.readyState !== "ended")
+  let errors = 0
+  const reports = await Promise.all(active.slice(0, 32).map(async ({ id, receiver }) => {
+    const streams: Array<Record<string, string | number | null>> = []
+    try {
+      const stats = await receiver.getStats()
+      stats.forEach((report: any) => {
+        if (report.type !== "inbound-rtp" || (report.kind ?? report.mediaType) !== "audio") return
+        if (streams.length >= 32) return
+        const stream: Record<string, string | number | null> = {
+          receiver_id: id,
+          report_id: String(report.id).slice(0, 128),
+          timestamp_ms: Number.isFinite(report.timestamp) ? report.timestamp : null
+        }
+        for (const field of fields) {
+          stream[field] = typeof report[field] === "number" && Number.isFinite(report[field])
+            ? report[field] : null
+        }
+        streams.push(stream)
+      })
+    } catch {
+      errors++
+    }
+    return streams
+  }))
+  const streams = reports.flat()
+  return {
+    collected_at_ms: Date.now(),
+    status: !active.length ? "no_audio_receivers" : !streams.length ? "unavailable" : errors ? "partial" : "ok",
+    receivers: active.length,
+    errors,
+    truncated: active.length > 32 || streams.length > 32,
+    streams: streams.slice(0, 32)
+  }
+}
+
 /** Arguments are passed in, not imported: this function is stringified into the page. */
 export function teamsBrowserInterceptionLogic(
   resolveSpeakingSet: SpeakerSetResolver,
   resolveRosterScope: RosterScopeResolver,
   extractOwnRoster: OwnRosterExtractor,
-  meetingScope: TeamsInterceptorScope
+  meetingScope: TeamsInterceptorScope,
+  readAudioStats?: typeof readTeamsInboundAudioStats
 ) {
   try {
     if ((window as any).__teamsNetworkInterceptorInitialized === true) {
@@ -162,6 +210,20 @@ export function teamsBrowserInterceptionLogic(
 
     // receiver → isActive
     const receiverMap = new Map<RTCRtpReceiver, boolean>()
+    const audioReceiverIds = readAudioStats ? new WeakMap<RTCRtpReceiver, number>() : null
+    let nextAudioReceiverId = 0
+    if (readAudioStats) {
+      const epoch = Date.now()
+      // On-demand only: no new browser timer or peer-connection wrapper.
+      ;(window as any).__teamsReadAudioStats = async () => ({
+        epoch_ms: epoch,
+        ...((window as any).__teamsNetworkInterceptorStopped
+          ? { collected_at_ms: Date.now(), status: "stopped", streams: [] }
+          : await readAudioStats(Array.from(receiverMap.keys()).map((receiver) => ({
+              id: audioReceiverIds?.get(receiver) ?? 0, receiver
+            }))))
+      })
+    }
     // participantId → ParticipantSpeakingStateMachine
     const speakingStateMachines = new Map<string, any>()
     // last logged speaking set, to log only on change
@@ -1011,6 +1073,7 @@ export function teamsBrowserInterceptionLogic(
     function addReceiver(receiver: RTCRtpReceiver | undefined): void {
       if (!receiver || receiverMap.has(receiver)) return
       receiverMap.set(receiver, false)
+      audioReceiverIds?.set(receiver, ++nextAudioReceiverId)
       diag.receiversAdded++
       debug("➕ audio receiver added")
     }

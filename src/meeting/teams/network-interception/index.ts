@@ -3,8 +3,9 @@
 
 import path from "node:path"
 import type { Page } from "@playwright/test"
+import { audioDiagnosticsEnabled } from "../../../config/audio-diagnostics"
 import { GLOBAL } from "../../../singleton"
-import { teamsBrowserInterceptionLogic } from "./browser-bundle"
+import { readTeamsInboundAudioStats, teamsBrowserInterceptionLogic } from "./browser-bundle"
 import {
   deriveMeetingScope,
   extractOwnRoster,
@@ -56,6 +57,9 @@ export async function setupTeamsNetworkInterceptionScripts(
   }
 
   const scope = buildTeamsInterceptorScope(joinUrl)
+  const params = GLOBAL.get()
+  const audioStatsReader = audioDiagnosticsEnabled(params.meeting_platform, params.extra)
+    ? readTeamsInboundAudioStats.toString() : "undefined"
   console.log(
     `[Teams NetworkInterceptor] Roster scope: conversation=${scope.conversationId ?? "unresolved (will latch in-page)"} authenticated=${scope.isAuthenticated}`
   )
@@ -68,7 +72,7 @@ export async function setupTeamsNetworkInterceptionScripts(
                     console.error("[Teams NetworkInterceptor] pako dependency not loaded");
                 }
                 // As source: the stringified bundle cannot import it.
-                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()}, ${resolveRosterScope.toString()}, ${extractOwnRoster.toString()}, ${JSON.stringify(scope)});
+                (${teamsBrowserInterceptionLogic.toString()})(${resolveSpeakingSet.toString()}, ${resolveRosterScope.toString()}, ${extractOwnRoster.toString()}, ${JSON.stringify(scope)}, ${audioStatsReader});
             } catch (e) {
                 console.error("[Teams NetworkInterceptor] Initialization error:", e);
             }
