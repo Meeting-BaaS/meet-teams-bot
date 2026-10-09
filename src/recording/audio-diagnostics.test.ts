@@ -111,7 +111,7 @@ it("rejects invalid native specs instead of silently resampling", () => {
   }
 })
 
-it("captures through a bounded native fd, retains raw audio, uploads to owner storage and stops polling", async () => {
+it("captures bounded native audio without retaining the recorder intermediate", async () => {
   const raw = path.join(mockRoot.path, "raw.flac")
   await fs.writeFile(raw, "raw-before-finalization")
   const page = { evaluate: jest.fn().mockResolvedValue(null) } as unknown as Page
@@ -124,17 +124,18 @@ it("captures through a bounded native fd, retains raw audio, uploads to owner st
   expect(mockSpawn.mock.calls[0][1][1]).toContain("ulimit -f 1048576")
   jest.advanceTimersByTime(1000)
   await (diagnostics as unknown as { sampleTask: Promise<void> }).sampleTask
-  await diagnostics.retainRecorderAudio(raw)
   await fs.unlink(raw)
   diagnostics.setAlignment({ start_trim_seconds: 3, audio_padding_seconds: 0 })
   await diagnostics.finish()
   const directory = path.join(mockRoot.path, (await fs.readdir(mockRoot.path))[0])
   const manifest = JSON.parse(await fs.readFile(path.join(directory, "manifest.json"), "utf8"))
-  expect(manifest).toMatchObject({ recorder_pid: 5678, recorder_raw_status: "retained", alignment: { start_trim_seconds: 3 } })
+  expect(manifest).toMatchObject({ recorder_pid: 5678, alignment: { start_trim_seconds: 3 } })
+  expect(manifest.files.map((file: { name: string }) => file.name)).not.toContain("recorder-raw.flac")
   expect(manifest.files.every((file: { status: string }) => file.status === "uploaded")).toBe(true)
-  expect(await fs.readFile(path.join(directory, "recorder-raw.flac"), "utf8")).toBe("raw-before-finalization")
+  expect(await fs.readdir(directory)).not.toContain("recorder-raw.flac")
+  expect(mockUpload.mock.calls.some((call) => String(call[2]).endsWith("recorder-raw.flac"))).toBe(false)
   expect((await fs.stat(path.join(directory, "pulse-native.pcm"))).mode & 0o777).toBe(0o600)
-  expect(mockUpload).toHaveBeenCalledTimes(4)
+  expect(mockUpload).toHaveBeenCalledTimes(3)
   for (const [, bucket, key, tags, options] of mockUpload.mock.calls) {
     expect(bucket).toBe("customer-artifacts")
     expect(key).toMatch(new RegExp(`^${UUID}/audio_diagnostics/`))
@@ -154,7 +155,6 @@ it("permanently discards diagnostic audio on pause and survives missing native c
   await (diagnostics as unknown as { startTask: Promise<void> }).startTask
   await diagnostics.discard()
   await diagnostics.stop()
-  await diagnostics.retainRecorderAudio(raw)
   await diagnostics.finish()
   expect(mockUpload).not.toHaveBeenCalled()
   const discardedName = (await fs.readdir(mockRoot.path)).find((name) => name.startsWith("audio-diagnostics-"))
@@ -166,7 +166,6 @@ it("permanently discards diagnostic audio on pause and survives missing native c
   mockExec.mockRejectedValueOnce(Object.assign(new Error("pactl missing"), { code: "ENOENT" }))
   const failed = new AudioDiagnostics()
   failed.start({ evaluate: jest.fn() } as unknown as Page, [], Date.now(), raw)
-  await failed.retainRecorderAudio(raw)
   await expect(failed.finish()).resolves.toBeUndefined()
   expect(mockSpawn).toHaveBeenCalledTimes(1)
 })
@@ -193,16 +192,10 @@ it("does not pile up hung stats reads and rebinds after an in-process browser re
   await diagnostics.stop()
 })
 
-it("can stop during setup without launching a capture and refuses an oversized raw artifact", async () => {
+it("can stop during setup without launching a capture", async () => {
   const diagnostics = new AudioDiagnostics()
   diagnostics.start({ evaluate: jest.fn() } as unknown as Page, [], Date.now(), "missing")
   await diagnostics.stop()
   expect(mockSpawn).not.toHaveBeenCalled()
   expect(mockExec).not.toHaveBeenCalled()
-  const raw = path.join(mockRoot.path, "oversize.flac")
-  await fs.writeFile(raw, "")
-  await fs.truncate(raw, 1024 ** 3 + 1) // Sparse file: checks the bound without allocating 1GiB.
-  await diagnostics.retainRecorderAudio(raw)
-  await diagnostics.finish()
-  expect(mockUpload.mock.calls.some((call) => String(call[2]).endsWith("recorder-raw.flac"))).toBe(false)
 })

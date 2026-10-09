@@ -557,7 +557,6 @@ export class ScreenRecorder extends EventEmitter {
         if (context && (context.currentPauseStart !== null || context.pauseWindows.length > 0)) {
           this.discardAudioDiagnostics()
         }
-        await this.audioDiagnostics.retainRecorderAudio(this.rawAudioPath)
       }
 
       // Consider recording successful if:

@@ -27,13 +27,13 @@ The worker logs the diagnostic S3 prefix. In the bot's configured **artifacts bu
   manifest.json         # Native format, timestamps, actual recorder args/PIDs, trim/sync offsets, upload status
   samples.jsonl         # 1-second inbound stats/deltas, PCM/file growth, cgroup CPU, Node event-loop delays
   pulse-native.pcm      # Independent parec capture, native source format/rate/channels, no async resampler
-  recorder-raw.flac     # Original recorder output before merge/trim/conversion; already async-resampled
 ```
 
-The raw FLAC is retained by a hard link after FFmpeg exits, before finalization;
-no extra encoder or copy runs during recording. The normal final audio/chunks
-remain the third comparison point. No participant names, SDP, peer addresses or
-transcript text are collected by the inbound-stats reader.
+The recorder's temporary raw FLAC is not retained in the diagnostics directory
+or uploaded. The normal recording pipeline still uses it for finalization; the
+final audio/chunks are the comparison point downstream of the independent PCM
+capture. No participant names, SDP, peer addresses or transcript text are
+collected by the inbound-stats reader.
 
 The existing Teams receiver hook supplies `getStats()` on demand, at most once
 per second. Missing counters are `null`, unsupported stats are `unavailable`,
@@ -45,9 +45,9 @@ Stats support depends on the browser and Teams' audio topology.
 
 Native PCM and metrics stop after 2 hours. A child-only file-size limit caps PCM
 at 1 GiB (whichever limit comes first: approximately 93 minutes for 48 kHz stereo
-16-bit PCM, 46 minutes for float32); metrics are capped at 32 MiB and retained raw
-FLAC at 1 GiB. The manifest
-states missing/empty/oversize/upload-failed evidence instead of inventing data.
+16-bit PCM, 46 minutes for float32); `samples.jsonl` is capped at 32 MiB. The
+manifest states missing/empty/oversize/upload-failed evidence instead of
+inventing data.
 Audio is never buffered through Node. Sampling and capture failures do not fail
 the normal recording; diagnostic uploads use the existing bounded uploader and
 have **no EFS fallback**.
@@ -64,7 +64,7 @@ has approved capture for all of its Teams meetings.
 
 1. Identify an audible clipped word/click in the final recording; don't classify
    natural speech pauses or a flat FLAC file-size counter as proof of a defect.
-2. Download that attempt's manifest/PCM/raw FLAC from its own artifacts bucket.
+2. Download that attempt's manifest and PCM from its own artifacts bucket.
    Decode PCM using the manifest's `native_source` fields. For the usual
    `s16le`, 48 kHz, stereo source:
 
@@ -72,15 +72,15 @@ has approved capture for all of its Teams meetings.
    ffmpeg -f s16le -ar 48000 -ac 2 -i pulse-native.pcm pulse-native.wav
    ```
 
-3. Align the **same utterance** in PCM, recorder raw FLAC, and final output using
-   the existing sync beep and manifest trim/padding offsets. Spawn and first-byte
-   timestamps are arrival observations, not exact first-sample timestamps. The
-   native source and recorder may drift; check alignment near the defect too.
-4. Clean PCM / damaged raw FLAC points at the main recorder's capture/resampling
-   path. Clean raw FLAC / damaged final output points at finalization. Damaged PCM
-   is already upstream; loss/concealment rising at that time supports an inbound
-   problem but does not prove it. If stats are inconclusive, a decoded-track PCM
-   tap before browser playback is the next measurement, not part of this change.
+3. Align the **same utterance** in native PCM and final output using the existing
+   sync beep and manifest trim/padding offsets. Spawn and first-byte timestamps
+   are arrival observations, not exact first-sample timestamps. Check alignment
+   near the defect too.
+4. Clean PCM / damaged final output points downstream of the Pulse capture, but
+   cannot distinguish the recorder from finalization. Damaged PCM is already
+   upstream; loss/concealment rising at that time supports an inbound problem
+   but does not prove it. If stats are inconclusive, a decoded-track PCM tap
+   before browser playback is the next measurement, not part of this change.
 
 Grafana Loki selector (replace the bot ID):
 

@@ -131,7 +131,7 @@ export class AudioDiagnostics {
       recorder_started_at_ms: recorderStartedAtMs, recorder_args: recorderArgs,
       recorder_pid: recorderPid ?? null,
       max_seconds: MAX_SECONDS, max_audio_bytes: MAX_AUDIO_BYTES,
-      alignment_note: "Spawn/arrival clocks are approximate; align PCM and recorder audio using the existing sync beep."
+      alignment_note: "Spawn/arrival clocks are approximate; align native PCM and final audio using the existing sync beep."
     }
     this.startTask = this.initialize().catch((error: NodeJS.ErrnoException) => {
       this.metadata.native_status = "setup_failed"
@@ -297,24 +297,7 @@ export class AudioDiagnostics {
     this.discarded = true
     await this.stop()
     if (!this.directory) return
-    await Promise.allSettled(["pulse-native.pcm", "recorder-raw.flac", "samples.jsonl"].map((file) => fs.unlink(path.join(this.directory, file))))
-  }
-
-  public async retainRecorderAudio(rawAudioPath: string): Promise<void> {
-    await this.stop()
-    if (!this.directory || this.discarded) return
-    try {
-      const bytes = await this.fileBytes(rawAudioPath)
-      if (bytes === null || bytes === 0 || bytes > MAX_AUDIO_BYTES) {
-        this.metadata.recorder_raw_status = "missing_empty_or_oversize"
-        return
-      }
-      // Retain the completed inode before finalization; no duplicate audio writes or extra encode.
-      await fs.link(rawAudioPath, path.join(this.directory, "recorder-raw.flac"))
-      this.metadata.recorder_raw_status = "retained"
-    } catch {
-      this.metadata.recorder_raw_status = "retention_failed"
-    }
+    await Promise.allSettled(["pulse-native.pcm", "samples.jsonl"].map((file) => fs.unlink(path.join(this.directory, file))))
   }
 
   public async finish(): Promise<void> {
@@ -324,7 +307,6 @@ export class AudioDiagnostics {
       const uploader = S3Uploader.getInstance()
       const files = [
         { name: "pulse-native.pcm", path: path.join(this.directory, "pulse-native.pcm"), max: MAX_AUDIO_BYTES },
-        { name: "recorder-raw.flac", path: path.join(this.directory, "recorder-raw.flac"), max: MAX_AUDIO_BYTES },
         { name: "samples.jsonl", path: path.join(this.directory, "samples.jsonl"), max: MAX_LOG_BYTES }
       ]
       const results = await Promise.all(files.map(async (file) => {
